@@ -59,6 +59,12 @@ dynamics = INLDynamics(
 
 *Stable training with INL Dynamics: loss converges smoothly, perplexity drops rapidly.*
 
+### Stability at 400k+ Steps
+
+![Training at 400k steps](docs/training-400k-stable.png)
+
+*After beta clamping fix: training remains stable past 400k steps where it previously exploded.*
+
 ## Documentation
 
 - [Getting Started](docs/getting-started.md)
