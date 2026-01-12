@@ -14,7 +14,7 @@ from complexity.api import (
     Attention, MLP, RMSNorm, RoPE, INLDynamics,
     # Optimizations
     CUDA, Efficient,
-    # Architectures O(N)
+    # Linear architectures O(N)
     Architecture, Mamba, RWKV,
 )
 
@@ -33,11 +33,11 @@ model = Efficient.tiny_llm(vocab_size=32000)  # ~125M params
 
 | Module | Description |
 |--------|-------------|
-| **Core** | Attention (GQA/MHA/MQA), MLP (SwiGLU/GeGLU), Position (RoPE/YaRN/ALiBi) |
+| **Core (O(N²))** | Attention (GQA/MHA/MQA), MLP (SwiGLU/GeGLU/MoE), Position (RoPE/YaRN/ALiBi) |
 | **INL Dynamics** | Velocity tracking for training stability |
 | **CUDA/Triton** | Flash Attention, Sliding Window, Sparse, Linear |
 | **Efficient** | Quantization, Mixed Precision, Small Models |
-| **O(N) Architectures** | Mamba, RWKV, RetNet |
+| **Linear (O(N))** | Mamba, RWKV, RetNet |
 | **Multimodal** | Vision, Audio, Fusion |
 
 ## INL Dynamics
@@ -79,7 +79,7 @@ model = Efficient.small_llm(vocab_size=32000)  # ~350M params
 Efficient.enable_checkpointing(model)
 ```
 
-## O(N) Architectures
+## Linear Architectures (O(N))
 
 ```python
 from complexity.api import Architecture
