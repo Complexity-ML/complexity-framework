@@ -1,30 +1,30 @@
 # Efficient - Small Budget Training
 
-**Optimisations pour entraîner sur hardware limité.**
+**Optimizations for training on limited hardware.**
 
-## Recommandations par GPU
+## Recommendations by GPU
 
 ```python
 from complexity.api import Efficient
 
-# Détecter le VRAM
+# Detect VRAM
 vram = Efficient.get_vram()
-print(f"VRAM disponible: {vram:.1f} GB")
+print(f"Available VRAM: {vram:.1f} GB")
 
-# Config recommandée
+# Recommended config
 config = Efficient.recommend_config(vram_gb=vram, training=True)
 print(config)
 ```
 
-| VRAM | Modèle | Batch | Seq Len | Optimisations |
-|------|--------|-------|---------|---------------|
+| VRAM | Model | Batch | Seq Len | Optimizations |
+|------|-------|-------|---------|---------------|
 | 80 GB (A100) | medium | 32 | 4096 | - |
 | 40 GB (A100) | small | 16 | 4096 | flash_attention |
 | 24 GB (3090/4090) | tiny | 8 | 2048 | flash, checkpointing |
 | 12 GB (3060/4070) | micro | 4 | 1024 | flash, checkpointing, mixed_precision |
 | 8 GB (3050) | nano | 2 | 512 | checkpointing, mixed_precision, accumulation |
 
-## Modèles pré-configurés
+## Pre-configured Models
 
 ```python
 # Nano (~10M params) - CPU friendly
@@ -42,7 +42,7 @@ model = Efficient.small_llm(vocab_size=32000)
 
 ## Gradient Checkpointing
 
-Réduit la mémoire au prix du compute (~30% plus lent).
+Reduces memory at the cost of compute (~30% slower).
 
 ```python
 model = Efficient.enable_checkpointing(model)
@@ -50,7 +50,7 @@ model = Efficient.enable_checkpointing(model)
 
 ## Mixed Precision (FP16/BF16)
 
-2x moins de mémoire, plus rapide.
+2x less memory, faster.
 
 ```python
 model, optimizer, scaler = Efficient.mixed_precision(model, optimizer)
@@ -66,19 +66,19 @@ scaler.update()
 
 ## Quantization
 
-### Inference INT8
+### INT8 Inference
 
 ```python
 model = Efficient.quantize.dynamic(model)  # INT8 dynamic
 ```
 
-### Inference INT4
+### INT4 Inference
 
 ```python
 model = Efficient.quantize.static(model, bits=4)
 ```
 
-### Estimer les économies
+### Estimate Savings
 
 ```python
 savings = Efficient.estimate_savings(model, bits=4)
@@ -86,7 +86,7 @@ print(savings)
 # {'original': '7.00 GB', 'quantized': '1.75 GB', 'savings': '75.0%'}
 ```
 
-## Estimation mémoire
+## Memory Estimation
 
 ```python
 mem = Efficient.estimate_memory(
@@ -106,7 +106,7 @@ print(mem)
 
 ## Gradient Accumulation
 
-Simule un batch plus grand.
+Simulates a larger batch.
 
 ```python
 accumulation_steps = 8
@@ -121,26 +121,26 @@ for step, batch in enumerate(dataloader):
         optimizer.zero_grad()
 ```
 
-## Setup complet small budget
+## Complete Small Budget Setup
 
 ```python
 from complexity.api import Efficient, Helpers
 import torch
 
-# 1. Créer le modèle
+# 1. Create model
 model = Efficient.tiny_llm(vocab_size=32000).cuda()
 print(f"Params: {Helpers.count_params(model)}")
 
-# 2. Optimisations
+# 2. Optimizations
 Efficient.enable_checkpointing(model)
 
-# 3. Optimizer avec mixed precision
+# 3. Optimizer with mixed precision
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 model, optimizer, scaler = Efficient.mixed_precision(model, optimizer)
 
-# 4. Estimer la mémoire
+# 4. Estimate memory
 mem = Efficient.estimate_memory(model, batch_size=4, seq_len=2048)
-print(f"Mémoire estimée: {mem['total']}")
+print(f"Estimated memory: {mem['total']}")
 
 # 5. Training loop
 accumulation_steps = 4
@@ -159,17 +159,17 @@ for step, batch in enumerate(dataloader):
         optimizer.zero_grad()
 ```
 
-## Optimizers économiques
+## Memory-Efficient Optimizers
 
 ```python
 from complexity.training import get_optimizer
 
-# AdaLomo - O(1) memory (pas d'états optimizer!)
+# AdaLomo - O(1) memory (no optimizer states!)
 optimizer = get_optimizer(model, "adalomo", lr=1e-2)
 
-# 8-bit Adam - 75% moins de mémoire
+# 8-bit Adam - 75% less memory
 optimizer = get_optimizer(model, "adam8bit", lr=1e-4)
 
-# LION - Pas de variance state
+# LION - No variance state
 optimizer = get_optimizer(model, "lion", lr=1e-5)
 ```

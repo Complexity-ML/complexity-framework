@@ -1,56 +1,56 @@
 # INL Dynamics
 
-**Velocity tracking pour stabilité du training LLM.**
+**Velocity tracking for LLM training stability.**
 
-## Le problème
+## The Problem
 
-Après ~400k steps de training, les modèles peuvent exploser (NaN loss) à cause de:
-- **Small words** (the, a, is) qui causent des oscillations
-- **beta non borné** qui tend vers l'infini avec softplus
-- **Accumulation de vélocité** sans amortissement
+After ~400k training steps, models can explode (NaN loss) due to:
+- **Small words** (the, a, is) causing oscillations
+- **Unbounded beta** that tends to infinity with softplus
+- **Velocity accumulation** without damping
 
-## La solution: INL Dynamics
+## The Solution: INL Dynamics
 
-Système de second ordre inspiré de la robotique:
+Second-order dynamical system for stable representation evolution:
 
 ```
-error = h - mu                      # déviation de l'équilibre
-v_next = alpha * v - beta * error   # mise à jour vélocité
-h_next = h + dt * gate * v_next     # mise à jour position
+error = h - mu                      # deviation from equilibrium
+v_next = alpha * v - beta * error   # velocity update
+h_next = h + dt * gate * v_next     # position update
 ```
 
-Comme un système masse-ressort-amortisseur:
-- **alpha** (inertie): lisse les mouvements
-- **beta** (correction): ramène vers l'équilibre
-- **gate** (amplitude): contrôle la force
-- **velocity**: absorbe les chocs des small words
+Key parameters:
+- **alpha** (inertia): smooths movements
+- **beta** (correction): pulls back to equilibrium
+- **gate** (amplitude): controls force
+- **velocity**: absorbs shocks from small words
 
 ## Usage
 
-### Version complète (paramètres adaptatifs)
+### Full Version (adaptive parameters)
 
 ```python
 from complexity.api import INLDynamics
 
 dynamics = INLDynamics(
     hidden_size=768,
-    # Paramètres initiaux
-    init_alpha=0.9,      # Haute inertie = smooth
-    init_beta=0.1,       # Faible correction = stable
-    init_gate=0.5,       # Amplitude moyenne
-    dt=0.1,              # Pas d'intégration
-    # CRITICAL: Contraintes de stabilité
-    beta_max=2.0,        # Clamp beta à [0, 2]!
-    velocity_max=10.0,   # Limite vélocité
-    mu_min=0.0,          # Équilibre min
-    mu_max=2.0,          # Équilibre max
+    # Initial parameters
+    init_alpha=0.9,      # High inertia = smooth
+    init_beta=0.1,       # Low correction = stable
+    init_gate=0.5,       # Medium amplitude
+    dt=0.1,              # Integration step
+    # CRITICAL: Stability constraints
+    beta_max=2.0,        # Clamp beta to [0, 2]!
+    velocity_max=10.0,   # Limit velocity
+    mu_min=0.0,          # Min equilibrium
+    mu_max=2.0,          # Max equilibrium
 )
 
 # Forward
 h_next, v_next = dynamics(hidden_states, velocity_states)
 ```
 
-### Version lite (paramètres fixes)
+### Lite Version (fixed parameters)
 
 ```python
 from complexity.api import INLDynamicsLite
@@ -58,33 +58,33 @@ from complexity.api import INLDynamicsLite
 dynamics = INLDynamicsLite(
     hidden_size=768,
     alpha=0.9,
-    beta=0.1,  # Fixé, pas d'explosion possible
+    beta=0.1,  # Fixed, no explosion possible
     gate=0.5,
     dt=0.1,
 )
 ```
 
-## Contraintes critiques
+## Critical Constraints
 
-| Paramètre | Range | Pourquoi |
-|-----------|-------|----------|
+| Parameter | Range | Why |
+|-----------|-------|-----|
 | `alpha` | [0, 1] | sigmoid |
-| **`beta`** | **[0, 2]** | **softplus → ∞ sans clamp!** |
+| **`beta`** | **[0, 2]** | **softplus → ∞ without clamp!** |
 | `gate` | [0, 1] | sigmoid |
-| `mu` | [0, 2] | équilibre borné |
-| `velocity` | [-10, 10] | évite runaway |
+| `mu` | [0, 2] | bounded equilibrium |
+| `velocity` | [-10, 10] | prevents runaway |
 
-### Le bug découvert après 400k steps
+### The Bug Discovered After 400k Steps
 
 ```python
-# MAUVAIS - cause explosion!
+# BAD - causes explosion!
 beta = F.softplus(beta_raw)  # [0, inf) ❌
 
-# BON - stable
+# GOOD - stable
 beta = torch.clamp(F.softplus(beta_raw), max=2.0)  # [0, 2] ✓
 ```
 
-## Intégration dans un decoder layer
+## Integration in a Decoder Layer
 
 ```python
 class DecoderLayer(nn.Module):
@@ -115,32 +115,32 @@ class DecoderLayer(nn.Module):
         return h, velocity
 ```
 
-## Monitoring pendant le training
+## Monitoring During Training
 
 ```python
-# Vérifier les stats dynamics
+# Check dynamics stats
 for layer in model.layers:
     stats = layer.dynamics.get_dynamics_stats()
     print(f"mu: [{stats['mu_min']:.2f}, {stats['mu_max']:.2f}]")
 
-# Si mu sort de [0, 2] → problème!
+# If mu goes outside [0, 2] → problem!
 ```
 
-## Pourquoi ça marche
+## Why It Works
 
-1. **Velocity = amortisseur**: Absorbe les chocs des tokens fréquents
-2. **Beta clampé**: Pas d'explosion de correction
-3. **Trajectoires lisses**: Comme un robot, pas de mouvements brusques
-4. **Équilibre learnable**: Le modèle apprend où converger
+1. **Velocity = damper**: Absorbs shocks from frequent tokens
+2. **Clamped beta**: No correction explosion
+3. **Smooth trajectories**: No jerky movements
+4. **Learnable equilibrium**: Model learns where to converge
 
-## Sans INL Dynamics
+## Without INL Dynamics
 
-- Training from scratch coûte plus cher
-- Instabilité sur les small words
-- Risque d'explosion après long training
+- Training from scratch costs more
+- Instability on small words
+- Risk of explosion after long training
 
-## Avec INL Dynamics
+## With INL Dynamics
 
-- Training stable jusqu'à 1M+ steps
-- Meilleure généralisation
-- Coût compute légèrement supérieur (~5%)
+- Stable training up to 1M+ steps
+- Better generalization
+- Slightly higher compute cost (~5%)

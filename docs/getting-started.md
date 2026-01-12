@@ -5,32 +5,32 @@
 ```bash
 pip install complexity-framework
 
-# Avec support CUDA/Triton
+# With CUDA/Triton support
 pip install complexity-framework[cuda]
 
-# Développement
-git clone https://github.com/Web3-League/complexity-framework.git
+# Development
+git clone https://github.com/Complexity-ML/complexity-framework.git
 cd complexity-framework
 pip install -e .
 ```
 
-## Premier modèle
+## First Model
 
-### Usage simple
+### Simple Usage
 
 ```python
 from complexity.api import Model, Tokenizer, Generate
 
-# Charger un modèle pré-entraîné
+# Load a pretrained model
 tokenizer = Tokenizer.load("llama-7b")
 model = Model.load("llama-7b", device="cuda")
 
-# Générer
+# Generate
 output = model.generate("Hello, world!", max_tokens=100)
 print(output)
 ```
 
-### Construire un modèle custom
+### Build a Custom Model
 
 ```python
 from complexity.api import (
@@ -72,13 +72,13 @@ class MyDecoderLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        # Attention avec Flash Attention
+        # Attention with Flash Attention
         self.attn = CUDA.flash(
             hidden_size=config.hidden_size,
             num_heads=config.num_heads,
         )
 
-        # INL Dynamics pour stabilité
+        # INL Dynamics for stability
         self.dynamics = INLDynamics(
             hidden_size=config.hidden_size,
             beta_max=2.0,
@@ -112,30 +112,30 @@ class MyDecoderLayer(nn.Module):
         return h, velocity
 ```
 
-## Avec petit budget GPU
+## Small GPU Budget
 
 ```python
 from complexity.api import Efficient
 
-# Vérifier le VRAM disponible
+# Check available VRAM
 vram = Efficient.get_vram()
 print(f"VRAM: {vram:.1f} GB")
 
-# Config recommandée
+# Recommended config
 config = Efficient.recommend_config(vram_gb=vram, training=True)
 print(config)
 
-# Créer un petit modèle
+# Create a small model
 model = Efficient.tiny_llm(vocab_size=32000)  # ~125M params
 
-# Optimisations
+# Optimizations
 Efficient.enable_checkpointing(model)
 model, optimizer, scaler = Efficient.mixed_precision(model, optimizer)
 ```
 
-## Architectures O(N)
+## O(N) Architectures
 
-Pour des séquences très longues:
+For very long sequences:
 
 ```python
 from complexity.api import Architecture
@@ -150,9 +150,10 @@ model = Architecture.rwkv(hidden_size=768, num_layers=12)
 model = Architecture.retnet(hidden_size=768, num_layers=12)
 ```
 
-## Prochaines étapes
+## Next Steps
 
-- [API Reference](api.md) - Documentation complète de l'API
-- [INL Dynamics](dynamics.md) - Comprendre le velocity tracking
-- [CUDA Optimizations](cuda.md) - Flash Attention et plus
-- [Training Guide](training.md) - Entraîner votre modèle
+- [API Reference](api.md) - Full API documentation
+- [INL Dynamics](dynamics.md) - Understanding velocity tracking
+- [CUDA Optimizations](cuda.md) - Flash Attention and more
+- [Training Guide](training.md) - Train your model
+- [MoE](moe.md) - Mixture of Experts
