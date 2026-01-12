@@ -42,16 +42,22 @@ model = Efficient.tiny_llm(vocab_size=32000)  # ~125M params
 
 ## INL Dynamics
 
-Velocity tracking pour éviter l'explosion après 400k+ steps:
+Velocity tracking to prevent explosion after 400k+ steps:
 
 ```python
 # CRITICAL: beta in [0, 2], NOT [0, inf)!
 dynamics = INLDynamics(
     hidden_size=768,
-    beta_max=2.0,       # Clamp beta pour stabilité
-    velocity_max=10.0,  # Limite vélocité
+    beta_max=2.0,       # Clamp beta for stability
+    velocity_max=10.0,  # Limit velocity
 )
 ```
+
+### Training Results
+
+![Training Curves](docs/training-curves.png)
+
+*Stable training with INL Dynamics: loss converges smoothly, perplexity drops rapidly.*
 
 ## Documentation
 
