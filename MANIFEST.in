@@ -1,0 +1,14 @@
+include LICENSE
+include README.md
+recursive-include complexity *.py
+recursive-exclude docs *
+recursive-exclude * *.png
+recursive-exclude * *.jpg
+recursive-exclude * *.jpeg
+recursive-exclude * *.gif
+recursive-exclude * *.svg
+exclude docs/*
+prune docs
+prune dist
+prune build
+prune *.egg-info

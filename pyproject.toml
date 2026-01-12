@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "complexity-framework"
-version = "0.1.0"
+version = "0.1.2"
 description = "Modular Python framework for building LLMs with INL Dynamics stability"
-readme = "README.md"
+readme = "README_PYPI.md"
 license = {text = "CC-BY-NC-4.0"}
 authors = [
     {name = "Complexity-ML", email = "contact@complexity-ml.org"}
@@ -73,9 +73,13 @@ Issues = "https://github.com/Complexity-ML/complexity-framework/issues"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["complexity*"]
+exclude = ["docs*", "tests*"]
 
 [tool.setuptools.package-data]
-"*" = ["*.md"]
+"*" = ["*.py"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["*.png", "*.jpg", "*.jpeg", "*.gif", "*.svg", "*.md"]
 
 [tool.black]
 line-length = 100
