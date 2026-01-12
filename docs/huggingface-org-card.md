@@ -151,7 +151,7 @@ model = Architecture.retnet(hidden_size=768, num_layers=12)
 ## Links
 
 - [GitHub](https://github.com/Complexity-ML/complexity-framework)
-- [PyPI](https://pypi.org/project/complexity-framework/) (coming soon)
+- [PyPI](https://pypi.org/project/complexity-framework/)
 
 ## License
 
@@ -160,11 +160,12 @@ CC BY-NC 4.0 (Creative Commons Attribution-NonCommercial 4.0)
 ## Citation
 
 ```bibtex
-@software{complexity_framework_2024,
+@software{complexity_framework_2025,
   title={Complexity Framework: Modular LLM Building Blocks with INL Dynamics},
   author={Complexity-ML},
-  year={2024},
-  url={https://github.com/Complexity-ML/complexity-framework}
+  year={2025},
+  url={https://github.com/Complexity-ML/complexity-framework},
+  note={PyPI: https://pypi.org/project/complexity-framework/}
 }
 ```
 
