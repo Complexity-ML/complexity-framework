@@ -14,7 +14,7 @@ from complexity.api import (
     Attention, MLP, RMSNorm, RoPE, INLDynamics,
     # Optimizations
     CUDA, Efficient,
-    # Architectures O(N)
+    # Linear architectures O(N)
     Architecture, Mamba, RWKV,
 )
 
@@ -33,11 +33,11 @@ model = Efficient.tiny_llm(vocab_size=32000)  # ~125M params
 
 | Module | Description |
 |--------|-------------|
-| **Core** | Attention (GQA/MHA/MQA), MLP (SwiGLU/GeGLU), Position (RoPE/YaRN/ALiBi) |
-| **INL Dynamics** | Velocity tracking pour stabilité training - [docs](docs/dynamics.md) |
+| **Core (O(N²))** | Attention (GQA/MHA/MQA), MLP (SwiGLU/GeGLU/MoE), Position (RoPE/YaRN/ALiBi) |
+| **INL Dynamics** | Velocity tracking for training stability - [docs](docs/dynamics.md) |
 | **CUDA/Triton** | Flash Attention, Sliding Window, Sparse, Linear - [docs](docs/cuda.md) |
 | **Efficient** | Quantization, Mixed Precision, Small Models - [docs](docs/efficient.md) |
-| **O(N) Architectures** | Mamba, RWKV, RetNet - [docs](docs/architectures.md) |
+| **Linear (O(N))** | Mamba, RWKV, RetNet - [docs](docs/architectures.md) |
 | **Multimodal** | Vision, Audio, Fusion - [docs](docs/multimodal.md) |
 
 ## INL Dynamics
