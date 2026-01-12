@@ -64,4 +64,4 @@ dynamics = INLDynamics(
 
 ## License
 
-MIT
+CC BY-NC 4.0 (Creative Commons Attribution-NonCommercial 4.0)
