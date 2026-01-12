@@ -1,0 +1,87 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "complexity-framework"
+version = "0.1.0"
+description = "Modular Python framework for building LLMs with INL Dynamics stability"
+readme = "README.md"
+license = {text = "CC-BY-NC-4.0"}
+authors = [
+    {name = "Complexity-ML", email = "contact@complexity-ml.org"}
+]
+keywords = [
+    "llm",
+    "transformer",
+    "deep-learning",
+    "pytorch",
+    "attention",
+    "moe",
+    "mixture-of-experts",
+    "inl-dynamics",
+    "flash-attention",
+    "mamba",
+    "rwkv",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: Other/Proprietary License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "torch>=2.0.0",
+    "numpy>=1.21.0",
+    "einops>=0.6.0",
+]
+
+[project.optional-dependencies]
+cuda = [
+    "triton>=2.0.0",
+    "flash-attn>=2.0.0",
+]
+all = [
+    "triton>=2.0.0",
+    "flash-attn>=2.0.0",
+    "transformers>=4.30.0",
+    "tokenizers>=0.13.0",
+    "datasets>=2.0.0",
+    "wandb>=0.15.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Complexity-ML/complexity-framework"
+Documentation = "https://github.com/Complexity-ML/complexity-framework/tree/main/docs"
+Repository = "https://github.com/Complexity-ML/complexity-framework"
+Issues = "https://github.com/Complexity-ML/complexity-framework/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["complexity*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.md"]
+
+[tool.black]
+line-length = 100
+target-version = ["py38", "py39", "py310", "py311"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
