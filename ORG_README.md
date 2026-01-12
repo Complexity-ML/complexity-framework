@@ -1,6 +1,6 @@
 ---
 title: Complexity Framework
-emoji: 🧠
+emoji: 🐢
 colorFrom: purple
 colorTo: blue
 sdk: static
