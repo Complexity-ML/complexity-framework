@@ -53,11 +53,11 @@ dynamics = INLDynamics(
 )
 ```
 
-### Training Results
+### Loss Spike Recovery
 
-![Training Curves](docs/training-curves.png)
+![Loss Spike Recovery](docs/loss-spike-recovery.png)
 
-*Stable training with INL Dynamics: loss converges smoothly, perplexity drops rapidly.*
+*INL Dynamics recovers from loss spikes (visible around 60-80k steps) thanks to velocity damping.*
 
 ### Stability at 400k+ Steps
 
