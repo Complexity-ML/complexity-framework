@@ -53,15 +53,17 @@ dynamics = INLDynamics(
 )
 ```
 
-## Token-Routed MLP (MoE)
+## Mixture of Experts (MoE)
 
 ```python
-from complexity.api import MLP, TokenRoutedMLP
+from complexity.api import MLP
 
-# Via factory
-moe = MLP.moe(hidden_size=4096, num_experts=8, top_k=2)
+# Token-Routed MoE (our innovation - deterministic, no aux_loss)
+moe = MLP.moe(hidden_size=4096, num_experts=4)
+output = moe(hidden_states, token_ids)  # No aux_loss!
 
-# Forward
+# Sparse MoE (standard - learned routing)
+moe = MLP.sparse_moe(hidden_size=4096, num_experts=8, top_k=2)
 output, aux_loss = moe(hidden_states)
 ```
 
