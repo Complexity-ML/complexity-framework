@@ -1,24 +1,36 @@
 """
-Complexity Tokenizer - BPE tokenizer for LLM training.
+Complexity Tokenizer - Fast BPE/Unigram/WordPiece tokenization.
+
+Uses HuggingFace tokenizers (Rust backend) for speed.
 
 Usage:
-    from complexity.tokenizer import ComplexityTokenizer
+    from complexity.tokenizer import Tokenizer, TokenizerConfig
 
-    # Train a new tokenizer
-    tokenizer = ComplexityTokenizer.train(
-        files=["corpus.txt"],
-        vocab_size=32000,
-    )
-    tokenizer.save("my_tokenizer")
+    # Load preset
+    tok = Tokenizer.load("llama3-8b")
 
-    # Load existing tokenizer
-    tokenizer = ComplexityTokenizer.load("my_tokenizer")
+    # Train new tokenizer
+    tok = Tokenizer.train("./data/", vocab_size=100000)
 
-    # Encode/Decode
-    ids = tokenizer.encode("Hello world")
-    text = tokenizer.decode(ids)
+    # Encode/decode
+    ids = tok.encode("Hello world")
+    text = tok.decode(ids)
 """
 
-from .bpe_tokenizer import ComplexityTokenizer
+from .config import (
+    TokenizerConfig,
+    TOKENIZER_PRESETS,
+    FORMAT_SPECIAL_TOKENS,
+    get_special_tokens,
+    get_bos_eos,
+)
+from .tokenizer import Tokenizer
 
-__all__ = ["ComplexityTokenizer"]
+__all__ = [
+    "Tokenizer",
+    "TokenizerConfig",
+    "TOKENIZER_PRESETS",
+    "FORMAT_SPECIAL_TOKENS",
+    "get_special_tokens",
+    "get_bos_eos",
+]
