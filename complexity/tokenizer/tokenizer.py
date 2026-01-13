@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Optional, Union, Dict, Any, Iterator, Callable
 
 import torch
 
@@ -141,6 +141,69 @@ class Tokenizer:
             tokenizer = cls._train_unigram(files, config.vocab_size, special_tokens)
         elif config.method == "wordpiece":
             tokenizer = cls._train_wordpiece(files, config.vocab_size, special_tokens, config.min_frequency)
+        else:
+            raise ValueError(f"Unknown method: {config.method}")
+
+        print(f"[Tokenizer] Done!")
+        return cls(tokenizer, config)
+
+    @classmethod
+    def train_from_iterator(
+        cls,
+        iterator: Union[Iterator[str], Callable[[], Iterator[str]]],
+        config: TokenizerConfig = None,
+        **kwargs,
+    ) -> "Tokenizer":
+        """
+        Train tokenizer from an iterator of texts.
+
+        Perfect for streaming datasets (HuggingFace datasets, generators, etc.)
+
+        Args:
+            iterator: Iterator yielding text strings, or callable returning iterator
+            config: Optional config
+            **kwargs: Override config (vocab_size, format, method, ...)
+
+        Examples:
+            # From HuggingFace dataset
+            from datasets import load_dataset
+            ds = load_dataset("Pacific-Prime/edu-web", split="train", streaming=True)
+
+            def text_iter():
+                for ex in ds:
+                    yield ex["text"]
+
+            tokenizer = Tokenizer.train_from_iterator(text_iter, vocab_size=100000)
+
+            # From generator
+            def my_texts():
+                yield "Hello world"
+                yield "This is a test"
+
+            tokenizer = Tokenizer.train_from_iterator(my_texts(), vocab_size=32000)
+        """
+        if config:
+            for k, v in kwargs.items():
+                setattr(config, k, v)
+        else:
+            config = TokenizerConfig(**kwargs)
+
+        print(f"[Tokenizer] Training {config.method.upper()} from iterator...")
+        print(f"  Vocab: {config.vocab_size}, Format: {config.format}")
+
+        special_tokens = get_special_tokens(config.format)
+
+        # Get iterator (call if callable)
+        if callable(iterator) and not hasattr(iterator, '__next__'):
+            iterator = iterator()
+
+        # Train by method
+        if config.method == "bpe":
+            tokenizer = cls._train_bpe_from_iterator(iterator, config.vocab_size, special_tokens, config.min_frequency)
+        elif config.method == "unigram":
+            tokenizer = cls._train_unigram_from_iterator(iterator, config.vocab_size, special_tokens)
+        elif config.method == "wordpiece":
+            tokenizer = cls._train_wordpiece_from_iterator(iterator, config.vocab_size, special_tokens, config.min_frequency)
         else:
             raise ValueError(f"Unknown method: {config.method}")
 
@@ -288,6 +351,61 @@ class Tokenizer:
         tok.train([str(f) for f in files], trainer)
         return tok
 
+    # ==================== Train from Iterator ====================
+
+    @staticmethod
+    def _train_bpe_from_iterator(iterator, vocab_size, special_tokens, min_freq):
+        from tokenizers import Tokenizer as HFTok
+        from tokenizers.models import BPE
+        from tokenizers.trainers import BpeTrainer
+        from tokenizers.pre_tokenizers import ByteLevel
+        from tokenizers.decoders import ByteLevel as BLD
+        tok = HFTok(BPE(unk_token="<|unk|>"))
+        tok.pre_tokenizer = ByteLevel(add_prefix_space=False)
+        tok.decoder = BLD()
+        trainer = BpeTrainer(
+            vocab_size=vocab_size,
+            min_frequency=min_freq,
+            special_tokens=special_tokens,
+            show_progress=True,
+        )
+        tok.train_from_iterator(iterator, trainer)
+        return tok
+
+    @staticmethod
+    def _train_unigram_from_iterator(iterator, vocab_size, special_tokens):
+        from tokenizers import Tokenizer as HFTok
+        from tokenizers.models import Unigram
+        from tokenizers.trainers import UnigramTrainer
+        from tokenizers.pre_tokenizers import Metaspace
+        tok = HFTok(Unigram())
+        tok.pre_tokenizer = Metaspace()
+        trainer = UnigramTrainer(
+            vocab_size=vocab_size,
+            special_tokens=special_tokens,
+            show_progress=True,
+            unk_token="<|unk|>",
+        )
+        tok.train_from_iterator(iterator, trainer)
+        return tok
+
+    @staticmethod
+    def _train_wordpiece_from_iterator(iterator, vocab_size, special_tokens, min_freq):
+        from tokenizers import Tokenizer as HFTok
+        from tokenizers.models import WordPiece
+        from tokenizers.trainers import WordPieceTrainer
+        from tokenizers.pre_tokenizers import Whitespace
+        tok = HFTok(WordPiece(unk_token="<|unk|>"))
+        tok.pre_tokenizer = Whitespace()
+        trainer = WordPieceTrainer(
+            vocab_size=vocab_size,
+            min_frequency=min_freq,
+            special_tokens=special_tokens,
+            show_progress=True,
+        )
+        tok.train_from_iterator(iterator, trainer)
+        return tok
+
     def _get_special_id(self, typ: str) -> Optional[int]:
         m = get_bos_eos(self._config.format)
         name = m.get(typ)
@@ -317,3 +435,9 @@ class Tokenizer:
 
     def __repr__(self):
         return f"Tokenizer(vocab={self._config.vocab_size}, format='{self._config.format}')"
+
+    def __len__(self):
+        """Return vocabulary size."""
+        if hasattr(self._tokenizer, "get_vocab_size"):
+            return self._tokenizer.get_vocab_size()
+        return self._config.vocab_size

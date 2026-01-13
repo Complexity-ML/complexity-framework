@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "complexity-framework"
-version = "0.2.2"
+version = "0.2.3"
 description = "Modular Python framework for building LLMs with INL Dynamics stability"
 readme = "README_PYPI.md"
 license = {text = "CC-BY-NC-4.0"}
