@@ -15,6 +15,7 @@ from ..config import ModelConfig
 from ..core.attention import AttentionConfig
 from ..core.mlp import MLPConfig
 from ..core.registry import ATTENTION_REGISTRY, MLP_REGISTRY, NORMALIZATION_REGISTRY
+from ..core.dynamics import INLDynamics
 
 
 class TransformerBlock(nn.Module):
@@ -71,6 +72,17 @@ class TransformerBlock(nn.Module):
         )
         self.mlp = MLP_REGISTRY.build(config.mlp_type, mlp_config)
 
+        # INL Dynamics (optional - Complexity innovation for stability)
+        self.use_inl_dynamics = config.use_inl_dynamics
+        if self.use_inl_dynamics:
+            self.dynamics = INLDynamics(
+                hidden_size=config.hidden_size,
+                beta_max=config.inl_beta_max,
+                velocity_max=config.inl_velocity_max,
+            )
+        else:
+            self.dynamics = None
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -78,7 +90,8 @@ class TransformerBlock(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
         token_ids: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        velocity_state: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor]]:
         """
         Forward pass through the transformer block.
 
@@ -88,10 +101,12 @@ class TransformerBlock(nn.Module):
             past_key_value: Optional KV cache
             use_cache: Whether to return updated KV cache
             token_ids: Optional token IDs for MoE routing
+            velocity_state: Optional velocity state for INL Dynamics
 
         Returns:
             hidden_states: [batch, seq_len, hidden_size]
             past_key_value: Optional updated KV cache
+            velocity_state: Optional updated velocity state
         """
         residual = hidden_states
 
@@ -103,6 +118,11 @@ class TransformerBlock(nn.Module):
             past_key_value=past_key_value,
             use_cache=use_cache,
         )
+
+        # INL Dynamics (after attention, before residual)
+        if self.dynamics is not None:
+            hidden_states, velocity_state = self.dynamics(hidden_states, velocity_state)
+
         hidden_states = residual + hidden_states
 
         # MLP
@@ -111,4 +131,4 @@ class TransformerBlock(nn.Module):
         hidden_states = self.mlp(hidden_states, token_ids=token_ids)
         hidden_states = residual + hidden_states
 
-        return hidden_states, new_kv
+        return hidden_states, new_kv, velocity_state

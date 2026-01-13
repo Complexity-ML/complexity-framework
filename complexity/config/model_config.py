@@ -70,6 +70,11 @@ class ModelConfig:
     # === MoE (Token-Routed) ===
     num_experts: int = 1  # 1 = standard MLP, >1 = MoE
 
+    # === INL Dynamics (Complexity innovation) ===
+    use_inl_dynamics: bool = False  # Enable velocity tracking for stability
+    inl_beta_max: float = 2.0  # Max beta for damping
+    inl_velocity_max: float = 10.0  # Max velocity clamp
+
     # === Normalization ===
     norm_type: str = "rmsnorm"  # rmsnorm, layernorm
     norm_eps: float = 1e-6
@@ -257,13 +262,113 @@ def gpt2_config() -> ModelConfig:
     )
 
 
+# === Complexity Size Presets ===
+def complexity_tiny_config() -> ModelConfig:
+    """Complexity Tiny (~15M params) - for testing and debugging."""
+    return ModelConfig(
+        hidden_size=256,
+        num_hidden_layers=6,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=704,
+        vocab_size=32000,
+        max_position_embeddings=2048,
+        attention_type="gqa",
+        mlp_type="swiglu",
+        norm_type="rmsnorm",
+        use_qk_norm=True,
+    )
+
+
+def complexity_small_config() -> ModelConfig:
+    """Complexity Small (~50M params) - for rapid prototyping."""
+    return ModelConfig(
+        hidden_size=512,
+        num_hidden_layers=8,
+        num_attention_heads=8,
+        num_key_value_heads=4,
+        intermediate_size=1408,
+        vocab_size=32000,
+        max_position_embeddings=2048,
+        attention_type="gqa",
+        mlp_type="swiglu",
+        norm_type="rmsnorm",
+        use_qk_norm=True,
+    )
+
+
+def complexity_base_config() -> ModelConfig:
+    """Complexity Base (~125M params) - balanced size for training."""
+    return ModelConfig(
+        hidden_size=768,
+        num_hidden_layers=12,
+        num_attention_heads=12,
+        num_key_value_heads=4,
+        intermediate_size=2048,
+        vocab_size=32000,
+        max_position_embeddings=2048,
+        attention_type="gqa",
+        mlp_type="swiglu",
+        norm_type="rmsnorm",
+        use_qk_norm=True,
+    )
+
+
+def complexity_large_config() -> ModelConfig:
+    """Complexity Large (~350M params) - for serious experiments."""
+    return ModelConfig(
+        hidden_size=1024,
+        num_hidden_layers=24,
+        num_attention_heads=16,
+        num_key_value_heads=4,
+        intermediate_size=2816,
+        vocab_size=32000,
+        max_position_embeddings=4096,
+        attention_type="gqa",
+        mlp_type="swiglu",
+        norm_type="rmsnorm",
+        use_qk_norm=True,
+    )
+
+
+def complexity_xl_config() -> ModelConfig:
+    """Complexity XL (~1B params) - large scale training."""
+    return ModelConfig(
+        hidden_size=2048,
+        num_hidden_layers=24,
+        num_attention_heads=16,
+        num_key_value_heads=4,
+        intermediate_size=5632,
+        vocab_size=32000,
+        max_position_embeddings=4096,
+        attention_type="gqa",
+        mlp_type="swiglu",
+        norm_type="rmsnorm",
+        use_qk_norm=True,
+    )
+
+
 # Registry of preset configs
 PRESET_CONFIGS = {
+    # Complexity size ladder
+    "complexity-tiny": complexity_tiny_config,
+    "complexity-small": complexity_small_config,
+    "complexity-base": complexity_base_config,
+    "complexity-large": complexity_large_config,
+    "complexity-xl": complexity_xl_config,
+    # Complexity with MoE
+    "complexity-7b": complexity_7b_config,
+    # Reference architectures
     "llama-7b": llama_7b_config,
     "llama-70b": llama_70b_config,
     "mistral-7b": mistral_7b_config,
-    "complexity-7b": complexity_7b_config,
     "gpt2": gpt2_config,
+    # Aliases
+    "tiny": complexity_tiny_config,
+    "small": complexity_small_config,
+    "base": complexity_base_config,
+    "large": complexity_large_config,
+    "xl": complexity_xl_config,
 }
 
 

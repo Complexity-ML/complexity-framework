@@ -4,9 +4,12 @@ Model Builder - constructs complete models from configuration.
 This is the main entry point for creating models in the framework.
 """
 
+import os
+import json
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Optional, Tuple, List, Dict, Any, Union
+from pathlib import Path
 
 from ..config import ModelConfig, get_preset
 from ..core.registry import NORMALIZATION_REGISTRY, MODEL_REGISTRY, register_model
@@ -100,6 +103,7 @@ class ComplexityModel(nn.Module):
         past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
         use_cache: bool = False,
         return_hidden_states: bool = False,
+        velocity_states: Optional[List[torch.Tensor]] = None,
     ) -> Dict[str, Any]:
         """
         Forward pass through the model.
@@ -110,12 +114,14 @@ class ComplexityModel(nn.Module):
             past_key_values: Optional list of KV caches per layer
             use_cache: Whether to return updated KV caches
             return_hidden_states: Whether to return all hidden states
+            velocity_states: Optional list of velocity states per layer (for INL Dynamics)
 
         Returns:
             Dictionary with:
                 - logits: [batch, seq_len, vocab_size]
                 - past_key_values: Optional list of KV caches
                 - hidden_states: Optional list of hidden states
+                - velocity_states: Optional list of velocity states (if INL Dynamics enabled)
         """
         batch_size, seq_len = input_ids.shape
 
@@ -128,20 +134,28 @@ class ComplexityModel(nn.Module):
         # Initialize KV cache list
         new_past_key_values = [] if use_cache else None
 
+        # Initialize velocity states list (for INL Dynamics)
+        new_velocity_states = [] if self.config.use_inl_dynamics else None
+
         # Process through layers
         for i, layer in enumerate(self.layers):
             past_kv = past_key_values[i] if past_key_values is not None else None
+            velocity_state = velocity_states[i] if velocity_states is not None else None
 
-            hidden_states, new_kv = layer(
+            hidden_states, new_kv, new_velocity = layer(
                 hidden_states,
                 attention_mask=attention_mask,
                 past_key_value=past_kv,
                 use_cache=use_cache,
                 token_ids=input_ids,  # For MoE routing
+                velocity_state=velocity_state,
             )
 
             if use_cache:
                 new_past_key_values.append(new_kv)
+
+            if new_velocity_states is not None:
+                new_velocity_states.append(new_velocity)
 
             if return_hidden_states:
                 all_hidden_states.append(hidden_states)
@@ -161,6 +175,7 @@ class ComplexityModel(nn.Module):
             "past_key_values": new_past_key_values,
             "hidden_states": all_hidden_states,
             "last_hidden_state": hidden_states,
+            "velocity_states": new_velocity_states,
         }
 
     @torch.no_grad()
@@ -173,9 +188,10 @@ class ComplexityModel(nn.Module):
         top_p: float = 0.9,
         do_sample: bool = True,
         eos_token_id: Optional[int] = None,
+        velocity_states: Optional[List[torch.Tensor]] = None,
     ) -> torch.Tensor:
         """
-        Generate text autoregressively.
+        Generate text autoregressively with velocity tracking.
 
         Args:
             input_ids: [batch, seq_len] initial token IDs
@@ -185,6 +201,7 @@ class ComplexityModel(nn.Module):
             top_p: Top-p (nucleus) sampling
             do_sample: Whether to sample (False = greedy)
             eos_token_id: Stop token ID
+            velocity_states: Optional initial velocity states (for INL Dynamics)
 
         Returns:
             output_ids: [batch, seq_len + new_tokens]
@@ -199,16 +216,31 @@ class ComplexityModel(nn.Module):
             # Get model output
             if past_key_values is None:
                 # First pass: process full sequence
-                outputs = self.forward(input_ids, use_cache=True)
+                outputs = self.forward(input_ids, use_cache=True, velocity_states=velocity_states)
             else:
                 # Subsequent passes: only process last token
+                # For INL Dynamics: extract only the last position's velocity
+                if velocity_states is not None:
+                    velocity_states_last = [v[:, -1:, :] for v in velocity_states]
+                else:
+                    velocity_states_last = None
                 outputs = self.forward(
                     input_ids[:, -1:],
                     past_key_values=past_key_values,
                     use_cache=True,
+                    velocity_states=velocity_states_last,
                 )
 
             past_key_values = outputs["past_key_values"]
+            # Update velocity states (concatenate new velocity to existing)
+            if outputs["velocity_states"] is not None:
+                if velocity_states is None:
+                    velocity_states = outputs["velocity_states"]
+                else:
+                    velocity_states = [
+                        torch.cat([v_old, v_new], dim=1)
+                        for v_old, v_new in zip(velocity_states, outputs["velocity_states"])
+                    ]
             logits = outputs["logits"][:, -1, :]  # [batch, vocab]
 
             # Apply temperature
@@ -265,6 +297,101 @@ class ComplexityModel(nn.Module):
         if trainable_only:
             return sum(p.numel() for p in self.parameters() if p.requires_grad)
         return sum(p.numel() for p in self.parameters())
+
+    def save_pretrained(self, save_directory: Union[str, Path], safe_serialization: bool = True):
+        """
+        Save model and config to directory (HuggingFace-compatible format).
+
+        Args:
+            save_directory: Path to save the model
+            safe_serialization: If True, save using safetensors format (requires safetensors)
+        """
+        save_directory = Path(save_directory)
+        save_directory.mkdir(parents=True, exist_ok=True)
+
+        # Save config
+        config_path = save_directory / "config.json"
+        with open(config_path, "w") as f:
+            json.dump(self.config.to_dict(), f, indent=2)
+
+        # Save model weights
+        if safe_serialization:
+            try:
+                from safetensors.torch import save_file
+                weights_path = save_directory / "model.safetensors"
+                save_file(self.state_dict(), str(weights_path))
+            except ImportError:
+                # Fall back to PyTorch format
+                weights_path = save_directory / "pytorch_model.bin"
+                torch.save(self.state_dict(), weights_path)
+        else:
+            weights_path = save_directory / "pytorch_model.bin"
+            torch.save(self.state_dict(), weights_path)
+
+        print(f"Model saved to {save_directory}")
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_path: Union[str, Path],
+        device: Optional[str] = None,
+        dtype: Optional[torch.dtype] = None,
+    ) -> "ComplexityModel":
+        """
+        Load model from pretrained directory.
+
+        Args:
+            pretrained_model_path: Path to saved model directory
+            device: Device to load model on (default: cpu)
+            dtype: Data type for model (default: float32)
+
+        Returns:
+            Loaded ComplexityModel instance
+        """
+        pretrained_model_path = Path(pretrained_model_path)
+
+        # Load config
+        config_path = pretrained_model_path / "config.json"
+        if not config_path.exists():
+            raise ValueError(f"Config not found at {config_path}")
+
+        with open(config_path, "r") as f:
+            config_dict = json.load(f)
+
+        config = ModelConfig.from_dict(config_dict)
+
+        # Create model
+        model = cls(config)
+
+        # Load weights
+        safetensors_path = pretrained_model_path / "model.safetensors"
+        pytorch_path = pretrained_model_path / "pytorch_model.bin"
+
+        if safetensors_path.exists():
+            try:
+                from safetensors.torch import load_file
+                state_dict = load_file(str(safetensors_path))
+            except ImportError:
+                raise ImportError(
+                    "safetensors is required to load .safetensors files. "
+                    "Install with: pip install safetensors"
+                )
+        elif pytorch_path.exists():
+            state_dict = torch.load(pytorch_path, map_location="cpu", weights_only=True)
+        else:
+            raise ValueError(
+                f"No model weights found. Expected {safetensors_path} or {pytorch_path}"
+            )
+
+        model.load_state_dict(state_dict)
+
+        # Move to device/dtype if specified
+        if device is not None:
+            model = model.to(device)
+        if dtype is not None:
+            model = model.to(dtype)
+
+        return model
 
     def __repr__(self) -> str:
         params = self.num_parameters() / 1e6
