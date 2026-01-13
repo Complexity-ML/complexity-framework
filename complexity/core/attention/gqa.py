@@ -68,6 +68,20 @@ class GroupedQueryAttention(AttentionBase):
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        """
+        Forward pass for Grouped Query Attention.
+
+        Args:
+            hidden_states: Input tensor of shape (batch_size, seq_len, hidden_size).
+            attention_mask: Optional attention mask of shape (batch_size, 1, seq_len, seq_len).
+            past_key_value: Optional cached (key, value) tuple for autoregressive generation.
+            use_cache: Whether to return the new (key, value) cache for next step.
+
+        Returns:
+            Tuple of:
+                - attn_output: Output tensor of shape (batch_size, seq_len, hidden_size).
+                - past_key_value: Updated (key, value) cache if use_cache=True, else None.
+        """
         batch_size, seq_len, _ = hidden_states.shape
 
         # Project Q, K, V
