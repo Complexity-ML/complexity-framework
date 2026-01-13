@@ -209,3 +209,7 @@ secrets.yaml
 credentials.json
 *.pem
 *.key
+
+# Maturin
+*.whl
+tmpclaude-*

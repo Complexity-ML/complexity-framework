@@ -18,6 +18,7 @@ from complexity.core import (
     TokenRoutedMLP,
     TokenRoutedMLPParallel,
 )
+from complexity.core.mlp import SparseMoE, SparseMoEParallel, SparseMoEConfig
 
 
 class MLP:
@@ -37,8 +38,10 @@ class MLP:
         "swiglu": SwiGLUMLP,
         "geglu": GeGLUMLP,
         "gated": SwiGLUMLP,  # alias
-        "moe": TokenRoutedMLP,
+        "moe": TokenRoutedMLP,  # Deterministic (our innovation)
         "moe_parallel": TokenRoutedMLPParallel,
+        "sparse_moe": SparseMoE,  # Learned routing (standard)
+        "sparse_moe_parallel": SparseMoEParallel,
     }
 
     @classmethod
@@ -81,9 +84,14 @@ class MLP:
         return cls.create("standard", hidden_size=hidden_size, intermediate_size=intermediate_size, **kwargs)
 
     @classmethod
-    def moe(cls, hidden_size: int, num_experts: int = 8, top_k: int = 2, **kwargs) -> nn.Module:
-        """Mixture of Experts."""
-        return cls.create("moe", hidden_size=hidden_size, num_experts=num_experts, moe_top_k=top_k, **kwargs)
+    def moe(cls, hidden_size: int, num_experts: int = 8, **kwargs) -> nn.Module:
+        """Token-Routed MoE (deterministic, our innovation)."""
+        return cls.create("moe", hidden_size=hidden_size, num_experts=num_experts, **kwargs)
+
+    @classmethod
+    def sparse_moe(cls, hidden_size: int, num_experts: int = 8, top_k: int = 2, **kwargs) -> nn.Module:
+        """Sparse MoE with learned routing (standard approach)."""
+        return cls.create("sparse_moe", hidden_size=hidden_size, num_experts=num_experts, top_k=top_k, **kwargs)
 
     @classmethod
     def register(cls, name: str, mlp_cls: Type):
@@ -105,6 +113,9 @@ __all__ = [
     "StandardMLP",
     "TokenRoutedMLP",
     "TokenRoutedMLPParallel",
+    "SparseMoE",
+    "SparseMoEParallel",
+    "SparseMoEConfig",
     "MLPBase",
     "MLPConfig",
 ]

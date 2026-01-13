@@ -98,6 +98,9 @@ from .core import (
     StandardMLP,
     TokenRoutedMLP,
     TokenRoutedMLPParallel,
+    SparseMoE,
+    SparseMoEParallel,
+    SparseMoEConfig,
     MLPBase,
     MLPConfig,
     # Position
@@ -264,6 +267,9 @@ __all__ = [
     "StandardMLP",
     "TokenRoutedMLP",
     "TokenRoutedMLPParallel",
+    "SparseMoE",
+    "SparseMoEParallel",
+    "SparseMoEConfig",
     "MLPBase",
     "MLPConfig",
 

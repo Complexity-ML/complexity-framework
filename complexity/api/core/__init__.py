@@ -54,6 +54,9 @@ from .mlp import (
     StandardMLP,
     TokenRoutedMLP,
     TokenRoutedMLPParallel,
+    SparseMoE,
+    SparseMoEParallel,
+    SparseMoEConfig,
     MLPBase,
     MLPConfig,
 )
@@ -193,6 +196,9 @@ __all__ = [
     "StandardMLP",
     "TokenRoutedMLP",
     "TokenRoutedMLPParallel",
+    "SparseMoE",
+    "SparseMoEParallel",
+    "SparseMoEConfig",
     "MLPBase",
     "MLPConfig",
 

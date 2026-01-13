@@ -7,6 +7,8 @@ Available MLP types:
 - geglu: GeGLU variant
 - token_routed / deterministic_moe / complexity: Token-Routed MoE (Complexity innovation)
 - token_routed_parallel / batched_moe: Optimized batched version
+- sparse_moe / learned_moe / mixtral: Standard MoE with learned routing
+- sparse_moe_parallel: Optimized batched SparseMoE
 
 Usage:
     from complexity.core.mlp import SwiGLUMLP, MLPConfig
@@ -19,14 +21,18 @@ Usage:
     # Via registry
     mlp = MLP_REGISTRY.build("swiglu", config)
 
-    # Token-Routed MoE
+    # Token-Routed MoE (deterministic, our innovation)
     config = MLPConfig(hidden_size=768, intermediate_size=3072, num_experts=4)
     moe = MLP_REGISTRY.build("token_routed", config)
+
+    # SparseMoE (learned routing, standard approach)
+    moe = MLP_REGISTRY.build("sparse_moe", config)
 """
 
 from .base import MLPBase, MLPConfig
 from .standard import StandardMLP, SwiGLUMLP, GeGLUMLP
 from .token_routed import TokenRoutedMLP, TokenRoutedMLPParallel, Expert
+from .sparse_moe import SparseMoE, SparseMoEParallel, SparseMoEConfig
 
 __all__ = [
     "MLPBase",
@@ -37,4 +43,7 @@ __all__ = [
     "TokenRoutedMLP",
     "TokenRoutedMLPParallel",
     "Expert",
+    "SparseMoE",
+    "SparseMoEParallel",
+    "SparseMoEConfig",
 ]
