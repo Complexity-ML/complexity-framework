@@ -178,10 +178,15 @@ class ComplexityModel(nn.Module):
             "velocity_states": new_velocity_states,
         }
 
+    def set_tokenizer(self, tokenizer):
+        """Set tokenizer for text-based generation."""
+        self.tokenizer = tokenizer
+
     @torch.no_grad()
     def generate(
         self,
-        input_ids: torch.Tensor,
+        input_ids: Optional[torch.Tensor] = None,
+        text: Optional[str] = None,
         max_new_tokens: int = 100,
         temperature: float = 1.0,
         top_k: int = 50,
@@ -189,12 +194,14 @@ class ComplexityModel(nn.Module):
         do_sample: bool = True,
         eos_token_id: Optional[int] = None,
         velocity_states: Optional[List[torch.Tensor]] = None,
-    ) -> torch.Tensor:
+        return_text: bool = False,
+    ) -> Union[torch.Tensor, str]:
         """
         Generate text autoregressively with velocity tracking.
 
         Args:
-            input_ids: [batch, seq_len] initial token IDs
+            input_ids: [batch, seq_len] initial token IDs (or use text=)
+            text: Input text (requires tokenizer to be set)
             max_new_tokens: Maximum tokens to generate
             temperature: Sampling temperature (1.0 = neutral)
             top_k: Top-k sampling (0 = disabled)
@@ -202,10 +209,21 @@ class ComplexityModel(nn.Module):
             do_sample: Whether to sample (False = greedy)
             eos_token_id: Stop token ID
             velocity_states: Optional initial velocity states (for INL Dynamics)
+            return_text: Return decoded text instead of IDs (requires tokenizer)
 
         Returns:
-            output_ids: [batch, seq_len + new_tokens]
+            output_ids: [batch, seq_len + new_tokens] or decoded text string
         """
+        # Handle text input
+        if text is not None:
+            if not hasattr(self, 'tokenizer') or self.tokenizer is None:
+                raise ValueError("Tokenizer not set. Use model.set_tokenizer(tokenizer) first.")
+            input_ids = torch.tensor([self.tokenizer.encode(text, add_bos=True)], device=next(self.parameters()).device)
+            if eos_token_id is None:
+                eos_token_id = self.tokenizer.eos_token_id
+
+        if input_ids is None:
+            raise ValueError("Either input_ids or text must be provided.")
         self.eval()
         device = input_ids.device
 
@@ -277,6 +295,12 @@ class ComplexityModel(nn.Module):
             # Check for EOS
             if eos_token_id is not None and (next_token == eos_token_id).all():
                 break
+
+        # Return text if requested
+        if return_text:
+            if not hasattr(self, 'tokenizer') or self.tokenizer is None:
+                raise ValueError("Tokenizer not set. Use model.set_tokenizer(tokenizer) first.")
+            return self.tokenizer.decode(input_ids[0].tolist())
 
         return input_ids
 
