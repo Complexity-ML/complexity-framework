@@ -44,7 +44,8 @@ class Dataset:
         if self._tokenizer:
             text = item.get(self._config.text_column, "")
             if isinstance(text, str):
-                tokens = self._tokenizer.encode(text, add_special_tokens=True)
+                # IMPORTANT: add_special_tokens=False to avoid <s> and </s> pollution in training data
+                tokens = self._tokenizer.encode(text, add_special_tokens=False)
                 if len(tokens) > self._config.seq_length:
                     tokens = tokens[:self._config.seq_length]
                 item["input_ids"] = torch.tensor(tokens, dtype=torch.long)
