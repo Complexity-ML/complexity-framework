@@ -7,6 +7,9 @@ Like a robot controller:
 - Learnable dynamics per dimension
 - Real-time capable
 
+v0.3.0: Contextual mu via mu_proj (INL 2025)
+v0.3.0: Returns mu_contextual for next layer guidance
+
 CRITICAL: beta in [0, 2], NOT [0, inf)!
 Discovered after 400k step explosion during training.
 """
@@ -84,6 +87,11 @@ class INLDynamics(nn.Module):
         # Initialize in middle of valid range
         self.mu = nn.Parameter(torch.full((hidden_size,), (mu_min + mu_max) / 2))
 
+        # v0.3.0: Contextual mu projection (INL 2025)
+        # mu_contextual = mu + mu_proj(h) - allows mu to adapt based on input
+        self.mu_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        nn.init.zeros_(self.mu_proj.weight)  # Start neutral (just mu)
+
         # Controller MLP - computes alpha, beta, gate from context
         # Input: [h, v] concatenated
         self.controller = nn.Sequential(
@@ -126,17 +134,20 @@ class INLDynamics(nn.Module):
         self,
         h: torch.Tensor,
         v: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return_mu: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
         Apply dynamics update.
 
         Args:
             h: Hidden states [batch, seq_len, hidden_size]
             v: Velocity states [batch, seq_len, hidden_size] (None = init to zero)
+            return_mu: Whether to return contextual mu for next layer guidance
 
         Returns:
             h_next: Updated hidden states
             v_next: Updated velocity states
+            mu_contextual: (if return_mu=True) Contextual mu for next layer
         """
         # Initialize velocity if not provided
         if v is None:
@@ -173,7 +184,12 @@ class INLDynamics(nn.Module):
 
         h_next = h + self.dt * gate * v_next      # position update
 
-        return h_next, v_next
+        # v0.3.0: Contextual mu for next layer guidance (INL 2025)
+        mu_contextual = None
+        if return_mu:
+            mu_contextual = mu + self.mu_proj(h)
+
+        return h_next, v_next, mu_contextual
 
     def init_velocity(
         self,
@@ -240,6 +256,10 @@ class INLDynamicsLite(nn.Module):
         # Learnable equilibrium only
         self.mu = nn.Parameter(torch.full((hidden_size,), (mu_min + mu_max) / 2))
 
+        # v0.3.0: Contextual mu projection (INL 2025)
+        self.mu_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        nn.init.zeros_(self.mu_proj.weight)
+
     @property
     def mu_clamped(self) -> torch.Tensor:
         """Get mu clamped to valid range."""
@@ -249,7 +269,8 @@ class INLDynamicsLite(nn.Module):
         self,
         h: torch.Tensor,
         v: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return_mu: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """Apply fixed-parameter dynamics."""
         if v is None:
             v = torch.zeros_like(h)
@@ -265,7 +286,12 @@ class INLDynamicsLite(nn.Module):
 
         h_next = h + self.dt * self.gate * v_next
 
-        return h_next, v_next
+        # v0.3.0: Contextual mu for next layer guidance
+        mu_contextual = None
+        if return_mu:
+            mu_contextual = mu + self.mu_proj(h)
+
+        return h_next, v_next, mu_contextual
 
     def init_velocity(
         self,
