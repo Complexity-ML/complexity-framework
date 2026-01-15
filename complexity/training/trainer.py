@@ -342,12 +342,25 @@ class Trainer:
         else:
             self.model = model.to(self.device)
 
-        # Optimizer
+        # Optimizer with proper weight decay handling
         if optimizer is None:
+            # Exclude bias, norm, and mu from weight decay
+            decay_params = []
+            no_decay_params = []
+            for name, param in self.model.named_parameters():
+                if not param.requires_grad:
+                    continue
+                if 'bias' in name or 'norm' in name or '.mu' in name:
+                    no_decay_params.append(param)
+                else:
+                    decay_params.append(param)
+
             self.optimizer = torch.optim.AdamW(
-                self.model.parameters(),
+                [
+                    {"params": decay_params, "weight_decay": config.weight_decay},
+                    {"params": no_decay_params, "weight_decay": 0.0},
+                ],
                 lr=config.learning_rate,
-                weight_decay=config.weight_decay,
                 betas=(0.9, 0.95),
             )
         else:
