@@ -5,6 +5,7 @@ Provides:
 - Checkpointing: Save/load model and training state
 - HuggingFace conversion: Load from / save to HF format
 - Security: Safe checkpoint loading, audit logging
+- Safety: Representation Engineering for safe inference
 
 Usage:
     # Checkpointing
@@ -29,6 +30,12 @@ Usage:
 
     with SecureTrainingContext() as ctx:
         state = ctx.load_checkpoint("model.pt")
+
+    # Safety (Representation Engineering)
+    from complexity.utils import SafetyClamp, install_safety
+
+    harm_dir = torch.load("harm_direction.pt")
+    install_safety(model, harm_dir, threshold=2.0, layers=[-2, -1])
 """
 
 from .checkpointing import (
@@ -63,6 +70,19 @@ from .security import (
     UnsafeCheckpointError,
 )
 
+from .safety import (
+    SafetyConfig,
+    SafetyClamp,
+    MultiDirectionSafetyClamp,
+    ContrastiveSafetyLoss,
+    install_safety,
+    remove_safety,
+    get_safety_stats,
+    SafetyCallback,
+    load_harm_direction,
+    save_harm_direction,
+)
+
 __all__ = [
     # Checkpointing
     "CheckpointManager",
@@ -90,4 +110,15 @@ __all__ = [
     "AuditLogger",
     "SecureTrainingContext",
     "UnsafeCheckpointError",
+    # Safety
+    "SafetyConfig",
+    "SafetyClamp",
+    "MultiDirectionSafetyClamp",
+    "ContrastiveSafetyLoss",
+    "install_safety",
+    "remove_safety",
+    "get_safety_stats",
+    "SafetyCallback",
+    "load_harm_direction",
+    "save_harm_direction",
 ]

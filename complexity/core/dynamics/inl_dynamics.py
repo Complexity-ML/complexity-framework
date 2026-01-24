@@ -9,6 +9,7 @@ Like a robot controller:
 
 v0.3.0: Contextual mu via mu_proj (INL 2025)
 v0.3.0: Returns mu_contextual for next layer guidance
+v0.3.1: Safety clamp integration (Representation Engineering)
 
 CRITICAL: beta in [0, 2], NOT [0, inf)!
 Discovered after 400k step explosion during training.
@@ -17,7 +18,7 @@ Discovered after 400k step explosion during training.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 from dataclasses import dataclass
 
 
@@ -102,6 +103,10 @@ class INLDynamics(nn.Module):
 
         # Initialize controller biases for desired initial values
         self._init_controller(init_alpha, init_beta, init_gate)
+
+        # Safety clamp (Representation Engineering)
+        # Installed via install_safety() method
+        self.safety_clamp = None
 
     def _init_controller(self, init_alpha: float, init_beta: float, init_gate: float):
         """Initialize controller for stable starting values."""
@@ -188,6 +193,13 @@ class INLDynamics(nn.Module):
         mu_contextual = None
         if return_mu:
             mu_contextual = mu + self.mu_proj(h)
+            # v0.3.1: Safety clamp on mu_contextual
+            if self.safety_clamp is not None:
+                mu_contextual = self.safety_clamp(mu_contextual)
+
+        # v0.3.1: Safety clamp on hidden states
+        if self.safety_clamp is not None:
+            h_next = self.safety_clamp(h_next)
 
         return h_next, v_next, mu_contextual
 
@@ -213,6 +225,27 @@ class INLDynamics(nn.Module):
                 "mu_min": self.mu_clamped.min().item(),
                 "mu_max": self.mu_clamped.max().item(),
             }
+
+    # ========== Safety Integration (v0.3.1) ==========
+
+    def install_safety(self, safety_clamp: nn.Module) -> None:
+        """
+        Install safety clamp for Representation Engineering.
+
+        Args:
+            safety_clamp: SafetyClamp module that projects out harm directions
+        """
+        self.safety_clamp = safety_clamp
+
+    def remove_safety(self) -> None:
+        """Remove safety clamp."""
+        self.safety_clamp = None
+
+    def get_safety_stats(self) -> Dict[str, Any]:
+        """Get safety clamping statistics."""
+        if self.safety_clamp is not None and hasattr(self.safety_clamp, 'get_stats'):
+            return self.safety_clamp.get_stats()
+        return {'enabled': False}
 
 
 class INLDynamicsLite(nn.Module):
@@ -260,6 +293,9 @@ class INLDynamicsLite(nn.Module):
         self.mu_proj = nn.Linear(hidden_size, hidden_size, bias=False)
         nn.init.zeros_(self.mu_proj.weight)
 
+        # v0.3.1: Safety clamp (Representation Engineering)
+        self.safety_clamp = None
+
     @property
     def mu_clamped(self) -> torch.Tensor:
         """Get mu clamped to valid range."""
@@ -290,6 +326,13 @@ class INLDynamicsLite(nn.Module):
         mu_contextual = None
         if return_mu:
             mu_contextual = mu + self.mu_proj(h)
+            # v0.3.1: Safety clamp on mu_contextual
+            if self.safety_clamp is not None:
+                mu_contextual = self.safety_clamp(mu_contextual)
+
+        # v0.3.1: Safety clamp on hidden states
+        if self.safety_clamp is not None:
+            h_next = self.safety_clamp(h_next)
 
         return h_next, v_next, mu_contextual
 
@@ -305,6 +348,22 @@ class INLDynamicsLite(nn.Module):
             batch_size, seq_len, self.hidden_size,
             device=device, dtype=dtype
         )
+
+    # ========== Safety Integration (v0.3.1) ==========
+
+    def install_safety(self, safety_clamp: nn.Module) -> None:
+        """Install safety clamp for Representation Engineering."""
+        self.safety_clamp = safety_clamp
+
+    def remove_safety(self) -> None:
+        """Remove safety clamp."""
+        self.safety_clamp = None
+
+    def get_safety_stats(self) -> Dict[str, Any]:
+        """Get safety clamping statistics."""
+        if self.safety_clamp is not None and hasattr(self.safety_clamp, 'get_stats'):
+            return self.safety_clamp.get_stats()
+        return {'enabled': False}
 
 
 # Factory function
