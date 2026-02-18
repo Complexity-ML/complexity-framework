@@ -19,9 +19,6 @@ from complexity.core.architectures import (
     RetNetBlock,
     RetNetConfig,
     RetNet,
-    # Mixture of Depths
-    MoDBlock,
-    MoDConfig,
 )
 
 
@@ -45,8 +42,6 @@ class Architecture:
         block = Architecture.mamba_block(hidden_size=768)
         block = Architecture.rwkv_block(hidden_size=768)
 
-        # Mixture of Depths
-        block = Architecture.mod_block(hidden_size=768, capacity_factor=0.5)
     """
 
     TYPES = {
@@ -59,7 +54,6 @@ class Architecture:
         "mamba": MambaBlock,
         "rwkv": RWKVBlock,
         "retnet": RetNetBlock,
-        "mod": MoDBlock,
     }
 
     @classmethod
@@ -91,7 +85,7 @@ class Architecture:
         Crée un block individuel.
 
         Args:
-            block_type: "mamba", "rwkv", "retnet", "mod"
+            block_type: "mamba", "rwkv", "retnet"
             **kwargs: hidden_size, ...
         """
         if block_type not in cls.BLOCK_TYPES:
@@ -103,7 +97,6 @@ class Architecture:
             "mamba": MambaConfig,
             "rwkv": RWKVConfig,
             "retnet": RetNetConfig,
-            "mod": MoDConfig,
         }[block_type]
 
         config = config_cls(**kwargs)
@@ -157,16 +150,6 @@ class Architecture:
         """Block RetNet individuel."""
         return cls.block("retnet", hidden_size=hidden_size, **kwargs)
 
-    # ==================== Mixture of Depths ====================
-
-    @classmethod
-    def mod_block(cls, hidden_size: int = 768, capacity_factor: float = 0.5, **kwargs) -> nn.Module:
-        """
-        Mixture of Depths block.
-
-        Sélectionne dynamiquement quels tokens passent par le block.
-        """
-        return cls.block("mod", hidden_size=hidden_size, capacity_factor=capacity_factor, **kwargs)
 
 
 __all__ = [
@@ -183,7 +166,4 @@ __all__ = [
     "RetNet",
     "RetNetBlock",
     "RetNetConfig",
-    # MoD
-    "MoDBlock",
-    "MoDConfig",
 ]

@@ -98,9 +98,6 @@ from .core import (
     StandardMLP,
     TokenRoutedMLP,
     TokenRoutedMLPParallel,
-    SparseMoE,
-    SparseMoEParallel,
-    SparseMoEConfig,
     MLPBase,
     MLPConfig,
     # Position
@@ -134,8 +131,6 @@ from .core import (
     RetNet,
     RetNetBlock,
     RetNetConfig,
-    MoDBlock,
-    MoDConfig,
     # Registry
     Registry,
     register,
@@ -267,9 +262,6 @@ __all__ = [
     "StandardMLP",
     "TokenRoutedMLP",
     "TokenRoutedMLPParallel",
-    "SparseMoE",
-    "SparseMoEParallel",
-    "SparseMoEConfig",
     "MLPBase",
     "MLPConfig",
 
@@ -307,9 +299,6 @@ __all__ = [
     "RetNet",
     "RetNetBlock",
     "RetNetConfig",
-    "MoDBlock",
-    "MoDConfig",
-
     # ========== Registry ==========
     "Registry",
     "register",
