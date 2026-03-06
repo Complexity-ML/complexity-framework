@@ -18,10 +18,12 @@ Usage:
 """
 
 from .norms import RMSNorm, LayerNorm, IdentityNorm, build_norm
+from .i64_norm import I64RMSNorm
 
 __all__ = [
     "RMSNorm",
     "LayerNorm",
     "IdentityNorm",
     "build_norm",
+    "I64RMSNorm",
 ]

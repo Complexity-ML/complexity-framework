@@ -27,6 +27,7 @@ Usage:
 from .base import MLPBase, MLPConfig
 from .standard import StandardMLP, SwiGLUMLP, GeGLUMLP
 from .token_routed import TokenRoutedMLP, TokenRoutedMLPParallel, Expert
+from .i64_mlp import I64SwiGLUMLP, I64TokenRoutedMLP
 
 __all__ = [
     "MLPBase",
@@ -37,4 +38,6 @@ __all__ = [
     "TokenRoutedMLP",
     "TokenRoutedMLPParallel",
     "Expert",
+    "I64SwiGLUMLP",
+    "I64TokenRoutedMLP",
 ]

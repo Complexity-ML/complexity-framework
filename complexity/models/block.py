@@ -91,7 +91,8 @@ class TransformerBlock(nn.Module):
         use_cache: bool = False,
         token_ids: Optional[torch.Tensor] = None,
         velocity_state: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor]]:
+        mu_prev: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Forward pass through the transformer block.
 
@@ -102,26 +103,36 @@ class TransformerBlock(nn.Module):
             use_cache: Whether to return updated KV cache
             token_ids: Optional token IDs for MoE routing
             velocity_state: Optional velocity state for INL Dynamics
+            mu_prev: Optional mu from previous layer (for I64 mu-guided attention)
 
         Returns:
             hidden_states: [batch, seq_len, hidden_size]
             past_key_value: Optional updated KV cache
             velocity_state: Optional updated velocity state
+            mu_contextual: Optional mu for next layer guidance
         """
         residual = hidden_states
 
         # Self Attention
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states, new_kv = self.self_attn(
-            hidden_states,
+
+        # Pass mu_prev to attention (I64 attention uses it, GQA accepts it too)
+        attn_kwargs = dict(
             attention_mask=attention_mask,
             past_key_value=past_key_value,
             use_cache=use_cache,
         )
+        if mu_prev is not None:
+            attn_kwargs["mu_prev"] = mu_prev
+
+        hidden_states, new_kv = self.self_attn(hidden_states, **attn_kwargs)
 
         # INL Dynamics (after attention, before residual)
+        mu_contextual = None
         if self.dynamics is not None:
-            hidden_states, velocity_state = self.dynamics(hidden_states, velocity_state)
+            hidden_states, velocity_state, mu_contextual = self.dynamics(
+                hidden_states, velocity_state, return_mu=True,
+            )
 
         hidden_states = residual + hidden_states
 
@@ -131,4 +142,4 @@ class TransformerBlock(nn.Module):
         hidden_states = self.mlp(hidden_states, token_ids=token_ids)
         hidden_states = residual + hidden_states
 
-        return hidden_states, new_kv, velocity_state
+        return hidden_states, new_kv, velocity_state, mu_contextual

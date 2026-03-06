@@ -45,6 +45,7 @@ from complexity.core.attention import (
     GroupedQueryAttention,
     MultiHeadAttention,
     MultiQueryAttention,
+    I64Attention,
 )
 
 from complexity.core.mlp import (
@@ -55,6 +56,8 @@ from complexity.core.mlp import (
     GeGLUMLP,
     TokenRoutedMLP,
     TokenRoutedMLPParallel,
+    I64SwiGLUMLP,
+    I64TokenRoutedMLP,
 )
 
 from complexity.core.position import (
@@ -73,6 +76,7 @@ from complexity.core.normalization import (
     LayerNorm,
     IdentityNorm,
     build_norm,
+    I64RMSNorm,
 )
 
 # INL Dynamics (velocity tracking for stability)
@@ -101,6 +105,7 @@ __all__ = [
     "GroupedQueryAttention",
     "MultiHeadAttention",
     "MultiQueryAttention",
+    "I64Attention",
     # MLP
     "MLPBase",
     "MLPConfig",
@@ -109,6 +114,8 @@ __all__ = [
     "GeGLUMLP",
     "TokenRoutedMLP",
     "TokenRoutedMLPParallel",
+    "I64SwiGLUMLP",
+    "I64TokenRoutedMLP",
     # Position
     "RotaryEmbedding",
     "StandardRoPE",
@@ -123,6 +130,7 @@ __all__ = [
     "LayerNorm",
     "IdentityNorm",
     "build_norm",
+    "I64RMSNorm",
     # INL Dynamics
     "INLDynamics",
     "INLDynamicsLite",

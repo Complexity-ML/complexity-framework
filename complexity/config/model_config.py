@@ -348,6 +348,61 @@ def complexity_xl_config() -> ModelConfig:
     )
 
 
+# === I64 Integer Presets (train float, deploy INT8) ===
+def i64_1b_config() -> ModelConfig:
+    """I64 1.5B — Integer-native, train float deploy INT8."""
+    return ModelConfig(
+        hidden_size=2048,
+        num_hidden_layers=24,
+        num_attention_heads=16,
+        num_key_value_heads=4,
+        intermediate_size=5632,
+        vocab_size=32000,
+        max_position_embeddings=2048,
+        attention_type="i64",
+        mlp_type="i64_swiglu",
+        norm_type="i64_rmsnorm",
+        use_qk_norm=True,
+        use_inl_dynamics=True,
+    )
+
+
+def i64_3b_config() -> ModelConfig:
+    """I64 3B — Integer-native, train float deploy INT8."""
+    return ModelConfig(
+        hidden_size=2560,
+        num_hidden_layers=32,
+        num_attention_heads=20,
+        num_key_value_heads=5,
+        intermediate_size=7168,
+        vocab_size=32000,
+        max_position_embeddings=4096,
+        attention_type="i64",
+        mlp_type="i64_swiglu",
+        norm_type="i64_rmsnorm",
+        use_qk_norm=True,
+        use_inl_dynamics=True,
+    )
+
+
+def i64_7b_config() -> ModelConfig:
+    """I64 7B — Integer-native, train float deploy INT8."""
+    return ModelConfig(
+        hidden_size=4096,
+        num_hidden_layers=32,
+        num_attention_heads=32,
+        num_key_value_heads=8,
+        intermediate_size=11008,
+        vocab_size=32000,
+        max_position_embeddings=4096,
+        attention_type="i64",
+        mlp_type="i64_swiglu",
+        norm_type="i64_rmsnorm",
+        use_qk_norm=True,
+        use_inl_dynamics=True,
+    )
+
+
 # Registry of preset configs
 PRESET_CONFIGS = {
     # Complexity size ladder
@@ -363,6 +418,10 @@ PRESET_CONFIGS = {
     "llama-70b": llama_70b_config,
     "mistral-7b": mistral_7b_config,
     "gpt2": gpt2_config,
+    # I64 Integer presets
+    "i64-1b": i64_1b_config,
+    "i64-3b": i64_3b_config,
+    "i64-7b": i64_7b_config,
     # Aliases
     "tiny": complexity_tiny_config,
     "small": complexity_small_config,
