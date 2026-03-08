@@ -31,7 +31,7 @@ import math
 
 from complexity.config import ModelConfig
 from complexity.models import ComplexityModel
-from complexity.training import Trainer, TrainingConfig
+from complexity.training import Trainer, TrainingConfig, WandBCallback
 
 
 # ── Architecture configs (all ~150M, 32k vocab) ──────────────────────────
@@ -360,6 +360,11 @@ def train_run(run_id: int, args):
 
     trainer.compute_loss = compute_loss
 
+    # W&B logging
+    if args.wandb:
+        wandb_cb = WandBCallback(project=args.wandb, name=f"{name}")
+        trainer.callbacks.append(wandb_cb)
+
     # Register PiD callback
     trainer._pid = pid
 
@@ -405,6 +410,8 @@ def main():
     parser.add_argument("--resume", type=str, default=None,
                         help="Resume from checkpoint path")
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--wandb", type=str, default=None,
+                        help="W&B project name (enables logging)")
     args = parser.parse_args()
 
     # Figure out which run to resume (if any)
