@@ -349,6 +349,8 @@ def train_run(run_id: int, args):
     )
 
     trainer = Trainer(model=model, config=train_config, train_dataloader=dataloader)
+    logger.info(f"  Device: {trainer.device}")
+    logger.info(f"  CUDA available: {torch.cuda.is_available()}")
 
     # Override loss to handle dict output from ComplexityModel
     # Uses chunked cross-entropy to avoid OOM on large vocab
