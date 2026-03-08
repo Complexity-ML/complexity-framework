@@ -27,6 +27,7 @@ from .model_config import (
     # Preset functions
     llama_7b_config,
     llama_70b_config,
+    llama_1_5b_config,
     mistral_7b_config,
     complexity_7b_config,
     gpt2_config,

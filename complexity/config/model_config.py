@@ -348,6 +348,31 @@ def complexity_xl_config() -> ModelConfig:
     )
 
 
+# === Dense Baselines (for paper comparisons) ===
+def llama_1_5b_config() -> ModelConfig:
+    """Dense Llama 1.5B — same dimensions as complexity-deep, no MoE/dynamics.
+
+    Purpose: fair baseline comparison for the paper.
+    Same: hidden_size, num_layers, num_heads, intermediate_size, vocab_size, max_pos
+    Removed: token routing, INL dynamics, mu-guidance
+    """
+    return ModelConfig(
+        hidden_size=2048,
+        num_hidden_layers=24,
+        num_attention_heads=16,
+        num_key_value_heads=8,  # GQA like the original
+        intermediate_size=5632,
+        vocab_size=32000,
+        max_position_embeddings=2048,
+        attention_type="gqa",
+        mlp_type="swiglu",
+        num_experts=1,
+        norm_type="rmsnorm",
+        use_qk_norm=True,
+        use_inl_dynamics=False,
+    )
+
+
 # === I64 Integer Presets (train float, deploy INT8) ===
 def i64_1b_config() -> ModelConfig:
     """I64 1.5B — Integer-native, train float deploy INT8."""
@@ -418,6 +443,9 @@ PRESET_CONFIGS = {
     "llama-70b": llama_70b_config,
     "mistral-7b": mistral_7b_config,
     "gpt2": gpt2_config,
+    # Dense baselines (paper comparisons)
+    "llama-1.5b": llama_1_5b_config,
+    "dense-1.5b": llama_1_5b_config,
     # I64 Integer presets
     "i64-1b": i64_1b_config,
     "i64-3b": i64_3b_config,
