@@ -26,6 +26,7 @@ import logging
 import time
 import json
 import math
+from tqdm import tqdm
 from datetime import datetime
 
 from ..parallel.data_parallel import (
@@ -465,6 +466,15 @@ class Trainer:
         # Training loop
         accumulation_steps = self.config.gradient_accumulation_steps
 
+        # Progress bar
+        pbar = tqdm(
+            total=self.config.max_steps,
+            initial=self.global_step,
+            desc="Training",
+            unit="step",
+            dynamic_ncols=True,
+        )
+
         try:
             while self.global_step < self.config.max_steps:
                 self.epoch += 1
@@ -493,8 +503,21 @@ class Trainer:
                         step_time = time.time() - step_start
                         self.metrics.log_step_time(step_time)
 
+                        current_loss = loss.item() * accumulation_steps
+                        current_ppl = math.exp(min(current_loss, 20))
+                        lr = self.scheduler.get_last_lr()[0]
+
+                        # Update progress bar
+                        pbar.set_postfix(
+                            loss=f"{current_loss:.4f}",
+                            ppl=f"{current_ppl:.1f}",
+                            lr=f"{lr:.2e}",
+                            ordered=True,
+                        )
+                        pbar.update(1)
+
                         if self.global_step % self.config.log_steps == 0:
-                            self._log_step(loss.item() * accumulation_steps, step_time)
+                            self._log_step(current_loss, step_time)
 
                         # Evaluation
                         if self.eval_dataloader and self.global_step % self.config.eval_steps == 0:
@@ -521,6 +544,8 @@ class Trainer:
         except KeyboardInterrupt:
             logger.info("Training interrupted by user")
             self._save_checkpoint(tag="interrupted")
+        finally:
+            pbar.close()
 
         # Final save
         self._save_checkpoint(tag="final")
