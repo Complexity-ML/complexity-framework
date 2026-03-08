@@ -392,6 +392,12 @@ def train_run(run_id: int, args):
     # Register PiD callback
     trainer._pid = pid
 
+    # PPL logging callback
+    def log_ppl(trainer_obj, step, loss_val):
+        ppl = math.exp(min(loss_val, 20))
+        logger.info(f"  >> Step {step} | PPL: {ppl:.2f} | Loss: {loss_val:.4f}")
+    trainer.callbacks.append(log_ppl)
+
     logger.info("Starting trainer.train()...")
     summary = trainer.train()
     logger.info(f"Run {run_id} complete: {summary}")
