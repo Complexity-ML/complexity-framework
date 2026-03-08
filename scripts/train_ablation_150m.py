@@ -330,6 +330,7 @@ def train_run(run_id: int, args):
     trainer = Trainer(model=model, config=train_config, train_dataloader=dataloader)
 
     # Override loss to handle dict output from ComplexityModel
+    # Uses chunked cross-entropy to avoid OOM on large vocab
     def compute_loss(model, batch):
         input_ids = batch["input_ids"].to(trainer.device)
         labels = batch["labels"].to(trainer.device)
@@ -337,11 +338,25 @@ def train_run(run_id: int, args):
         logits = outputs["logits"] if isinstance(outputs, dict) else outputs
         shift_logits = logits[:, :-1, :].contiguous()
         shift_labels = labels[:, :shift_logits.size(1)].contiguous()
-        return nn.functional.cross_entropy(
-            shift_logits.view(-1, shift_logits.size(-1)),
-            shift_labels.view(-1),
-            ignore_index=-100,
-        )
+
+        # Chunked cross-entropy: process 4 sequences at a time to avoid
+        # materializing the full (batch × seq × vocab) tensor in float32
+        chunk_size = 4
+        batch_len = shift_logits.size(0)
+        total_loss = 0.0
+        total_tokens = 0
+        for i in range(0, batch_len, chunk_size):
+            chunk_logits = shift_logits[i:i+chunk_size].view(-1, shift_logits.size(-1))
+            chunk_labels = shift_labels[i:i+chunk_size].view(-1)
+            mask = chunk_labels != -100
+            n_tokens = mask.sum().item()
+            if n_tokens > 0:
+                loss = nn.functional.cross_entropy(
+                    chunk_logits, chunk_labels, ignore_index=-100, reduction='sum',
+                )
+                total_loss = total_loss + loss
+                total_tokens += n_tokens
+        return total_loss / max(total_tokens, 1)
 
     trainer.compute_loss = compute_loss
 
