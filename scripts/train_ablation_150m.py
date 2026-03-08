@@ -28,6 +28,15 @@ import torch.nn as nn
 import argparse
 import os
 import math
+import logging
+import time
+
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%H:%M:%S",
+    level=logging.INFO,
+)
+logger = logging.getLogger("ablation")
 
 from complexity.config import ModelConfig
 from complexity.models import ComplexityModel
@@ -136,7 +145,7 @@ class ProgressiveDepth:
 
         # Freeze upper layers initially
         self._update_frozen()
-        print(f"PiD: {self.initial_layers}/{self.num_layers} layers active, "
+        logger.info(f"PiD: {self.initial_layers}/{self.num_layers} layers active, "
               f"new layer every {self.steps_per_layer:,} steps")
 
     def _update_frozen(self):
@@ -158,7 +167,7 @@ class ProgressiveDepth:
         if target_active > self.active_layers:
             self.active_layers = target_active
             self._update_frozen()
-            print(f"PiD: activated layer {self.active_layers}/{self.num_layers} "
+            logger.info(f"PiD: activated layer {self.active_layers}/{self.num_layers} "
                   f"at step {global_step:,}")
 
 
@@ -215,7 +224,7 @@ def disable_mu_propagation(model: ComplexityModel):
         }
 
     model.forward = forward_no_mu
-    print("Mu-Guidance DISABLED (ablation mode)")
+    logger.info("Mu-Guidance DISABLED (ablation mode)")
     return model
 
 
@@ -227,14 +236,18 @@ class FineWebStreamingDataset(IterableDataset):
     def __init__(self, tokenizer, max_length=2048):
         self.tokenizer = tokenizer
         self.max_length = max_length
+        logger.info("Connecting to FineWeb-Edu (streaming)...")
+        t0 = time.time()
         self.dataset = load_dataset(
             "HuggingFaceFW/fineweb-edu",
             split="train",
             streaming=True,
         )
+        logger.info(f"Dataset ready in {time.time() - t0:.1f}s")
 
     def __iter__(self):
         buffer = []
+        first_yield = True
         for example in self.dataset:
             text = example.get("text", "")
             if not text:
@@ -247,6 +260,9 @@ class FineWebStreamingDataset(IterableDataset):
                 buffer = buffer[self.max_length:]
                 input_ids = torch.tensor(chunk[:-1], dtype=torch.long)
                 labels = torch.tensor(chunk[1:], dtype=torch.long)
+                if first_yield:
+                    logger.info("First batch tokenized and ready!")
+                    first_yield = False
                 yield {"input_ids": input_ids, "labels": labels}
 
 
@@ -262,10 +278,10 @@ def compute_steps_for_tokens(target_tokens: int, batch_size: int,
 def train_run(run_id: int, args):
     """Train a single run."""
     name, desc, config_fn = RUN_CONFIGS[run_id]
-    print(f"\n{'='*70}")
-    print(f"  Run {run_id}: {desc}")
-    print(f"  Output: {args.checkpoint_dir}/{name}")
-    print(f"{'='*70}\n")
+    logger.info("=" * 70)
+    logger.info(f"  Run {run_id}: {desc}")
+    logger.info(f"  Output: {args.checkpoint_dir}/{name}")
+    logger.info("=" * 70)
 
     # Tokenizer
     if not os.path.exists(args.tokenizer):
@@ -279,12 +295,12 @@ def train_run(run_id: int, args):
     config = config_fn()
     config.vocab_size = min(len(tokenizer), 32000)  # Cap at 32k
     model = ComplexityModel(config)
-    print(f"Model: {model.num_parameters():,} params "
-          f"({model.num_parameters()/1e6:.1f}M)")
-    print(f"  hidden={config.hidden_size}, layers={config.num_hidden_layers}, "
-          f"heads={config.num_attention_heads}, kv_heads={config.num_key_value_heads}")
-    print(f"  mlp={config.mlp_type}, experts={config.num_experts}, "
-          f"dynamics={config.use_inl_dynamics}")
+    logger.info(f"Model: {model.num_parameters():,} params "
+                f"({model.num_parameters()/1e6:.1f}M)")
+    logger.info(f"  hidden={config.hidden_size}, layers={config.num_hidden_layers}, "
+                f"heads={config.num_attention_heads}, kv_heads={config.num_key_value_heads}")
+    logger.info(f"  mlp={config.mlp_type}, experts={config.num_experts}, "
+                f"dynamics={config.use_inl_dynamics}")
 
     # Disable mu for Run 3
     if run_id == 3:
@@ -297,8 +313,8 @@ def train_run(run_id: int, args):
         grad_accum=args.gradient_accumulation,
         seq_len=2048,
     )
-    print(f"  Training for {max_steps:,} steps "
-          f"(~{args.target_tokens/1e9:.1f}B tokens)")
+    logger.info(f"  Training for {max_steps:,} steps "
+                f"(~{args.target_tokens/1e9:.1f}B tokens)")
 
     # PiD — Progressive increasing Depth
     pid = ProgressiveDepth(model, total_steps=max_steps)
@@ -369,19 +385,19 @@ def train_run(run_id: int, args):
     trainer._pid = pid
 
     summary = trainer.train()
-    print(f"Run {run_id} complete: {summary}")
+    logger.info(f"Run {run_id} complete: {summary}")
 
     # Save final model
     model.save_pretrained(os.path.join(checkpoint_dir, "final"))
     config.save(os.path.join(checkpoint_dir, "final", "model_config.yaml"))
-    print(f"Model saved to {checkpoint_dir}/final/")
+    logger.info(f"Model saved to {checkpoint_dir}/final/")
 
     # For Run 4: also save quantized version
     if run_id == 4:
-        print("Quantizing Run 4 to INT8...")
+        logger.info("Quantizing Run 4 to INT8...")
         model.quantize_all()
         model.save_pretrained(os.path.join(checkpoint_dir, "final-int8"))
-        print(f"INT8 model saved to {checkpoint_dir}/final-int8/")
+        logger.info(f"INT8 model saved to {checkpoint_dir}/final-int8/")
 
     return summary
 
@@ -425,22 +441,21 @@ def main():
     # Print study overview
     tokens_per_step = args.batch_size * args.gradient_accumulation * 2048
     total_steps = math.ceil(args.target_tokens / tokens_per_step)
-    print(f"Ablation Study: 150M × 4 variants")
-    print(f"  Tokens/step: {tokens_per_step:,} "
+    logger.info(f"Ablation Study: 150M × 4 variants")
+    logger.info(f"  Tokens/step: {tokens_per_step:,} "
           f"(batch={args.batch_size} × accum={args.gradient_accumulation} × seq=2048)")
-    print(f"  Total steps: {total_steps:,} ({args.target_tokens/1e9:.1f}B tokens)")
-    print(f"  LR: {args.lr}, warmup: {args.warmup_steps}")
-    print()
+    logger.info(f"  Total steps: {total_steps:,} ({args.target_tokens/1e9:.1f}B tokens)")
+    logger.info(f"  LR: {args.lr}, warmup: {args.warmup_steps}")
 
     # Run
     if args.run == "all":
         results = {}
         for run_id in [1, 2, 3, 4]:
             results[run_id] = train_run(run_id, args)
-        print("\n" + "="*70)
-        print("All runs complete!")
+        logger.info("=" * 70)
+        logger.info("All runs complete!")
         for rid, summary in results.items():
-            print(f"  Run {rid} ({RUN_CONFIGS[rid][1]}): {summary}")
+            logger.info(f"  Run {rid} ({RUN_CONFIGS[rid][1]}): {summary}")
     else:
         run_id = int(args.run)
         if run_id not in RUN_CONFIGS:
