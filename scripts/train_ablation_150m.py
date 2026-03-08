@@ -31,11 +31,12 @@ import math
 import logging
 import time
 
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%H:%M:%S",
+    level=logging.INFO,
+)
 logger = logging.getLogger("ablation")
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", datefmt="%H:%M:%S"))
-logger.addHandler(handler)
 
 # Silence noisy HTTP loggers
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -354,11 +355,7 @@ def train_run(run_id: int, args):
 
     # Override loss to handle dict output from ComplexityModel
     # Uses chunked cross-entropy to avoid OOM on large vocab
-    batch_counter = [0]
-
     def compute_loss(model, batch):
-        batch_counter[0] += 1
-        logger.info(f"  [batch {batch_counter[0]}] Forward pass...")
         input_ids = batch["input_ids"].to(trainer.device)
         labels = batch["labels"].to(trainer.device)
         outputs = model(input_ids)
@@ -383,10 +380,7 @@ def train_run(run_id: int, args):
                 )
                 total_loss = total_loss + loss
                 total_tokens += n_tokens
-        avg_loss = total_loss / max(total_tokens, 1)
-        logger.info(f"  [batch {batch_counter[0]}] Loss: {avg_loss.item():.4f} | "
-                    f"{total_tokens} tokens | input: {input_ids.shape}")
-        return avg_loss
+        return total_loss / max(total_tokens, 1)
 
     trainer.compute_loss = compute_loss
 
