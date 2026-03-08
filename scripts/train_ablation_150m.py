@@ -393,9 +393,11 @@ def train_run(run_id: int, args):
     trainer._pid = pid
 
     # PPL logging callback
+    accum = args.gradient_accumulation
     def log_ppl(trainer_obj, step, loss_val):
-        ppl = math.exp(min(loss_val, 20))
-        logger.info(f"  >> Step {step} | PPL: {ppl:.2f} | Loss: {loss_val:.4f}")
+        real_loss = loss_val * accum
+        ppl = math.exp(min(real_loss, 20))
+        logger.info(f"  >> Step {step} | PPL: {ppl:.2f} | Loss: {real_loss:.4f}")
     trainer.callbacks.append(log_ppl)
 
     logger.info("Starting trainer.train()...")
