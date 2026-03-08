@@ -329,8 +329,21 @@ def train_run(run_id: int, args):
 
     trainer = Trainer(model=model, config=train_config, train_dataloader=dataloader)
 
-    # Hook PiD into training loop
-    original_step = trainer.training_step if hasattr(trainer, 'training_step') else None
+    # Override loss to handle dict output from ComplexityModel
+    def compute_loss(model, batch):
+        input_ids = batch["input_ids"].to(trainer.device)
+        labels = batch["labels"].to(trainer.device)
+        outputs = model(input_ids)
+        logits = outputs["logits"] if isinstance(outputs, dict) else outputs
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = labels[:, :shift_logits.size(1)].contiguous()
+        return nn.functional.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+            ignore_index=-100,
+        )
+
+    trainer.compute_loss = compute_loss
 
     # Register PiD callback
     trainer._pid = pid
