@@ -31,12 +31,17 @@ import math
 import logging
 import time
 
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    datefmt="%H:%M:%S",
-    level=logging.INFO,
-)
 logger = logging.getLogger("ablation")
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", datefmt="%H:%M:%S"))
+logger.addHandler(handler)
+
+# Silence noisy HTTP loggers
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+logging.getLogger("datasets").setLevel(logging.WARNING)
 
 from complexity.config import ModelConfig
 from complexity.models import ComplexityModel
