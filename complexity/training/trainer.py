@@ -25,6 +25,7 @@ from pathlib import Path
 import logging
 import time
 import json
+import math
 from datetime import datetime
 
 from ..parallel.data_parallel import (
@@ -587,9 +588,11 @@ class Trainer:
                 self.config.batch_size,
                 512,  # Assume seq_len
             )
+            ppl = math.exp(min(loss, 20))  # Cap to avoid overflow
             logger.info(
                 f"Step {self.global_step} | "
                 f"Loss: {loss:.4f} | "
+                f"PPL: {ppl:.2f} | "
                 f"LR: {lr:.2e} | "
                 f"Throughput: {throughput:.0f} tok/s"
             )
