@@ -30,6 +30,7 @@ import os
 import math
 import logging
 import time
+from tqdm import tqdm
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -392,16 +393,25 @@ def train_run(run_id: int, args):
     # Register PiD callback
     trainer._pid = pid
 
-    # PPL logging callback
+    # tqdm progress bar callback
     accum = args.gradient_accumulation
-    def log_ppl(trainer_obj, step, loss_val):
+    pbar = tqdm(total=max_steps, desc=f"Run {run_id}", unit="step", dynamic_ncols=True)
+
+    def tqdm_callback(trainer_obj, step, loss_val):
         real_loss = loss_val * accum
         ppl = math.exp(min(real_loss, 20))
-        logger.info(f"  >> Step {step} | PPL: {ppl:.2f} | Loss: {real_loss:.4f}")
-    trainer.callbacks.append(log_ppl)
+        pbar.set_postfix(loss=f"{real_loss:.4f}", ppl=f"{ppl:.1f}", ordered=True)
+        pbar.update(1)
+    trainer.callbacks.append(tqdm_callback)
+
+    # Silence trainer's own logger during training
+    logging.getLogger("complexity.training.trainer").setLevel(logging.WARNING)
 
     logger.info("Starting trainer.train()...")
     summary = trainer.train()
+
+    pbar.close()
+    logging.getLogger("complexity.training.trainer").setLevel(logging.INFO)
     logger.info(f"Run {run_id} complete: {summary}")
 
     # Save final model
