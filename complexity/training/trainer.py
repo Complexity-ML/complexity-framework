@@ -494,11 +494,6 @@ class Trainer:
                         self.metrics.log_step_time(step_time)
 
                         current_loss = loss.item() * accumulation_steps
-                        current_ppl = math.exp(min(current_loss, 20))
-                        lr = self.scheduler.get_last_lr()[0]
-
-                        if self.global_step % self.config.log_steps == 0:
-                            self._log_step(current_loss, step_time)
 
                         # Evaluation
                         if self.eval_dataloader and self.global_step % self.config.eval_steps == 0:
