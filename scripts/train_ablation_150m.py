@@ -430,7 +430,7 @@ def main():
     parser.add_argument("--checkpoint-dir", type=str, default="./checkpoints/ablation-150m")
     parser.add_argument("--resume", type=str, default=None,
                         help="Resume from checkpoint path")
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--wandb", type=str, default=None,
                         help="W&B project name (enables logging)")
     args = parser.parse_args()
