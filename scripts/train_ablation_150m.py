@@ -426,7 +426,7 @@ def main():
                         help="Peak learning rate")
     parser.add_argument("--warmup-steps", type=int, default=2000)
     parser.add_argument("--save-steps", type=int, default=10000)
-    parser.add_argument("--log-steps", type=int, default=100)
+    parser.add_argument("--log-steps", type=int, default=1)
     parser.add_argument("--checkpoint-dir", type=str, default="./checkpoints/ablation-150m")
     parser.add_argument("--resume", type=str, default=None,
                         help="Resume from checkpoint path")
