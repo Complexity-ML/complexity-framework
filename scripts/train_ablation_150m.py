@@ -398,6 +398,7 @@ def train_run(run_id: int, args):
     # Register PiD callback
     trainer._pid = pid
 
+    logger.info("Starting trainer.train()...")
     summary = trainer.train()
     logger.info(f"Run {run_id} complete: {summary}")
 
