@@ -523,7 +523,7 @@ class Trainer:
                             )
                             pbar.update(1)
 
-                        if self.global_step % self.config.log_steps == 0:
+                        if pbar is None and self.global_step % self.config.log_steps == 0:
                             self._log_step(current_loss, step_time)
 
                         # Evaluation
