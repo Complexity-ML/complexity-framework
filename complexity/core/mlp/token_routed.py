@@ -98,23 +98,31 @@ class TokenRoutedMLP(MLPBase):
         token_ids_clamped = token_ids.clamp(0, self.vocab_size - 1)
         expert_ids = self.token_to_expert[token_ids_clamped]  # [batch, seq_len]
 
-        # Process each expert's tokens
-        output = torch.zeros_like(hidden_states)
+        # Flatten for dispatch
+        flat_hidden = hidden_states.view(-1, hidden_states.shape[-1])  # [B*S, H]
+        flat_expert_ids = expert_ids.view(-1)  # [B*S]
+        N = flat_hidden.shape[0]
+        tokens_per_expert = N // self.num_experts  # exact for modulo routing
 
+        # Sort tokens by expert — argsort gives fixed-shape indices
+        sorted_indices = flat_expert_ids.argsort(stable=True)  # [B*S]
+        sorted_hidden = flat_hidden[sorted_indices]  # [B*S, H]
+
+        # Process each expert on its contiguous slice (fixed shape)
+        output_chunks = []
         for expert_id in range(self.num_experts):
-            # Mask for tokens routed to this expert
-            mask = (expert_ids == expert_id)  # [batch, seq_len]
-
-            # Get tokens for this expert (always run — no data-dependent branch)
-            expert_input = hidden_states[mask]  # [num_tokens, hidden_size]
-
-            # Process through expert
+            start = expert_id * tokens_per_expert
+            end = start + tokens_per_expert
+            expert_input = sorted_hidden[start:end]  # [tokens_per_expert, H]
             expert_output = self.experts[expert_id](expert_input)
+            output_chunks.append(expert_output.to(flat_hidden.dtype))
 
-            # Put back in output (cast to match output dtype for bf16 training)
-            output[mask] = expert_output.to(output.dtype)
+        # Concatenate and unsort back to original order
+        sorted_output = torch.cat(output_chunks, dim=0)  # [B*S, H]
+        unsort_indices = sorted_indices.argsort()
+        output = sorted_output[unsort_indices]
 
-        return output
+        return output.view(batch_size, seq_len, -1)
 
     def _forward_all_experts(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Fallback: average all experts (for inference without token_ids)."""

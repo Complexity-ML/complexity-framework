@@ -213,8 +213,8 @@ def train_run(run_id: int, args):
 
     # torch.compile for kernel fusion (PyTorch 2.x)
     if torch.cuda.is_available() and hasattr(torch, "compile"):
-        model = torch.compile(model, fullgraph=False)
-        logger.info("torch.compile enabled (fullgraph=False)")
+        model = torch.compile(model, fullgraph=True)
+        logger.info("torch.compile enabled (fullgraph=True)")
 
     # Compute steps for 2B tokens
     max_steps = compute_steps_for_tokens(
