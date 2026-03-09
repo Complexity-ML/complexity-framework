@@ -324,12 +324,14 @@ def train_run(run_id: int, args):
     logger.info(f"  Training for {max_steps:,} steps "
                 f"(~{args.target_tokens/1e9:.1f}B tokens)")
 
-    # PiD — Progressive increasing Depth (disabled for Run 4 ablation)
-    if run_id == 4:
-        pid = None
-        logger.info("PiD DISABLED (ablation mode)")
-    else:
+    # PiD — Progressive increasing Depth
+    # Run 2 (full) and Run 3 (no-mu): PiD enabled
+    # Run 1 (dense baseline) and Run 4 (no-pid ablation): PiD disabled
+    if run_id in (2, 3):
         pid = ProgressiveDepth(model, total_steps=max_steps)
+    else:
+        pid = None
+        logger.info("PiD DISABLED for this run")
 
     # Dataset
     dataset = FineWebStreamingDataset(tokenizer=tokenizer)
