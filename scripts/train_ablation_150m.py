@@ -1,10 +1,10 @@
 """
 Ablation Study — 4 × 150M models, 32k vocab, 2B tokens, PiD in all.
 
-Run 1: Dense float      — SwiGLU standard, absolute reference
-Run 2: Full archi float  — Token-Routed + Mu + INL Dynamics
-Run 3: Full archi no-Mu  — Token-Routed + INL Dynamics, Mu disabled
-Run 4: Full archi INL    — Integer-first (i64), same archi as Run 2
+Run 1: Dense baseline    — SwiGLU standard, no routing, no Mu, no PiD
+Run 2: Full archi        — Token-Routed + Mu + PiD (all components)
+Run 3: Full archi no-Mu  — Token-Routed + PiD, Mu disabled
+Run 4: Full archi no-PiD — Token-Routed + Mu, PiD disabled
 
 Progressive increasing Depth (PiD): start with L/2 active layers,
 add one layer every (total_steps / (L/2)) steps until all layers active.
@@ -101,7 +101,7 @@ def make_config_run3() -> ModelConfig:
 
 
 def make_config_run4() -> ModelConfig:
-    """Run 4: Full archi INL — Integer-first (i64), same structure as Run 2."""
+    """Run 4: Full archi sans PiD — Token-Routed + Mu, PiD disabled."""
     return ModelConfig(
         hidden_size=768,
         num_hidden_layers=18,
@@ -110,10 +110,10 @@ def make_config_run4() -> ModelConfig:
         intermediate_size=2048,
         vocab_size=32000,
         max_position_embeddings=2048,
-        attention_type="i64",
-        mlp_type="i64_swiglu",
-        num_experts=1,
-        norm_type="i64_rmsnorm",
+        attention_type="gqa",
+        mlp_type="token_routed",
+        num_experts=4,
+        norm_type="rmsnorm",
         use_qk_norm=True,
         use_inl_dynamics=True,
         inl_beta_max=2.0,
@@ -122,10 +122,10 @@ def make_config_run4() -> ModelConfig:
 
 
 RUN_CONFIGS = {
-    1: ("run1-dense",   "Dense float (SwiGLU baseline)",        make_config_run1),
-    2: ("run2-full",    "Full archi (Token-Routed + Mu + PiD)",  make_config_run2),
-    3: ("run3-no-mu",   "Full archi sans Mu-Guidance",           make_config_run3),
-    4: ("run4-inl",     "Full archi INL (integer-first)",        make_config_run4),
+    1: ("run1-dense",   "Dense float (SwiGLU baseline)",              make_config_run1),
+    2: ("run2-full",    "Full archi (Token-Routed + Mu + PiD)",       make_config_run2),
+    3: ("run3-no-mu",   "Full archi sans Mu-Guidance",                make_config_run3),
+    4: ("run4-no-pid",  "Full archi sans PiD (Token-Routed + Mu)",    make_config_run4),
 }
 
 
@@ -324,8 +324,12 @@ def train_run(run_id: int, args):
     logger.info(f"  Training for {max_steps:,} steps "
                 f"(~{args.target_tokens/1e9:.1f}B tokens)")
 
-    # PiD — Progressive increasing Depth
-    pid = ProgressiveDepth(model, total_steps=max_steps)
+    # PiD — Progressive increasing Depth (disabled for Run 4 ablation)
+    if run_id == 4:
+        pid = None
+        logger.info("PiD DISABLED (ablation mode)")
+    else:
+        pid = ProgressiveDepth(model, total_steps=max_steps)
 
     # Dataset
     dataset = FineWebStreamingDataset(tokenizer=tokenizer)
@@ -412,6 +416,9 @@ def train_run(run_id: int, args):
         ppl = math.exp(min(real_loss, 20))
         pbar.set_postfix(loss=f"{real_loss:.4f}", ppl=f"{ppl:.1f}", ordered=True)
         pbar.update(1)
+        # PiD: progressively activate layers
+        if pid is not None:
+            pid.step(step)
         # Save to CSV
         csv_writer.writerow([step, f"{real_loss:.6f}", f"{ppl:.2f}", f"{time.time() - t_start:.1f}"])
         if step % 100 == 0:
