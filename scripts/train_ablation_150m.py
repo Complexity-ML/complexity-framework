@@ -310,10 +310,8 @@ def train_run(run_id: int, args):
 
     # torch.compile for kernel fusion (PyTorch 2.x)
     if torch.cuda.is_available() and hasattr(torch, "compile"):
-        # Ablation patches (Run 3/4) use monkey-patching, need graph breaks
-        use_fullgraph = run_id in (1, 2)
-        model = torch.compile(model, fullgraph=use_fullgraph)
-        logger.info(f"torch.compile enabled (fullgraph={use_fullgraph})")
+        model = torch.compile(model, fullgraph=False)
+        logger.info("torch.compile enabled (fullgraph=False)")
 
     # Compute steps for 2B tokens
     max_steps = compute_steps_for_tokens(
