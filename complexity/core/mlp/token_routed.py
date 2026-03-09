@@ -17,7 +17,9 @@ from .base import MLPBase, MLPConfig
 from ..registry import register_mlp
 
 
-@register_mlp("token_routed_loop")
+@register_mlp("token_routed")
+@register_mlp("deterministic_moe")
+@register_mlp("complexity")
 class TokenRoutedMLP(MLPBase):
     """
     Token-Routed MLP (Deterministic MoE).
@@ -140,10 +142,7 @@ class Expert(nn.Module):
         return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
 
 
-@register_mlp("token_routed")
 @register_mlp("token_routed_parallel")
-@register_mlp("deterministic_moe")
-@register_mlp("complexity")
 @register_mlp("batched_moe")
 class TokenRoutedMLPParallel(MLPBase):
     """

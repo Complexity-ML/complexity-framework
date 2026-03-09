@@ -212,10 +212,9 @@ def train_run(run_id: int, args):
                 f"dynamics={config.use_inl_dynamics}")
 
     # torch.compile for kernel fusion (PyTorch 2.x)
-    # fullgraph=True for all runs (no monkey-patching, ablations via config flags)
     if torch.cuda.is_available() and hasattr(torch, "compile"):
-        model = torch.compile(model, fullgraph=True)
-        logger.info("torch.compile enabled (fullgraph=True)")
+        model = torch.compile(model, fullgraph=False)
+        logger.info("torch.compile enabled (fullgraph=False)")
 
     # Compute steps for 2B tokens
     max_steps = compute_steps_for_tokens(
