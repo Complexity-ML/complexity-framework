@@ -411,19 +411,26 @@ def train_run(run_id: int, args):
     logging.getLogger("complexity.training.trainer").setLevel(logging.WARNING)
 
     logger.info("Starting trainer.train()...")
-    summary = trainer.train()
+    summary = None
+    try:
+        summary = trainer.train()
+    except KeyboardInterrupt:
+        logger.info("Ctrl+C — saving progress before exit...")
+        model.save_pretrained(os.path.join(checkpoint_dir, "interrupted"))
+        config.save(os.path.join(checkpoint_dir, "interrupted", "model_config.yaml"))
+        logger.info(f"Interrupted checkpoint saved to {checkpoint_dir}/interrupted/")
+    finally:
+        pbar.close()
+        csv_file.flush()
+        csv_file.close()
+        logger.info(f"Training log saved: {csv_path}")
+        logging.getLogger("complexity.training.trainer").setLevel(logging.INFO)
 
-    pbar.close()
-    csv_file.flush()
-    csv_file.close()
-    logger.info(f"Training log saved: {csv_path}")
-    logging.getLogger("complexity.training.trainer").setLevel(logging.INFO)
-    logger.info(f"Run {run_id} complete: {summary}")
-
-    # Save final model
-    model.save_pretrained(os.path.join(checkpoint_dir, "final"))
-    config.save(os.path.join(checkpoint_dir, "final", "model_config.yaml"))
-    logger.info(f"Model saved to {checkpoint_dir}/final/")
+    if summary is not None:
+        logger.info(f"Run {run_id} complete: {summary}")
+        model.save_pretrained(os.path.join(checkpoint_dir, "final"))
+        config.save(os.path.join(checkpoint_dir, "final", "model_config.yaml"))
+        logger.info(f"Model saved to {checkpoint_dir}/final/")
 
     return summary
 
@@ -477,11 +484,15 @@ def main():
     if args.run == "all":
         results = {}
         for run_id in [1, 2, 3, 4]:
-            results[run_id] = train_run(run_id, args)
+            try:
+                results[run_id] = train_run(run_id, args)
+            except KeyboardInterrupt:
+                logger.info(f"Interrupted during Run {run_id} — stopping.")
+                break
         logger.info("=" * 70)
-        logger.info("All runs complete!")
         for rid, summary in results.items():
             logger.info(f"  Run {rid} ({RUN_CONFIGS[rid][1]}): {summary}")
+        logger.info(f"{len(results)}/4 runs completed.")
     else:
         run_id = int(args.run)
         if run_id not in RUN_CONFIGS:
