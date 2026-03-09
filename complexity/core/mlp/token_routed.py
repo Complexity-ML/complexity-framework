@@ -114,8 +114,8 @@ class TokenRoutedMLP(MLPBase):
             # Process through expert
             expert_output = self.experts[expert_id](expert_input)
 
-            # Put back in output
-            output[mask] = expert_output
+            # Put back in output (cast to match output dtype for bf16 training)
+            output[mask] = expert_output.to(output.dtype)
 
         return output
 
