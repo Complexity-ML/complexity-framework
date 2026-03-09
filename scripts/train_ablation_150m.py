@@ -30,6 +30,7 @@ import os
 import math
 import logging
 import time
+import csv
 from tqdm import tqdm
 
 logging.basicConfig(
@@ -393,7 +394,16 @@ def train_run(run_id: int, args):
     # Register PiD callback
     trainer._pid = pid
 
-    # tqdm progress bar callback
+    # CSV logger for training curves
+    csv_path = os.path.join(checkpoint_dir, "training_log.csv")
+    csv_file = open(csv_path, "w", newline="")
+    csv_writer = csv.writer(csv_file)
+    csv_writer.writerow(["step", "loss", "ppl", "elapsed_s"])
+    csv_file.flush()
+    t_start = time.time()
+    logger.info(f"CSV log: {csv_path}")
+
+    # tqdm progress bar + CSV callback
     accum = args.gradient_accumulation
     pbar = tqdm(total=max_steps, desc=f"Run {run_id}", unit="step", dynamic_ncols=True)
 
@@ -402,6 +412,10 @@ def train_run(run_id: int, args):
         ppl = math.exp(min(real_loss, 20))
         pbar.set_postfix(loss=f"{real_loss:.4f}", ppl=f"{ppl:.1f}", ordered=True)
         pbar.update(1)
+        # Save to CSV
+        csv_writer.writerow([step, f"{real_loss:.6f}", f"{ppl:.2f}", f"{time.time() - t_start:.1f}"])
+        if step % 100 == 0:
+            csv_file.flush()
     trainer.callbacks.append(tqdm_callback)
 
     # Silence trainer's own logger during training
@@ -411,6 +425,9 @@ def train_run(run_id: int, args):
     summary = trainer.train()
 
     pbar.close()
+    csv_file.flush()
+    csv_file.close()
+    logger.info(f"Training log saved: {csv_path}")
     logging.getLogger("complexity.training.trainer").setLevel(logging.INFO)
     logger.info(f"Run {run_id} complete: {summary}")
 
