@@ -101,7 +101,7 @@ def make_config_run2() -> ModelConfig:
 def make_config_run3() -> ModelConfig:
     """Run 3: Full archi float sans Mu — Token-Routed + INL Dynamics, Mu disabled."""
     config = make_config_run2()
-    config.extra_config["disable_mu_guidance"] = True
+    config.disable_mu_guidance = True
     return config
 
 
@@ -123,6 +123,7 @@ def make_config_run4() -> ModelConfig:
         use_inl_dynamics=True,
         inl_beta_max=2.0,
         inl_velocity_max=10.0,
+        disable_pid_scaler=True,
     )
 
 
@@ -134,98 +135,6 @@ RUN_CONFIGS = {
 }
 
 
-# ── PiD controller disabler (for Run 4 ablation) ─────────────────────────
-
-def disable_pid_controller(model: ComplexityModel):
-    """
-    Disable the PiD-style Dynamic Scaler (INLDynamics controller) while
-    keeping Mu-Guidance active.
-
-    Monkey-patches each layer's dynamics.forward() so that the velocity/
-    controller update is skipped (h passes through unchanged), but
-    mu_contextual is still computed and flows to the next layer's attention.
-    """
-    for i, layer in enumerate(model.layers):
-        if layer.dynamics is None:
-            continue
-        dynamics = layer.dynamics
-
-        def make_patched(dyn):
-            def forward_no_pid(h, v=None, return_mu=False):
-                # Skip velocity/controller update — h unchanged
-                if v is None:
-                    v = torch.zeros_like(h)
-                # Still compute mu_contextual for Mu-Guidance
-                mu_contextual = None
-                if return_mu:
-                    mu = dyn.mu_clamped
-                    mu_contextual = mu + dyn.mu_proj(h)
-                    if dyn.safety_clamp is not None:
-                        mu_contextual = dyn.safety_clamp(mu_contextual)
-                return h, v, mu_contextual
-            return forward_no_pid
-
-        dynamics.forward = make_patched(dynamics)
-
-    logger.info("PiD Dynamic Scaler DISABLED (ablation mode — Mu-Guidance still active)")
-    return model
-
-
-# ── Mu-Guidance disabler (for Run 3 ablation) ────────────────────────────
-
-def disable_mu_propagation(model: ComplexityModel):
-    """
-    Disable mu guidance by monkey-patching the forward to skip mu propagation.
-    INL Dynamics still runs (velocity tracking), but mu is NOT passed between layers.
-    """
-    original_forward = model.forward
-
-    def forward_no_mu(input_ids, **kwargs):
-        # Run normal forward but intercept mu flow
-        batch_size, seq_len = input_ids.shape
-        hidden_states = model.embed_tokens(input_ids)
-
-        new_past_key_values = [] if kwargs.get("use_cache", False) else None
-        new_velocity_states = [] if model.config.use_inl_dynamics else None
-        past_key_values = kwargs.get("past_key_values", None)
-        velocity_states = kwargs.get("velocity_states", None)
-
-        for i, layer in enumerate(model.layers):
-            past_kv = past_key_values[i] if past_key_values else None
-            vel_state = velocity_states[i] if velocity_states else None
-
-            hidden_states, new_kv, new_vel, _ = layer(
-                hidden_states,
-                attention_mask=kwargs.get("attention_mask"),
-                past_key_value=past_kv,
-                use_cache=kwargs.get("use_cache", False),
-                token_ids=input_ids,
-                velocity_state=vel_state,
-                mu_prev=None,  # <-- Mu ALWAYS None = disabled
-            )
-
-            if new_past_key_values is not None:
-                new_past_key_values.append(new_kv)
-            if new_velocity_states is not None:
-                new_velocity_states.append(new_vel)
-
-        hidden_states = model.norm(hidden_states)
-        if model.lm_head is not None:
-            logits = model.lm_head(hidden_states)
-        else:
-            logits = torch.matmul(hidden_states, model.embed_tokens.weight.T)
-
-        return {
-            "logits": logits,
-            "past_key_values": new_past_key_values,
-            "hidden_states": None,
-            "last_hidden_state": hidden_states,
-            "velocity_states": new_velocity_states,
-        }
-
-    model.forward = forward_no_mu
-    logger.info("Mu-Guidance DISABLED (ablation mode)")
-    return model
 
 
 # ── Dataset ───────────────────────────────────────────────────────────────
@@ -302,16 +211,11 @@ def train_run(run_id: int, args):
     logger.info(f"  mlp={config.mlp_type}, experts={config.num_experts}, "
                 f"dynamics={config.use_inl_dynamics}")
 
-    # Ablation patches
-    if run_id == 3:
-        model = disable_mu_propagation(model)
-    elif run_id == 4:
-        model = disable_pid_controller(model)
-
     # torch.compile for kernel fusion (PyTorch 2.x)
+    # fullgraph=True for all runs (no monkey-patching, ablations via config flags)
     if torch.cuda.is_available() and hasattr(torch, "compile"):
-        model = torch.compile(model, fullgraph=False)
-        logger.info("torch.compile enabled (fullgraph=False)")
+        model = torch.compile(model, fullgraph=True)
+        logger.info("torch.compile enabled (fullgraph=True)")
 
     # Compute steps for 2B tokens
     max_steps = compute_steps_for_tokens(

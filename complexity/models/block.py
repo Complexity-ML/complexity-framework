@@ -130,9 +130,14 @@ class TransformerBlock(nn.Module):
         # INL Dynamics (after attention, before residual)
         mu_contextual = None
         if self.dynamics is not None:
-            hidden_states, velocity_state, mu_contextual = self.dynamics(
-                hidden_states, velocity_state, return_mu=True,
-            )
+            if self.config.disable_pid_scaler:
+                # Ablation: skip velocity/controller, just compute mu
+                velocity_state = torch.zeros_like(hidden_states) if velocity_state is None else velocity_state
+                mu_contextual = self.dynamics.mu_clamped + self.dynamics.mu_proj(hidden_states)
+            else:
+                hidden_states, velocity_state, mu_contextual = self.dynamics(
+                    hidden_states, velocity_state, return_mu=True,
+                )
 
         hidden_states = residual + hidden_states
 

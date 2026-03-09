@@ -105,10 +105,7 @@ class TokenRoutedMLP(MLPBase):
             # Mask for tokens routed to this expert
             mask = (expert_ids == expert_id)  # [batch, seq_len]
 
-            if not mask.any():
-                continue
-
-            # Get tokens for this expert
+            # Get tokens for this expert (always run — no data-dependent branch)
             expert_input = hidden_states[mask]  # [num_tokens, hidden_size]
 
             # Process through expert

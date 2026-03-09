@@ -154,7 +154,7 @@ class ComplexityModel(nn.Module):
             )
 
             # mu from this layer's dynamics guides next layer's attention
-            if mu_contextual is not None:
+            if mu_contextual is not None and not self.config.disable_mu_guidance:
                 mu_prev = mu_contextual
 
             if use_cache:

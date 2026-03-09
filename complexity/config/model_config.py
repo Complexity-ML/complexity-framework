@@ -75,6 +75,10 @@ class ModelConfig:
     inl_beta_max: float = 2.0  # Max beta for damping
     inl_velocity_max: float = 10.0  # Max velocity clamp
 
+    # === Ablation flags (disable components without monkey-patching) ===
+    disable_mu_guidance: bool = False   # Skip mu propagation between layers
+    disable_pid_scaler: bool = False    # Skip velocity/controller update (h passes through)
+
     # === Normalization ===
     norm_type: str = "rmsnorm"  # rmsnorm, layernorm
     norm_eps: float = 1e-6
