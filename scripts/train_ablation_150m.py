@@ -1,19 +1,24 @@
 """
-Ablation Study — 4 × 150M models, 32k vocab, 2B tokens, PiD in all.
+Ablation Study — 4 × 150M models, 32k vocab, 2B tokens.
+
+Training-time ablations as requested by TMLR reviewers:
+each component (Mu-Guidance, PiD Dynamic Scaler) is removed individually
+to measure its contribution during optimization, not just at inference.
 
 Run 1: Dense baseline    — SwiGLU standard, no routing, no Mu, no PiD
 Run 2: Full archi        — Token-Routed + Mu + PiD (all components)
-Run 3: Full archi no-Mu  — Token-Routed + PiD, Mu disabled
-Run 4: Full archi no-PiD — Token-Routed + Mu, PiD disabled
+Run 3: Full archi no-Mu  — Token-Routed + PiD, Mu-Guidance disabled
+Run 4: Full archi no-PiD — Token-Routed + Mu, PiD controller disabled
 
-Progressive increasing Depth (PiD): start with L/2 active layers,
-add one layer every (total_steps / (L/2)) steps until all layers active.
+PiD = PiD-style Dynamic Scaler (INLDynamics controller: alpha/beta/gate
+velocity tracking). Mu-Guidance = contextual mu flowing between layers
+to guide K,Q,V projections in attention.
 
 Usage:
     python scripts/train_ablation_150m.py --run 1           # Dense baseline
     python scripts/train_ablation_150m.py --run 2           # Full archi
     python scripts/train_ablation_150m.py --run 3           # No Mu ablation
-    python scripts/train_ablation_150m.py --run 4           # INL integer-first
+    python scripts/train_ablation_150m.py --run 4           # No PiD ablation
     python scripts/train_ablation_150m.py --run all         # All 4 sequentially
     python scripts/train_ablation_150m.py --run 2 --resume checkpoints/run2-full/step_50000
 
@@ -129,54 +134,41 @@ RUN_CONFIGS = {
 }
 
 
-# ── PiD: Progressive increasing Depth ────────────────────────────────────
+# ── PiD controller disabler (for Run 4 ablation) ─────────────────────────
 
-class ProgressiveDepth:
+def disable_pid_controller(model: ComplexityModel):
     """
-    PiD — start with L/2 active layers, progressively activate the rest.
+    Disable the PiD-style Dynamic Scaler (INLDynamics controller) while
+    keeping Mu-Guidance active.
 
-    Strategy: layers are activated from bottom to top. Inactive layers are
-    frozen with identity pass-through (residual only, no computation).
-    A new layer is unfrozen every `total_steps / (L - L_init)` steps.
+    Monkey-patches each layer's dynamics.forward() so that the velocity/
+    controller update is skipped (h passes through unchanged), but
+    mu_contextual is still computed and flows to the next layer's attention.
     """
+    for i, layer in enumerate(model.layers):
+        if layer.dynamics is None:
+            continue
+        dynamics = layer.dynamics
 
-    def __init__(self, model: ComplexityModel, total_steps: int):
-        self.model = model
-        self.total_steps = total_steps
-        self.num_layers = len(model.layers)
-        self.initial_layers = self.num_layers // 2
-        self.active_layers = self.initial_layers
+        def make_patched(dyn):
+            def forward_no_pid(h, v=None, return_mu=False):
+                # Skip velocity/controller update — h unchanged
+                if v is None:
+                    v = torch.zeros_like(h)
+                # Still compute mu_contextual for Mu-Guidance
+                mu_contextual = None
+                if return_mu:
+                    mu = dyn.mu_clamped
+                    mu_contextual = mu + dyn.mu_proj(h)
+                    if dyn.safety_clamp is not None:
+                        mu_contextual = dyn.safety_clamp(mu_contextual)
+                return h, v, mu_contextual
+            return forward_no_pid
 
-        # Steps between each new layer activation
-        layers_to_add = self.num_layers - self.initial_layers
-        self.steps_per_layer = total_steps // (layers_to_add + 1)
+        dynamics.forward = make_patched(dynamics)
 
-        # Freeze upper layers initially
-        self._update_frozen()
-        logger.info(f"PiD: {self.initial_layers}/{self.num_layers} layers active, "
-              f"new layer every {self.steps_per_layer:,} steps")
-
-    def _update_frozen(self):
-        """Freeze/unfreeze layers based on current active count."""
-        for i, layer in enumerate(self.model.layers):
-            if i < self.active_layers:
-                for p in layer.parameters():
-                    p.requires_grad = True
-            else:
-                for p in layer.parameters():
-                    p.requires_grad = False
-
-    def step(self, global_step: int):
-        """Call each training step — activates new layers when due."""
-        target_active = min(
-            self.num_layers,
-            self.initial_layers + global_step // self.steps_per_layer
-        )
-        if target_active > self.active_layers:
-            self.active_layers = target_active
-            self._update_frozen()
-            logger.info(f"PiD: activated layer {self.active_layers}/{self.num_layers} "
-                  f"at step {global_step:,}")
+    logger.info("PiD Dynamic Scaler DISABLED (ablation mode — Mu-Guidance still active)")
+    return model
 
 
 # ── Mu-Guidance disabler (for Run 3 ablation) ────────────────────────────
@@ -310,9 +302,11 @@ def train_run(run_id: int, args):
     logger.info(f"  mlp={config.mlp_type}, experts={config.num_experts}, "
                 f"dynamics={config.use_inl_dynamics}")
 
-    # Disable mu for Run 3
+    # Ablation patches
     if run_id == 3:
         model = disable_mu_propagation(model)
+    elif run_id == 4:
+        model = disable_pid_controller(model)
 
     # Compute steps for 2B tokens
     max_steps = compute_steps_for_tokens(
@@ -323,15 +317,6 @@ def train_run(run_id: int, args):
     )
     logger.info(f"  Training for {max_steps:,} steps "
                 f"(~{args.target_tokens/1e9:.1f}B tokens)")
-
-    # PiD — Progressive increasing Depth
-    # Run 2 (full) and Run 3 (no-mu): PiD enabled
-    # Run 1 (dense baseline) and Run 4 (no-pid ablation): PiD disabled
-    if run_id in (2, 3):
-        pid = ProgressiveDepth(model, total_steps=max_steps)
-    else:
-        pid = None
-        logger.info("PiD DISABLED for this run")
 
     # Dataset
     dataset = FineWebStreamingDataset(tokenizer=tokenizer)
@@ -397,10 +382,8 @@ def train_run(run_id: int, args):
         wandb_cb = WandBCallback(project=args.wandb, name=f"{name}")
         trainer.callbacks.append(wandb_cb)
 
-    # Register PiD callback
-    trainer._pid = pid
-
     # CSV logger for training curves
+    os.makedirs(checkpoint_dir, exist_ok=True)
     csv_path = os.path.join(checkpoint_dir, "training_log.csv")
     csv_file = open(csv_path, "w", newline="")
     csv_writer = csv.writer(csv_file)
@@ -418,9 +401,6 @@ def train_run(run_id: int, args):
         ppl = math.exp(min(real_loss, 20))
         pbar.set_postfix(loss=f"{real_loss:.4f}", ppl=f"{ppl:.1f}", ordered=True)
         pbar.update(1)
-        # PiD: progressively activate layers
-        if pid is not None:
-            pid.step(step)
         # Save to CSV
         csv_writer.writerow([step, f"{real_loss:.6f}", f"{ppl:.2f}", f"{time.time() - t_start:.1f}"])
         if step % 100 == 0:
@@ -444,13 +424,6 @@ def train_run(run_id: int, args):
     model.save_pretrained(os.path.join(checkpoint_dir, "final"))
     config.save(os.path.join(checkpoint_dir, "final", "model_config.yaml"))
     logger.info(f"Model saved to {checkpoint_dir}/final/")
-
-    # For Run 4: also save quantized version
-    if run_id == 4:
-        logger.info("Quantizing Run 4 to INT8...")
-        model.quantize_all()
-        model.save_pretrained(os.path.join(checkpoint_dir, "final-int8"))
-        logger.info(f"INT8 model saved to {checkpoint_dir}/final-int8/")
 
     return summary
 
