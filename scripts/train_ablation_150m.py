@@ -308,6 +308,11 @@ def train_run(run_id: int, args):
     elif run_id == 4:
         model = disable_pid_controller(model)
 
+    # torch.compile for kernel fusion (PyTorch 2.x)
+    if torch.cuda.is_available() and hasattr(torch, "compile"):
+        model = torch.compile(model)
+        logger.info("torch.compile enabled")
+
     # Compute steps for 2B tokens
     max_steps = compute_steps_for_tokens(
         target_tokens=args.target_tokens,
@@ -470,6 +475,13 @@ def main():
             if RUN_CONFIGS[rid][0] in args.resume:
                 args.resume_run = rid
                 break
+
+    # CUDA kernel optimizations
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        logger.info("CUDA optimizations: cudnn.benchmark=True, tf32=True")
 
     # Print study overview
     tokens_per_step = args.batch_size * args.gradient_accumulation * 2048
