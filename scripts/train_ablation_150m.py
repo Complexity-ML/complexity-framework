@@ -59,13 +59,15 @@ from complexity.training import Trainer, TrainingConfig, WandBCallback
 # ── Architecture configs (all ~150M, 32k vocab) ──────────────────────────
 
 def make_config_run1() -> ModelConfig:
-    """Run 1: Dense float — SwiGLU, no routing, no dynamics."""
+    """Run 1: Dense float — SwiGLU, no routing, no dynamics.
+    intermediate_size=2416 → 170.8M params, iso-param vs Token-Routed 170.6M (runs 2/3/4).
+    """
     return ModelConfig(
         hidden_size=768,
         num_hidden_layers=18,
         num_attention_heads=12,
         num_key_value_heads=4,
-        intermediate_size=2048,
+        intermediate_size=2416,
         vocab_size=32000,
         max_position_embeddings=2048,
         attention_type="gqa",
