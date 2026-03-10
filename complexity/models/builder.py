@@ -153,9 +153,11 @@ class ComplexityModel(nn.Module):
                 mu_prev=mu_prev,
             )
 
-            # mu from this layer's dynamics guides next layer's attention
+            # mu from this layer's dynamics guides next layer's attention.
+            # Clamp mu_contextual to [-2, 2]: mu_clamped is in [0,2] but mu_proj(h)
+            # is unclamped, so without this the autoregressive feedback loop explodes.
             if mu_contextual is not None and not self.config.disable_mu_guidance:
-                mu_prev = mu_contextual
+                mu_prev = torch.clamp(mu_contextual, -2.0, 2.0)
 
             if use_cache:
                 new_past_key_values.append(new_kv)
