@@ -351,8 +351,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Ablation Study: 4 × 150M models, 32k vocab, 2B tokens"
     )
-    parser.add_argument("--run", type=str, default="all",
-                        help="Run ID: 1, 2, 3, 4, or 'all'")
+    parser.add_argument("--run", type=str, default="all", nargs="+",
+                        help="Run ID(s): 1, 2, 3, 4, 'all', or multiple e.g. --run 2 3 4")
     parser.add_argument("--tokenizer", type=str, default="./tokenizer",
                         help="Path to HF tokenizer directory")
     parser.add_argument("--target-tokens", type=int, default=2_000_000_000,
@@ -397,24 +397,29 @@ def main():
     logger.info(f"  Total steps: {total_steps:,} ({args.target_tokens/1e9:.1f}B tokens)")
     logger.info(f"  LR: {args.lr}, warmup: {args.warmup_steps}")
 
+    # Normalize --run to a list of ints
+    run_arg = args.run if isinstance(args.run, list) else [args.run]
+    if len(run_arg) == 1 and run_arg[0] == "all":
+        run_ids = [1, 2, 3, 4]
+    else:
+        run_ids = [int(r) for r in run_arg]
+        for r in run_ids:
+            if r not in RUN_CONFIGS:
+                raise ValueError(f"Invalid run ID: {r}. Choose 1-4 or 'all'.")
+
     # Run
-    if args.run == "all":
-        results = {}
-        for run_id in [1, 2, 3, 4]:
-            try:
-                results[run_id] = train_run(run_id, args)
-            except KeyboardInterrupt:
-                logger.info(f"Interrupted during Run {run_id} — stopping.")
-                break
+    results = {}
+    for run_id in run_ids:
+        try:
+            results[run_id] = train_run(run_id, args)
+        except KeyboardInterrupt:
+            logger.info(f"Interrupted during Run {run_id} — stopping.")
+            break
+    if len(run_ids) > 1:
         logger.info("=" * 70)
         for rid, summary in results.items():
             logger.info(f"  Run {rid} ({RUN_CONFIGS[rid][1]}): {summary}")
-        logger.info(f"{len(results)}/4 runs completed.")
-    else:
-        run_id = int(args.run)
-        if run_id not in RUN_CONFIGS:
-            raise ValueError(f"Invalid run ID: {run_id}. Choose 1-4 or 'all'.")
-        train_run(run_id, args)
+        logger.info(f"{len(results)}/{len(run_ids)} runs completed.")
 
 
 if __name__ == "__main__":
