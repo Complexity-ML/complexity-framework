@@ -127,6 +127,33 @@ class OmniConfig:
     video_num_layers: int = 12
     video_num_heads: int = 12
 
+    def __post_init__(self):
+        """Validate expert / intermediate-size consistency at construction time."""
+        checks = [
+            ("general", self.general_num_experts, self.general_intermediate_size),
+            ("text",    self.text_num_experts,    self.text_intermediate_size),
+            ("image",   self.image_num_experts,   self.image_intermediate_size),
+            ("audio",   self.audio_num_experts,   self.audio_intermediate_size),
+            ("video",   self.video_num_experts,   self.video_intermediate_size),
+        ]
+        errors = []
+        for name, n_exp, inter in checks:
+            if n_exp < 1:
+                errors.append(f"  {name}_num_experts={n_exp} must be >= 1")
+            if inter % n_exp != 0:
+                errors.append(
+                    f"  {name}_intermediate_size={inter} must be divisible by "
+                    f"{name}_num_experts={n_exp} "
+                    f"(remainder {inter % n_exp})"
+                )
+        if self.num_attention_heads < 1 or self.hidden_size % self.num_attention_heads != 0:
+            errors.append(
+                f"  hidden_size={self.hidden_size} must be divisible by "
+                f"num_attention_heads={self.num_attention_heads}"
+            )
+        if errors:
+            raise ValueError("OmniConfig validation failed:\n" + "\n".join(errors))
+
 
 # =============================================================================
 # PositionRoutedMLP — generic reusable base
