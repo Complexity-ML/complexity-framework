@@ -144,8 +144,13 @@ def review_omni(device: torch.device, H: int, num_heads: int, vocab: int) -> Non
         )
 
     log.info("  params            : %s", n_params(model))
-    log.info("  logits            : %s", list(out["logits"].shape))
     log.info("  last_hidden_state : %s", list(out["last_hidden_state"].shape))
+    log.info("")
+    log.info("  any-to-any outputs:")
+    log.info("    logits      (text)  : %s", list(out["logits"].shape))
+    log.info("    image_pred  (image) : %s", list(out["image_pred"].shape))
+    log.info("    audio_pred  (audio) : %s", list(out["audio_pred"].shape))
+    log.info("    video_pred  (video) : %s", list(out["video_pred"].shape))
     log.info("")
     log.info("  Modality dispatch (auto() enum):")
     for m in Modality:

@@ -503,8 +503,20 @@ class OmniModel(nn.Module):
         self.blocks = nn.ModuleList([OmniBlock(config) for _ in range(config.num_hidden_layers)])
         self.norm = nn.LayerNorm(H, eps=config.layer_norm_eps)
 
-        # ---- LM head ----
+        # ---- Output heads (any-to-any) ----
+        # Text: H → vocab logits
         self.lm_head = nn.Linear(H, config.vocab_size, bias=False)
+
+        # Image: H → patch pixels  [patch_size² × 3 per patch]
+        self.image_decoder = nn.Linear(H, config.patch_size ** 2 * 3, bias=False)
+
+        # Audio: H → mel frame  [n_mels per frame]
+        self.audio_decoder = nn.Linear(H, config.n_mels, bias=False)
+
+        # Video: H → tubelet pixels  [temporal_patch_size × patch_size² × 3 per tubelet]
+        self.video_decoder = nn.Linear(
+            H, config.temporal_patch_size * config.patch_size ** 2 * 3, bias=False
+        )
 
     # ------------------------------------------------------------------
     # Token packing
@@ -553,57 +565,82 @@ class OmniModel(nn.Module):
         """
         All inputs optional — any subset of modalities is valid.
 
-        Returns
+        Returns  (any-to-any)
         -------
-        last_hidden_state : [B, total_tokens, H]
-        logits            : [B, text_tokens, vocab_size]  (empty if no text)
-        text_length       : int
+        last_hidden_state : [B, N, H]
+        logits            : [B, Lt, vocab_size]           text output
+        image_pred        : [B, Li, patch_size²×3]        image patches
+        audio_pred        : [B, La, n_mels]               mel frames
+        video_pred        : [B, Lv, tps×patch_size²×3]   video tubelets
+        (keys absent when the corresponding input modality is None)
         """
         device = self._first_device(text_ids, pixel_values, audio_features, video_frames)
         B = self._batch_size(text_ids, pixel_values, audio_features, video_frames)
 
         segs_tokens, segs_mod, segs_pos = [], [], []
-        text_len = 0
+        # track (start, end) slice in the packed sequence per modality
+        slices: Dict[Modality, tuple] = {}
+        cursor = 0
 
         if text_ids is not None:
             t, m, p = self._pack(self.text_embed(text_ids), Modality.TEXT, device)
             segs_tokens.append(t); segs_mod.append(m); segs_pos.append(p)
-            text_len = t.shape[1]
+            slices[Modality.TEXT] = (cursor, cursor + t.shape[1])
+            cursor += t.shape[1]
 
         if pixel_values is not None:
             enc = self.image_proj(self.image_encoder(pixel_values)["last_hidden_state"])
             enc, m, p = self._pack(enc, Modality.IMAGE, device)
             segs_tokens.append(enc); segs_mod.append(m); segs_pos.append(p)
+            slices[Modality.IMAGE] = (cursor, cursor + enc.shape[1])
+            cursor += enc.shape[1]
 
         if audio_features is not None:
             enc = self.audio_proj(self.audio_encoder(audio_features)["last_hidden_state"])
             enc, m, p = self._pack(enc, Modality.AUDIO, device)
             segs_tokens.append(enc); segs_mod.append(m); segs_pos.append(p)
+            slices[Modality.AUDIO] = (cursor, cursor + enc.shape[1])
+            cursor += enc.shape[1]
 
         if video_frames is not None:
             enc = self.video_proj(self.video_encoder(video_frames)["last_hidden_state"])
             enc, m, p = self._pack(enc, Modality.VIDEO, device)
             segs_tokens.append(enc); segs_mod.append(m); segs_pos.append(p)
+            slices[Modality.VIDEO] = (cursor, cursor + enc.shape[1])
+            cursor += enc.shape[1]
 
-        x = torch.cat(segs_tokens, dim=1)                                # [B, N, H]
-        mod_ids = torch.cat(segs_mod).unsqueeze(0).expand(B, -1)         # [B, N]
-        pos_ids = torch.cat(segs_pos).unsqueeze(0).expand(B, -1)         # [B, N]
+        x = torch.cat(segs_tokens, dim=1)                         # [B, N, H]
+        mod_ids = torch.cat(segs_mod).unsqueeze(0).expand(B, -1)  # [B, N]
+        pos_ids = torch.cat(segs_pos).unsqueeze(0).expand(B, -1)  # [B, N]
 
         for block in self.blocks:
             x = block(x, mod_ids, pos_ids, attention_mask)
         x = self.norm(x)
 
-        logits = (
-            self.lm_head(x[:, :text_len])
-            if text_len > 0
-            else x.new_zeros(B, 0, self.config.vocab_size)
-        )
+        out: Dict[str, torch.Tensor] = {"last_hidden_state": x}
 
-        return {
-            "last_hidden_state": x,
-            "logits": logits,
-            "text_length": text_len,
-        }
+        # ---- Text output ----
+        if Modality.TEXT in slices:
+            s, e = slices[Modality.TEXT]
+            out["logits"] = self.lm_head(x[:, s:e])   # [B, Lt, vocab]
+
+        # ---- Image output ----
+        if Modality.IMAGE in slices:
+            s, e = slices[Modality.IMAGE]
+            # skip boundary token (position 0), decode patch tokens
+            out["image_pred"] = self.image_decoder(x[:, s + 1:e])  # [B, Li, P²×3]
+
+        # ---- Audio output ----
+        if Modality.AUDIO in slices:
+            s, e = slices[Modality.AUDIO]
+            out["audio_pred"] = self.audio_decoder(x[:, s + 1:e])  # [B, La, n_mels]
+
+        # ---- Video output ----
+        if Modality.VIDEO in slices:
+            s, e = slices[Modality.VIDEO]
+            out["video_pred"] = self.video_decoder(x[:, s + 1:e])  # [B, Lv, tps×P²×3]
+
+        return out
 
     # ------------------------------------------------------------------
 
