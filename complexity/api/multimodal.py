@@ -1,27 +1,25 @@
 """
-Multimodal API - Vision et Audio faciles.
-=========================================
+Multimodal API - Vision, Audio, Video, Omni faciles.
+=====================================================
 
 Usage:
-    from complexity.api import Vision, Audio, Fusion
+    from complexity.api import Vision, Audio, Video, Fusion, Omni
 
-    # Vision simple
-    encoder = Vision.encoder(image_size=224, hidden_size=768)
+    # Vision (avec token-routed MLP)
+    encoder = Vision.encoder(image_size=224, hidden_size=768, num_experts=4)
     features = encoder(images)
 
-    # CLIP style
-    encoder = Vision.clip(hidden_size=768)
-
     # Audio
-    encoder = Audio.encoder(n_mels=80, hidden_size=768)
-    features = encoder(mel_spectrograms)
+    encoder = Audio.whisper(hidden_size=768, num_experts=4)
 
-    # Whisper style
-    encoder = Audio.whisper(hidden_size=768)
+    # Video (ViViT + token-routed MLP)
+    encoder = Video.encoder(num_frames=16, hidden_size=768, num_experts=4)
+    features = encoder(video)   # [B, C, T, H, W]
 
-    # Fusion
-    fusion = Fusion.cross_attention(hidden_size=768)
-    combined = fusion(text_features, image_features)
+    # Omni — any-to-any (text + image + audio + video)
+    model = Omni.model(hidden_size=1024, vocab_size=32000)
+    out = model(text_ids=text, pixel_values=images)
+    logits = out["logits"]
 """
 
 from __future__ import annotations
@@ -30,7 +28,6 @@ from typing import Optional, Dict, Any, Union, List
 import torch
 import torch.nn as nn
 
-# Import depuis multimodal module
 from complexity.multimodal import (
     # Vision
     VisionEncoder,
@@ -45,6 +42,11 @@ from complexity.multimodal import (
     MelSpectrogramEncoder,
     WhisperEncoder,
     AudioConvStack,
+    # Video
+    VideoEncoder,
+    VideoConfig,
+    TubeletEmbedding,
+    VideoTransformer,
     # Fusion
     MultimodalFusion,
     FusionConfig,
@@ -52,6 +54,10 @@ from complexity.multimodal import (
     GatedFusion,
     ConcatProjection,
     PerceiverResampler,
+    # Omni
+    OmniModel,
+    OmniConfig,
+    PositionRoutedMLP,
 )
 
 
@@ -345,6 +351,166 @@ class Fusion:
         return cls.create("multimodal", hidden_size=hidden_size, **kwargs)
 
 
+class Video:
+    """
+    Factory pour créer des encodeurs vidéo (ViViT + token-routed MLP).
+
+    Usage:
+        # Encoder basique
+        encoder = Video.encoder(num_frames=16, hidden_size=768)
+        features = encoder(video)   # [B, C, T, H, W]
+
+        # Avec config complète
+        encoder = Video.create(image_size=224, patch_size=16, num_frames=32)
+    """
+
+    @classmethod
+    def encoder(
+        cls,
+        image_size: int = 224,
+        patch_size: int = 16,
+        num_frames: int = 16,
+        temporal_patch_size: int = 2,
+        hidden_size: int = 768,
+        num_layers: int = 12,
+        num_heads: int = 12,
+        num_experts: int = 4,
+        output_dim: Optional[int] = None,
+    ) -> nn.Module:
+        """
+        Video encoder (ViViT Factorised + token-routed MLP).
+
+        Args:
+            image_size: Taille des frames
+            patch_size: Taille patch spatial
+            num_frames: Nombre de frames
+            temporal_patch_size: Taille patch temporel
+            hidden_size: Dimension hidden
+            num_layers: Nombre de layers
+            num_heads: Nombre de heads
+            num_experts: Experts par bloc MLP (routing par position spatiale)
+            output_dim: Projection de sortie optionnelle
+        """
+        return VideoEncoder(
+            image_size=image_size,
+            patch_size=patch_size,
+            num_frames=num_frames,
+            temporal_patch_size=temporal_patch_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            num_experts=num_experts,
+            output_dim=output_dim,
+        )
+
+    @classmethod
+    def create(cls, **kwargs) -> nn.Module:
+        """VideoEncoder avec kwargs libres (passe à VideoConfig)."""
+        config = VideoConfig(**kwargs)
+        return VideoTransformer(config)
+
+    @classmethod
+    def tubelets(
+        cls,
+        image_size: int = 224,
+        patch_size: int = 16,
+        num_frames: int = 16,
+        temporal_patch_size: int = 2,
+        hidden_size: int = 768,
+    ) -> nn.Module:
+        """Tubelet embedding seul (Conv3d)."""
+        config = VideoConfig(
+            image_size=image_size,
+            patch_size=patch_size,
+            num_frames=num_frames,
+            temporal_patch_size=temporal_patch_size,
+            hidden_size=hidden_size,
+        )
+        return TubeletEmbedding(config)
+
+
+class Omni:
+    """
+    Factory pour créer des modèles any-to-any (text + image + audio + video).
+
+    Usage:
+        model = Omni.model(hidden_size=1024, vocab_size=32000)
+        out = model(
+            text_ids=text,
+            pixel_values=images,
+            audio_features=mel,
+            video_frames=video,
+        )
+        logits = out["logits"]
+
+        # Avec config complète
+        config = Omni.config(hidden_size=2048, text_num_experts=16)
+        model = Omni.from_config(config)
+    """
+
+    @classmethod
+    def model(
+        cls,
+        hidden_size: int = 1024,
+        num_hidden_layers: int = 24,
+        num_attention_heads: int = 16,
+        vocab_size: int = 32000,
+        text_num_experts: int = 8,
+        image_num_experts: int = 4,
+        audio_num_experts: int = 4,
+        video_num_experts: int = 8,
+        **kwargs,
+    ) -> nn.Module:
+        """
+        Modèle OmniModel (any-to-any).
+
+        Chaque modalité a son propre PositionRoutedMLP avec N experts configurables.
+        Routing: arbre à 2 niveaux → modalité → position % num_experts.
+
+        Args:
+            hidden_size: Dimension backbone partagé
+            num_hidden_layers: Nombre de blocs OmniBlock
+            num_attention_heads: Heads d'attention partagés
+            vocab_size: Taille du vocabulaire texte
+            text_num_experts: Experts pour les tokens texte
+            image_num_experts: Experts pour les patches image
+            audio_num_experts: Experts pour les frames audio
+            video_num_experts: Experts pour les tubelets vidéo
+        """
+        config = OmniConfig(
+            hidden_size=hidden_size,
+            num_hidden_layers=num_hidden_layers,
+            num_attention_heads=num_attention_heads,
+            vocab_size=vocab_size,
+            text_num_experts=text_num_experts,
+            image_num_experts=image_num_experts,
+            audio_num_experts=audio_num_experts,
+            video_num_experts=video_num_experts,
+            **kwargs,
+        )
+        return OmniModel(config)
+
+    @classmethod
+    def config(cls, **kwargs) -> OmniConfig:
+        """Crée un OmniConfig."""
+        return OmniConfig(**kwargs)
+
+    @classmethod
+    def from_config(cls, config: OmniConfig) -> nn.Module:
+        """OmniModel depuis un OmniConfig existant."""
+        return OmniModel(config)
+
+    @classmethod
+    def position_routed_mlp(
+        cls,
+        hidden_size: int = 768,
+        intermediate_size: int = 3072,
+        num_experts: int = 4,
+    ) -> nn.Module:
+        """PositionRoutedMLP standalone (réutilisable dans n'importe quel modèle)."""
+        return PositionRoutedMLP(hidden_size, intermediate_size, num_experts)
+
+
 # =============================================================================
 # Exports
 # =============================================================================
@@ -353,7 +519,9 @@ __all__ = [
     # Factories
     "Vision",
     "Audio",
+    "Video",
     "Fusion",
+    "Omni",
     # Direct classes - Vision
     "VisionEncoder",
     "VisionConfig",
@@ -367,6 +535,11 @@ __all__ = [
     "MelSpectrogramEncoder",
     "WhisperEncoder",
     "AudioConvStack",
+    # Direct classes - Video
+    "VideoEncoder",
+    "VideoConfig",
+    "TubeletEmbedding",
+    "VideoTransformer",
     # Direct classes - Fusion
     "MultimodalFusion",
     "FusionConfig",
@@ -374,4 +547,8 @@ __all__ = [
     "GatedFusion",
     "ConcatProjection",
     "PerceiverResampler",
+    # Direct classes - Omni
+    "OmniModel",
+    "OmniConfig",
+    "PositionRoutedMLP",
 ]

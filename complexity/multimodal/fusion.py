@@ -6,6 +6,10 @@ Implements various fusion strategies:
 - Gated fusion
 - Concatenation with projection
 - Perceiver-style resampling
+
+v2: FusionTokenRoutedMLP — query-position routing (pos % num_experts).
+    CrossAttentionBlock and PerceiverResampler use it in their MLP step.
+    Same fused BMM pattern as TokenRoutedMLPParallel.
 """
 
 import torch
@@ -25,7 +29,85 @@ class FusionConfig:
     dropout: float = 0.1
     num_latents: int = 64  # For Perceiver
     layer_norm_eps: float = 1e-6
+    # Token-routed MLP: 1 = standard, >1 = query-position routing
+    num_experts: int = 4
 
+
+# =============================================================================
+# Token-Routed MLP (query-position routing)
+# =============================================================================
+
+class FusionTokenRoutedMLP(nn.Module):
+    """
+    Token-Routed MLP for fusion query tokens.
+
+    Routing key: query position in the output sequence.
+    Expert assignment: pos % num_experts (computed on-the-fly).
+
+    For PerceiverResampler the query length equals num_latents (fixed);
+    for CrossAttentionFusion it equals the text/query sequence length
+    (variable but deterministic). Both paths are fullgraph=True safe.
+
+    Fused BMM: gate+up → SwiGLU → down.
+    """
+
+    def __init__(self, config: FusionConfig):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        self.num_experts = config.num_experts
+        self.expert_intermediate_size = (config.hidden_size * 4) // config.num_experts
+
+        self.gate_up_proj = nn.Parameter(
+            torch.randn(config.num_experts, config.hidden_size, self.expert_intermediate_size * 2) * 0.02
+        )
+        self.down_proj = nn.Parameter(
+            torch.randn(config.num_experts, self.expert_intermediate_size, config.hidden_size) * 0.02
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,                             # [B, N, H]
+        expert_ids: Optional[torch.Tensor] = None,   # [N] or None
+    ) -> torch.Tensor:
+        B, N, H = x.shape
+
+        if expert_ids is None:
+            expert_ids = torch.arange(N, device=x.device) % self.num_experts
+
+        flat = x.view(B * N, H)
+        eids = expert_ids.unsqueeze(0).expand(B, -1).reshape(B * N)
+
+        gu_w = self.gate_up_proj[eids]
+        down_w = self.down_proj[eids]
+
+        gu = torch.bmm(flat.unsqueeze(1), gu_w).squeeze(1)
+        gate, up = gu.split(self.expert_intermediate_size, dim=-1)
+        inter = F.silu(gate) * up
+        out = torch.bmm(inter.unsqueeze(1), down_w).squeeze(1)
+
+        return out.view(B, N, H)
+
+
+class FusionPlainMLP(nn.Module):
+    """Standard MLP block (fallback when num_experts == 1)."""
+
+    def __init__(self, config: FusionConfig):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size * 4),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.hidden_size * 4, config.hidden_size),
+            nn.Dropout(config.dropout),
+        )
+
+    def forward(self, x: torch.Tensor, _expert_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
+        return self.net(x)
+
+
+# =============================================================================
+# Cross-attention
+# =============================================================================
 
 class CrossAttention(nn.Module):
     """Cross-attention between two modalities."""
@@ -57,45 +139,33 @@ class CrossAttention(nn.Module):
     ) -> torch.Tensor:
         """
         Args:
-            query: Query tensor [batch, q_len, hidden]
-            key_value: Key/Value tensor [batch, kv_len, hidden]
+            query: [batch, q_len, hidden]
+            key_value: [batch, kv_len, hidden]
             attention_mask: Optional mask
 
         Returns:
-            Cross-attended output [batch, q_len, hidden]
+            [batch, q_len, hidden]
         """
         batch_size, q_len, _ = query.shape
         kv_len = key_value.size(1)
 
-        # Project Q, K, V
-        q = self.q_proj(query)
-        k = self.k_proj(key_value)
-        v = self.v_proj(key_value)
+        q = self.q_proj(query).view(batch_size, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(key_value).view(batch_size, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(key_value).view(batch_size, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-        # Reshape for multi-head attention
-        q = q.view(batch_size, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k.view(batch_size, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
-        v = v.view(batch_size, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
-
-        # Attention
         attn_weights = torch.matmul(q, k.transpose(-2, -1)) * self.scale
-
         if attention_mask is not None:
             attn_weights = attn_weights + attention_mask
-
         attn_weights = F.softmax(attn_weights, dim=-1)
         attn_weights = self.dropout(attn_weights)
 
-        # Output
         attn_output = torch.matmul(attn_weights, v)
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.view(batch_size, q_len, -1)
-
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, q_len, -1)
         return self.out_proj(attn_output)
 
 
 class CrossAttentionBlock(nn.Module):
-    """Cross-attention block with feedforward."""
+    """Cross-attention block with token-routed feedforward."""
 
     def __init__(self, config: FusionConfig):
         super().__init__()
@@ -109,19 +179,17 @@ class CrossAttentionBlock(nn.Module):
         self.norm1 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.norm2 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
-        self.mlp = nn.Sequential(
-            nn.Linear(config.hidden_size, config.hidden_size * 4),
-            nn.GELU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.hidden_size * 4, config.hidden_size),
-            nn.Dropout(config.dropout),
-        )
+        if config.num_experts > 1:
+            self.mlp: nn.Module = FusionTokenRoutedMLP(config)
+        else:
+            self.mlp = FusionPlainMLP(config)
 
     def forward(
         self,
         query: torch.Tensor,
         key_value: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
+        expert_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         # Cross-attention with residual
         residual = query
@@ -129,20 +197,25 @@ class CrossAttentionBlock(nn.Module):
         query = self.cross_attn(query, key_value, attention_mask)
         query = residual + query
 
-        # MLP with residual
+        # Token-routed MLP with residual
         residual = query
         query = self.norm2(query)
-        query = self.mlp(query)
+        query = self.mlp(query, expert_ids)
         query = residual + query
 
         return query
 
+
+# =============================================================================
+# Fusion modules
+# =============================================================================
 
 class CrossAttentionFusion(nn.Module):
     """
     Fuse modalities using cross-attention.
 
     Text attends to image/audio features.
+    Expert IDs computed on-the-fly from query length.
     """
 
     def __init__(
@@ -151,6 +224,7 @@ class CrossAttentionFusion(nn.Module):
         num_heads: int = 12,
         num_layers: int = 2,
         dropout: float = 0.1,
+        num_experts: int = 4,
     ):
         super().__init__()
 
@@ -159,6 +233,7 @@ class CrossAttentionFusion(nn.Module):
             num_attention_heads=num_heads,
             num_layers=num_layers,
             dropout=dropout,
+            num_experts=num_experts,
         )
 
         self.layers = nn.ModuleList([
@@ -176,8 +251,8 @@ class CrossAttentionFusion(nn.Module):
     ) -> torch.Tensor:
         """
         Args:
-            text_features: Text features [batch, text_len, hidden]
-            other_features: Image/audio features [batch, other_len, hidden]
+            text_features: [batch, text_len, hidden]
+            other_features: [batch, other_len, hidden]
             attention_mask: Optional attention mask
 
         Returns:
@@ -203,16 +278,10 @@ class GatedFusion(nn.Module):
         hidden_size: int = 768,
         num_modalities: int = 2,
     ):
-        """
-        Args:
-            hidden_size: Hidden dimension
-            num_modalities: Number of modalities to fuse
-        """
         super().__init__()
 
         self.num_modalities = num_modalities
 
-        # Gate for each modality
         self.gates = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(hidden_size * num_modalities, hidden_size),
@@ -221,7 +290,6 @@ class GatedFusion(nn.Module):
             for _ in range(num_modalities)
         ])
 
-        # Output projection
         self.proj = nn.Linear(hidden_size * num_modalities, hidden_size)
 
     def forward(self, *features: torch.Tensor) -> torch.Tensor:
@@ -234,18 +302,13 @@ class GatedFusion(nn.Module):
         """
         assert len(features) == self.num_modalities
 
-        # Concatenate for gate computation
         concat = torch.cat(features, dim=-1)
 
-        # Compute gates
         gated_features = []
-        for i, (feat, gate) in enumerate(zip(features, self.gates)):
-            g = gate(concat)
-            gated_features.append(g * feat)
+        for feat, gate in zip(features, self.gates):
+            gated_features.append(gate(concat) * feat)
 
-        # Combine and project
-        combined = torch.cat(gated_features, dim=-1)
-        return self.proj(combined)
+        return self.proj(torch.cat(gated_features, dim=-1))
 
 
 class ConcatProjection(nn.Module):
@@ -271,23 +334,10 @@ class ConcatProjection(nn.Module):
         )
 
     def forward(self, *features: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            *features: Feature tensors to concatenate
-
-        Returns:
-            Projected features [batch, seq, hidden]
-        """
-        # Handle different sequence lengths by pooling
         pooled = []
         for feat in features:
-            if feat.dim() == 3:
-                pooled.append(feat.mean(dim=1))  # Pool over sequence
-            else:
-                pooled.append(feat)
-
-        concat = torch.cat(pooled, dim=-1)
-        return self.proj(concat)
+            pooled.append(feat.mean(dim=1) if feat.dim() == 3 else feat)
+        return self.proj(torch.cat(pooled, dim=-1))
 
 
 class PerceiverResampler(nn.Module):
@@ -296,6 +346,8 @@ class PerceiverResampler(nn.Module):
 
     Uses learned latent queries to resample variable-length
     features to fixed-length representations.
+
+    Latent expert IDs precomputed: latent_i → expert i % num_experts.
 
     Reference: Perceiver IO (https://arxiv.org/abs/2107.14795)
     """
@@ -307,20 +359,12 @@ class PerceiverResampler(nn.Module):
         num_heads: int = 12,
         num_layers: int = 2,
         dropout: float = 0.1,
+        num_experts: int = 4,
     ):
-        """
-        Args:
-            hidden_size: Hidden dimension
-            num_latents: Number of latent query vectors
-            num_heads: Number of attention heads
-            num_layers: Number of cross-attention layers
-            dropout: Dropout rate
-        """
         super().__init__()
 
         self.num_latents = num_latents
 
-        # Learned latent queries
         self.latents = nn.Parameter(torch.randn(num_latents, hidden_size) * 0.02)
 
         config = FusionConfig(
@@ -329,15 +373,19 @@ class PerceiverResampler(nn.Module):
             num_layers=num_layers,
             dropout=dropout,
             num_latents=num_latents,
+            num_experts=num_experts,
         )
 
-        # Cross-attention layers
         self.layers = nn.ModuleList([
             CrossAttentionBlock(config)
             for _ in range(num_layers)
         ])
 
         self.norm = nn.LayerNorm(hidden_size)
+
+        # Precompute expert_ids for latents (fixed count)
+        expert_ids = torch.arange(num_latents) % num_experts
+        self.register_buffer("expert_ids", expert_ids)  # [num_latents]
 
     def forward(
         self,
@@ -346,20 +394,17 @@ class PerceiverResampler(nn.Module):
     ) -> torch.Tensor:
         """
         Args:
-            features: Input features [batch, seq_len, hidden]
-            attention_mask: Optional attention mask
+            features: [batch, seq_len, hidden]
+            attention_mask: Optional mask
 
         Returns:
             Resampled features [batch, num_latents, hidden]
         """
         batch_size = features.size(0)
-
-        # Expand latents for batch
         latents = self.latents.unsqueeze(0).expand(batch_size, -1, -1)
 
-        # Cross-attend to input features
         for layer in self.layers:
-            latents = layer(latents, features, attention_mask)
+            latents = layer(latents, features, attention_mask, self.expert_ids)
 
         return self.norm(latents)
 
@@ -379,16 +424,8 @@ class MultimodalFusion(nn.Module):
         fusion_type: str = "cross_attention",
         num_latents: int = 64,
         dropout: float = 0.1,
+        num_experts: int = 4,
     ):
-        """
-        Args:
-            hidden_size: Hidden dimension
-            num_heads: Number of attention heads
-            num_layers: Number of layers
-            fusion_type: Type of fusion (cross_attention, gated, concat, perceiver)
-            num_latents: Number of latents for perceiver
-            dropout: Dropout rate
-        """
         super().__init__()
 
         self.fusion_type = fusion_type
@@ -399,6 +436,7 @@ class MultimodalFusion(nn.Module):
                 num_heads=num_heads,
                 num_layers=num_layers,
                 dropout=dropout,
+                num_experts=num_experts,
             )
         elif fusion_type == "gated":
             self.fusion = GatedFusion(hidden_size=hidden_size)
@@ -411,6 +449,7 @@ class MultimodalFusion(nn.Module):
                 num_heads=num_heads,
                 num_layers=num_layers,
                 dropout=dropout,
+                num_experts=num_experts,
             )
         else:
             raise ValueError(f"Unknown fusion type: {fusion_type}")
@@ -421,36 +460,15 @@ class MultimodalFusion(nn.Module):
         other_features: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """
-        Fuse text features with another modality.
-
-        Args:
-            text_features: Text features [batch, text_len, hidden]
-            other_features: Other modality features [batch, other_len, hidden]
-            attention_mask: Optional attention mask
-
-        Returns:
-            Fused features
-        """
         if self.fusion_type == "cross_attention":
             return self.fusion(text_features, other_features, attention_mask)
         elif self.fusion_type == "gated":
-            # Pool text features to match dimensions
-            if text_features.dim() == 3:
-                text_pooled = text_features.mean(dim=1, keepdim=True)
-            else:
-                text_pooled = text_features.unsqueeze(1)
-
-            if other_features.dim() == 3:
-                other_pooled = other_features.mean(dim=1, keepdim=True)
-            else:
-                other_pooled = other_features.unsqueeze(1)
-
+            text_pooled = text_features.mean(dim=1, keepdim=True) if text_features.dim() == 3 else text_features.unsqueeze(1)
+            other_pooled = other_features.mean(dim=1, keepdim=True) if other_features.dim() == 3 else other_features.unsqueeze(1)
             return self.fusion(text_pooled, other_pooled).squeeze(1)
         elif self.fusion_type == "concat":
             return self.fusion(text_features, other_features)
         elif self.fusion_type == "perceiver":
-            # Resample other modality features
             return self.fusion(other_features, attention_mask)
 
 
@@ -468,27 +486,18 @@ class VisionLanguageConnector(nn.Module):
         num_tokens: int = 576,  # (384/14)^2 for SigLIP
         connector_type: str = "mlp",
     ):
-        """
-        Args:
-            vision_hidden_size: Vision encoder hidden size
-            language_hidden_size: Language model hidden size
-            num_tokens: Number of vision tokens
-            connector_type: Type of connector (mlp, resampler)
-        """
         super().__init__()
 
         self.num_tokens = num_tokens
         self.connector_type = connector_type
 
         if connector_type == "mlp":
-            # Simple MLP projection (LLaVA 1.5 style)
             self.connector = nn.Sequential(
                 nn.Linear(vision_hidden_size, language_hidden_size),
                 nn.GELU(),
                 nn.Linear(language_hidden_size, language_hidden_size),
             )
         elif connector_type == "resampler":
-            # Perceiver resampler
             self.connector = PerceiverResampler(
                 hidden_size=vision_hidden_size,
                 num_latents=64,
