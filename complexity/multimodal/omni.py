@@ -118,6 +118,11 @@ class OmniConfig:
     # Rule: general_intermediate_size % general_num_experts == 0
     general_num_experts: int = 8        # 4096 / 8 = 512 per expert ✓
     general_intermediate_size: int = 4096
+    # block_size = K → general_expert = (position // K) % general_num_experts
+    # Set to the number of specialized experts so each general expert covers
+    # exactly one "block" of specialized positions.
+    # 0 = auto (derived from modality_mlp defaults at build time)
+    general_block_size: int = 0
 
     # ---- Per-modality MLPs ----
     # Keyed by Modality enum — no modality names hardcoded here.
@@ -196,14 +201,25 @@ class OmniConfig:
 
 class PositionRoutedMLP(nn.Module):
     """
-    Generic Position-Routed MLP.
+    Generic Position-Routed MLP with optional hierarchical routing.
 
-    Routes tokens by their sequential position within the current sequence:
-        expert_id = position % num_experts
+    Routing formula controlled by block_size:
 
-    `position_ids` is a [B, N] or [N] tensor of sequential indices.
-    It is precomputed once per modality segment by OmniModel and reused
-    across all layers — zero overhead, no Python control flow on values.
+        block_size = 1  (default, fine-grained):
+            expert_id = position % num_experts
+
+        block_size = K  (coarse/hierarchical):
+            expert_id = (position // K) % num_experts
+
+    Hierarchical use in OmniBlock:
+        - general_mlp : block_size = specialized_num_experts
+                        → each expert covers a BLOCK of K positions
+        - modal_mlps  : block_size = 1
+                        → each expert covers individual positions within block
+
+    Result: a 2-level position tree:
+        position p → general_expert  = (p // K) % G
+                   → modal_expert    = p % K
 
     Fused BMM: gate+up → SwiGLU → down (fullgraph=True safe).
 
@@ -211,7 +227,8 @@ class PositionRoutedMLP(nn.Module):
     ----------
     hidden_size       : transformer hidden dimension
     intermediate_size : total intermediate dim (split across experts)
-    num_experts       : number of experts (each handles 1/num_experts tokens)
+    num_experts       : number of experts
+    block_size        : routing granularity (1 = fine, K = coarse blocks)
     """
 
     def __init__(
@@ -219,10 +236,12 @@ class PositionRoutedMLP(nn.Module):
         hidden_size: int,
         intermediate_size: int,
         num_experts: int,
+        block_size: int = 1,
     ):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_experts = num_experts
+        self.block_size = block_size
         self.expert_intermediate_size = intermediate_size // num_experts
 
         # Fused gate+up: [E, H, 2*I_e]
@@ -253,7 +272,8 @@ class PositionRoutedMLP(nn.Module):
         if position_ids.dim() == 1:
             position_ids = position_ids.unsqueeze(0).expand(B, -1)
 
-        expert_ids = position_ids % self.num_experts   # [B, N]
+        # Hierarchical routing: block_size=1 → fine, block_size=K → coarse
+        expert_ids = (position_ids // self.block_size) % self.num_experts  # [B, N]
 
         flat = x.view(B * N, H)
         eids = expert_ids.reshape(B * N)
@@ -342,9 +362,15 @@ class OmniBlock(nn.Module):
         self.norm2 = nn.LayerNorm(H, eps=config.layer_norm_eps)  # feeds general MLP
         self.norm3 = nn.LayerNorm(H, eps=config.layer_norm_eps)  # feeds specialised MLPs
 
-        # General MLP — shared by all tokens regardless of modality
+        # Resolve block_size: 0 = auto → min specialized expert count
+        block_size = config.general_block_size or min(
+            cfg.num_experts for cfg in config.modality_mlp.values()
+        )
+
+        # General MLP — shared by all tokens, coarse routing by block
         self.general_mlp = PositionRoutedMLP(
-            H, config.general_intermediate_size, config.general_num_experts
+            H, config.general_intermediate_size, config.general_num_experts,
+            block_size=block_size,
         )
 
         # Specialised MLPs — built from Modality enum, no names hardcoded
