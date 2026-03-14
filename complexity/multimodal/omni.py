@@ -49,6 +49,7 @@ Usage
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import Optional, Dict
 
 import torch
@@ -64,11 +65,30 @@ from .video import VideoTransformer, VideoConfig
 # Modality IDs
 # =============================================================================
 
-TEXT  = 0
-IMAGE = 1
-AUDIO = 2
-VIDEO = 3
-NUM_MODALITIES = 4
+class Modality(IntEnum):
+    """
+    Modality identifiers used for expert dispatch in OmniBlock.
+
+    IntEnum → usable directly as tensor indices and in arithmetic.
+    NUM_MODALITIES is derived automatically — never hardcoded.
+    """
+    TEXT  = 0
+    IMAGE = 1
+    AUDIO = 2
+    VIDEO = 3
+
+    @classmethod
+    def count(cls) -> int:
+        """Number of modalities — single source of truth."""
+        return len(cls)
+
+
+# Keep bare names for ergonomics (used as tensor values)
+TEXT  = Modality.TEXT
+IMAGE = Modality.IMAGE
+AUDIO = Modality.AUDIO
+VIDEO = Modality.VIDEO
+NUM_MODALITIES = Modality.count()   # derived, never hardcoded
 
 
 # =============================================================================
@@ -88,13 +108,15 @@ class OmniConfig:
 
     # ---- General MLP (all tokens, shared) ----
     # Applied first to every token regardless of modality → "common knowledge".
-    general_num_experts: int = 12
+    # Rule: general_intermediate_size % general_num_experts == 0
+    general_num_experts: int = 8       # 4096 / 8  = 512  per expert  ✓
     general_intermediate_size: int = 4096
 
     # ---- Per-modality MLPs (specialisation layer) ----
     # Applied after the general MLP; each modality has its own PositionRoutedMLP.
-    # All counts are independent — set to 1 to use a plain single-expert MLP.
-    text_num_experts: int = 4
+    # Rule: *_intermediate_size % *_num_experts == 0  (enforced in __post_init__)
+    # All counts are independent — set to 1 to use a single dense expert.
+    text_num_experts: int = 4          # 4096 / 4  = 1024 per expert  ✓
     image_num_experts: int = 4
     audio_num_experts: int = 4
     video_num_experts: int = 4
