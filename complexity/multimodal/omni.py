@@ -49,7 +49,7 @@ Usage
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import IntEnum
+from enum import IntEnum, auto
 from typing import Optional, Dict
 
 import torch
@@ -72,11 +72,20 @@ class Modality(IntEnum):
     IntEnum → usable directly as tensor indices and in arithmetic.
     Adding a new modality here is the ONLY change needed in this file.
     Everything else (ModuleDict, validation, dispatch) derives from it.
+
+    Values are auto-assigned from 0 in declaration order — no hardcoded
+    integers. Reorder freely; just don't remove a modality after saving
+    checkpoints (embedding indices would shift).
     """
-    TEXT  = 0
-    IMAGE = 1
-    AUDIO = 2
-    VIDEO = 3
+
+    @staticmethod
+    def _generate_next_value_(_name, _start, count, _last_values):
+        return count  # 0-based: TEXT=0, IMAGE=1, …
+
+    TEXT  = auto()
+    IMAGE = auto()
+    AUDIO = auto()
+    VIDEO = auto()
 
     @classmethod
     def count(cls) -> int:
