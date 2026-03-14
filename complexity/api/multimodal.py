@@ -455,33 +455,40 @@ class Omni:
         num_hidden_layers: int = 24,
         num_attention_heads: int = 16,
         vocab_size: int = 32000,
-        text_num_experts: int = 8,
+        general_num_experts: int = 12,
+        text_num_experts: int = 4,
         image_num_experts: int = 4,
         audio_num_experts: int = 4,
-        video_num_experts: int = 8,
+        video_num_experts: int = 4,
         **kwargs,
     ) -> nn.Module:
         """
         Modèle OmniModel (any-to-any).
 
-        Chaque modalité a son propre PositionRoutedMLP avec N experts configurables.
+        Chaque OmniBlock a 2 couches MLP en cascade :
+          1. General MLP (general_num_experts) — partagé par tous les tokens
+          2. Specialised MLP (N experts) — un par modalité, indépendant
+
         Routing: arbre à 2 niveaux → modalité → position % num_experts.
+        Tout est dynamique — adapte les experts selon ton budget.
 
         Args:
             hidden_size: Dimension backbone partagé
             num_hidden_layers: Nombre de blocs OmniBlock
             num_attention_heads: Heads d'attention partagés
             vocab_size: Taille du vocabulaire texte
-            text_num_experts: Experts pour les tokens texte
-            image_num_experts: Experts pour les patches image
-            audio_num_experts: Experts pour les frames audio
-            video_num_experts: Experts pour les tubelets vidéo
+            general_num_experts: Experts partagés (tous les tokens)
+            text_num_experts: Experts spécialisés texte
+            image_num_experts: Experts spécialisés image
+            audio_num_experts: Experts spécialisés audio
+            video_num_experts: Experts spécialisés vidéo
         """
         config = OmniConfig(
             hidden_size=hidden_size,
             num_hidden_layers=num_hidden_layers,
             num_attention_heads=num_attention_heads,
             vocab_size=vocab_size,
+            general_num_experts=general_num_experts,
             text_num_experts=text_num_experts,
             image_num_experts=image_num_experts,
             audio_num_experts=audio_num_experts,

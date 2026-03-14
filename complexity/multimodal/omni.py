@@ -86,13 +86,18 @@ class OmniConfig:
     layer_norm_eps: float = 1e-6
     dropout: float = 0.0
 
-    # ---- Per-modality MLP experts ----
-    # Each modality gets its own PositionRoutedMLP with its own expert count.
-    text_num_experts: int = 8
+    # ---- General MLP (all tokens, shared) ----
+    # Applied first to every token regardless of modality → "common knowledge".
+    general_num_experts: int = 12
+    general_intermediate_size: int = 4096
+
+    # ---- Per-modality MLPs (specialisation layer) ----
+    # Applied after the general MLP; each modality has its own PositionRoutedMLP.
+    # All counts are independent — set to 1 to use a plain single-expert MLP.
+    text_num_experts: int = 4
     image_num_experts: int = 4
     audio_num_experts: int = 4
-    video_num_experts: int = 8
-    # intermediate_size per expert (same ratio as GPT: 4x hidden / num_experts)
+    video_num_experts: int = 4
     text_intermediate_size: int = 4096
     image_intermediate_size: int = 4096
     audio_intermediate_size: int = 4096
@@ -243,23 +248,27 @@ class OmniAttention(nn.Module):
 
 class OmniBlock(nn.Module):
     """
-    Pre-norm transformer block with per-modality PositionRoutedMLP.
+    Pre-norm transformer block with 2-layer MLP cascade.
 
-    Attention is shared across all tokens (all modalities attend to each other).
-    MLP is modality-specific:
+    Per forward pass:
 
-        normed = norm2(x)
-        mlp_out = (
-            text_mlp(normed,  text_pos)  * text_mask
-          + image_mlp(normed, image_pos) * image_mask
-          + audio_mlp(normed, audio_pos) * audio_mask
-          + video_mlp(normed, video_pos) * video_mask
-        )
-        x = x + mlp_out
+        1. Shared attention  — all tokens attend to all tokens.
 
-    All 4 MLPs run on the full sequence but their outputs are zeroed for
-    tokens that don't belong to them → masked sum, no dynamic shapes,
-    fullgraph=True safe.
+        2. General MLP  (general_num_experts, fully shared)
+           Every token passes through this regardless of modality.
+           Captures cross-modal common knowledge.
+               x = x + general_mlp(norm2(x), position_ids)
+
+        3. Specialised MLPs  (one per modality, each with its own experts)
+           Each token is routed to its modality's dedicated MLP.
+           Masked sum → fullgraph=True safe, no dynamic shapes.
+               x = x + (text_mlp * text_mask + image_mlp * image_mask + …)
+
+    Expert budget (defaults):
+        General   : 12 experts   — shared "backbone" knowledge
+        Specialised: 4 experts × 4 modalities = 16 modal experts
+
+    Both counts are fully configurable via OmniConfig.
     """
 
     def __init__(self, config: OmniConfig):
@@ -268,41 +277,48 @@ class OmniBlock(nn.Module):
 
         self.attn  = OmniAttention(config)
         self.norm1 = nn.LayerNorm(H, eps=config.layer_norm_eps)
-        self.norm2 = nn.LayerNorm(H, eps=config.layer_norm_eps)
+        self.norm2 = nn.LayerNorm(H, eps=config.layer_norm_eps)  # feeds general MLP
+        self.norm3 = nn.LayerNorm(H, eps=config.layer_norm_eps)  # feeds specialised MLPs
 
-        # One independent PositionRoutedMLP per modality
-        self.text_mlp = PositionRoutedMLP(H, config.text_intermediate_size,  config.text_num_experts)
+        # General MLP — all tokens, shared across modalities
+        self.general_mlp = PositionRoutedMLP(
+            H, config.general_intermediate_size, config.general_num_experts
+        )
+
+        # Specialised MLPs — one per modality, independent weights & expert counts
+        self.text_mlp  = PositionRoutedMLP(H, config.text_intermediate_size,  config.text_num_experts)
         self.image_mlp = PositionRoutedMLP(H, config.image_intermediate_size, config.image_num_experts)
         self.audio_mlp = PositionRoutedMLP(H, config.audio_intermediate_size, config.audio_num_experts)
         self.video_mlp = PositionRoutedMLP(H, config.video_intermediate_size, config.video_num_experts)
 
     def forward(
         self,
-        x: torch.Tensor,                   # [B, N, H]
-        modality_ids: torch.Tensor,         # [B, N]  values in {0,1,2,3}
-        position_ids: torch.Tensor,         # [B, N]  per-modality positions
+        x: torch.Tensor,                    # [B, N, H]
+        modality_ids: torch.Tensor,          # [B, N]  values in {0,1,2,3}
+        position_ids: torch.Tensor,          # [B, N]  per-modality positions
         attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        # Shared attention across all tokens
+        # 1. Shared attention
         x = x + self.attn(self.norm1(x), attention_mask)
 
-        normed = self.norm2(x)
+        # 2. General MLP — every token, shared routing by position
+        x = x + self.general_mlp(self.norm2(x), position_ids)
 
-        # Per-modality binary masks  [B, N, 1]  → broadcast over H
+        # 3. Specialised MLPs — modality dispatch via masked sum
+        normed = self.norm3(x)
         text_mask  = (modality_ids == TEXT ).unsqueeze(-1).float()
         image_mask = (modality_ids == IMAGE).unsqueeze(-1).float()
         audio_mask = (modality_ids == AUDIO).unsqueeze(-1).float()
         video_mask = (modality_ids == VIDEO).unsqueeze(-1).float()
 
-        # Each MLP runs on all tokens; only the relevant tokens contribute
-        mlp_out = (
+        x = x + (
             self.text_mlp (normed, position_ids) * text_mask
           + self.image_mlp(normed, position_ids) * image_mask
           + self.audio_mlp(normed, position_ids) * audio_mask
           + self.video_mlp(normed, position_ids) * video_mask
         )
 
-        return x + mlp_out
+        return x
 
 
 # =============================================================================
