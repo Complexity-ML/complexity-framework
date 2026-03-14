@@ -48,7 +48,7 @@ Usage
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Optional, Dict
 
@@ -62,7 +62,7 @@ from .video import VideoTransformer, VideoConfig
 
 
 # =============================================================================
-# Modality IDs
+# Modality registry — single source of truth
 # =============================================================================
 
 class Modality(IntEnum):
@@ -70,7 +70,8 @@ class Modality(IntEnum):
     Modality identifiers used for expert dispatch in OmniBlock.
 
     IntEnum → usable directly as tensor indices and in arithmetic.
-    NUM_MODALITIES is derived automatically — never hardcoded.
+    Adding a new modality here is the ONLY change needed in this file.
+    Everything else (ModuleDict, validation, dispatch) derives from it.
     """
     TEXT  = 0
     IMAGE = 1
@@ -79,20 +80,27 @@ class Modality(IntEnum):
 
     @classmethod
     def count(cls) -> int:
-        """Number of modalities — single source of truth."""
         return len(cls)
 
 
-# Keep bare names for ergonomics (used as tensor values)
-TEXT  = Modality.TEXT
-IMAGE = Modality.IMAGE
-AUDIO = Modality.AUDIO
-VIDEO = Modality.VIDEO
-NUM_MODALITIES = Modality.count()   # derived, never hardcoded
+# =============================================================================
+# Per-modality MLP config
+# =============================================================================
+
+@dataclass
+class ModalityMLPConfig:
+    """
+    Expert configuration for one modality's specialised MLP.
+
+    Rule enforced at OmniConfig validation:
+        intermediate_size % num_experts == 0
+    """
+    num_experts: int = 4
+    intermediate_size: int = 4096
 
 
 # =============================================================================
-# Config
+# Omni config
 # =============================================================================
 
 @dataclass
@@ -106,43 +114,36 @@ class OmniConfig:
     layer_norm_eps: float = 1e-6
     dropout: float = 0.0
 
-    # ---- General MLP (all tokens, shared) ----
-    # Applied first to every token regardless of modality → "common knowledge".
+    # ---- General MLP (shared by ALL tokens) ----
     # Rule: general_intermediate_size % general_num_experts == 0
-    general_num_experts: int = 8       # 4096 / 8  = 512  per expert  ✓
+    general_num_experts: int = 8        # 4096 / 8 = 512 per expert ✓
     general_intermediate_size: int = 4096
 
-    # ---- Per-modality MLPs (specialisation layer) ----
-    # Applied after the general MLP; each modality has its own PositionRoutedMLP.
-    # Rule: *_intermediate_size % *_num_experts == 0  (enforced in __post_init__)
-    # All counts are independent — set to 1 to use a single dense expert.
-    text_num_experts: int = 4          # 4096 / 4  = 1024 per expert  ✓
-    image_num_experts: int = 4
-    audio_num_experts: int = 4
-    video_num_experts: int = 4
-    text_intermediate_size: int = 4096
-    image_intermediate_size: int = 4096
-    audio_intermediate_size: int = 4096
-    video_intermediate_size: int = 4096
+    # ---- Per-modality MLPs ----
+    # Keyed by Modality enum — no modality names hardcoded here.
+    # Default: 4 experts, 4096 intermediate for every modality.
+    modality_mlp: Dict[Modality, ModalityMLPConfig] = field(
+        default_factory=lambda: {m: ModalityMLPConfig() for m in Modality}
+    )
 
-    # ---- Text ----
+    # ---- Text encoder ----
     vocab_size: int = 32000
 
-    # ---- Image ----
+    # ---- Image encoder ----
     image_size: int = 224
     patch_size: int = 16
     vision_hidden_size: int = 768
     vision_num_layers: int = 12
     vision_num_heads: int = 12
 
-    # ---- Audio ----
+    # ---- Audio encoder ----
     n_mels: int = 80
     audio_hidden_size: int = 768
     audio_num_layers: int = 6
     audio_num_heads: int = 12
     audio_max_length: int = 3000
 
-    # ---- Video ----
+    # ---- Video encoder ----
     num_frames: int = 16
     temporal_patch_size: int = 2
     video_hidden_size: int = 768
@@ -150,29 +151,41 @@ class OmniConfig:
     video_num_heads: int = 12
 
     def __post_init__(self):
-        """Validate expert / intermediate-size consistency at construction time."""
-        checks = [
-            ("general", self.general_num_experts, self.general_intermediate_size),
-            ("text",    self.text_num_experts,    self.text_intermediate_size),
-            ("image",   self.image_num_experts,   self.image_intermediate_size),
-            ("audio",   self.audio_num_experts,   self.audio_intermediate_size),
-            ("video",   self.video_num_experts,   self.video_intermediate_size),
-        ]
+        """Validate all expert / intermediate-size pairs at construction time."""
         errors = []
-        for name, n_exp, inter in checks:
-            if n_exp < 1:
-                errors.append(f"  {name}_num_experts={n_exp} must be >= 1")
-            if inter % n_exp != 0:
+
+        # General MLP
+        if self.general_num_experts < 1:
+            errors.append(f"  general_num_experts={self.general_num_experts} must be >= 1")
+        elif self.general_intermediate_size % self.general_num_experts != 0:
+            errors.append(
+                f"  general_intermediate_size={self.general_intermediate_size} must be "
+                f"divisible by general_num_experts={self.general_num_experts} "
+                f"(remainder {self.general_intermediate_size % self.general_num_experts})"
+            )
+
+        # Per-modality MLPs — loop derives from Modality enum, never hardcoded
+        for m in Modality:
+            cfg = self.modality_mlp.get(m)
+            if cfg is None:
+                errors.append(f"  modality_mlp missing entry for {m.name}")
+                continue
+            if cfg.num_experts < 1:
+                errors.append(f"  {m.name} num_experts={cfg.num_experts} must be >= 1")
+            elif cfg.intermediate_size % cfg.num_experts != 0:
                 errors.append(
-                    f"  {name}_intermediate_size={inter} must be divisible by "
-                    f"{name}_num_experts={n_exp} "
-                    f"(remainder {inter % n_exp})"
+                    f"  {m.name} intermediate_size={cfg.intermediate_size} must be "
+                    f"divisible by num_experts={cfg.num_experts} "
+                    f"(remainder {cfg.intermediate_size % cfg.num_experts})"
                 )
-        if self.num_attention_heads < 1 or self.hidden_size % self.num_attention_heads != 0:
+
+        # Attention
+        if self.hidden_size % self.num_attention_heads != 0:
             errors.append(
                 f"  hidden_size={self.hidden_size} must be divisible by "
                 f"num_attention_heads={self.num_attention_heads}"
             )
+
         if errors:
             raise ValueError("OmniConfig validation failed:\n" + "\n".join(errors))
 
@@ -329,45 +342,42 @@ class OmniBlock(nn.Module):
         self.norm2 = nn.LayerNorm(H, eps=config.layer_norm_eps)  # feeds general MLP
         self.norm3 = nn.LayerNorm(H, eps=config.layer_norm_eps)  # feeds specialised MLPs
 
-        # General MLP — all tokens, shared across modalities
+        # General MLP — shared by all tokens regardless of modality
         self.general_mlp = PositionRoutedMLP(
             H, config.general_intermediate_size, config.general_num_experts
         )
 
-        # Specialised MLPs — one per modality, independent weights & expert counts
-        self.text_mlp  = PositionRoutedMLP(H, config.text_intermediate_size,  config.text_num_experts)
-        self.image_mlp = PositionRoutedMLP(H, config.image_intermediate_size, config.image_num_experts)
-        self.audio_mlp = PositionRoutedMLP(H, config.audio_intermediate_size, config.audio_num_experts)
-        self.video_mlp = PositionRoutedMLP(H, config.video_intermediate_size, config.video_num_experts)
+        # Specialised MLPs — built from Modality enum, no names hardcoded
+        self.modal_mlps = nn.ModuleDict({
+            m.name: PositionRoutedMLP(
+                H,
+                config.modality_mlp[m].intermediate_size,
+                config.modality_mlp[m].num_experts,
+            )
+            for m in Modality
+        })
 
     def forward(
         self,
         x: torch.Tensor,                    # [B, N, H]
-        modality_ids: torch.Tensor,          # [B, N]  values in {0,1,2,3}
+        modality_ids: torch.Tensor,          # [B, N]  values in Modality
         position_ids: torch.Tensor,          # [B, N]  per-modality positions
         attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         # 1. Shared attention
         x = x + self.attn(self.norm1(x), attention_mask)
 
-        # 2. General MLP — every token, shared routing by position
+        # 2. General MLP — every token, routing by position
         x = x + self.general_mlp(self.norm2(x), position_ids)
 
-        # 3. Specialised MLPs — modality dispatch via masked sum
+        # 3. Specialised MLPs — loop derives from Modality enum, masked sum
         normed = self.norm3(x)
-        text_mask  = (modality_ids == TEXT ).unsqueeze(-1).float()
-        image_mask = (modality_ids == IMAGE).unsqueeze(-1).float()
-        audio_mask = (modality_ids == AUDIO).unsqueeze(-1).float()
-        video_mask = (modality_ids == VIDEO).unsqueeze(-1).float()
-
-        x = x + (
-            self.text_mlp (normed, position_ids) * text_mask
-          + self.image_mlp(normed, position_ids) * image_mask
-          + self.audio_mlp(normed, position_ids) * audio_mask
-          + self.video_mlp(normed, position_ids) * video_mask
+        spec_out = sum(
+            self.modal_mlps[m.name](normed, position_ids)
+            * (modality_ids == m).unsqueeze(-1).float()
+            for m in Modality
         )
-
-        return x
+        return x + spec_out
 
 
 # =============================================================================
@@ -389,8 +399,8 @@ class OmniModel(nn.Module):
         self.config = config
         H = config.hidden_size
 
-        # Learned boundary token per modality (prepended to each segment)
-        self.modality_tokens = nn.Embedding(NUM_MODALITIES, H)
+        # Learned boundary token per modality — size from enum, not hardcoded
+        self.modality_tokens = nn.Embedding(Modality.count(), H)
 
         # ---- Text ----
         self.text_embed = nn.Embedding(config.vocab_size, H)
@@ -403,7 +413,7 @@ class OmniModel(nn.Module):
             num_hidden_layers=config.vision_num_layers,
             num_attention_heads=config.vision_num_heads,
             use_class_token=False,
-            num_experts=config.image_num_experts,
+            num_experts=config.modality_mlp[Modality.IMAGE].num_experts,
         )
         self.image_encoder = VisionTransformer(vision_cfg)
         self.image_proj = nn.Linear(config.vision_hidden_size, H)
@@ -415,7 +425,7 @@ class OmniModel(nn.Module):
             num_hidden_layers=config.audio_num_layers,
             num_attention_heads=config.audio_num_heads,
             max_length=config.audio_max_length,
-            num_experts=config.audio_num_experts,
+            num_experts=config.modality_mlp[Modality.AUDIO].num_experts,
         )
         self.audio_encoder = MelSpectrogramEncoder(audio_cfg)
         self.audio_proj = nn.Linear(config.audio_hidden_size, H)
@@ -429,7 +439,7 @@ class OmniModel(nn.Module):
             hidden_size=config.video_hidden_size,
             num_hidden_layers=config.video_num_layers,
             num_attention_heads=config.video_num_heads,
-            num_experts=config.video_num_experts,
+            num_experts=config.modality_mlp[Modality.VIDEO].num_experts,
         )
         self.video_encoder = VideoTransformer(video_cfg)
         self.video_proj = nn.Linear(config.video_hidden_size, H)
@@ -501,23 +511,23 @@ class OmniModel(nn.Module):
         text_len = 0
 
         if text_ids is not None:
-            t, m, p = self._pack(self.text_embed(text_ids), TEXT, device)
+            t, m, p = self._pack(self.text_embed(text_ids), Modality.TEXT, device)
             segs_tokens.append(t); segs_mod.append(m); segs_pos.append(p)
             text_len = t.shape[1]
 
         if pixel_values is not None:
             enc = self.image_proj(self.image_encoder(pixel_values)["last_hidden_state"])
-            enc, m, p = self._pack(enc, IMAGE, device)
+            enc, m, p = self._pack(enc, Modality.IMAGE, device)
             segs_tokens.append(enc); segs_mod.append(m); segs_pos.append(p)
 
         if audio_features is not None:
             enc = self.audio_proj(self.audio_encoder(audio_features)["last_hidden_state"])
-            enc, m, p = self._pack(enc, AUDIO, device)
+            enc, m, p = self._pack(enc, Modality.AUDIO, device)
             segs_tokens.append(enc); segs_mod.append(m); segs_pos.append(p)
 
         if video_frames is not None:
             enc = self.video_proj(self.video_encoder(video_frames)["last_hidden_state"])
-            enc, m, p = self._pack(enc, VIDEO, device)
+            enc, m, p = self._pack(enc, Modality.VIDEO, device)
             segs_tokens.append(enc); segs_mod.append(m); segs_pos.append(p)
 
         x = torch.cat(segs_tokens, dim=1)                                # [B, N, H]

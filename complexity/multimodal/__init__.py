@@ -73,10 +73,8 @@ from .omni import (
     OmniConfig,
     OmniBlock,
     PositionRoutedMLP,
-    TEXT,
-    IMAGE,
-    AUDIO,
-    VIDEO,
+    Modality,
+    ModalityMLPConfig,
 )
 
 __all__ = [
@@ -116,8 +114,6 @@ __all__ = [
     "OmniConfig",
     "OmniBlock",
     "PositionRoutedMLP",
-    "TEXT",
-    "IMAGE",
-    "AUDIO",
-    "VIDEO",
+    "Modality",
+    "ModalityMLPConfig",
 ]

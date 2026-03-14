@@ -58,6 +58,8 @@ from complexity.multimodal import (
     OmniModel,
     OmniConfig,
     PositionRoutedMLP,
+    Modality,
+    ModalityMLPConfig,
 )
 
 
@@ -453,26 +455,52 @@ class Omni:
         """
         Modèle OmniModel (any-to-any).
 
-        Tous les champs de OmniConfig sont passables directement en kwargs.
         Chaque OmniBlock a 2 couches MLP en cascade :
           1. General MLP  — partagé par tous les tokens (general_num_experts)
-          2. Specialised  — un par modalité   (*_num_experts)
+          2. Specialised  — un par modalité, derivé de Modality enum
+
+        Accepts flat kwargs pour les experts par modalité (traduits en dict):
+            text_num_experts, text_intermediate_size
+            image_num_experts, image_intermediate_size
+            audio_num_experts, audio_intermediate_size
+            video_num_experts, video_intermediate_size
+
+        Ou passe directement un modality_mlp dict:
+            modality_mlp={Modality.VIDEO: ModalityMLPConfig(8, 4096)}
 
         Exemples:
-            # Minimal
             model = Omni.model(hidden_size=1024, vocab_size=32000)
 
-            # Experts personnalisés
             model = Omni.model(
                 hidden_size=2048,
-                general_num_experts=16,
+                general_num_experts=8,
                 video_num_experts=8,
                 audio_num_experts=8,
             )
-
-        Voir OmniConfig pour la liste complète des paramètres.
         """
-        return OmniModel(OmniConfig(**kwargs))
+        # Build modality_mlp dict from flat kwargs (e.g. text_num_experts=8)
+        modal_cfg = {m: ModalityMLPConfig() for m in Modality}
+        omni_kwargs = {}
+        for key, val in kwargs.items():
+            matched = False
+            for m in Modality:
+                prefix = m.name.lower()
+                if key == f"{prefix}_num_experts":
+                    modal_cfg[m] = ModalityMLPConfig(val, modal_cfg[m].intermediate_size)
+                    matched = True
+                    break
+                elif key == f"{prefix}_intermediate_size":
+                    modal_cfg[m] = ModalityMLPConfig(modal_cfg[m].num_experts, val)
+                    matched = True
+                    break
+            if not matched:
+                omni_kwargs[key] = val
+
+        # Allow explicit modality_mlp dict to override
+        if "modality_mlp" not in omni_kwargs:
+            omni_kwargs["modality_mlp"] = modal_cfg
+
+        return OmniModel(OmniConfig(**omni_kwargs))
 
     @classmethod
     def config(cls, **kwargs) -> OmniConfig:
@@ -535,4 +563,6 @@ __all__ = [
     "OmniModel",
     "OmniConfig",
     "PositionRoutedMLP",
+    "Modality",
+    "ModalityMLPConfig",
 ]
