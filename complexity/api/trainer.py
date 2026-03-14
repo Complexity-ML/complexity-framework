@@ -8,13 +8,8 @@ For full trainer functionality, use:
 from complexity.training.trainer import (
     Trainer as IntegratedTrainer,
     TrainingConfig,
-    EvaluationConfig,
 )
-from complexity.training.optimizers import (
-    get_optimizer,
-    get_scheduler,
-    OptimizerConfig,
-)
+from complexity.training.optimizers import get_optimizer
 
 # Simple Trainer wrapper for API convenience
 from dataclasses import dataclass, field
@@ -92,8 +87,5 @@ __all__ = [
     "TrainerConfig",
     "IntegratedTrainer",
     "TrainingConfig",
-    "EvaluationConfig",
     "get_optimizer",
-    "get_scheduler",
-    "OptimizerConfig",
 ]
