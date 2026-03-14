@@ -99,30 +99,30 @@ class TokenRoutedMLP(MLPBase):
         expert_ids = self.token_to_expert[token_ids_clamped]  # [batch, seq_len]
 
         # Flatten for dispatch
-        flat_hidden = hidden_states.view(-1, hidden_states.shape[-1])  # [B*S, H]
-        flat_expert_ids = expert_ids.view(-1)  # [B*S]
-        N = flat_hidden.shape[0]
-        tokens_per_expert = N // self.num_experts  # exact for modulo routing
+        flat_hidden = hidden_states.view(-1, self.hidden_size)  # [N, H]
+        flat_expert_ids = expert_ids.view(-1)                   # [N]
 
-        # Sort tokens by expert — argsort gives fixed-shape indices
-        sorted_indices = flat_expert_ids.argsort(stable=True)  # [B*S]
-        sorted_hidden = flat_hidden[sorted_indices]  # [B*S, H]
+        # Stack expert weights for BMM — fullgraph=True safe, no .item(), no dynamic branches.
+        # Loop over num_experts is a compile-time constant → unrolled by torch.compile.
+        gate_up_proj = torch.stack([
+            torch.cat([e.gate_proj.weight.t(), e.up_proj.weight.t()], dim=-1)
+            for e in self.experts
+        ])  # (E, H, 2*I)
+        down_proj = torch.stack([
+            e.down_proj.weight.t() for e in self.experts
+        ])  # (E, I, H)
 
-        # Process each expert on its contiguous slice (fixed shape)
-        output_chunks = []
-        for expert_id in range(self.num_experts):
-            start = expert_id * tokens_per_expert
-            end = start + tokens_per_expert
-            expert_input = sorted_hidden[start:end]  # [tokens_per_expert, H]
-            expert_output = self.experts[expert_id](expert_input)
-            output_chunks.append(expert_output.to(flat_hidden.dtype))
+        # Select each token's expert weights by direct indexing (no sort, no slice)
+        sel_gu   = gate_up_proj[flat_expert_ids]  # (N, H, 2*I)
+        sel_down = down_proj[flat_expert_ids]      # (N, I, H)
 
-        # Concatenate and unsort back to original order
-        sorted_output = torch.cat(output_chunks, dim=0)  # [B*S, H]
-        unsort_indices = sorted_indices.argsort()
-        output = sorted_output[unsort_indices]
+        # Fused gate+up BMM → SwiGLU → down BMM
+        gu    = torch.bmm(flat_hidden.unsqueeze(1), sel_gu).squeeze(1)   # (N, 2*I)
+        gate, up = gu.split(self.expert_intermediate_size, dim=-1)
+        inter = F.silu(gate) * up                                         # (N, I)
+        out   = torch.bmm(inter.unsqueeze(1), sel_down).squeeze(1)       # (N, H)
 
-        return output.view(batch_size, seq_len, -1)
+        return out.view(batch_size, seq_len, self.hidden_size)
 
     def _forward_all_experts(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Fallback: average all experts (for inference without token_ids)."""
