@@ -365,6 +365,7 @@ class OmniBlock(nn.Module):
     def __init__(self, config: OmniConfig):
         super().__init__()
         H = config.hidden_size
+        M = Modality.count()
 
         self.attn  = OmniAttention(config)
         self.norm1 = nn.LayerNorm(H, eps=config.layer_norm_eps)
@@ -392,6 +393,12 @@ class OmniBlock(nn.Module):
             for m in Modality
         })
 
+        # Soft routing: embed modality id → learned gate over all modal MLPs.
+        # modality_ids (integers) index this embedding — never enter a Linear raw.
+        # gate_proj projects the embedding to M logits → softmax → soft weights.
+        self.modality_embed = nn.Embedding(M, H)
+        self.gate_proj = nn.Linear(H, M, bias=False)
+
     def forward(
         self,
         x: torch.Tensor,                    # [B, N, H]
@@ -405,13 +412,26 @@ class OmniBlock(nn.Module):
         # 2. General MLP — every token, routing by position
         x = x + self.general_mlp(self.norm2(x), position_ids)
 
-        # 3. Specialised MLPs — loop derives from Modality enum, masked sum
+        # 3. Specialised MLPs — soft routing via learned modality embedding.
+        #
+        #    modality_ids → modality_embed → gate_proj → softmax
+        #                                                  ↓
+        #    gates [B, N, M] : learned soft weights over modal MLPs.
+        #    "audio" token can partially activate the "text" MLP if useful.
+        #
+        #    expert_outs [B, N, H, M] : stack all modal MLP outputs.
+        #    spec_out    [B, N, H]    : weighted sum via einsum.
         normed = self.norm3(x)
-        spec_out = sum(
-            self.modal_mlps[m.name](normed, position_ids)
-            * (modality_ids == m).unsqueeze(-1).float()
-            for m in Modality
-        )
+        gates = F.softmax(
+            self.gate_proj(self.modality_embed(modality_ids)), dim=-1
+        )  # [B, N, M]
+
+        expert_outs = torch.stack(
+            [self.modal_mlps[m.name](normed, position_ids) for m in Modality],
+            dim=-1,
+        )  # [B, N, H, M]
+
+        spec_out = torch.einsum("bnhm,bnm->bnh", expert_outs, gates)
         return x + spec_out
 
 
