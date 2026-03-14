@@ -449,53 +449,30 @@ class Omni:
     """
 
     @classmethod
-    def model(
-        cls,
-        hidden_size: int = 1024,
-        num_hidden_layers: int = 24,
-        num_attention_heads: int = 16,
-        vocab_size: int = 32000,
-        general_num_experts: int = 12,
-        text_num_experts: int = 4,
-        image_num_experts: int = 4,
-        audio_num_experts: int = 4,
-        video_num_experts: int = 4,
-        **kwargs,
-    ) -> nn.Module:
+    def model(cls, **kwargs) -> nn.Module:
         """
         Modèle OmniModel (any-to-any).
 
+        Tous les champs de OmniConfig sont passables directement en kwargs.
         Chaque OmniBlock a 2 couches MLP en cascade :
-          1. General MLP (general_num_experts) — partagé par tous les tokens
-          2. Specialised MLP (N experts) — un par modalité, indépendant
+          1. General MLP  — partagé par tous les tokens (general_num_experts)
+          2. Specialised  — un par modalité   (*_num_experts)
 
-        Routing: arbre à 2 niveaux → modalité → position % num_experts.
-        Tout est dynamique — adapte les experts selon ton budget.
+        Exemples:
+            # Minimal
+            model = Omni.model(hidden_size=1024, vocab_size=32000)
 
-        Args:
-            hidden_size: Dimension backbone partagé
-            num_hidden_layers: Nombre de blocs OmniBlock
-            num_attention_heads: Heads d'attention partagés
-            vocab_size: Taille du vocabulaire texte
-            general_num_experts: Experts partagés (tous les tokens)
-            text_num_experts: Experts spécialisés texte
-            image_num_experts: Experts spécialisés image
-            audio_num_experts: Experts spécialisés audio
-            video_num_experts: Experts spécialisés vidéo
+            # Experts personnalisés
+            model = Omni.model(
+                hidden_size=2048,
+                general_num_experts=16,
+                video_num_experts=8,
+                audio_num_experts=8,
+            )
+
+        Voir OmniConfig pour la liste complète des paramètres.
         """
-        config = OmniConfig(
-            hidden_size=hidden_size,
-            num_hidden_layers=num_hidden_layers,
-            num_attention_heads=num_attention_heads,
-            vocab_size=vocab_size,
-            general_num_experts=general_num_experts,
-            text_num_experts=text_num_experts,
-            image_num_experts=image_num_experts,
-            audio_num_experts=audio_num_experts,
-            video_num_experts=video_num_experts,
-            **kwargs,
-        )
-        return OmniModel(config)
+        return OmniModel(OmniConfig(**kwargs))
 
     @classmethod
     def config(cls, **kwargs) -> OmniConfig:
