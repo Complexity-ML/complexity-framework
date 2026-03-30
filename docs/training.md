@@ -1,233 +1,62 @@
-# Training Guide
+# Training
 
-Train models with the Complexity Framework.
+Guide for training Complexity-Deep models.
 
 ## Quick Start
 
-```python
-from complexity.api import Tokenizer, Model, Dataset, Trainer, TrainerConfig
+```bash
+# Single GPU
+python scripts/train_ablation_150m.py --run 2 --batch-size 128 --target-tokens 500000000
 
-# Load components
-tokenizer = Tokenizer.load("llama-7b")
-model = Model.load("llama-7b", device="cuda")
-dataset = Dataset.load("./train.jsonl", tokenizer=tokenizer)
-
-# Train
-trainer = Trainer(model, dataset)
-trainer.train()
+# Multi-GPU (2x RTX 6000)
+torchrun --nproc_per_node=2 scripts/train_ablation_150m.py -- --run 2 --batch-size 128 --target-tokens 500000000
 ```
 
-## Training Configuration
+## Training Runs
 
-```python
-from complexity.api import TrainerConfig
+| Run | Description | Params | Avg Loss |
+|-----|-------------|--------|----------|
+| 1 | Dense SwiGLU baseline | 171M | 5.205 |
+| 2 | **Full Complexity** (TR + Mu + Zipf + Shared) | 187M | **5.026** |
+| 3 | TR without Mu-Guidance | 187M | 5.127 |
+| 4 | Mixtral baseline (learned router) | 187M | 5.110 |
 
-config = TrainerConfig(
-    # Optimization
-    learning_rate=1e-4,
-    weight_decay=0.1,
-    warmup_steps=1000,
-    max_steps=100000,
+*700-step averages on 500M tokens FineWeb-Edu.*
 
-    # Batch
-    batch_size=4,
-    gradient_accumulation_steps=8,
+![Loss Curves](../figures/fig_loss_curves.png)
 
-    # Mixed precision
-    fp16=True,
-    bf16=False,
+## Loss Gap: Dense vs Token-Routed
 
-    # Checkpointing
-    save_steps=1000,
-    save_dir="./checkpoints",
+![Loss Gap](../figures/fig_loss_gap.png)
 
-    # Logging
-    log_steps=100,
-    wandb_project="my-project",
-)
+The Token-Routed model leads over 95% of training (green area).
 
-trainer = Trainer(model, dataset, config=config)
-```
+## Average Training Loss
 
-## Small Budget Training
+![Average Loss](../figures/fig_avg_total.png)
 
-For limited GPU memory:
+## Hyperparameters
 
-```python
-from complexity.api import Efficient, SmallModels
+| Parameter | Value |
+|-----------|-------|
+| Learning rate | 3e-4 (auto-scaled by batch size) |
+| Warmup | 5% of total steps (auto) |
+| Scheduler | Cosine decay |
+| Optimizer | AdamW (FSDP) or Muon |
+| Precision | bf16 |
+| Batch size | 64 per GPU |
 
-# Small model (~125M params)
-model = SmallModels.tiny_llm(vocab_size=32000)
+## Expert Analysis
 
-# Enable memory optimizations
-Efficient.enable_checkpointing(model)
-model, optimizer, scaler = Efficient.mixed_precision(model, optimizer)
+![Expert Balance](../figures/expert_balance.png)
+![Expert Loss](../figures/fig_expert_loss.png)
+![Head Expert Heatmap](../figures/head_expert_heatmap.png)
 
-# Estimate memory usage
-mem = Efficient.estimate_memory(model, batch_size=4, seq_len=2048)
-print(f"Estimated: {mem['total_gb']:.1f} GB")
+## Inference
 
-# Get recommended config for your GPU
-config = Efficient.recommend_config(vram_gb=12, training=True)
-```
-
-## INL Dynamics Integration
-
-For stable long training:
-
-```python
-from complexity.api import INLDynamics
-
-# Add dynamics to your model
-dynamics = INLDynamics(
-    hidden_size=768,
-    beta_max=2.0,      # CRITICAL: keeps beta in [0, 2]
-    velocity_max=10.0,  # Prevents runaway
-)
-
-# In forward pass
-h_next, v_next = dynamics(hidden_states, velocity_states)
-```
-
-**Why velocity tracking?**
-- Acts as damper/shock absorber
-- Stabilizes training on frequent tokens (the, a, is)
-- Prevents explosion at long training (400k+ steps)
-
-## Streaming Dataset
-
-For large datasets:
-
-```python
-from complexity.api import StreamingDataset, DataPipeline
-
-# Stream from disk
-dataset = StreamingDataset(
-    path="./data/train.jsonl",
-    tokenizer=tokenizer,
-    max_seq_len=2048,
-    shuffle_buffer=10000,
-)
-
-# Or use DataPipeline for complex preprocessing
-pipeline = DataPipeline(
-    source="./data/",
-    tokenizer=tokenizer,
-    transforms=[
-        lambda x: x["text"],
-        # Add more transforms
-    ],
-)
-```
-
-## Distributed Training
-
-```python
-import torch.distributed as dist
-from complexity.api import Trainer
-
-# Initialize distributed
-dist.init_process_group("nccl")
-
-# Trainer handles DDP automatically
-trainer = Trainer(
-    model,
-    dataset,
-    distributed=True,
-)
-trainer.train()
-```
-
-## Checkpointing
-
-```python
-from complexity.api import Trainer
-
-trainer = Trainer(model, dataset)
-
-# Save checkpoint
-trainer.save_checkpoint("./checkpoint-1000")
-
-# Resume training
-trainer.load_checkpoint("./checkpoint-1000")
-trainer.train()
-```
-
-## Gradient Checkpointing
-
-Save memory by recomputing activations:
-
-```python
-from complexity.api import Efficient
-
-# Enable gradient checkpointing
-Efficient.enable_checkpointing(model)
-
-# Or manually on specific layers
-for layer in model.layers[::2]:  # Every other layer
-    layer.gradient_checkpointing = True
-```
-
-## Mixed Precision
-
-```python
-from complexity.api import MixedPrecision
-
-# Setup
-scaler = MixedPrecision.setup(model, optimizer)
-
-# Training loop
-with MixedPrecision.autocast():
-    loss = model(batch)
-
-scaler.scale(loss).backward()
-scaler.step(optimizer)
-scaler.update()
-```
-
-## Monitoring
-
-```python
-from complexity.api import Debug
-
-# Parameter count
-print(Debug.count_params(model))  # "125M"
-
-# Memory usage
-mem = Debug.memory_usage()
-print(f"GPU: {mem['allocated_gb']:.1f} GB")
-
-# Model summary
-Debug.print_summary(model)
-
-# INL Dynamics stats
-if hasattr(model, 'dynamics'):
-    stats = model.dynamics.get_dynamics_stats()
-    print(f"mu mean: {stats['mu_mean']:.3f}")
-```
-
-## Common Issues
-
-### Out of Memory
-1. Reduce batch size
-2. Enable gradient checkpointing
-3. Use mixed precision (fp16/bf16)
-4. Use smaller sequence length
-
-### Training Instability
-1. Check beta is clamped to [0, 2]
-2. Enable velocity tracking
-3. Reduce learning rate
-4. Add gradient clipping
-
-### Slow Training
-1. Use Flash Attention
-2. Enable mixed precision
-3. Increase batch size if memory allows
-4. Use O(N) architectures for long sequences
+Deployed on vLLM: **204 tokens/s** on RTX 5060 Ti (16GB).
 
 ## See Also
 
-- [Efficient Training](efficient.md) - Memory optimization
-- [INL Dynamics](dynamics.md) - Stability system
-- [CUDA Optimizations](cuda.md) - Flash Attention
+- [Token-Routed MLP](token-routed.md)
+- [Mu-Guidance](dynamics.md)

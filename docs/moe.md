@@ -1,126 +1,78 @@
 # Mixture of Experts (MoE)
 
-Complexity Framework provides **two MoE approaches**:
+Two MoE approaches available:
 
 | Type | Class | Routing | aux_loss |
 |------|-------|---------|----------|
-| **Token-Routed** (our innovation) | `TokenRoutedMLP` | `token_id % num_experts` | None |
-| **Sparse MoE** (standard) | `SparseMoE` | Learned router | Required |
-
-## Quick Start
-
-```python
-from complexity.api import MLP
-
-# Token-Routed MoE (deterministic, our innovation)
-moe = MLP.moe(hidden_size=768, num_experts=4)
-
-# Sparse MoE (learned routing, standard approach)
-moe = MLP.sparse_moe(hidden_size=768, num_experts=8, top_k=2)
-```
-
----
+| **Token-Routed** (ours) | `TokenRoutedMLP` | Zipf-balanced deterministic | None |
+| **Mixtral-style** (baseline) | `MixtralMoE` | Learned router + top-1 | Required |
 
 ## Token-Routed MLP (Recommended)
 
-Our novel approach - **zero routing overhead, perfect load balancing**.
+Sort-and-split dispatch with deterministic routing. Zero overhead, perfect load balancing.
 
 ```python
-expert_id = token_id % num_experts
-```
-
-**Benefits:**
-- No router network to learn
-- No aux_loss required
-- Perfect load balancing by design
-- 100% deterministic
-- One line of code
-
-```python
-from complexity.api import TokenRoutedMLP, MLPConfig
+from complexity.core.mlp import TokenRoutedMLP, MLPConfig
 
 config = MLPConfig(
     hidden_size=768,
-    intermediate_size=3072,
+    intermediate_size=2048,
     num_experts=4,
-    vocab_size=100000,
+    vocab_size=32000,
+    shared_expert=True,
+    token_frequencies=freqs,  # Zipf-balanced routing
 )
-
-moe = TokenRoutedMLP(config)
-output = moe(hidden_states, token_ids)  # No aux_loss!
+mlp = TokenRoutedMLP(config)
+output = mlp(hidden_states, token_ids=input_ids)  # No aux_loss!
 ```
 
 See [Token-Routed MLP](token-routed.md) for full documentation.
 
----
+## Mixtral-style MoE (Baseline)
 
-## Sparse MoE (Standard)
-
-Traditional MoE with learned routing (like Mixtral, GPT-4).
+Learned router with load balancing loss. For comparison with standard MoE.
 
 ```python
-from complexity.api import SparseMoE, SparseMoEConfig
+from complexity.core.mlp import MixtralMoE, MLPConfig
 
-config = SparseMoEConfig(
+config = MLPConfig(
     hidden_size=768,
-    intermediate_size=3072,
-    num_experts=8,
-    top_k=2,
-    load_balancing_weight=0.01,
+    intermediate_size=2048,
+    num_experts=4,
+    vocab_size=32000,
+    shared_expert=True,
 )
-
-moe = SparseMoE(config)
-output, aux_loss = moe(hidden_states)
-
-# Add aux_loss to total loss!
-total_loss = ce_loss + aux_loss
+mlp = MixtralMoE(config)
+output = mlp(hidden_states)
+# aux_loss stored in mlp.last_aux_loss
 ```
-
-### SparseMoE Parameters
-
-| Param | Description | Default |
-|-------|-------------|---------|
-| `num_experts` | Total experts | 8 |
-| `top_k` | Active experts per token | 2 |
-| `load_balancing_weight` | aux_loss weight | 0.01 |
-
-### Why aux_loss?
-
-Without load balancing loss, some experts get all tokens (expert collapse). The aux_loss encourages uniform distribution:
-
-```python
-output, aux_loss = moe(hidden_states)
-total_loss = ce_loss + aux_loss  # Required!
-```
-
----
 
 ## Comparison
 
-| Aspect | Token-Routed (Ours) | Sparse MoE |
-|--------|---------------------|------------|
-| Router | **None** | Neural network |
+| Aspect | Token-Routed (ours) | Mixtral-style |
+|--------|---------------------|---------------|
+| Router | **None (table lookup)** | nn.Linear + softmax |
 | aux_loss | **None** | Required |
 | Load balancing | **Perfect by design** | Must be learned |
 | Expert collapse | **Impossible** | Possible |
 | Deterministic | **Yes** | No |
-| Latency | **<0.1ms** | 5-10ms |
+| CUDA graph safe | **Yes** | Needs special handling |
+| Dispatch | Sort-and-split (bmm) | Sort-and-split (bmm) |
 
-## When to Use Which?
+### Training Results (500M tokens, 700 steps avg)
 
-**Token-Routed MLP** (recommended):
-- Production/inference (determinism)
-- Robotics/real-time (low latency)
-- Training stability (no aux_loss tuning)
+| Configuration | Avg Loss |
+|---------------|----------|
+| **TR + Mu + Zipf** | **5.026** |
+| Mixtral (learned) | 5.110 |
+| Dense baseline | 5.205 |
 
-**Sparse MoE**:
-- Research/comparison with Mixtral-style models
-- When you need learned specialization
+Token-Routed converges faster because experts specialize immediately without learning a router.
 
----
+![Loss Curves](../figures/fig_loss_curves.png)
 
 ## See Also
 
-- [Token-Routed MLP](token-routed.md) - Full documentation
-- [INL Dynamics](dynamics.md) - Training stability
-- [API Reference](api.md) - All MLP types
+- [Token-Routed MLP](token-routed.md)
+- [Mu-Guidance](dynamics.md)
+- [Training](training.md)

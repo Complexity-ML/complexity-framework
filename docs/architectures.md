@@ -1,151 +1,56 @@
-# O(N) Architectures
+# Architecture Overview
 
-**Alternatives aux Transformers pour séquences longues.**
+## Complexity-Deep
 
-## Comparaison
+![Architecture](../figures/architecture_complexity_deep.png)
 
-| Architecture | Complexité | Mémoire | Parallélisable | Inference |
-|--------------|------------|---------|----------------|-----------|
-| Transformer | O(N²) | O(N²) | Oui | O(N) par token |
-| **Mamba** | O(N) | O(N) | Oui | O(1) par token |
-| **RWKV** | O(N) | O(N) | Oui | O(1) par token |
-| **RetNet** | O(N) | O(N) | Oui | O(1) par token |
+### Decoder Layer
 
-## Mamba (State Space Model)
+Each of the 18 decoder layers:
 
-État de l'art pour SSM. Excellente qualité proche des Transformers.
+1. **RMSNorm + GQA Attention** (12 Q heads, 4 KV heads, head_dim=64)
+   - Mu-Guided Q/K/V bias from previous layer
+   - QK RMSNorm + RoPE (theta=10000)
+   - Residual connection
 
-```python
-from complexity.api import Architecture
+2. **RMSNorm + Token-Routed MLP** (4 experts SwiGLU, 512d each)
+   - Sort-and-split dispatch (bmm, fullgraph safe)
+   - Zipf-balanced deterministic routing
+   - Shared Lexical Expert (dense SwiGLU, all tokens)
+   - Residual connection
 
-# Modèle complet
-model = Architecture.mamba(
-    hidden_size=768,
-    num_layers=12,
-    vocab_size=32000,
-)
+3. **Mu-Guidance** (after MLP)
+   - mu = clamp(mu_param + mu_proj(h), -2, 2)
+   - Flows to next layer's attention
 
-# Block individuel
-block = Architecture.mamba_block(hidden_size=768)
-```
+### Specs (187M)
 
-### Caractéristiques
-- Selective state spaces
-- Hardware-efficient (scan linéaire)
-- Bon pour audio, génomique, texte long
+| Component | Value |
+|-----------|-------|
+| Hidden size | 768 |
+| Layers | 18 |
+| Attention | GQA (12h / 4kv) |
+| MLP | Token-Routed (4 experts) |
+| Expert size | 512 |
+| Shared expert | Yes |
+| Routing | Zipf bin-packing |
+| Mu-Guidance | Yes |
+| Vocab | 32k BPE |
 
-## RWKV (Linear Attention RNN)
+## Supported Architectures
 
-Combine avantages RNN (inference rapide) et Transformer (training parallèle).
+The framework also supports:
 
-```python
-model = Architecture.rwkv(
-    hidden_size=768,
-    num_layers=12,
-    vocab_size=32000,
-)
+| Architecture | Type | Use Case |
+|-------------|------|----------|
+| Dense SwiGLU | Standard MLP | Baseline comparison |
+| Mixtral MoE | Learned router | MoE baseline |
+| Mamba | SSM (O(N)) | Long sequences |
+| RetNet | Retention | Efficient inference |
+| RWKV | Linear attention | Low memory |
 
-block = Architecture.rwkv_block(hidden_size=768)
-```
+## See Also
 
-### Caractéristiques
-- Time-mixing + Channel-mixing
-- Pas de KV cache nécessaire
-- Inference très rapide
-
-## RetNet (Retentive Networks)
-
-Training parallèle, inference récurrente.
-
-```python
-model = Architecture.retnet(
-    hidden_size=768,
-    num_layers=12,
-    vocab_size=32000,
-)
-
-block = Architecture.retnet_block(hidden_size=768)
-```
-
-### Caractéristiques
-- 3 modes: parallèle, récurrent, chunk
-- Retention mechanism (decay exponentiel)
-- Multi-scale retention
-
-## Mixture of Depths (MoD)
-
-Sélectionne dynamiquement quels tokens passent par le bloc.
-
-```python
-block = Architecture.mod_block(
-    hidden_size=768,
-    capacity_factor=0.5,  # 50% des tokens
-)
-```
-
-### Caractéristiques
-- Réduit le compute pour tokens "faciles"
-- Capacity factor contrôlable
-- Compatible avec autres architectures
-
-## Quand utiliser quoi
-
-| Cas d'usage | Recommandation |
-|-------------|----------------|
-| Texte standard (<4k) | Transformer + Flash Attention |
-| Texte long (4k-32k) | Mamba ou Sliding Window |
-| Texte très long (>32k) | Mamba ou RWKV |
-| Inference temps réel | RWKV ou RetNet |
-| Audio | Mamba |
-| Code | Transformer ou Mamba |
-
-## Hybrid architectures
-
-Combiner Transformer et SSM:
-
-```python
-import torch.nn as nn
-from complexity.api import Architecture, CUDA
-
-class HybridLayer(nn.Module):
-    def __init__(self, hidden_size, use_mamba=False):
-        super().__init__()
-        if use_mamba:
-            self.core = Architecture.mamba_block(hidden_size)
-        else:
-            self.core = CUDA.flash(hidden_size, num_heads=12)
-
-# Alterner: Transformer aux layers critiques, Mamba ailleurs
-layers = []
-for i in range(24):
-    use_mamba = i % 4 != 0  # Transformer toutes les 4 layers
-    layers.append(HybridLayer(768, use_mamba=use_mamba))
-```
-
-## Configs
-
-```python
-from complexity.api import MambaConfig, RWKVConfig, RetNetConfig
-
-# Mamba
-config = MambaConfig(
-    hidden_size=768,
-    num_hidden_layers=12,
-    state_size=16,
-    expand=2,
-)
-
-# RWKV
-config = RWKVConfig(
-    hidden_size=768,
-    num_hidden_layers=12,
-    context_length=4096,
-)
-
-# RetNet
-config = RetNetConfig(
-    hidden_size=768,
-    num_hidden_layers=12,
-    num_heads=8,
-)
-```
+- [Token-Routed MLP](token-routed.md)
+- [Mu-Guidance](dynamics.md)
+- [Training](training.md)

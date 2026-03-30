@@ -1,146 +1,80 @@
-# INL Dynamics
+# Mu-Guidance
 
-**Velocity tracking for LLM training stability.**
+Inter-layer communication channel for Token-Routed MoE architectures.
 
-## The Problem
+## Overview
 
-After ~400k training steps, models can explode (NaN loss) due to:
-- **Small words** (the, a, is) causing oscillations
-- **Unbounded beta** that tends to infinity with softplus
-- **Velocity accumulation** without damping
-
-## The Solution: INL Dynamics
-
-Second-order dynamical system for stable representation evolution:
+Mu-Guidance is a learnable signal that flows from layer $l$ to layer $l+1$, carrying expert-aware context. Each layer computes a contextual $\mu$ after its MLP, which influences the next layer's Q/K/V attention projections.
 
 ```
-error = h - mu                      # deviation from equilibrium
-v_next = alpha * v - beta * error   # velocity update
-h_next = h + dt * gate * v_next     # position update
+Layer l:   Attention → MLP → MuGuidance → mu_current
+                                              │
+Layer l+1: Attention(mu_prev=mu_current) → MLP → MuGuidance → ...
 ```
 
-Key parameters:
-- **alpha** (inertia): smooths movements
-- **beta** (correction): pulls back to equilibrium
-- **gate** (amplitude): controls force
-- **velocity**: absorbs shocks from small words
+![Architecture](../figures/architecture_complexity_deep.png)
+
+## How It Works
+
+```python
+# MuGuidance module (after MLP in each layer)
+mu_current = clamp(mu_param + mu_proj(hidden_states), -2.0, 2.0)
+
+# Next layer's attention receives mu_current as mu_prev
+q = q_proj(x) + mu_to_q(mu_prev)
+k = k_proj(x) + mu_to_k(mu_prev)
+v = v_proj(x) + mu_to_v(mu_prev)
+```
+
+Key components:
+- **mu_param**: learnable vector (768d), initialized to 1.0
+- **mu_proj**: linear projection from hidden states
+- **clamp(-2, 2)**: prevents feedback explosion between layers
+- **mu_init**: learnable parameter for layer 0 (so it also gets guidance)
+
+## Why It Matters
+
+![Mu Contribution](../figures/mu_contribution.png)
+
+Without Mu-Guidance, the Token-Routed MLP is slightly worse than dense:
+
+| Configuration | Avg Loss (700 steps) |
+|---------------|---------------------|
+| TR + Mu + Zipf | **5.026** |
+| TR sans Mu | 5.127 |
+| Dense | 5.205 |
+
+Mu-Guidance is the key component: it tells the next layer which expert processed each token, enabling cross-layer expert coordination.
+
+![Component Activity](../figures/component_activity.png)
 
 ## Usage
 
-### Full Version (adaptive parameters)
-
 ```python
-from complexity.api import INLDynamics
+from complexity.models.block import MuGuidance
 
-dynamics = INLDynamics(
-    hidden_size=768,
-    # Initial parameters
-    init_alpha=0.9,      # High inertia = smooth
-    init_beta=0.1,       # Low correction = stable
-    init_gate=0.5,       # Medium amplitude
-    dt=0.1,              # Integration step
-    # CRITICAL: Stability constraints
-    beta_max=2.0,        # Clamp beta to [0, 2]!
-    velocity_max=10.0,   # Limit velocity
-    mu_min=0.0,          # Min equilibrium
-    mu_max=2.0,          # Max equilibrium
-)
-
-# Forward
-h_next, v_next = dynamics(hidden_states, velocity_states)
+mu_guidance = MuGuidance(hidden_size=768, mu_min=0.0, mu_max=2.0)
+mu_current = mu_guidance(hidden_states)  # [batch, seq, 768]
 ```
 
-### Lite Version (fixed parameters)
+In the training loop (builder.py), the clamp is applied between layers:
 
 ```python
-from complexity.api import INLDynamicsLite
-
-dynamics = INLDynamicsLite(
-    hidden_size=768,
-    alpha=0.9,
-    beta=0.1,  # Fixed, no explosion possible
-    gate=0.5,
-    dt=0.1,
-)
-```
-
-## Critical Constraints
-
-| Parameter | Range | Why |
-|-----------|-------|-----|
-| `alpha` | [0, 1] | sigmoid |
-| **`beta`** | **[0, 2]** | **softplus → ∞ without clamp!** |
-| `gate` | [0, 1] | sigmoid |
-| `mu` | [0, 2] | bounded equilibrium |
-| `velocity` | [-10, 10] | prevents runaway |
-
-### The Bug Discovered After 400k Steps
-
-```python
-# BAD - causes explosion!
-beta = F.softplus(beta_raw)  # [0, inf) ❌
-
-# GOOD - stable
-beta = torch.clamp(F.softplus(beta_raw), max=2.0)  # [0, 2] ✓
-```
-
-## Integration in a Decoder Layer
-
-```python
-class DecoderLayer(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.attn = CUDA.flash(...)
-        self.dynamics = INLDynamics(config.hidden_size, beta_max=2.0)
-        self.mlp = SwiGLU(...)
-        self.norm1 = RMSNorm(config.hidden_size)
-        self.norm2 = RMSNorm(config.hidden_size)
-
-    def forward(self, h, velocity=None):
-        # 1. Attention
-        residual = h
-        h = self.norm1(h)
-        h, _ = self.attn(h)
-
-        # 2. INL Dynamics - CRUCIAL!
-        h, velocity = self.dynamics(h, velocity)
-        h = residual + h
-
-        # 3. MLP
-        residual = h
-        h = self.norm2(h)
-        h = self.mlp(h)
-        h = residual + h
-
-        return h, velocity
-```
-
-## Monitoring During Training
-
-```python
-# Check dynamics stats
+mu_prev = model.mu_init.expand(batch_size, seq_len, -1)
 for layer in model.layers:
-    stats = layer.dynamics.get_dynamics_stats()
-    print(f"mu: [{stats['mu_min']:.2f}, {stats['mu_max']:.2f}]")
-
-# If mu goes outside [0, 2] → problem!
+    hidden_states, _, _, mu_contextual = layer(hidden_states, mu_prev=mu_prev)
+    mu_prev = torch.clamp(mu_contextual, -2.0, 2.0)
 ```
 
-## Why It Works
+## vLLM Integration
 
-1. **Velocity = damper**: Absorbs shocks from frequent tokens
-2. **Clamped beta**: No correction explosion
-3. **Smooth trajectories**: No jerky movements
-4. **Learnable equilibrium**: Model learns where to converge
+Mu-Guidance is fully supported in vLLM inference:
+- `mu_init` stored outside `torch.compile` scope
+- `mu_prev` flows through all 18 layers with clamp(-2, 2)
+- Compatible with PagedAttention and CUDA graphs
 
-## Without INL Dynamics
+## See Also
 
-- Training from scratch costs more
-- Instability on small words
-- Risk of explosion after long training
-
-## With INL Dynamics
-
-- Stable training up to 1M+ steps
-- Better generalization
-- Slightly higher compute cost (~5%)
+- [Token-Routed MLP](token-routed.md)
+- [Architecture Overview](architectures.md)
+- [Training](training.md)

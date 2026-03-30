@@ -1,127 +1,75 @@
-# CUDA / Triton Optimizations
+# CUDA / GPU Optimizations
 
-**Attention layers optimisées pour GPU.**
+## Attention
 
-## Vue d'ensemble
+| Type | Complexity | Memory | Usage |
+|------|-----------|--------|-------|
+| Flash Attention (SDPA) | O(N^2) | O(N) | Default, up to 8k tokens |
+| Sliding Window | O(NxW) | O(W) | Long sequences |
 
-| Type | Complexité | Mémoire | Usage |
-|------|------------|---------|-------|
-| Flash Attention | O(N²) | O(N) | Standard, jusqu'à 8k tokens |
-| Sliding Window | O(N×W) | O(W) | Mistral-style, longues séquences |
-| Sparse | O(N×B) | O(B) | BigBird/Longformer |
-| Linear | O(N) | O(1) | Très longues séquences |
-| MultiScale | Variable | Variable | Mix local + global |
-
-## Flash Attention
-
-2-4x plus rapide, O(N) mémoire au lieu de O(N²).
+### GQA with Flash Attention
 
 ```python
-from complexity.api import CUDA
-
-attn = CUDA.flash(
-    hidden_size=4096,
-    num_heads=32,
-    num_kv_heads=8,  # GQA
-)
-
-output, cache = attn(hidden_states)
+# 12 query heads, 4 KV heads (Complexity-Deep default)
+# Uses PyTorch SDPA with Flash backend
+attn = GroupedQueryAttention(config)
 ```
 
-**Requis:** PyTorch 2.0+
+### KV Cache Fix
 
-## Sliding Window Attention
-
-Chaque token n'attend que les W tokens précédents.
+When using SDPA with KV cache (autoregressive generation), `is_causal=True` must be disabled when `q_len != kv_len`:
 
 ```python
-attn = CUDA.sliding_window(
-    hidden_size=4096,
-    num_heads=32,
-    window_size=4096,  # Mistral-style
-)
+# is_causal=True only valid when q_len == kv_len (no KV cache)
+use_causal = (attn_mask is None) and (q.shape[2] == k.shape[2])
+attn_output = F.scaled_dot_product_attention(q, k, v, is_causal=use_causal)
 ```
 
-**Utilisé par:** Mistral, Longformer
+## Token-Routed MLP Dispatch
 
-## Sparse Attention
-
-Combine attention locale + globale + aléatoire.
+### Sort-and-Split (current)
 
 ```python
-attn = CUDA.sparse(
-    hidden_size=4096,
-    num_heads=32,
-    block_size=64,
-    num_global_tokens=1,  # [CLS] token
-)
+sort_idx = expert_ids.argsort(stable=True)
+sorted_x = flat[sort_idx]
+# BMM: [E, N/E, hidden] @ [E, hidden, inter*2]
+gu = torch.bmm(sorted_x.view(E, chunk, hidden), gate_up_proj)
 ```
 
-**Utilisé par:** BigBird, Longformer
+- Fullgraph compatible with `torch.compile`
+- Each expert processes exactly N/E tokens
+- No dynamic shapes
 
-## Linear Attention
-
-O(N) complexité totale - pour séquences très longues.
+### Fused Cross-Entropy
 
 ```python
-attn = CUDA.linear(
-    hidden_size=4096,
-    num_heads=32,
-    feature_map="elu",  # "elu", "relu", "softmax"
-)
+from complexity_cuda.fused_cross_entropy import fused_cross_entropy
+# Never materializes full logits tensor
+loss = fused_cross_entropy(hidden_states, embed_weight, labels)
 ```
 
-**Référence:** "Transformers are RNNs" (Katharopoulos et al., 2020)
+## vLLM Integration
 
-## Multi-Scale Attention
+The model runs on vLLM with:
+- **PagedAttention**: KV cache management
+- **CUDA Graphs**: captured for decode steps
+- **Custom splitting_op**: deterministic routing in eager mode during graph replay
+- **204 tok/s** on RTX 5060 Ti (16GB)
 
-Différentes têtes utilisent différentes échelles.
+## torch.compile Notes
 
-```python
-attn = CUDA.multiscale(
-    hidden_size=4096,
-    num_heads=32,
-    local_heads=16,  # 16 têtes locales, 16 globales
-    window_sizes=(256, 512, 1024),
-)
-```
+- Expert weights as `nn.Parameter` (not 3D indexed tensors) for XBLOCK compatibility
+- `token_to_expert` buffer stored outside compiled module to avoid pickle issues
+- `mu_init` in `ComplexityForCausalLM` (not compiled) to avoid serialization errors
 
-## Factory générique
+## Memory Tips
 
-```python
-attn = CUDA.create(
-    attn_type="flash",  # "flash", "sliding_window", "sparse", "linear", "multiscale"
-    hidden_size=4096,
-    num_heads=32,
-    **kwargs
-)
-```
+| Model | GPU Memory | Config |
+|-------|-----------|--------|
+| 187M (training) | ~31 GB | bf16, batch 128, seq 2048 |
+| 187M (inference, vLLM) | ~0.4 GB | bf16, PagedAttention |
 
-## Comparaison mémoire
+## See Also
 
-Pour seq_len=8192, hidden_size=4096, batch_size=1:
-
-| Type | Mémoire activations |
-|------|---------------------|
-| Standard | ~2 GB |
-| Flash | ~500 MB |
-| Sliding (W=512) | ~64 MB |
-| Linear | ~32 MB |
-
-## Tips
-
-1. **Flash Attention** pour la plupart des cas
-2. **Sliding Window** si séquences > 8k tokens
-3. **Linear Attention** si séquences > 32k tokens
-4. **Sparse** pour documents avec structure (début important)
-
-## Avec GQA
-
-```python
-# 32 query heads, 8 KV heads = 4x moins de mémoire KV
-attn = CUDA.flash(
-    hidden_size=4096,
-    num_heads=32,
-    num_kv_heads=8,
-)
-```
+- [Token-Routed MLP](token-routed.md)
+- [Training](training.md)
