@@ -1,0 +1,376 @@
+"""
+Integrated Trainer for framework-complexity.
+
+Combines FSDP, mixed precision, gradient accumulation, checkpointing,
+and learning rate scheduling into a single training loop.
+"""
+
+import torch
+import torch.nn as nn
+import torch.distributed as dist
+from torch.utils.data import DataLoader
+from typing import Optional, Dict, Any, Callable, List
+from pathlib import Path
+import logging
+import time
+import math
+import warnings
+
+warnings.filterwarnings("ignore", message=".*epoch parameter in.*scheduler.step.*")
+
+from ..parallel.data_parallel import (
+    wrap_model_fsdp,
+    ShardingMode,
+    PrecisionMode,
+    init_distributed,
+    get_rank,
+    get_world_size,
+    is_main_process,
+)
+from ..utils.checkpointing import CheckpointManager, TrainingState
+from ..utils.security import AuditLogger, SecureTrainingContext
+
+from .config import TrainingConfig
+from .scheduler import get_lr_scheduler, resolve_scheduler_name
+from .metrics import MetricsTracker
+
+logger = logging.getLogger(__name__)
+
+
+class Trainer:
+    """
+    Integrated trainer for framework-complexity models.
+
+    Usage:
+        trainer = Trainer(model=model, config=config, train_dataloader=loader)
+        trainer.train()
+    """
+
+    def __init__(
+        self,
+        model: nn.Module,
+        config: TrainingConfig,
+        train_dataloader: DataLoader,
+        eval_dataloader: Optional[DataLoader] = None,
+        optimizer: Optional[torch.optim.Optimizer] = None,
+        scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+        compute_loss: Optional[Callable] = None,
+        callbacks: Optional[List[Callable]] = None,
+    ):
+        self.config = config
+        self.train_dataloader = train_dataloader
+        self.eval_dataloader = eval_dataloader
+        self.callbacks = callbacks or []
+
+        # Initialize distributed
+        self.distributed = init_distributed()
+        self.rank = get_rank()
+        self.world_size = get_world_size()
+        self.is_main = is_main_process()
+
+        # Device
+        if torch.cuda.is_available():
+            self.device = torch.device(f"cuda:{self.rank % torch.cuda.device_count()}")
+        else:
+            self.device = torch.device("cpu")
+
+        # Wrap model with FSDP if enabled
+        if config.use_fsdp and self.distributed:
+            precision = PrecisionMode.BF16 if config.precision == "bf16" else (
+                PrecisionMode.FP16 if config.precision == "fp16" else PrecisionMode.FP32
+            )
+            sharding = ShardingMode(config.sharding_mode)
+            gc_enabled = getattr(model, '_gradient_checkpointing', False)
+            self.model = wrap_model_fsdp(
+                model,
+                sharding_mode=sharding,
+                precision=precision,
+                gradient_checkpointing=gc_enabled,
+            )
+        else:
+            self.model = model.to(self.device)
+
+        # Auto-scale LR by effective batch size (sqrt scaling)
+        # Base LR is calibrated for batch=64 on 1 GPU.
+        base_batch = 64
+        effective_batch = config.batch_size * self.world_size * config.gradient_accumulation_steps
+        if effective_batch != base_batch:
+            import math
+            lr_scale = math.sqrt(effective_batch / base_batch)
+            config.learning_rate = config.learning_rate * lr_scale
+            if hasattr(config, 'muon_lr'):
+                config.muon_lr = config.muon_lr * lr_scale
+            if self.is_main:
+                logger.info(f"  LR auto-scaled: x{lr_scale:.2f} for effective_batch={effective_batch} "
+                            f"(base={base_batch}) -> lr={config.learning_rate:.2e}")
+
+        # Optimizer
+        if optimizer is None:
+            self.optimizer = self._create_optimizer()
+        else:
+            self.optimizer = optimizer
+
+        # Scheduler
+        num_training_steps = config.max_steps
+        if scheduler is None:
+            self.scheduler = get_lr_scheduler(
+                self.optimizer, config, num_training_steps, model=model,
+            )
+            resolved = resolve_scheduler_name(config, model)
+            if config.lr_scheduler == "auto":
+                logger.info(f"Auto scheduler: {resolved}")
+        else:
+            self.scheduler = scheduler
+
+        # Loss function
+        self.compute_loss = compute_loss or self._default_loss
+
+        # Checkpointing
+        self.checkpoint_manager = CheckpointManager(
+            checkpoint_dir=config.checkpoint_dir,
+            model=self.model,
+            optimizer=self.optimizer,
+            scheduler=self.scheduler,
+            max_checkpoints=config.save_total_limit,
+        )
+
+        # Metrics
+        self.metrics = MetricsTracker(config.log_dir)
+
+        # Audit logging
+        self.audit = AuditLogger(
+            log_path=str(Path(config.log_dir) / "audit.log")
+        )
+
+        # Training state
+        self.state = TrainingState()
+        self.global_step = 0
+        self.epoch = 0
+
+        # Mixed precision scaler (FP16 only, BF16 doesn't need it)
+        self.scaler = None
+        if config.precision == "fp16":
+            self.scaler = torch.cuda.amp.GradScaler()
+
+        if self.is_main:
+            self.audit.log_training_start(config.to_dict())
+            logger.info(f"Trainer initialized on {self.world_size} devices")
+
+    def _create_optimizer(self) -> torch.optim.Optimizer:
+        """Create optimizer based on config."""
+        config = self.config
+
+        if config.optimizer_type == "muon":
+            from .muon import MuonWithAdamW, split_params_for_muon
+            muon_groups, adam_groups = split_params_for_muon(self.model)
+            optimizer = MuonWithAdamW(
+                muon_params=muon_groups,
+                adam_params=adam_groups,
+                lr=config.muon_lr,
+                adam_lr=config.learning_rate,
+                weight_decay=config.weight_decay,
+            )
+            if self.is_main:
+                muon_p = sum(p.numel() for g in muon_groups for p in g['params'])
+                adam_p = sum(p.numel() for g in adam_groups for p in g['params'])
+                logger.info(f"Muon optimizer: {muon_p/1e6:.0f}M orthogonalized, {adam_p/1e6:.0f}M AdamW")
+            return optimizer
+
+        # Split params: decay vs no-decay, and optionally muP scaling
+        embed_params = []
+        hidden_params = []
+        no_decay_params = []
+
+        base_width = getattr(config, 'mup_base_width', 256)
+        model_width = getattr(self.model, 'config', None)
+        model_width = getattr(model_width, 'hidden_size', base_width) if model_width else base_width
+        width_ratio = model_width / base_width
+
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if 'bias' in name or 'norm' in name or '.mu' in name:
+                no_decay_params.append(param)
+            elif 'embed' in name or 'lm_head' in name:
+                embed_params.append(param)
+            else:
+                hidden_params.append(param)
+
+        if config.optimizer_type == "adamw_mup":
+            # muP: scale LR by 1/width_ratio for hidden layers,
+            # keep base LR for embeddings. Ref: Yang et al. 2022
+            param_groups = [
+                {"params": embed_params, "lr": config.learning_rate, "weight_decay": config.weight_decay},
+                {"params": hidden_params, "lr": config.learning_rate / width_ratio, "weight_decay": config.weight_decay},
+                {"params": no_decay_params, "lr": config.learning_rate / width_ratio, "weight_decay": 0.0},
+            ]
+            if self.is_main:
+                logger.info(f"muP AdamW: base_width={base_width}, model_width={model_width}, "
+                            f"embed_lr={config.learning_rate:.2e}, hidden_lr={config.learning_rate/width_ratio:.2e}")
+        else:
+            # Standard AdamW
+            param_groups = [
+                {"params": embed_params + hidden_params, "weight_decay": config.weight_decay},
+                {"params": no_decay_params, "weight_decay": 0.0},
+            ]
+
+        return torch.optim.AdamW(
+            param_groups,
+            lr=config.learning_rate,
+            betas=(0.9, 0.95),
+            foreach=False,
+        )
+
+    def _default_loss(self, model: nn.Module, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Default loss computation (cross-entropy for LM)."""
+        input_ids = batch["input_ids"].to(self.device)
+        labels = batch.get("labels", input_ids[:, 1:]).to(self.device)
+
+        outputs = model(input_ids)
+
+        if outputs.dim() == 3:
+            shift_logits = outputs[:, :-1, :].contiguous()
+            shift_labels = labels[:, :shift_logits.size(1)].contiguous()
+        else:
+            shift_logits = outputs
+            shift_labels = labels
+
+        return nn.functional.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+            ignore_index=-100,
+        )
+
+    def train(self) -> Dict[str, Any]:
+        """Main training loop."""
+        self.model.train()
+
+        if self.config.resume_from:
+            self.state = self.checkpoint_manager.load(self.config.resume_from)
+            self.global_step = self.state.step
+            self.epoch = self.state.epoch
+            logger.info(f"Resumed from step {self.global_step}")
+
+        accumulation_steps = self.config.gradient_accumulation_steps
+
+        try:
+            while self.global_step < self.config.max_steps:
+                self.epoch += 1
+
+                for batch_idx, batch in enumerate(self.train_dataloader):
+                    step_start = time.time()
+
+                    loss = self._training_step(batch)
+
+                    if (batch_idx + 1) % accumulation_steps == 0:
+                        self._optimizer_step()
+                        self.global_step += 1
+
+                        step_time = time.time() - step_start
+                        self.metrics.log_step_time(step_time)
+
+                        if self.eval_dataloader and self.global_step % self.config.eval_steps == 0:
+                            eval_loss = self.evaluate()
+                            if self.is_main:
+                                logger.info(f"Step {self.global_step} - Eval Loss: {eval_loss:.4f}")
+
+                        if self.global_step % self.config.save_steps == 0:
+                            self._save_checkpoint()
+
+                        for callback in self.callbacks:
+                            callback(self, self.global_step, loss.item())
+
+                        if self.global_step >= self.config.max_steps:
+                            break
+
+                if self.config.max_epochs and self.epoch >= self.config.max_epochs:
+                    break
+
+        except KeyboardInterrupt:
+            logger.info("Training interrupted by user")
+            self._save_checkpoint(tag="interrupted")
+
+        self._save_checkpoint(tag="final")
+
+        summary = self.metrics.get_summary()
+        if self.is_main:
+            self.audit.log_training_end(summary)
+            self.metrics.save()
+
+        return summary
+
+    def _training_step(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Forward + backward pass under autocast."""
+        if self.config.precision in ["fp16", "bf16"]:
+            dtype = torch.float16 if self.config.precision == "fp16" else torch.bfloat16
+            with torch.autocast(device_type="cuda", dtype=dtype):
+                loss = self.compute_loss(self.model, batch)
+                scaled_loss = loss / self.config.gradient_accumulation_steps
+                if self.scaler:
+                    self.scaler.scale(scaled_loss).backward()
+                else:
+                    scaled_loss.backward()
+        else:
+            loss = self.compute_loss(self.model, batch)
+            scaled_loss = loss / self.config.gradient_accumulation_steps
+            scaled_loss.backward()
+
+        return loss
+
+    def _optimizer_step(self):
+        """Optimizer step with gradient clipping."""
+        if self.scaler:
+            self.scaler.unscale_(self.optimizer)
+
+        if self.config.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                self.config.grad_clip,
+            )
+
+        if self.scaler:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            self.optimizer.step()
+
+        self.scheduler.step()
+        self.optimizer.zero_grad()
+
+    def _save_checkpoint(self, tag: str = "step"):
+        """Save checkpoint."""
+        self.state.step = self.global_step
+        self.state.epoch = self.epoch
+        self.state.learning_rate = self.scheduler.get_last_lr()[0]
+
+        self.checkpoint_manager.save(
+            step=self.global_step,
+            training_state=self.state,
+            tag=tag,
+        )
+
+    @torch.no_grad()
+    def evaluate(self) -> float:
+        """Run evaluation."""
+        if self.eval_dataloader is None:
+            return 0.0
+
+        self.model.eval()
+        total_loss = 0.0
+        num_batches = 0
+
+        for batch in self.eval_dataloader:
+            loss = self._training_step(batch)
+            total_loss += loss.item()
+            num_batches += 1
+
+        self.model.train()
+
+        avg_loss = total_loss / max(num_batches, 1)
+
+        if self.distributed:
+            loss_tensor = torch.tensor(avg_loss, device=self.device)
+            dist.all_reduce(loss_tensor)
+            avg_loss = loss_tensor.item() / self.world_size
+
+        return avg_loss

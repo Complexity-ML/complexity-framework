@@ -1,0 +1,130 @@
+"""
+Framework-Complexity Core Components
+====================================
+
+Modular building blocks for transformer architectures.
+
+Modules:
+- attention: MHA, GQA, MQA implementations
+- mlp: Standard, SwiGLU, Token-Routed MoE
+- position: RoPE, YaRN, Dynamic NTK
+- normalization: RMSNorm, LayerNorm
+- registry: Component registration system
+
+Usage:
+    from complexity.core.registry import ATTENTION_REGISTRY, register_attention
+    from complexity.core.attention import GroupedQueryAttention
+    from complexity.core.mlp import SwiGLUMLP
+"""
+
+# Registry (must be imported first)
+from complexity.core.registry import (
+    Registry,
+    ATTENTION_REGISTRY,
+    MLP_REGISTRY,
+    NORMALIZATION_REGISTRY,
+    POSITION_REGISTRY,
+    MODEL_REGISTRY,
+    register_attention,
+    register_mlp,
+    register_normalization,
+    register_position,
+    register_model,
+)
+
+# Import modules to register components
+from complexity.core import attention
+from complexity.core import mlp
+from complexity.core import position
+from complexity.core import normalization
+
+# Re-export main classes
+from complexity.core.attention import (
+    AttentionBase,
+    AttentionConfig,
+    GroupedQueryAttention,
+    MultiHeadAttention,
+    MultiQueryAttention,
+    RoutedGQA,
+    I64Attention,
+)
+
+from complexity.core.mlp import (
+    MLPBase,
+    MLPConfig,
+    StandardMLP,
+    SwiGLUMLP,
+    GeGLUMLP,
+    TokenRoutedMLP,
+    MixtralMoE,
+    I64SwiGLUMLP,
+    I64TokenRoutedMLP,
+)
+
+from complexity.core.position import (
+    RotaryEmbedding,
+    StandardRoPE,
+    YaRNRoPE,
+    DynamicNTKRoPE,
+    ALiBiPositionBias,
+    LearnedPositionEmbedding,
+    rotate_half,
+    apply_rotary_pos_emb,
+)
+
+from complexity.core.normalization import (
+    RMSNorm,
+    LayerNorm,
+    IdentityNorm,
+    build_norm,
+    I64RMSNorm,
+)
+
+
+__all__ = [
+    # Registry
+    "Registry",
+    "ATTENTION_REGISTRY",
+    "MLP_REGISTRY",
+    "NORMALIZATION_REGISTRY",
+    "POSITION_REGISTRY",
+    "MODEL_REGISTRY",
+    "register_attention",
+    "register_mlp",
+    "register_normalization",
+    "register_position",
+    "register_model",
+    # Attention
+    "AttentionBase",
+    "AttentionConfig",
+    "GroupedQueryAttention",
+    "MultiHeadAttention",
+    "MultiQueryAttention",
+    "I64Attention",
+    "RoutedGQA",
+    # MLP
+    "MLPBase",
+    "MLPConfig",
+    "StandardMLP",
+    "SwiGLUMLP",
+    "GeGLUMLP",
+    "TokenRoutedMLP",
+    "MixtralMoE",
+    "I64SwiGLUMLP",
+    "I64TokenRoutedMLP",
+    # Position
+    "RotaryEmbedding",
+    "StandardRoPE",
+    "YaRNRoPE",
+    "DynamicNTKRoPE",
+    "ALiBiPositionBias",
+    "LearnedPositionEmbedding",
+    "rotate_half",
+    "apply_rotary_pos_emb",
+    # Normalization
+    "RMSNorm",
+    "LayerNorm",
+    "IdentityNorm",
+    "build_norm",
+    "I64RMSNorm",
+]

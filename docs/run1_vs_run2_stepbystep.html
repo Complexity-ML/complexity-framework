@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Run 1 vs Run 2 — Step by Step</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; color: #e0e0e0; font-family: 'Segoe UI', system-ui, sans-serif; padding: 30px; }
+  h1 { color: #7eb8ff; margin-bottom: 6px; font-size: 1.5em; }
+  .subtitle { color: #888; margin-bottom: 25px; font-size: 0.9em; }
+
+  .controls { text-align: center; margin: 20px 0; }
+  .btn {
+    background: #4a6aff; color: white; border: none; padding: 10px 28px;
+    border-radius: 8px; font-size: 1em; cursor: pointer; margin: 0 8px;
+  }
+  .btn:hover { background: #5a7aff; }
+  .btn:disabled { background: #333; color: #666; cursor: default; }
+  .btn.reset { background: #ff5555; }
+
+  .pipeline { display: flex; flex-direction: column; gap: 18px; max-width: 1100px; margin: 0 auto; }
+
+  .step {
+    background: #13131f;
+    border: 1px solid #2a2a3f;
+    border-radius: 12px;
+    padding: 20px;
+    opacity: 0.25;
+    transform: translateY(8px);
+    transition: all 0.5s ease;
+  }
+  .step.active { opacity: 1; transform: translateY(0); border-color: #4a4a7f; box-shadow: 0 0 20px rgba(100,100,255,0.08); }
+  .step.done { opacity: 0.65; transform: translateY(0); }
+
+  .step-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .step-num {
+    background: #2a2a4f; color: #7eb8ff;
+    width: 30px; height: 30px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: bold; font-size: 0.85em; flex-shrink: 0;
+  }
+  .step.active .step-num { background: #4a6aff; color: white; }
+  .step-title { font-weight: 600; font-size: 1em; }
+
+  /* ── Deux colonnes Run 1 / Run 2 ── */
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 15px;
+    margin-top: 10px;
+  }
+  .col {
+    background: #0e0e1a;
+    border: 1px solid #1e1e3f;
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .col.r1 { border-left: 3px solid #ffb86c; }
+  .col.r2 { border-left: 3px solid #50fa7b; }
+  .col-title { font-size: 0.8em; font-weight: 600; margin-bottom: 8px; }
+  .col.r1 .col-title { color: #ffb86c; }
+  .col.r2 .col-title { color: #50fa7b; }
+
+  /* ── Vecteurs ── */
+  .vec {
+    display: flex; align-items: center; gap: 3px;
+    margin: 6px 0; flex-wrap: wrap;
+  }
+  .vec-label {
+    color: #888; font-size: 0.8em; width: 90px; text-align: right;
+    margin-right: 6px; flex-shrink: 0; font-family: monospace;
+  }
+  .cell {
+    min-width: 44px; height: 26px; padding: 0 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.75em; font-family: 'Consolas', monospace;
+    border: 1px solid #2a2a3f; border-radius: 3px;
+    transition: all 0.3s;
+  }
+  .cell.pos { background: #50fa7b15; color: #50fa7b; }
+  .cell.neg { background: #ff555515; color: #ff5555; }
+  .cell.neutral { background: #7eb8ff10; color: #7eb8ff; }
+  .cell.hot { background: #4a6aff25; color: #7eb8ff; border-color: #4a6aff; }
+  .cell.mu { background: #ff79c620; color: #ff79c6; border-color: #ff79c655; }
+  .cell.pid { background: #8be9fd20; color: #8be9fd; border-color: #8be9fd55; }
+  .cell.same { background: #ffffff08; color: #666; }
+
+  .op-row {
+    display: flex; align-items: center; gap: 6px; margin: 6px 0;
+    font-family: monospace; font-size: 0.82em; color: #aaa;
+  }
+  .op { color: #ffb86c; font-weight: bold; }
+
+  /* ── Explications ── */
+  .explain {
+    margin-top: 10px; padding: 10px 14px;
+    border-radius: 8px; font-size: 0.82em; line-height: 1.6;
+  }
+  .explain.diff {
+    background: #0d1a0d; border-left: 3px solid #50fa7b;
+  }
+  .explain.diff b { color: #50fa7b; }
+  .explain.same-note {
+    background: #0d0d1a; border-left: 3px solid #4a4a7f;
+  }
+  .explain.same-note b { color: #7eb8ff; }
+  .explain.warn {
+    background: #1a0d0d; border-left: 3px solid #ff5555;
+  }
+  .explain.warn b { color: #ff5555; }
+
+  .arrow-down { text-align: center; color: #2a2a4f; font-size: 1.4em; margin: -5px 0; }
+
+  .tag {
+    display: inline-block; padding: 1px 7px; border-radius: 4px;
+    font-size: 0.7em; font-weight: 600; vertical-align: middle;
+  }
+  .tag-same { background: #2a2a3f; color: #888; }
+  .tag-diff { background: #1a3a1a; color: #50fa7b; }
+  .tag-key { background: #3a1a1a; color: #ff5555; }
+</style>
+</head>
+<body>
+
+<h1>Run 1 (Dense) vs Run 2 (Full) — Même token, step by step</h1>
+<p class="subtitle">
+  Token <b>"hello"</b> (id=15339) dans le contexte <b>"write hello world"</b> — Layer 5/18, hidden_size=4 (simplifié)
+</p>
+
+<div class="controls">
+  <button class="btn" id="prevBtn" onclick="prev()" disabled>← Précédent</button>
+  <button class="btn" id="nextBtn" onclick="next()">Suivant →</button>
+  <button class="btn reset" onclick="reset()">Reset</button>
+  <span style="color:#555; font-size:0.85em; margin-left:15px;" id="counter">0 / 8</span>
+</div>
+
+<div class="pipeline" id="pipeline">
+
+  <!-- ═══ Step 0: Input ═══ -->
+  <div class="step" id="step0">
+    <div class="step-header">
+      <div class="step-num">0</div>
+      <div class="step-title">Input — Hidden state identique pour les deux runs</div>
+    </div>
+    <div class="compare">
+      <div class="col r1">
+        <div class="col-title">Run 1 — Dense</div>
+        <div class="vec">
+          <div class="vec-label">h =</div>
+          <div class="cell same">0.70</div>
+          <div class="cell same">0.30</div>
+          <div class="cell same">-0.20</div>
+          <div class="cell same">0.50</div>
+        </div>
+      </div>
+      <div class="col r2">
+        <div class="col-title">Run 2 — Full</div>
+        <div class="vec">
+          <div class="vec-label">h =</div>
+          <div class="cell same">0.70</div>
+          <div class="cell same">0.30</div>
+          <div class="cell same">-0.20</div>
+          <div class="cell same">0.50</div>
+        </div>
+      </div>
+    </div>
+    <div class="explain same-note">
+      <b>Point de départ identique.</b> On va voir comment le signal diverge à chaque étape.
+      À la fin, le hidden state sera différent → le prochain token prédit sera différent.
+    </div>
+  </div>
+
+  <!-- ═══ Step 1: Attention ═══ -->
+  <div class="step" id="step1">
+    <div class="step-header">
+      <div class="step-num">1</div>
+      <div class="step-title">Attention — GQA (12H/4KV) <span class="tag tag-diff">DIFF: Mu-Guidance</span></div>
+    </div>
+    <div class="compare">
+      <div class="col r1">
+        <div class="col-title">Run 1 — Attention standard</div>
+        <div class="op-row">Q, K, V = W_q·h, W_k·h, W_v·h</div>
+        <div class="vec">
+          <div class="vec-label">attn_out =</div>
+          <div class="cell neutral">0.12</div>
+          <div class="cell neutral">-0.08</div>
+          <div class="cell neutral">0.15</div>
+          <div class="cell neutral">-0.03</div>
+        </div>
+        <div class="op-row" style="color:#666;">L'attention distribue le poids <b style="color:#ffb86c;">uniformément</b> sur "write", "hello", "world"</div>
+      </div>
+      <div class="col r2">
+        <div class="col-title">Run 2 — Attention + Mu du layer 4</div>
+        <div class="op-row">
+          <span style="color:#ff79c6">mu_prev</span> du layer 4 → guide K, Q, V
+        </div>
+        <div class="vec">
+          <div class="vec-label">mu_prev =</div>
+          <div class="cell mu">0.80</div>
+          <div class="cell mu">0.15</div>
+          <div class="cell mu">-0.40</div>
+          <div class="cell mu">0.60</div>
+        </div>
+        <div class="op-row">K' = W_k·h + <span style="color:#ff79c6">W_mu_k·mu</span></div>
+        <div class="op-row">Q' = W_q·h + <span style="color:#ff79c6">W_mu_q·mu</span></div>
+        <div class="vec">
+          <div class="vec-label">attn_out =</div>
+          <div class="cell hot">0.18</div>
+          <div class="cell hot">-0.12</div>
+          <div class="cell hot">0.22</div>
+          <div class="cell hot">-0.07</div>
+        </div>
+        <div class="op-row" style="color:#666;">Mu focalise l'attention sur <b style="color:#50fa7b">"write"</b> (contexte code) → signal plus fort</div>
+      </div>
+    </div>
+    <div class="explain diff">
+      <b>Différence #1 — Mu-Guidance :</b> Le mu du layer précédent biaise les projections K,Q,V.
+      L'attention de Run 2 "sait" déjà que le contexte est du code (le layer 4 l'a encodé dans mu).
+      Run 1 traite chaque layer indépendamment → attention plus diffuse, signal plus faible.
+    </div>
+  </div>
+
+  <!-- ═══ Step 2: Residual post-attn ═══ -->
+  <div class="step" id="step2">
+    <div class="step-header">
+      <div class="step-num">2</div>
+      <div class="step-title">Résiduel post-attention — x = x + attn_out</div>
+    </div>
+    <div class="compare">
+      <div class="col r1">
+        <div class="col-title">Run 1</div>
+        <div class="vec">
+          <div class="vec-label">h + attn =</div>
+          <div class="cell neutral">0.82</div>
+          <div class="cell neutral">0.22</div>
+          <div class="cell neutral">-0.05</div>
+          <div class="cell neutral">0.47</div>
+        </div>
+      </div>
+      <div class="col r2">
+        <div class="col-title">Run 2</div>
+        <div class="vec">
+          <div class="vec-label">h + attn =</div>
+          <div class="cell hot">0.88</div>
+          <div class="cell hot">0.18</div>
+          <div class="cell hot">0.02</div>
+          <div class="cell hot">0.43</div>
+        </div>
+      </div>
+    </div>
+    <div class="explain same-note">
+      <b>Les vecteurs divergent déjà.</b> Run 2 a un signal plus marqué (0.88 vs 0.82 en dim 0)
+      grâce à l'attention guidée par mu. Cette différence va s'amplifier dans les étapes suivantes.
+    </div>
+  </div>
+
+  <!-- ═══ Step 3: PiD Dynamics ═══ -->
+  <div class="step" id="step3">
+    <div class="step-header">
+      <div class="step-num">3</div>
+      <div class="step-title">INL Dynamics (PiD Controller) <span class="tag tag-key">Run 2 uniquement</span></div>
+    </div>
+    <div class="compare">
+      <div class="col r1">
+        <div class="col-title">Run 1 — Pas de PiD</div>
+        <div class="vec">
+          <div class="vec-label">h =</div>
+          <div class="cell same">0.82</div>
+          <div class="cell same">0.22</div>
+          <div class="cell same">-0.05</div>
+          <div class="cell same">0.47</div>
+        </div>
+        <div class="op-row" style="color:#666;">Le signal passe tel quel — aucun contrôle de magnitude.</div>
+        <div class="op-row" style="color:#ff5555; font-size:0.78em;">
+          Si h explose dans les couches profondes → rien ne le corrige.
+        </div>
+      </div>
+      <div class="col r2">
+        <div class="col-title">Run 2 — PiD Controller</div>
+        <div class="vec">
+          <div class="vec-label">mu =</div>
+          <div class="cell mu">1.00</div>
+          <div class="cell mu">1.00</div>
+          <div class="cell mu">1.00</div>
+          <div class="cell mu">1.00</div>
+        </div>
+        <div class="op-row">error = h - mu</div>
+        <div class="vec">
+          <div class="vec-label">error =</div>
+          <div class="cell neg">-0.12</div>
+          <div class="cell neg">-0.82</div>
+          <div class="cell neg">-0.98</div>
+          <div class="cell neg">-0.57</div>
+        </div>
+        <div class="op-row">v_next = <span class="op">α</span>·v − <span class="op">β</span>·error &nbsp;&nbsp; (α≈0.9, β≈0.1)</div>
+        <div class="vec">
+          <div class="vec-label">v_next =</div>
+          <div class="cell pid">0.012</div>
+          <div class="cell pid">0.082</div>
+          <div class="cell pid">0.098</div>
+          <div class="cell pid">0.057</div>
+        </div>
+        <div class="op-row">h_next = h + <span class="op">dt</span>·<span class="op">gate</span>·v_next &nbsp;&nbsp; (dt=0.1, gate≈0.5)</div>
+        <div class="vec">
+          <div class="vec-label">h_next =</div>
+          <div class="cell pid">0.881</div>
+          <div class="cell pid">0.184</div>
+          <div class="cell pid">0.025</div>
+          <div class="cell pid">0.433</div>
+        </div>
+      </div>
+    </div>
+    <div class="explain diff">
+      <b>Différence #2 — PiD :</b> Le contrôleur tire doucement h vers l'équilibre mu (≈1.0).
+      C'est un <b>petit ajustement</b> (×0.1×0.5) — pas un écrasement brutal.
+      Sur 18 layers, ces micro-corrections s'accumulent et empêchent le signal de dériver ou d'exploser.
+      Run 1 n'a aucun garde-fou → les couches profondes (12-18) deviennent bruitées.
+    </div>
+  </div>
+
+  <!-- ═══ Step 4: Mu contextual ═══ -->
+  <div class="step" id="step4">
+    <div class="step-header">
+      <div class="step-num">4</div>
+      <div class="step-title">Mu Contextuel — Préparé pour le layer 6 <span class="tag tag-key">Run 2 uniquement</span></div>
+    </div>
+    <div class="compare">
+      <div class="col r1">
+        <div class="col-title">Run 1 — Rien</div>
+        <div class="op-row" style="color:#666;">Pas de signal inter-layer. Le layer 6 part de zéro,
+          il doit tout redécouvrir depuis le hidden state brut.</div>
+      </div>
+      <div class="col r2">
+        <div class="col-title">Run 2 — mu_contextual = mu + mu_proj(h)</div>
+        <div class="vec">
+          <div class="vec-label">mu =</div>
+          <div class="cell mu">1.00</div>
+          <div class="cell mu">1.00</div>
+          <div class="cell mu">1.00</div>
+          <div class="cell mu">1.00</div>
+        </div>
+        <div class="op-row">mu_proj(h) = Linear(768,768) appliqué à h &nbsp; <span style="color:#555">(init zeros, apprend)</span></div>
+        <div class="vec">
+          <div class="vec-label">mu_proj(h)=</div>
+          <div class="cell mu">0.05</div>
+          <div class="cell mu">-0.12</div>
+          <div class="cell mu">0.08</div>
+          <div class="cell mu">-0.03</div>
+        </div>
+        <div class="op-row">mu_contextual = clamp(mu + mu_proj(h), -2, +2)</div>
+        <div class="vec">
+          <div class="vec-label">mu_ctx =</div>
+          <div class="cell mu">1.05</div>
+          <div class="cell mu">0.88</div>
+          <div class="cell mu">1.08</div>
+          <div class="cell mu">0.97</div>
+        </div>
+        <div class="op-row" style="color:#ff79c6;">→ envoyé au layer 6 pour guider son attention (step 1 du layer suivant)</div>
+      </div>
+    </div>
+    <div class="explain diff">
+      <b>Différence #3 — Mu inter-layer :</b> Run 2 encode "ce que ce layer a compris" dans mu_contextual
+      et le transmet au layer suivant. C'est un <b>canal de communication</b> entre layers.
+      Run 1 : chaque layer est isolé, il doit tout réapprendre depuis h. Run 2 : le layer 6 sait déjà
+      que "hello" est dans un contexte code grâce au mu du layer 5.
+    </div>
+  </div>
+
+  <!-- ═══ Step 5: Routing ═══ -->
+  <div class="step" id="step5">
+    <div class="step-header">
+      <div class="step-num">5</div>
+      <div class="step-title">MLP Routing <span class="tag tag-diff">DIFF: 1 dense vs 4 experts</span></div>
+    </div>
+    <div class="compare">
+      <div class="col r1">
+        <div class="col-title">Run 1 — Dense SwiGLU (2416)</div>
+        <div class="op-row">Pas de routing. Tous les tokens passent par le <b style="color:#ffb86c;">même FFN</b>.</div>
+        <div class="op-row">W_gate: [768 × 2416] &nbsp; W_up: [768 × 2416] &nbsp; W_down: [2416 × 768]</div>
+        <div class="op-row" style="color:#666;">Ce FFN doit encoder code + prose + math + tout → dilué.</div>
+      </div>
+      <div class="col r2">
+        <div class="col-title">Run 2 — Token-Routed (4 experts × 512)</div>
+        <div class="op-row">expert_id = 15339 % 4 = <b style="color:#50fa7b;">3</b></div>
+        <div class="op-row" style="color:#50fa7b;">→ Seul l'Expert 3 est activé. Experts 0,1,2 ne font rien.</div>
+        <div class="op-row">W_gate: [768 × 512] &nbsp; W_up: [768 × 512] &nbsp; W_down: [512 × 768]</div>
+        <div class="op-row" style="color:#666;">Expert 3 ne voit que 25% du vocab → poids spécialisés.</div>
+      </div>
+    </div>
+    <div class="explain diff">
+      <b>Différence #4 — Spécialisation :</b>
+      Run 1 : 2416 neurones partagés entre TOUS les tokens. Chaque neurone doit être "bon à tout".
+      Run 2 : 512 neurones dédiés aux tokens de l'Expert 3. Ils n'ont jamais vu les tokens des experts 0,1,2
+      → ils se spécialisent à 100% sur leur sous-ensemble. Moins de neurones, mais mieux ciblés.
+    </div>
+  </div>
+
+  <!-- ═══ Step 6: MLP Forward ═══ -->
+  <div class="step" id="step6">
+    <div class="step-header">
+      <div class="step-num">6</div>
+      <div class="step-title">MLP Forward — Le calcul concret</div>
+    </div>
+    <div class="compare">
+      <div class="col r1">
+        <div class="col-title">Run 1 — Dense (2416 neurones)</div>
+        <div class="op-row">gate = silu(W_gate · h) <span style="color:#555">→ [2416]</span></div>
+        <div class="op-row">up = W_up · h <span style="color:#555">→ [2416]</span></div>
+        <div class="op-row">inter = gate * up <span style="color:#555">→ [2416] SwiGLU</span></div>
+        <div class="op-row">out = W_down · inter <span style="color:#555">→ [768]</span></div>
+        <div class="vec">
+          <div class="vec-label">mlp_out =</div>
+          <div class="cell neutral">0.031</div>
+          <div class="cell neutral">-0.018</div>
+          <div class="cell neutral">0.042</div>
+          <div class="cell neutral">-0.009</div>
+        </div>
+        <div class="op-row" style="color:#ffb86c; font-size:0.78em;">
+          FLOPs: 768 × 2416 × 3 = <b>5,574,912</b> MACs
+        </div>
+      </div>
+      <div class="col r2">
+        <div class="col-title">Run 2 — Expert 3 (512 neurones)</div>
+        <div class="op-row">gate = silu(W_gate<sub>E3</sub> · h) <span style="color:#555">→ [512]</span></div>
+        <div class="op-row">up = W_up<sub>E3</sub> · h <span style="color:#555">→ [512]</span></div>
+        <div class="op-row">inter = gate * up <span style="color:#555">→ [512] SwiGLU</span></div>
+        <div class="op-row">out = W_down<sub>E3</sub> · inter <span style="color:#555">→ [768]</span></div>
+        <div class="vec">
+          <div class="vec-label">mlp_out =</div>
+          <div class="cell pos">0.048</div>
+          <div class="cell pos">-0.025</div>
+          <div class="cell pos">0.061</div>
+          <div class="cell pos">-0.014</div>
+        </div>
+        <div class="op-row" style="color:#50fa7b; font-size:0.78em;">
+          FLOPs: 768 × 512 × 3 = <b>1,179,648</b> MACs &nbsp; (<b>4.7× moins</b>)
+        </div>
+      </div>
+    </div>
+    <div class="explain diff">
+      <b>Run 2 produit un signal plus fort</b> (0.048 vs 0.031) avec 4.7× moins de FLOPs.
+      Pourquoi ? L'Expert 3 a des poids plus "affûtés" pour ce token — il n'a pas besoin de neurones
+      qui gèrent la ponctuation ou les nombres, il concentre ses 512 neurones sur ce qu'il connaît.
+      Le dense dilue ses 2416 neurones sur tout → chaque neurone contribue moins.
+    </div>
+  </div>
+
+  <!-- ═══ Step 7: Résiduel final ═══ -->
+  <div class="step" id="step7">
+    <div class="step-header">
+      <div class="step-num">7</div>
+      <div class="step-title">Résiduel final — x = x + mlp_out → output du layer</div>
+    </div>
+    <div class="compare">
+      <div class="col r1">
+        <div class="col-title">Run 1 — Output layer 5</div>
+        <div class="vec">
+          <div class="vec-label">h_out =</div>
+          <div class="cell neutral">0.851</div>
+          <div class="cell neutral">0.202</div>
+          <div class="cell neutral">-0.008</div>
+          <div class="cell neutral">0.461</div>
+        </div>
+        <div class="op-row" style="color:#666; font-size:0.78em;">
+          Passe au layer 6 sans aucun signal additionnel (pas de mu, pas de velocity).
+        </div>
+      </div>
+      <div class="col r2">
+        <div class="col-title">Run 2 — Output layer 5</div>
+        <div class="vec">
+          <div class="vec-label">h_out =</div>
+          <div class="cell pos">0.929</div>
+          <div class="cell pos">0.159</div>
+          <div class="cell pos">0.086</div>
+          <div class="cell pos">0.419</div>
+        </div>
+        <div class="op-row" style="color:#ff79c6; font-size:0.78em;">
+          + mu_contextual [1.05, 0.88, 1.08, 0.97] → layer 6 attention
+        </div>
+        <div class="op-row" style="color:#8be9fd; font-size:0.78em;">
+          + velocity_state [0.012, 0.082, 0.098, 0.057] → layer 6 PiD
+        </div>
+      </div>
+    </div>
+    <div class="explain diff">
+      <b>Bilan du layer 5 :</b> Les vecteurs ont divergé significativement (0.929 vs 0.851 en dim 0,
+      0.086 vs -0.008 en dim 2). Et surtout, Run 2 envoie <b>3 signaux</b> au layer suivant
+      (h, mu, velocity) vs <b>1 seul</b> pour Run 1 (h).
+      Sur 18 layers, ces différences se composent → le logit final est très différent.
+    </div>
+  </div>
+
+  <!-- ═══ Step 8: Impact final ═══ -->
+  <div class="step" id="step8">
+    <div class="step-header">
+      <div class="step-num">8</div>
+      <div class="step-title">Impact cumulé × 18 layers → Prédiction finale</div>
+    </div>
+    <div class="compare">
+      <div class="col r1">
+        <div class="col-title">Run 1 — Dense, pas de Mu, pas de PiD</div>
+        <div class="op-row" style="font-size:0.85em;">
+          Layer 5 : petit écart<br>
+          Layer 10 : écart × ~5 (composé)<br>
+          Layer 15 : signal bruité (pas de PiD → drift)<br>
+          Layer 18 : logits "flous"
+        </div>
+        <div class="vec" style="margin-top:8px;">
+          <div class="vec-label">top tokens:</div>
+          <div class="cell neutral">world 18%</div>
+          <div class="cell neutral">the 12%</div>
+          <div class="cell neutral">hello 9%</div>
+          <div class="cell neg">a 8%</div>
+        </div>
+        <div class="op-row" style="color:#ffb86c;">Distribution plate → hésite entre "world" et des mots génériques</div>
+      </div>
+      <div class="col r2">
+        <div class="col-title">Run 2 — Token-Routed + Mu + PiD</div>
+        <div class="op-row" style="font-size:0.85em;">
+          Layer 5 : signal déjà plus fort<br>
+          Layer 10 : mu guide → cohérence maintenue<br>
+          Layer 15 : PiD stabilise → pas de drift<br>
+          Layer 18 : logits piqués
+        </div>
+        <div class="vec" style="margin-top:8px;">
+          <div class="vec-label">top tokens:</div>
+          <div class="cell pos">world 42%</div>
+          <div class="cell neutral">! 8%</div>
+          <div class="cell neutral">\n 6%</div>
+          <div class="cell same">the 3%</div>
+        </div>
+        <div class="op-row" style="color:#50fa7b;">Distribution piquée → confiant sur "world" (contexte code)</div>
+      </div>
+    </div>
+    <div class="explain diff">
+      <b>Résultat final :</b> Run 2 prédit <b>"world" à 42%</b> vs 18% pour Run 1.<br>
+      • <b>Experts</b> : signal MLP plus fort et plus précis à chaque layer → logits plus discriminants<br>
+      • <b>Mu</b> : cohérence inter-layer → le modèle "sait" qu'il est dans du code sur toute la profondeur<br>
+      • <b>PiD</b> : pas de dérive dans les couches 12-18 → le signal arrive propre au dernier layer<br><br>
+      Même à 170M de params, ces 3 composants ensemble font la différence entre
+      une prédiction floue et une prédiction confiante.
+    </div>
+  </div>
+
+</div>
+
+<script>
+let current = -1;
+const total = 9;
+
+function updateSteps() {
+  for (let i = 0; i < total; i++) {
+    const el = document.getElementById('step' + i);
+    el.classList.remove('active', 'done');
+    if (i === current) el.classList.add('active');
+    else if (i < current) el.classList.add('done');
+  }
+  document.getElementById('prevBtn').disabled = current <= 0;
+  document.getElementById('nextBtn').disabled = current >= total - 1;
+  document.getElementById('counter').textContent = `${Math.max(current,0)} / ${total - 1}`;
+  if (current >= 0) {
+    document.getElementById('step' + current).scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+}
+
+function next() { if (current < total - 1) { current++; updateSteps(); } }
+function prev() { if (current > 0) { current--; updateSteps(); } }
+function reset() { current = -1; updateSteps(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); next(); }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); prev(); }
+  if (e.key === 'r') reset();
+});
+</script>
+
+</body>
+</html>

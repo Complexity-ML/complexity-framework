@@ -1,0 +1,27 @@
+{# Complexity-Deep SFT Chat Template
+   Compatible with: tokenizer special tokens (<s>, </s>, <pad>, <unk>)
+   Format: simple User/Assistant turns with BOS/EOS markers
+
+   Usage with lm-evaluation-harness:
+     --apply_chat_template (uses tokenizer_config.json chat_template)
+
+   Usage with SFT training:
+     tokenizer.apply_chat_template(messages, tokenize=True)
+#}
+{%- if messages[0]['role'] == 'system' -%}
+{{ messages[0]['content'] }}
+
+{% set ns = namespace(messages=messages[1:]) %}
+{%- else -%}
+{% set ns = namespace(messages=messages) %}
+{%- endif -%}
+{%- for message in ns.messages -%}
+{%- if message['role'] == 'user' -%}
+User: {{ message['content'] }}
+
+{% elif message['role'] == 'assistant' -%}
+Assistant: {{ message['content'] }}{{ eos_token }}
+{% endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+Assistant:{% endif -%}
