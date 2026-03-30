@@ -134,11 +134,25 @@ model = ClusterModel(model, config)
 | **CUDA/Triton** | Flash Attention, CGGR expert dispatch |
 | **Multimodal** | OmniModel (text + image + audio + video) |
 
+## Documentation
+
+- [Getting Started](docs/getting-started.md)
+- [Token-Routed MLP](docs/token-routed.md) - Sort-and-split dispatch, Zipf routing
+- [Mu-Guidance](docs/dynamics.md) - Inter-layer communication
+- [MoE Comparison](docs/moe.md) - Token-Routed vs Mixtral
+- [Training Guide](docs/training.md) - Ablation results, loss curves
+- [Architecture](docs/architectures.md) - Full architecture overview
+- [Custom Models](docs/custom-models.md) - Build your own
+- [CUDA / GPU](docs/cuda.md) - Optimizations, vLLM integration
+- [Efficient Training](docs/efficient.md) - Small budget tips
+
 ## Links
 
 - [HuggingFace](https://huggingface.co/Complexity-ML)
 - [PyPI](https://pypi.org/project/complexity-framework/)
 - [GitHub](https://github.com/Complexity-ML/complexity-framework)
+- [TMLR Paper](https://github.com/Complexity-ML/tmlr-paper-pool)
+- [vLLM Integration](https://github.com/Complexity-ML/vllm-cuda_graph)
 
 ## License
 

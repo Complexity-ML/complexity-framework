@@ -2,179 +2,118 @@
 
 Build your own architectures using Complexity building blocks.
 
-## Basic Custom Model
+## Architecture Reference
+
+![Architecture](../figures/architecture_complexity_deep.png)
+
+## Token-Routed Model (Recommended)
 
 ```python
-import torch.nn as nn
-from complexity.api import (
-    GQA, SwiGLU, RoPE, RMSNorm,
-    AttentionConfig, register
+from complexity.models import ComplexityModel
+from complexity.config import ModelConfig
+
+config = ModelConfig(
+    hidden_size=768,
+    num_hidden_layers=18,
+    num_attention_heads=12,
+    num_key_value_heads=4,
+    intermediate_size=2048,
+    vocab_size=32000,
+    mlp_type="token_routed",  # sort-and-split dispatch
+    num_experts=4,
+    shared_expert=True,
+    use_mu_guidance=True,
 )
-
-class MyTransformerBlock(nn.Module):
-    def __init__(self, hidden_size=768, num_heads=12, kv_heads=4):
-        super().__init__()
-
-        # Attention with GQA
-        self.attn = GQA(
-            AttentionConfig(
-                hidden_size=hidden_size,
-                num_attention_heads=num_heads,
-                num_key_value_heads=kv_heads,
-            )
-        )
-
-        # MLP with SwiGLU
-        self.mlp = SwiGLU(
-            hidden_size=hidden_size,
-            intermediate_size=hidden_size * 4,
-        )
-
-        # Normalization
-        self.norm1 = RMSNorm(hidden_size)
-        self.norm2 = RMSNorm(hidden_size)
-
-        # Position embeddings
-        self.rope = RoPE(dim=hidden_size // num_heads, max_seq_len=4096)
-
-    def forward(self, x, position_ids=None):
-        # Pre-norm architecture
-        h = self.norm1(x)
-
-        # Apply RoPE
-        cos, sin = self.rope(h, position_ids)
-
-        # Attention
-        attn_out, _ = self.attn(h, cos=cos, sin=sin)
-        x = x + attn_out
-
-        # MLP
-        x = x + self.mlp(self.norm2(x))
-
-        return x
+model = ComplexityModel(config)
+# 187M params, deterministic routing, no auxiliary losses
 ```
 
-## Full Custom Model
+## Custom Decoder Layer
 
 ```python
-from complexity.api import (
-    Model, ModelConfig, TransformerBlock,
-    INLDynamics, Efficient
-)
+import torch
+import torch.nn as nn
+from complexity.core.attention.gqa import GroupedQueryAttention
+from complexity.core.mlp import TokenRoutedMLP, MLPConfig
+from complexity.models.block import MuGuidance
 
-class MyLLM(nn.Module):
+class MyDecoderLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.config = config
+        self.input_layernorm = nn.RMSNorm(config.hidden_size)
+        self.post_attention_layernorm = nn.RMSNorm(config.hidden_size)
 
-        # Embeddings
-        self.embed = nn.Embedding(config.vocab_size, config.hidden_size)
+        # GQA Attention with Mu-Guided Q/K/V bias
+        self.self_attn = GroupedQueryAttention(config)
 
-        # Transformer blocks
-        self.blocks = nn.ModuleList([
-            TransformerBlock(config) for _ in range(config.num_layers)
-        ])
-
-        # INL Dynamics for stability
-        self.dynamics = INLDynamics(
+        # Token-Routed MLP with shared expert
+        mlp_config = MLPConfig(
             hidden_size=config.hidden_size,
-            beta_max=2.0,  # CRITICAL!
+            intermediate_size=config.intermediate_size,
+            num_experts=4,
+            vocab_size=config.vocab_size,
+            shared_expert=True,
         )
+        self.mlp = TokenRoutedMLP(mlp_config)
 
-        # Output
-        self.norm = RMSNorm(config.hidden_size)
-        self.head = nn.Linear(config.hidden_size, config.vocab_size)
+        # Mu-Guidance (after MLP, flows to next layer)
+        self.mu_guidance = MuGuidance(config.hidden_size)
 
-        # Initialize
-        self.apply(self._init_weights)
+    def forward(self, x, token_ids=None, mu_prev=None):
+        # Attention with mu bias
+        residual = x
+        x = self.input_layernorm(x)
+        x, _ = self.self_attn(x, mu_prev=mu_prev)
+        x = residual + x
 
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, std=0.02)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
+        # Token-Routed MLP
+        residual = x
+        x = self.post_attention_layernorm(x)
+        x = self.mlp(x, token_ids=token_ids)
+        x = residual + x
 
-    def forward(self, input_ids, velocity=None):
-        # Embed
-        h = self.embed(input_ids)
+        # Mu-Guidance (after MLP)
+        mu_current = self.mu_guidance(x)
 
-        # Initialize velocity if needed
-        if velocity is None:
-            velocity = torch.zeros_like(h)
-
-        # Process through blocks
-        for block in self.blocks:
-            h = block(h)
-
-            # Apply dynamics every N layers
-            h, velocity = self.dynamics(h, velocity)
-
-        # Output
-        h = self.norm(h)
-        logits = self.head(h)
-
-        return logits, velocity
+        return x, mu_current
 ```
 
-## Using Factories
+## Expert Specialization
 
-```python
-from complexity.api import Attention, MLP, Position, Norm
+Each expert learns different token patterns via deterministic routing:
 
-# Quick construction via factories
-attn = Attention.gqa(hidden_size=768, num_heads=12, kv_heads=4)
-mlp = MLP.swiglu(hidden_size=768, intermediate_size=3072)
-rope = Position.rope(dim=64, max_seq_len=4096)
-norm = Norm.rms(hidden_size=768)
-```
+![Expert Balance](../figures/expert_balance.png)
+
+![Expert t-SNE](../figures/expert_tsne_2d.png)
+
+## Mu-Guidance Flow
+
+Mu carries expert-aware context between layers:
+
+![Mu Contribution](../figures/mu_contribution.png)
+
+![Component Activity](../figures/component_activity.png)
 
 ## Registering Custom Components
 
 ```python
-from complexity.api import register, AttentionBase
+from complexity.core.registry import register_mlp
+from complexity.core.mlp.base import MLPBase
 
-@register("attention", "my_custom_attention")
-class MyCustomAttention(AttentionBase):
-    """Custom attention with special features."""
-
+@register_mlp("my_custom_mlp")
+class MyCustomMLP(MLPBase):
     def __init__(self, config):
         super().__init__(config)
-        # Custom initialization
+        # Custom init
 
-    def forward(self, x, **kwargs):
-        # Custom implementation
-        return output, attention_weights
-
-# Use via registry
-from complexity.api import Attention
-attn = Attention.create("my_custom_attention", hidden_size=768)
-```
-
-## Hybrid Architectures
-
-Mix Transformer with O(N) components:
-
-```python
-from complexity.api import (
-    TransformerBlock, MambaBlock, Architecture
-)
-
-class HybridModel(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-
-        self.layers = nn.ModuleList()
-        for i in range(config.num_layers):
-            if i % 4 == 0:
-                # Every 4th layer is Mamba (O(N))
-                self.layers.append(MambaBlock(config.hidden_size))
-            else:
-                # Regular Transformer
-                self.layers.append(TransformerBlock(config))
+    def forward(self, hidden_states, **kwargs):
+        # Custom forward
+        return output
 ```
 
 ## See Also
 
-- [API Reference](api.md) - Full API documentation
-- [Architectures](architectures.md) - O(N) architectures
-- [INL Dynamics](dynamics.md) - Stability system
+- [Token-Routed MLP](token-routed.md)
+- [Mu-Guidance](dynamics.md)
+- [Architecture Overview](architectures.md)
+- [Training](training.md)
