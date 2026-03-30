@@ -151,7 +151,6 @@ model = ClusterModel(model, config)
 - [HuggingFace](https://huggingface.co/Complexity-ML)
 - [PyPI](https://pypi.org/project/complexity-framework/)
 - [GitHub](https://github.com/Complexity-ML/complexity-framework)
-- [TMLR Paper](https://github.com/Complexity-ML/tmlr-paper-pool)
 - [vLLM Integration](https://github.com/Complexity-ML/vllm-cuda_graph)
 
 ## License
