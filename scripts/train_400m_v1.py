@@ -139,7 +139,8 @@ def main():
                         help="Batch size per GPU")
     parser.add_argument("--gradient-accumulation", type=int, default=1)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--warmup-steps", type=int, default=None)
+    parser.add_argument("--warmup-steps", type=int, default=None,
+                        help="Warmup steps (default: 5%% of max_steps)")
     parser.add_argument("--lr-scheduler", type=str, default="auto",
                         choices=["auto", "cosine", "linear", "constant"])
     parser.add_argument("--max-steps", type=int, default=None,
@@ -220,12 +221,15 @@ def main():
             grad_accum=args.gradient_accumulation,
             seq_len=2048,
         )
+    # Auto warmup: 5% of max_steps
+    warmup_steps = args.warmup_steps if args.warmup_steps is not None else max(1, int(max_steps * 0.05))
+
     if is_main:
         tokens_per_step = args.batch_size * world_size * args.gradient_accumulation * 2048
         logger.info(f"Training: {max_steps:,} steps (~{args.target_tokens/1e9:.1f}B tokens)")
         logger.info(f"  Tokens/step: {tokens_per_step:,} "
                     f"(batch={args.batch_size} × {world_size} GPUs × accum={args.gradient_accumulation} × seq=2048)")
-        logger.info(f"  Warmup: {args.warmup_steps} steps")
+        logger.info(f"  Warmup: {warmup_steps} steps (5%)")
 
     # Dataset
     dataset = FineWebStreamingDataset(
@@ -244,7 +248,7 @@ def main():
         batch_size=args.batch_size,
         gradient_accumulation_steps=args.gradient_accumulation,
         learning_rate=args.lr,
-        warmup_steps=args.warmup_steps,
+        warmup_steps=warmup_steps,
         lr_scheduler=args.lr_scheduler,
         precision="bf16",
         save_steps=args.save_steps,
