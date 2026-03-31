@@ -139,7 +139,7 @@ def main():
                         help="Batch size per GPU")
     parser.add_argument("--gradient-accumulation", type=int, default=1)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--warmup-steps", type=int, default=1500)
+    parser.add_argument("--warmup-steps", type=int, default=None)
     parser.add_argument("--lr-scheduler", type=str, default="auto",
                         choices=["auto", "cosine", "linear", "constant"])
     parser.add_argument("--max-steps", type=int, default=None,
