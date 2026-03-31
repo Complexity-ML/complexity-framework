@@ -1,18 +1,19 @@
 """
-Pre-training 750M v1 — Token-Routed MLP + Mu-Guidance.
+Pre-training 400M v1 — Token-Routed MLP + Mu-Guidance.
 
-Full architecture v1 at 750M scale for continuous pre-training.
+Full architecture v1 at 400M scale for continuous pre-training.
 Uses FSDP full_shard for 2× RTX PRO 6000 multi-GPU training.
+Optimized for batch_size=128 on 96GB VRAM per GPU.
 
-Model: hidden=1536, layers=22, heads=24, kv_heads=4, inter=4096, 4 experts
-       → ~750M params (Token-Routed + Mu)
+Model: hidden=1024, layers=20, heads=16, kv_heads=4, inter=2816, 4 experts
+       → ~400M params (Token-Routed + Mu)
 
 Usage:
     # 2× RTX PRO 6000
     torchrun --nproc_per_node=2 scripts/train_750m_v1.py
 
     # Resume
-    torchrun --nproc_per_node=2 scripts/train_750m_v1.py --resume checkpoints/750m-v1/step_10000
+    torchrun --nproc_per_node=2 scripts/train_750m_v1.py --resume checkpoints/400m-v1/step_10000
 
 INL / Complexity-ML — 2026
 """
@@ -37,7 +38,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     level=logging.INFO,
 )
-logger = logging.getLogger("train_750m")
+logger = logging.getLogger("train_400m")
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -50,18 +51,18 @@ from complexity.training import Trainer, TrainingConfig, WandBCallback, TqdmCall
 from complexity.parallel import init_distributed, get_rank, get_world_size, is_main_process, cleanup, simple_ddp
 
 
-# ── Model config (~750M params) ─────────────────────────────────────────
+# ── Model config (~400M params) ─────────────────────────────────────────
 
 def make_config() -> ModelConfig:
     """Full v1: Token-Routed MLP + Mu-Guidance + INL Dynamics.
-    hidden=1536, layers=22, heads=24, kv_heads=4, inter=4096, 4 experts → ~750M.
+    hidden=1024, layers=20, heads=16, kv_heads=4, inter=2816, 4 experts → ~400M.
     """
     return ModelConfig(
-        hidden_size=1536,
-        num_hidden_layers=22,
-        num_attention_heads=24,
+        hidden_size=1024,
+        num_hidden_layers=20,
+        num_attention_heads=16,
         num_key_value_heads=4,
-        intermediate_size=4096,
+        intermediate_size=2816,
         vocab_size=32000,
         max_position_embeddings=4096,
         attention_type="gqa",
@@ -130,7 +131,7 @@ def compute_steps_for_tokens(target_tokens: int, batch_size: int,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train 750M v1 (Token-Routed + Mu)")
+    parser = argparse.ArgumentParser(description="Train 400M v1 (Token-Routed + Mu)")
     parser.add_argument("--tokenizer", type=str, default="./tokenizer")
     parser.add_argument("--target-tokens", type=int, default=8_000_000_000,
                         help="Target token count (default: 8B)")
@@ -146,7 +147,7 @@ def main():
                              "Use when resuming with different gradient-accumulation.")
     parser.add_argument("--save-steps", type=int, default=5000)
     parser.add_argument("--log-steps", type=int, default=10)
-    parser.add_argument("--checkpoint-dir", type=str, default="./checkpoints/750m-v1")
+    parser.add_argument("--checkpoint-dir", type=str, default="./checkpoints/400m-v1")
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--wandb", type=str, default=None)
@@ -284,10 +285,10 @@ def main():
     tqdm_cb = None
     if is_main:
         if args.wandb:
-            wandb_cb = WandBCallback(project=args.wandb, name="750m-v1")
+            wandb_cb = WandBCallback(project=args.wandb, name="400m-v1")
             trainer.callbacks.append(wandb_cb)
 
-        tqdm_cb = TqdmCallback(total_steps=max_steps, desc="750M v1")
+        tqdm_cb = TqdmCallback(total_steps=max_steps, desc="400M v1")
         trainer.callbacks.append(tqdm_cb)
 
         os.makedirs(args.checkpoint_dir, exist_ok=True)
