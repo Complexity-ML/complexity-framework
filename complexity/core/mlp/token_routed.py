@@ -109,38 +109,44 @@ class TokenRoutedMLP(MLPBase):
         **kwargs,
     ) -> torch.Tensor:
         """
-        Forward pass with per-expert loop dispatch.
+        Forward pass with sort-and-split dispatch using Zipf routing.
 
         Args:
             hidden_states: [batch, seq_len, hidden_size]
             token_ids: [batch, seq_len] — for routing (token_to_expert lookup)
-            sort_idx: ignored (kept for API compat)
+            sort_idx: Optional precomputed argsort (must use Zipf mapping)
 
         Returns:
             output: [batch, seq_len, hidden_size]
         """
         batch_size, seq_len, _ = hidden_states.shape
         N = batch_size * seq_len
+        chunk = N // self.num_experts
         E = self.num_experts
         flat_x = hidden_states.reshape(N, self.hidden_size)
 
-        # Compute expert assignments
+        # Always compute sort_idx from Zipf token_to_expert mapping
         if token_ids is not None:
             token_ids_clamped = token_ids.reshape(-1).clamp(0, self.vocab_size - 1)
             expert_ids = self.token_to_expert[token_ids_clamped]
         else:
             expert_ids = torch.arange(N, device=flat_x.device) % E
+        sort_idx = expert_ids.argsort(stable=True)
 
-        out = torch.zeros(N, self.hidden_size, device=flat_x.device, dtype=flat_x.dtype)
-        for e in range(E):
-            mask = expert_ids == e
-            if not mask.any():
-                continue
-            xe = flat_x[mask]
-            gu = torch.mm(xe, self.gate_up_proj[e])
-            gate, up = gu.chunk(2, dim=-1)
-            activated = F.silu(gate) * up
-            out[mask] = torch.mm(activated, self.down_proj[e])
+        sorted_x = flat_x[sort_idx]
+
+        # bmm gate+up: [E, chunk, hidden] @ [E, hidden, inter*2]
+        gu = torch.bmm(
+            sorted_x.view(E, chunk, self.hidden_size), self.gate_up_proj
+        )
+        gate, up = gu.chunk(2, dim=-1)
+        activated = F.silu(gate) * up
+
+        # bmm down: [E, chunk, inter] @ [E, inter, hidden]
+        sorted_out = torch.bmm(activated, self.down_proj).reshape(N, self.hidden_size)
+
+        out = torch.zeros(N, self.hidden_size, device=flat_x.device, dtype=sorted_out.dtype)
+        out[sort_idx] = sorted_out
 
         # Shared expert: dense SwiGLU applied to all tokens
         if self.shared_expert:
