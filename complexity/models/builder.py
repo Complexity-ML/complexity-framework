@@ -182,11 +182,7 @@ class ComplexityModel(nn.Module):
         # Initialize KV cache list
         new_past_key_values = [] if use_cache else None
 
-        # Precompute sort_idx once for sort-split routing (reused by all layers)
-        sort_idx = None
-        if self.config.num_experts > 1:
-            expert_ids = input_ids.reshape(-1) % self.config.num_experts
-            sort_idx = expert_ids.argsort(stable=True)
+        sort_idx = None  # No longer used (per-expert loop dispatch)
 
         # Process through layers (mu flows from layer to layer)
         # mu_init: learnable starting mu so layer 0 gets guidance too
