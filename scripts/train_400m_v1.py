@@ -271,8 +271,6 @@ def main():
     # Fused cross-entropy: never materializes full [B*S, vocab] logits
     from complexity_cuda.fused_cross_entropy import fused_cross_entropy
 
-    _expert_losses = {}
-
     def compute_loss(model, batch):
         input_ids = batch["input_ids"].to(trainer.device)
         labels = batch["labels"].to(trainer.device)
@@ -284,29 +282,6 @@ def main():
         weight = m.embed_tokens.weight
         shift_hidden = hidden[:, :-1, :].contiguous()
         shift_labels = labels[:, :shift_hidden.size(1)].contiguous()
-
-        # Per-expert loss tracking
-        if config.num_experts > 1 and is_main:
-            with torch.no_grad():
-                logits = torch.matmul(shift_hidden.float(), weight.float().t())
-                per_token_loss = torch.nn.functional.cross_entropy(
-                    logits.view(-1, logits.size(-1)), shift_labels.view(-1), reduction='none',
-                )
-                shift_ids = input_ids[:, 1:shift_hidden.size(1)+1].contiguous()
-                token_to_expert = None
-                for module in m.modules():
-                    if hasattr(module, 'token_to_expert'):
-                        token_to_expert = module.token_to_expert
-                        break
-                if token_to_expert is not None:
-                    flat_ids = shift_ids.view(-1).clamp(0, config.vocab_size - 1)
-                    flat_experts = token_to_expert[flat_ids]
-                    valid = shift_labels.view(-1) != -100
-                    for e in range(config.num_experts):
-                        mask = (flat_experts == e) & valid
-                        if mask.any():
-                            _expert_losses[e] = per_token_loss[mask].mean().item()
-
         return fused_cross_entropy(shift_hidden, weight, shift_labels)
 
     trainer.compute_loss = compute_loss
@@ -328,17 +303,14 @@ def main():
         csv_file = open(csv_path, file_mode, newline="")
         csv_writer = csv.writer(csv_file)
         if file_mode == "w":
-            expert_cols = [f"loss_e{e}" for e in range(config.num_experts)]
-            csv_writer.writerow(["step", "loss", "ppl", "lr", "elapsed_s"] + expert_cols)
+            csv_writer.writerow(["step", "loss", "ppl", "elapsed_s"])
         csv_file.flush()
         t_start = time.time()
 
         def csv_callback(trainer_obj, step, loss_val):
             real_loss = loss_val
             ppl = math.exp(min(real_loss, 20))
-            lr = trainer_obj.optimizer.param_groups[0]["lr"]
-            expert_vals = [f"{_expert_losses.get(e, 0):.6f}" for e in range(config.num_experts)]
-            csv_writer.writerow([step, f"{real_loss:.6f}", f"{ppl:.2f}", f"{lr:.2e}", f"{time.time() - t_start:.1f}"] + expert_vals)
+            csv_writer.writerow([step, f"{real_loss:.6f}", f"{ppl:.2f}", f"{time.time() - t_start:.1f}"])
             if step % 100 == 0:
                 csv_file.flush()
         trainer.callbacks.append(csv_callback)
