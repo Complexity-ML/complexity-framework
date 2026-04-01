@@ -62,7 +62,7 @@ class TokenRoutedMLP(MLPBase):
         # Shared lexical expert: dense SwiGLU all tokens pass through
         self.shared_expert = None
         if getattr(config, 'shared_expert', False):
-            shared_size = self.expert_intermediate_size
+            shared_size = self.intermediate_size
             self.shared_gate = nn.Linear(self.hidden_size, shared_size, bias=False)
             self.shared_up = nn.Linear(self.hidden_size, shared_size, bias=False)
             self.shared_down = nn.Linear(shared_size, self.hidden_size, bias=False)
