@@ -72,6 +72,7 @@ class ModelConfig:
     num_experts: int = 1  # 1 = standard MLP, >1 = MoE
     token_frequencies: Optional[torch.Tensor] = None  # Zipf-balanced routing
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
+    shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
 
     # === Mu-Guidance (Complexity innovation) ===
     use_mu_guidance: bool = False  # Enable contextual mu flowing between layers
