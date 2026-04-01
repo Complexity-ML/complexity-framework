@@ -134,7 +134,7 @@ class TransformerBlock(nn.Module):
             token_ids: Optional token IDs for MoE routing
             velocity_state: Unused (kept for backward compat)
             mu_prev: Optional mu from previous layer (for mu-guided attention)
-            sort_idx: Optional precomputed argsort for sort-split routing
+            sort_idx: Unused (sort_idx computed internally by token_routed)
 
         Returns:
             hidden_states: [batch, seq_len, hidden_size]
@@ -154,16 +154,13 @@ class TransformerBlock(nn.Module):
         )
         if mu_prev is not None:
             attn_kwargs["mu_prev"] = mu_prev
-        if sort_idx is not None:
-            attn_kwargs["sort_idx"] = sort_idx
-
         hidden_states, new_kv = self.self_attn(hidden_states, **attn_kwargs)
         hidden_states = residual + hidden_states
 
         # MLP
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states, token_ids=token_ids, sort_idx=sort_idx)
+        hidden_states = self.mlp(hidden_states, token_ids=token_ids)
         hidden_states = residual + hidden_states
 
         # Mu-Guidance AFTER MLP — captures expert-specific information

@@ -182,8 +182,6 @@ class ComplexityModel(nn.Module):
         # Initialize KV cache list
         new_past_key_values = [] if use_cache else None
 
-        sort_idx = None  # No longer used (per-expert loop dispatch)
-
         # Process through layers (mu flows from layer to layer)
         # mu_init: learnable starting mu so layer 0 gets guidance too
         mu_prev = None
@@ -202,7 +200,7 @@ class ComplexityModel(nn.Module):
                     input_ids,
                     None,  # velocity_state (unused, kept for compat)
                     mu_prev,
-                    sort_idx,
+                    None,  # sort_idx (computed internally by token_routed)
                     use_reentrant=False,
                 )
             else:
@@ -213,7 +211,6 @@ class ComplexityModel(nn.Module):
                     use_cache=use_cache,
                     token_ids=input_ids,
                     mu_prev=mu_prev,
-                    sort_idx=sort_idx,
                 )
 
             # mu from this layer guides next layer's attention.
