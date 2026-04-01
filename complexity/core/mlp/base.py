@@ -26,6 +26,7 @@ class MLPConfig:
     hash_routing: str = ""  # "" = modulo (token_id % E), "learned" = learned projection router
     token_frequencies: Optional[torch.Tensor] = None  # [vocab_size] token counts for frequency-balanced routing
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
+    shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
 
 
 class MLPBase(nn.Module, ABC):

@@ -98,6 +98,7 @@ class TransformerBlock(nn.Module):
             vocab_size=config.vocab_size,
             token_frequencies=config.token_frequencies,
             shared_expert=getattr(config, 'shared_expert', False),
+            shared_intermediate_size=getattr(config, 'shared_intermediate_size', None),
         )
         self.mlp = MLP_REGISTRY.build(config.mlp_type, mlp_config)
 
