@@ -1,14 +1,14 @@
 """
-Token-Routed MLP — Deterministic expert routing with sort-and-split dispatch.
+Token-Routed MLP — Deterministic Mixture-of-Experts.
 
 Innovation from Complexity-ML (2026):
-  argsort by expert_id -> fixed split N/E per expert -> all experts always busy.
-  Zero waste, zero idle, all shapes static, fullgraph compatible.
+  Each token is routed to exactly one expert based on its token ID.
+  Routing is deterministic (no learned router, no load-balancing loss).
 
 Features:
   - Zipf-balanced routing via greedy bin-packing on token frequencies
   - Shared Lexical Expert (dense SwiGLU all tokens pass through)
-  - Sort-and-split dispatch (bmm, no dynamic shapes)
+  - Sparse dispatch (loop over experts with masking)
   - Falls back to simple modulo routing without token frequencies
 
 Usage:
@@ -33,13 +33,10 @@ from ..registry import register_mlp
 @register_mlp("complexity")
 class TokenRoutedMLP(MLPBase):
     """
-    Token-Routed MLP with sort-and-split dispatch.
+    Token-Routed MLP with Shared Lexical Expert.
 
-    Routes tokens to experts deterministically (token_id -> expert_id),
-    then sorts by expert and processes fixed-size chunks via bmm.
-
-    Each expert processes exactly N/E tokens. No dynamic shapes,
-    no wasted compute, fullgraph compatible with torch.compile.
+    Routes tokens to experts deterministically (token_id -> expert_id)
+    via Zipf-balanced bin-packing, then dispatches with sparse masking.
     """
 
     def __init__(self, config: MLPConfig):
@@ -49,24 +46,27 @@ class TokenRoutedMLP(MLPBase):
         self.vocab_size = config.vocab_size
         self.expert_intermediate_size = self.intermediate_size // self.num_experts
 
-        # Expert weights: [E, hidden, inter*2] and [E, inter, hidden]
-        self.gate_up_proj = nn.Parameter(
-            torch.empty(self.num_experts, self.hidden_size,
-                        self.expert_intermediate_size * 2)
+        # Routed expert weights: gate, up, down — separate like supplementary code
+        self.gate_proj_w = nn.Parameter(
+            torch.randn(self.num_experts, self.hidden_size,
+                        self.expert_intermediate_size) * 0.02
         )
-        self.down_proj = nn.Parameter(
-            torch.empty(self.num_experts, self.expert_intermediate_size,
-                        self.hidden_size)
+        self.up_proj_w = nn.Parameter(
+            torch.randn(self.num_experts, self.hidden_size,
+                        self.expert_intermediate_size) * 0.02
+        )
+        self.down_proj_w = nn.Parameter(
+            torch.randn(self.num_experts, self.expert_intermediate_size,
+                        self.hidden_size) * 0.02
         )
 
         # Shared lexical expert: dense SwiGLU all tokens pass through
-        self.shared_expert = None
-        if getattr(config, 'shared_expert', False):
-            shared_size = getattr(config, 'shared_intermediate_size', None) or self.intermediate_size
+        self.use_shared_expert = getattr(config, 'shared_expert', False)
+        if self.use_shared_expert:
+            shared_size = getattr(config, 'shared_intermediate_size', None) or self.expert_intermediate_size
             self.shared_gate = nn.Linear(self.hidden_size, shared_size, bias=False)
             self.shared_up = nn.Linear(self.hidden_size, shared_size, bias=False)
             self.shared_down = nn.Linear(shared_size, self.hidden_size, bias=False)
-            self.shared_expert = True
 
         # Token -> expert mapping (Zipf-balanced or modulo)
         self.register_buffer(
@@ -74,19 +74,13 @@ class TokenRoutedMLP(MLPBase):
             self._create_token_mapping(self.vocab_size, self.num_experts),
         )
 
-        self._init_weights()
-
-    def _init_weights(self):
-        nn.init.kaiming_uniform_(self.gate_up_proj, a=5**0.5)
-        nn.init.zeros_(self.down_proj)
-
     def _create_token_mapping(self, vocab_size: int, num_experts: int) -> torch.Tensor:
         """
         Create deterministic mapping from token ID to expert ID.
 
-        If token_frequencies are provided, distributes via greedy bin-packing
-        so each expert gets equal corpus frequency load (Zipf-balanced).
-        Otherwise, simple modulo routing.
+        With token_frequencies: greedy bin-packing so each expert gets
+        equal corpus frequency load (Zipf-balanced).
+        Without: simple modulo fallback (token_id % E).
         """
         if getattr(self.config, 'token_frequencies', None) is not None:
             freqs = self.config.token_frequencies
@@ -105,54 +99,66 @@ class TokenRoutedMLP(MLPBase):
         self,
         hidden_states: torch.Tensor,
         token_ids: Optional[torch.Tensor] = None,
-        sort_idx: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor:
         """
-        Forward pass with sort-and-split dispatch using Zipf routing.
+        Forward pass with sparse dispatch.
 
         Args:
             hidden_states: [batch, seq_len, hidden_size]
-            token_ids: [batch, seq_len] — for routing (token_to_expert lookup)
-            sort_idx: Optional precomputed argsort (must use Zipf mapping)
+            token_ids: [batch, seq_len] — original input token IDs
 
         Returns:
             output: [batch, seq_len, hidden_size]
+                    = SharedMLP(x) + Expert_e(x)
         """
-        batch_size, seq_len, _ = hidden_states.shape
-        N = batch_size * seq_len
-        chunk = N // self.num_experts
-        E = self.num_experts
-        flat_x = hidden_states.reshape(N, self.hidden_size)
+        B, S, H = hidden_states.shape
 
-        # Always compute sort_idx from Zipf token_to_expert mapping
-        if token_ids is not None:
-            token_ids_clamped = token_ids.reshape(-1).clamp(0, self.vocab_size - 1)
-            expert_ids = self.token_to_expert[token_ids_clamped]
-        else:
-            expert_ids = torch.arange(N, device=flat_x.device) % E
-        sort_idx = expert_ids.argsort(stable=True)
+        if token_ids is None:
+            return self._forward_all_experts(hidden_states)
 
-        sorted_x = flat_x[sort_idx]
+        # Look up expert assignment per token
+        token_ids_clamped = token_ids.clamp(0, self.vocab_size - 1)
+        expert_ids = self.token_to_expert[token_ids_clamped]  # [B, S]
 
-        # bmm gate+up: [E, chunk, hidden] @ [E, hidden, inter*2]
-        gu = torch.bmm(
-            sorted_x.view(E, chunk, self.hidden_size), self.gate_up_proj
-        )
-        gate, up = gu.chunk(2, dim=-1)
-        activated = F.silu(gate) * up
+        flat_x = hidden_states.view(-1, H)
+        flat_expert_ids = expert_ids.view(-1)
 
-        # bmm down: [E, chunk, inter] @ [E, inter, hidden]
-        sorted_out = torch.bmm(activated, self.down_proj).reshape(N, self.hidden_size)
-
-        out = torch.zeros(N, self.hidden_size, device=flat_x.device, dtype=sorted_out.dtype)
-        out[sort_idx] = sorted_out
-
-        # Shared expert: dense SwiGLU applied to all tokens
-        if self.shared_expert:
+        # Shared expert (dense, all tokens)
+        if self.use_shared_expert:
             shared_out = self.shared_down(
                 F.silu(self.shared_gate(flat_x)) * self.shared_up(flat_x)
             ).to(flat_x.dtype)
-            out = out + shared_out
+        else:
+            shared_out = 0
 
-        return out.reshape(batch_size, seq_len, self.hidden_size)
+        # Routed experts (sparse dispatch)
+        routed_out = torch.zeros_like(flat_x)
+        for e in range(self.num_experts):
+            mask = (flat_expert_ids == e)
+            if not mask.any():
+                continue
+            x_e = flat_x[mask]
+            gate_e = x_e @ self.gate_proj_w[e]
+            up_e = x_e @ self.up_proj_w[e]
+            inter_e = F.silu(gate_e) * up_e
+            routed_out[mask] = (inter_e @ self.down_proj_w[e]).to(routed_out.dtype)
+
+        out = routed_out + shared_out
+        return out.view(B, S, H)
+
+    def _forward_all_experts(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Fallback: average all experts (inference without token_ids)."""
+        flat = hidden_states.view(-1, self.hidden_size)
+        out = torch.zeros_like(flat)
+        for e in range(self.num_experts):
+            gate_e = flat @ self.gate_proj_w[e]
+            up_e = flat @ self.up_proj_w[e]
+            out = out + (F.silu(gate_e) * up_e) @ self.down_proj_w[e]
+        out = out / self.num_experts
+        if self.use_shared_expert:
+            shared = self.shared_down(
+                F.silu(self.shared_gate(flat)) * self.shared_up(flat)
+            )
+            out = out + shared
+        return out.view_as(hidden_states)
