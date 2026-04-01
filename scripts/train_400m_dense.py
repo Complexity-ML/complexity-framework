@@ -6,7 +6,7 @@ Zipf routing, Shared Expert, or Mu-Guidance. Pure dense transformer baseline.
 
 Uses FSDP full_shard for 2× RTX PRO 6000 multi-GPU training.
 
-Model: hidden=1024, layers=20, heads=16, kv_heads=4, inter=4352, dense SwiGLU
+Model: hidden=1024, layers=20, heads=16, kv_heads=4, inter=3840, dense SwiGLU
        → ~354M params (iso-params with MoE variant)
 
 Usage:
@@ -56,14 +56,14 @@ from complexity.parallel import init_distributed, get_rank, get_world_size, is_m
 
 def make_config() -> ModelConfig:
     """Dense baseline: same param count as Token-Routed 400M, no MoE.
-    hidden=1024, layers=20, heads=16, kv_heads=4, inter=4352, dense → ~354M.
+    hidden=1024, layers=20, heads=16, kv_heads=4, inter=3840, dense → ~354M.
     """
     return ModelConfig(
         hidden_size=1024,
         num_hidden_layers=20,
         num_attention_heads=16,
         num_key_value_heads=4,
-        intermediate_size=4352,
+        intermediate_size=3840,
         vocab_size=32000,
         max_position_embeddings=4096,
         attention_type="gqa",
