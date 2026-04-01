@@ -52,18 +52,18 @@ from complexity.training import Trainer, TrainingConfig, WandBCallback, TqdmCall
 from complexity.parallel import init_distributed, get_rank, get_world_size, is_main_process, cleanup, simple_ddp
 
 
-# ── Model config (~353M params, dense) ──────────────────────────────────
+# ── Model config (~390M params, dense) ──────────────────────────────────
 
 def make_config() -> ModelConfig:
-    """Dense baseline: iso-params with Token-Routed MoE (353M).
-    hidden=1024, layers=20, heads=16, kv_heads=4, inter=4358, dense → ~353M.
+    """Dense baseline: iso-params with Token-Routed MoE (~390M).
+    hidden=1024, layers=20, heads=16, kv_heads=4, inter=4458, dense → ~390M.
     """
     return ModelConfig(
         hidden_size=1024,
         num_hidden_layers=20,
         num_attention_heads=16,
         num_key_value_heads=4,
-        intermediate_size=4358,
+        intermediate_size=4458,
         vocab_size=32000,
         max_position_embeddings=4096,
         attention_type="gqa",
