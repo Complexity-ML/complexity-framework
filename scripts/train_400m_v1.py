@@ -92,17 +92,20 @@ class FineWebStreamingDataset(IterableDataset):
         self.world_size = world_size
         logger.info(f"Connecting to FineWeb-Edu (streaming) [rank {rank}/{world_size}]...")
         t0 = time.time()
-        self.dataset = load_dataset(
+        ds = load_dataset(
             "HuggingFaceFW/fineweb-edu",
             split="train",
             streaming=True,
         )
+        # Shard at document level — each GPU gets its own documents
+        if world_size > 1:
+            ds = ds.shard(num_shards=world_size, index=rank)
+        self.dataset = ds
         logger.info(f"Dataset ready in {time.time() - t0:.1f}s")
 
     def __iter__(self):
         buffer = []
         first_yield = True
-        chunk_idx = 0
         for example in self.dataset:
             text = example.get("text", "")
             if not text:
@@ -113,14 +116,12 @@ class FineWebStreamingDataset(IterableDataset):
             while len(buffer) >= self.max_length + 1:
                 chunk = buffer[:self.max_length + 1]
                 buffer = buffer[self.max_length:]
-                if chunk_idx % self.world_size == self.rank:
-                    input_ids = torch.tensor(chunk[:-1], dtype=torch.long)
-                    labels = torch.tensor(chunk[1:], dtype=torch.long)
-                    if first_yield:
-                        logger.info(f"First batch tokenized [rank {self.rank}]")
-                        first_yield = False
-                    yield {"input_ids": input_ids, "labels": labels}
-                chunk_idx += 1
+                input_ids = torch.tensor(chunk[:-1], dtype=torch.long)
+                labels = torch.tensor(chunk[1:], dtype=torch.long)
+                if first_yield:
+                    logger.info(f"First batch tokenized [rank {self.rank}]")
+                    first_yield = False
+                yield {"input_ids": input_ids, "labels": labels}
 
 
 # ── Training ──────────────────────────────────────────────────────────────
