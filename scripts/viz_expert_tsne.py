@@ -38,7 +38,7 @@ def load_checkpoint(checkpoint_path):
         state_dict = data.get("model", data)
     else:
         from safetensors.torch import load_file
-        state_dict = load_file(str(path))
+        state_dict = load_file(str(path), device="cpu")
     cleaned = {}
     for k, v in state_dict.items():
         key = k.replace("model.", "") if k.startswith("model.") else k
