@@ -73,20 +73,23 @@ def build_model(state_dict):
         inter = w.shape[0] if w.dim() == 2 else w.shape[2]
         mlp_type = "swiglu"
 
+    q_key = next(k for k in state_dict if "q_proj.weight" in k and "layers.0." in k)
+    head_dim = 64  # standard head dimension
+    num_attention_heads = state_dict[q_key].shape[0] // head_dim
     k_key = next(k for k in state_dict if "k_proj.weight" in k and "layers.0." in k)
-    num_kv_heads = state_dict[k_key].shape[0] // (hidden // 12)
+    num_kv_heads = state_dict[k_key].shape[0] // head_dim
 
-    logger.info(f"Inferred: hidden={hidden}, layers={num_layers}, experts={num_experts_found}, inter={inter}")
+    logger.info(f"Inferred: hidden={hidden}, layers={num_layers}, experts={num_experts_found}, inter={inter}, heads={num_attention_heads}, kv_heads={num_kv_heads}")
 
     config = ModelConfig(
         hidden_size=hidden,
         num_hidden_layers=num_layers,
-        num_attention_heads=12,
+        num_attention_heads=num_attention_heads,
         num_key_value_heads=num_kv_heads,
         intermediate_size=inter,
         vocab_size=vocab,
         num_experts=num_experts_found,
-        max_position_embeddings=2048,
+        max_position_embeddings=4096,
         mlp_type=mlp_type,
         use_mu_guidance=True,
         use_qk_norm=True,
