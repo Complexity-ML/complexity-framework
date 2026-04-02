@@ -147,11 +147,49 @@ def eval_hellaswag(model, tokenizer, device="cuda", split="validation"):
     return {"acc": acc, "correct": correct, "total": total}
 
 
+# ── MMLU ──
+
+MMLU_CHOICES = ["A", "B", "C", "D"]
+
+def eval_mmlu(model, tokenizer, device="cuda", split="test"):
+    """Evaluate on MMLU (zero-shot, log-likelihood, batched).
+
+    Uses the 'all' config to get all 57 subjects at once.
+    """
+    dataset = load_dataset("cais/mmlu", "all", split=split)
+
+    correct = 0
+    total = 0
+
+    for item in tqdm(dataset, desc="MMLU"):
+        question = item["question"]
+        choices = item["choices"]
+        answer_idx = item["answer"]
+
+        context = f"Question: {question}\n"
+        for i, choice in enumerate(choices):
+            context += f"{MMLU_CHOICES[i]}. {choice}\n"
+        context += "Answer:"
+
+        completions = [f" {c}" for c in MMLU_CHOICES]
+
+        scores = score_choices_batched(model, tokenizer, context, completions, device)
+
+        pred = max(range(len(scores)), key=lambda i: scores[i])
+        if pred == answer_idx:
+            correct += 1
+        total += 1
+
+    acc = correct / total
+    return {"acc": acc, "correct": correct, "total": total}
+
+
 # ── Main ──
 
 BENCHMARKS = {
     "arc_easy": eval_arc_easy,
     "hellaswag": eval_hellaswag,
+    "mmlu": eval_mmlu,
 }
 
 
