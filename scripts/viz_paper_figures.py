@@ -45,8 +45,10 @@ def load_model(checkpoint_path):
         data = torch.load(str(path), map_location="cpu", weights_only=False)
         state_dict = data.get("model", data)
     else:
-        from safetensors.torch import load_file
-        state_dict = load_file(str(path), device="cpu")
+        from safetensors.torch import load as safetensors_load
+        with open(str(path), "rb") as f:
+            data = f.read()
+        state_dict = safetensors_load(data)
 
     model = ComplexityModel(config)
     model.load_state_dict(state_dict, strict=False)

@@ -32,7 +32,10 @@ def load_checkpoint(checkpoint_path):
         state_dict = data.get("model_state_dict", data.get("model", data))
     else:
         from safetensors.torch import load_file
-        state_dict = load_file(str(path))
+        from safetensors.torch import load as safetensors_load
+        with open(str(path), "rb") as f:
+            data = f.read()
+        state_dict = safetensors_load(data)
 
     cleaned = {}
     for k, v in state_dict.items():
