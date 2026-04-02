@@ -1,5 +1,5 @@
 <mxfile host="app.diagrams.net" modified="2026-03-29T03:00:00.000Z" agent="Claude" version="21.0.0">
-  <diagram name="Complexity-Deep 176M" id="arch">
+  <diagram name="Complexity-Deep 187M" id="arch">
     <mxGraphModel dx="1200" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="600" pageHeight="1400" math="0" shadow="0">
       <root>
         <mxCell id="0"/>
@@ -9,7 +9,7 @@
         <mxCell id="title" value="&lt;b&gt;&lt;font style=&quot;font-size: 18px&quot;&gt;Complexity-Deep&lt;/font&gt;&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;" vertex="1" parent="1">
           <mxGeometry x="200" y="10" width="200" height="30" as="geometry"/>
         </mxCell>
-        <mxCell id="subtitle" value="Token-Routed MoE + Mu-Guidance + Shared Expert (176M)" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;fontColor=#666666;fontSize=10;" vertex="1" parent="1">
+        <mxCell id="subtitle" value="Token-Routed MoE + Mu-Guidance + Shared Expert (187M)" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;fontColor=#666666;fontSize=10;" vertex="1" parent="1">
           <mxGeometry x="120" y="35" width="360" height="20" as="geometry"/>
         </mxCell>
 
@@ -307,7 +307,7 @@
         </mxCell>
 
         <!-- ═══ RESOURCE SAVINGS ═══ -->
-        <mxCell id="resources" value="&lt;b&gt;&lt;font color=&quot;#C62828&quot;&gt;Resource savings:&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#C62828&quot; style=&quot;font-size: 9px&quot;&gt;• Model size is 176M&lt;br&gt;• but only 1 expert (of 4) + shared active per token&lt;br&gt;• only ~134M parameters active per inference step&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#C62828;fontSize=9;" vertex="1" parent="1">
+        <mxCell id="resources" value="&lt;b&gt;&lt;font color=&quot;#C62828&quot;&gt;Resource savings:&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#C62828&quot; style=&quot;font-size: 9px&quot;&gt;• Model size is 187M&lt;br&gt;• but only 1 expert (of 4) + shared active per token&lt;br&gt;• only ~105M parameters active per inference step&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#C62828;fontSize=9;" vertex="1" parent="1">
           <mxGeometry x="130" y="1210" width="340" height="65" as="geometry"/>
         </mxCell>
 
