@@ -33,6 +33,13 @@ import logging
 logger = logging.getLogger("complexity.muon_tr")
 
 
+def _to_local(t: torch.Tensor) -> torch.Tensor:
+    """Convert DTensor to local tensor (FSDP v2 compat)."""
+    if hasattr(t, 'to_local'):
+        return t.to_local()
+    return t
+
+
 class MuonTR(Optimizer):
     """
     MuonTR: Muon optimizer specialized for Token-Routed MoE.
@@ -144,7 +151,7 @@ class MuonTR(Optimizer):
                 if p.grad is None:
                     continue
 
-                grad = p.grad
+                grad = _to_local(p.grad)
 
                 state = self.state[p]
                 if len(state) == 0:
@@ -153,8 +160,9 @@ class MuonTR(Optimizer):
                 buf = state['momentum_buffer']
 
                 # === Feature 3: Gradient scaling per expert ===
+                p_local = _to_local(p)
                 if param_type == 'expert' and self.token_counts is not None:
-                    if p.dim() == 3 and p.shape[0] == self.num_experts:
+                    if p_local.dim() == 3 and p_local.shape[0] == self.num_experts:
                         mean_count = self.token_counts.float().mean()
                         for e in range(self.num_experts):
                             if self.token_counts[e] > 0:
@@ -189,7 +197,7 @@ class MuonTR(Optimizer):
                 # For expert tensors [E, H, I], orthogonalize each expert slice independently
                 # Per-expert NS is more correct because each expert sees different token
                 # distributions under Zipf routing → different SV spectra
-                if p.dim() == 3 and p.shape[0] == self.num_experts and param_type == 'expert':
+                if p_local.dim() == 3 and p_local.shape[0] == self.num_experts and param_type == 'expert':
                     for e in range(self.num_experts):
                         slice_update = update[e]
                         rows, cols = slice_update.shape

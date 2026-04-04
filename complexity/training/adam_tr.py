@@ -51,8 +51,16 @@ from torch.optim.optimizer import Optimizer
 logger = logging.getLogger("complexity.adam_tr")
 
 
+def _to_local(t: Tensor) -> Tensor:
+    """Convert DTensor to local tensor (FSDP v2 compat)."""
+    if hasattr(t, 'to_local'):
+        return t.to_local()
+    return t
+
+
 def _estimate_spectral_norm(G: Tensor, n_iters: int = 3) -> float:
     """Estimate largest singular value via power iteration (cheap)."""
+    G = _to_local(G)
     if G.shape[0] == 0 or G.shape[1] == 0:
         return 1.0
     # Random init, power iteration on G^T G
@@ -181,6 +189,9 @@ class AdamTR(Optimizer):
                     continue
 
                 grad = p.grad
+                # FSDP v2 wraps params as DTensor — convert to local for indexing
+                if hasattr(grad, 'to_local'):
+                    grad = grad.to_local()
                 if grad.is_sparse:
                     raise RuntimeError("AdamTR does not support sparse gradients")
 
@@ -222,7 +233,8 @@ class AdamTR(Optimizer):
                 # === Feature 3: Gradient scaling per expert ===
                 if param_type == "expert" and self.token_counts is not None:
                     mean_count = self.token_counts.float().mean()
-                    if p.dim() == 3 and p.shape[0] == self.num_experts:
+                    p_local = _to_local(p) if hasattr(p, 'to_local') else p
+                    if p_local.dim() == 3 and p_local.shape[0] == self.num_experts:
                         for e in range(self.num_experts):
                             if self.token_counts[e] > 0:
                                 scale = mean_count / self.token_counts[e].float()
@@ -233,10 +245,11 @@ class AdamTR(Optimizer):
                 # Estimate κ_e = σ_max / σ_rms for each expert's gradient
                 # and scale LR inversely. Well-conditioned (κ≈1) → full LR.
                 # Noisy tail expert (κ>>1) → reduced LR to stabilize.
+                p_local = _to_local(p) if hasattr(p, 'to_local') else p
                 if (self.spectral_conditioning
                         and param_type == "expert"
-                        and p.dim() == 3
-                        and p.shape[0] == self.num_experts):
+                        and p_local.dim() == 3
+                        and p_local.shape[0] == self.num_experts):
                     per_expert_lr_scale = torch.ones(self.num_experts, device=p.device)
                     for e in range(self.num_experts):
                         G_e = grad[e]  # [H, I]
@@ -272,9 +285,11 @@ class AdamTR(Optimizer):
                     bias_correction2_sqrt = math.sqrt(bias_correction2)
                     denom = (exp_avg_sq.sqrt() / bias_correction2_sqrt).add_(eps)
 
+                    exp_avg_local = _to_local(exp_avg)
+                    denom_local = _to_local(denom)
                     for e in range(self.num_experts):
                         step_size = effective_lr * per_expert_lr_scale[e].item() / bias_correction1
-                        p[e].addcdiv_(exp_avg[e], denom[e], value=-step_size)
+                        p_local[e].addcdiv_(exp_avg_local[e], denom_local[e], value=-step_size)
 
                     # Log diagnostics periodically
                     if self._step_count % 100 == 0:
