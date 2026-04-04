@@ -82,15 +82,16 @@ def make_config() -> ModelConfig:
 
 # High-quality programming languages for code pre-training
 DEFAULT_LANGS = [
-    "Python", "JavaScript", "TypeScript", "Java", "C", "C++", "Go",
-    "Rust", "Ruby", "PHP", "Swift", "Kotlin", "Scala", "Shell",
-    "Lua", "R", "Julia", "Haskell", "OCaml", "SQL",
+    "python", "javascript", "typescript", "java", "c", "c++", "go",
+    "rust", "ruby", "php", "swift", "kotlin", "scala", "shell",
+    "lua", "r", "julia", "haskell", "ocaml", "sql",
 ]
 
 
-class StackV2StreamingDataset(IterableDataset):
-    """Streaming tokenized chunks from The Stack v2 (deduplicated).
+class StarCoderStreamingDataset(IterableDataset):
+    """Streaming tokenized chunks from StarCoderData (bigcode/starcoderdata).
 
+    783GB of source code across 86 languages, ~250B tokens.
     Multi-GPU: each rank takes every world_size-th chunk.
     Continuous pre-training: dataset loops forever.
     """
@@ -102,7 +103,7 @@ class StackV2StreamingDataset(IterableDataset):
         self.world_size = world_size
         self.languages = languages or DEFAULT_LANGS
 
-        logger.info(f"Connecting to The Stack v2 (streaming) [rank {rank}/{world_size}]...")
+        logger.info(f"Connecting to StarCoderData (streaming) [rank {rank}/{world_size}]...")
         logger.info(f"  Languages: {', '.join(self.languages[:10])}{'...' if len(self.languages) > 10 else ''}")
         t0 = time.time()
 
@@ -111,17 +112,18 @@ class StackV2StreamingDataset(IterableDataset):
         for lang in self.languages:
             try:
                 ds = load_dataset(
-                    "bigcode/the-stack-v2-dedup",
-                    data_dir=f"data/{lang}",
+                    "bigcode/starcoderdata",
+                    data_dir=lang,
                     split="train",
                     streaming=True,
                 )
                 datasets.append(ds)
+                logger.info(f"  Loaded {lang}")
             except Exception as e:
                 logger.warning(f"  Skipping {lang}: {e}")
 
         if len(datasets) == 0:
-            raise RuntimeError("No languages loaded from The Stack v2")
+            raise RuntimeError("No languages loaded from StarCoderData")
 
         from datasets import interleave_datasets
         combined = interleave_datasets(datasets, stopping_strategy="all_exhausted")
@@ -216,7 +218,7 @@ def main():
     if config.num_experts > 1 and is_main:
         from itertools import islice
         logger.info("Computing token frequencies for Zipf-balanced routing...")
-        freq_dataset = StackV2StreamingDataset(
+        freq_dataset = StarCoderStreamingDataset(
             tokenizer=tokenizer, languages=args.languages, rank=0, world_size=1,
         )
         freq_loader = DataLoader(freq_dataset, batch_size=32, num_workers=2)
@@ -266,7 +268,7 @@ def main():
         logger.info(f"  Warmup: {warmup_steps} steps (5%)")
 
     # Dataset
-    dataset = StackV2StreamingDataset(
+    dataset = StarCoderStreamingDataset(
         tokenizer=tokenizer,
         languages=args.languages,
         max_length=4096,
