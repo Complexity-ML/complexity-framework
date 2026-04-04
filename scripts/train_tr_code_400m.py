@@ -82,9 +82,9 @@ def make_config() -> ModelConfig:
 
 # High-quality programming languages for code pre-training
 DEFAULT_LANGS = [
-    "python", "javascript", "typescript", "java", "c", "c++", "go",
-    "rust", "ruby", "php", "swift", "kotlin", "scala", "shell",
-    "lua", "r", "julia", "haskell", "ocaml", "sql",
+    "Python", "JavaScript", "TypeScript", "Java", "C", "C++", "Go",
+    "Rust", "Ruby", "PHP", "Swift", "Kotlin", "Scala", "Shell",
+    "Lua", "R", "Julia", "Haskell", "OCaml", "SQL",
 ]
 
 
