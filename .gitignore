@@ -220,3 +220,6 @@ tmpclaude-*
 .claude
 .gitignore
 tmlr-paper-pool/
+results_*
+benchmark_*
+spaces
