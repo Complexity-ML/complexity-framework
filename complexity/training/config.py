@@ -15,7 +15,7 @@ class TrainingConfig:
     gradient_accumulation_steps: int = 1
 
     # Optimizer
-    optimizer_type: str = "adamw"  # adamw, adamw_mup, muon, muon_tr
+    optimizer_type: str = "adamw"  # adamw, adamw_mup, muon, muon_tr, adam_tr
     learning_rate: float = 1e-4
     weight_decay: float = 0.1
     muon_lr: float = 0.02         # Muon LR for 2D weights (only used when optimizer_type="muon" or "muon_tr")

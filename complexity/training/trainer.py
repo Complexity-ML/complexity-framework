@@ -201,6 +201,31 @@ class Trainer:
                             f"expert_wd={config.expert_weight_decay}, adaptive_ns={config.adaptive_ns}")
             return optimizer
 
+        if config.optimizer_type == "adam_tr":
+            from .adam_tr import AdamTR, adamtr_param_groups
+            num_experts = getattr(getattr(self.model, 'config', None), 'num_experts', 4)
+            param_groups = adamtr_param_groups(
+                self.model,
+                lr=config.learning_rate,
+                weight_decay=config.weight_decay,
+                expert_lr_scale=config.expert_lr_scale,
+                expert_weight_decay=config.expert_weight_decay,
+            )
+            optimizer = AdamTR(
+                param_groups,
+                lr=config.learning_rate,
+                weight_decay=config.weight_decay,
+                expert_lr_scale=config.expert_lr_scale,
+                expert_weight_decay=config.expert_weight_decay,
+                num_experts=num_experts,
+                spectral_conditioning=True,
+            )
+            if self.is_main:
+                total_p = sum(p.numel() for g in param_groups for p in g['params'])
+                logger.info(f"AdamTR optimizer: {total_p/1e6:.0f}M params, "
+                            f"expert_lr_scale={config.expert_lr_scale}, spectral_conditioning=True")
+            return optimizer
+
         # Split params: decay vs no-decay, and optionally muP scaling
         embed_params = []
         hidden_params = []
