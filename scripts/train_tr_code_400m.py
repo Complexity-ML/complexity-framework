@@ -163,11 +163,11 @@ def compute_steps_for_tokens(target_tokens: int, batch_size: int,
 def main():
     parser = argparse.ArgumentParser(description="Train 400M Code (Token-Routed + Mu + AdamTR)")
     parser.add_argument("--tokenizer", type=str, default="./tokenizer")
-    parser.add_argument("--target-tokens", type=int, default=10_000_000_000,
-                        help="Target token count (default: 10B)")
-    parser.add_argument("--batch-size", type=int, default=64,
-                        help="Batch size per GPU (smaller for 4096 seq len)")
-    parser.add_argument("--gradient-accumulation", type=int, default=2)
+    parser.add_argument("--target-tokens", type=int, default=8_000_000_000,
+                        help="Target token count (default: 8B)")
+    parser.add_argument("--batch-size", type=int, default=256,
+                        help="Batch size per GPU")
+    parser.add_argument("--gradient-accumulation", type=int, default=1)
     parser.add_argument("--lr", type=float, default=2.1e-4)
     parser.add_argument("--warmup-steps", type=int, default=None,
                         help="Warmup steps (default: 5%% of max_steps)")
