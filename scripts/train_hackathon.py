@@ -196,7 +196,7 @@ def main():
                     f"heads={config.num_attention_heads}, kv_heads={config.num_key_value_heads}")
         logger.info(f"  inter={config.intermediate_size}, experts={config.num_experts}")
         logger.info(f"  mlp={config.mlp_type}, mu_guidance={getattr(config, 'use_mu_guidance', False)}")
-        logger.info(f"  Optimizer: Muon (lr={args.muon_lr}) + AdamW (lr={args.adam_lr})")
+        logger.info(f"  Optimizer: MuonTR (lr={args.muon_lr}) + AdamW (lr={args.adam_lr})")
 
     # ClusterModel — DP only, batch per GPU, accum=1
     # Scale séquences/step via nb de GPUs (DP)
@@ -248,9 +248,11 @@ def main():
         max_steps=max_steps,
         batch_size=args.batch_size,
         gradient_accumulation_steps=args.gradient_accumulation,
-        optimizer_type="muon",
+        optimizer_type="muon_tr",
         learning_rate=args.adam_lr,
         muon_lr=args.muon_lr,
+        expert_lr_scale=1.5,
+        expert_weight_decay=0.005,
         warmup_steps=args.warmup_steps,
         lr_scheduler=args.lr_scheduler,
         precision="bf16",

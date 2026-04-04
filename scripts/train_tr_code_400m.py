@@ -1,21 +1,25 @@
 """
-Pre-training 1B v1 — Token-Routed MLP + Mu-Guidance .
+Pre-training 400M Code — Token-Routed MLP + Mu-Guidance + AdamTR.
 
-Full architecture v1 at 1B scale for continuous pre-training.
-Uses FSDP full_shard for 8× H100/H200 multi-GPU training.
+Code-focused pre-training on The Stack v2 (bigcode/the-stack-v2-dedup).
+Uses FSDP full_shard for multi-GPU training.
 
-Model: hidden=1792, layers=24, heads=28, kv_heads=4, inter=4608, 4 experts
-       → ~1.02B params (Token-Routed + Mu )
+Model: hidden=1024, layers=20, heads=16, kv_heads=4, inter=3200, 4 experts
+       → ~384M params (Token-Routed + Mu)
 
 Usage:
-    # 8× H100
-    torchrun --nproc_per_node=8 scripts/train_1b_v1.py
+    # 2× RTX PRO 6000
+    torchrun --nproc_per_node=2 scripts/train_tr_code_400m.py
 
     # Resume
-    torchrun --nproc_per_node=8 scripts/train_1b_v1.py --resume checkpoints/1b-v1/step_10000
+    torchrun --nproc_per_node=2 scripts/train_tr_code_400m.py --resume checkpoints/tr-code-400m/step_10000
 
 INL / Complexity-ML — 2026
 """
+
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
 from complexity.gpu import setup_gpu
 setup_gpu()
@@ -26,7 +30,6 @@ from torch.utils.data import DataLoader, IterableDataset
 import torch
 import torch.nn as nn
 import argparse
-import os
 import math
 import logging
 import time
@@ -37,7 +40,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     level=logging.INFO,
 )
-logger = logging.getLogger("train_1b")
+logger = logging.getLogger("train_tr_code_400m")
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -50,18 +53,19 @@ from complexity.training import Trainer, TrainingConfig, WandBCallback, TqdmCall
 from complexity.parallel import init_distributed, get_rank, get_world_size, is_main_process, cleanup, simple_ddp
 
 
-# ── Model config (~1.02B params) ─────────────────────────────────────────
+# ── Model config (~400M params) ─────────────────────────────────────────
 
 def make_config() -> ModelConfig:
-    """Full v1: Token-Routed MLP + Mu-Guidance + INL Dynamics.
-    hidden=1792, layers=24, heads=28, kv_heads=4, inter=4608, 4 experts → ~1.02B.
+    """Token-Routed MLP + Mu-Guidance for code pre-training.
+    hidden=1024, layers=20, heads=16, kv_heads=4, inter=3200, 4 experts
+    shared=expert_inter=800 → ~384M.
     """
     return ModelConfig(
-        hidden_size=1792,
-        num_hidden_layers=24,
-        num_attention_heads=28,
+        hidden_size=1024,
+        num_hidden_layers=20,
+        num_attention_heads=16,
         num_key_value_heads=4,
-        intermediate_size=4608,
+        intermediate_size=3200,
         vocab_size=32000,
         max_position_embeddings=4096,
         attention_type="gqa",
@@ -76,38 +80,65 @@ def make_config() -> ModelConfig:
 
 # ── Dataset ───────────────────────────────────────────────────────────────
 
-class FineWebStreamingDataset(IterableDataset):
-    """Streaming tokenized chunks from FineWeb-Edu.
+# High-quality programming languages for code pre-training
+DEFAULT_LANGS = [
+    "python", "javascript", "typescript", "java", "c", "c++", "go",
+    "rust", "ruby", "php", "swift", "kotlin", "scala", "shell",
+    "lua", "r", "julia", "haskell", "ocaml", "sql",
+]
+
+
+class StackV2StreamingDataset(IterableDataset):
+    """Streaming tokenized chunks from The Stack v2 (deduplicated).
 
     Multi-GPU: each rank takes every world_size-th chunk.
     Continuous pre-training: dataset loops forever.
     """
 
-    def __init__(self, tokenizer, max_length=2048, rank=0, world_size=1):
+    def __init__(self, tokenizer, languages=None, max_length=4096, rank=0, world_size=1):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.rank = rank
         self.world_size = world_size
-        logger.info(f"Connecting to FineWeb-Edu (streaming) [rank {rank}/{world_size}]...")
+        self.languages = languages or DEFAULT_LANGS
+
+        logger.info(f"Connecting to The Stack v2 (streaming) [rank {rank}/{world_size}]...")
+        logger.info(f"  Languages: {', '.join(self.languages[:10])}{'...' if len(self.languages) > 10 else ''}")
         t0 = time.time()
-        ds = load_dataset(
-            "HuggingFaceFW/fineweb-edu",
-            split="train",
-            streaming=True,
-        )
+
+        # Load all requested languages and interleave
+        datasets = []
+        for lang in self.languages:
+            try:
+                ds = load_dataset(
+                    "bigcode/the-stack-v2-dedup",
+                    data_dir=f"data/{lang}",
+                    split="train",
+                    streaming=True,
+                )
+                datasets.append(ds)
+            except Exception as e:
+                logger.warning(f"  Skipping {lang}: {e}")
+
+        if len(datasets) == 0:
+            raise RuntimeError("No languages loaded from The Stack v2")
+
+        from datasets import interleave_datasets
+        combined = interleave_datasets(datasets, stopping_strategy="all_exhausted")
+
         if world_size > 1:
-            ds = ds.shard(num_shards=world_size, index=rank)
-        self.dataset = ds
-        logger.info(f"Dataset ready in {time.time() - t0:.1f}s")
+            combined = combined.shard(num_shards=world_size, index=rank)
+        self.dataset = combined
+        logger.info(f"Dataset ready in {time.time() - t0:.1f}s ({len(datasets)} languages)")
 
     def __iter__(self):
         buffer = []
         first_yield = True
         for example in self.dataset:
-            text = example.get("text", "")
-            if not text:
+            content = example.get("content", "")
+            if not content or len(content) < 50:
                 continue
-            tokens = self.tokenizer.encode(text)
+            tokens = self.tokenizer.encode(content)
             buffer.extend(tokens)
 
             while len(buffer) >= self.max_length + 1:
@@ -130,30 +161,32 @@ def compute_steps_for_tokens(target_tokens: int, batch_size: int,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train 1B v1 (Token-Routed + Mu )")
+    parser = argparse.ArgumentParser(description="Train 400M Code (Token-Routed + Mu + AdamTR)")
     parser.add_argument("--tokenizer", type=str, default="./tokenizer")
-    parser.add_argument("--target-tokens", type=int, default=15_000_000_000,
-                        help="Target token count (default: 15B)")
-    parser.add_argument("--batch-size", type=int, default=32,
-                        help="Batch size per GPU")
-    parser.add_argument("--gradient-accumulation", type=int, default=1)
-    parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--warmup-steps", type=int, default=1500)
+    parser.add_argument("--target-tokens", type=int, default=10_000_000_000,
+                        help="Target token count (default: 10B)")
+    parser.add_argument("--batch-size", type=int, default=64,
+                        help="Batch size per GPU (smaller for 4096 seq len)")
+    parser.add_argument("--gradient-accumulation", type=int, default=2)
+    parser.add_argument("--lr", type=float, default=2.1e-4)
+    parser.add_argument("--warmup-steps", type=int, default=None,
+                        help="Warmup steps (default: 5%% of max_steps)")
     parser.add_argument("--lr-scheduler", type=str, default="auto",
                         choices=["auto", "cosine", "linear", "constant"])
     parser.add_argument("--max-steps", type=int, default=None,
-                        help="Override max_steps directly (bypasses --target-tokens calc). "
-                             "Use when resuming with different gradient-accumulation.")
-    parser.add_argument("--save-steps", type=int, default=2000)
+                        help="Override max_steps directly (bypasses --target-tokens calc).")
+    parser.add_argument("--save-steps", type=int, default=5000)
     parser.add_argument("--log-steps", type=int, default=10)
-    parser.add_argument("--checkpoint-dir", type=str, default="./checkpoints/1b-v1")
+    parser.add_argument("--checkpoint-dir", type=str, default="./checkpoints/tr-code-400m")
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--wandb", type=str, default=None)
     parser.add_argument("--gradient-checkpointing", action="store_true", default=True,
-                        help="Gradient checkpointing (default: enabled for 1B)")
+                        help="Gradient checkpointing (default: enabled)")
     parser.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing",
                         action="store_false")
+    parser.add_argument("--languages", type=str, nargs="+", default=None,
+                        help="Languages to include (default: top 20)")
     args = parser.parse_args()
 
     # Initialize distributed
@@ -183,8 +216,10 @@ def main():
     if config.num_experts > 1 and is_main:
         from itertools import islice
         logger.info("Computing token frequencies for Zipf-balanced routing...")
-        freq_dataset = FineWebStreamingDataset(tokenizer=tokenizer, rank=0, world_size=1)
-        freq_loader = DataLoader(freq_dataset, batch_size=64, num_workers=2)
+        freq_dataset = StackV2StreamingDataset(
+            tokenizer=tokenizer, languages=args.languages, rank=0, world_size=1,
+        )
+        freq_loader = DataLoader(freq_dataset, batch_size=32, num_workers=2)
         freqs = torch.zeros(config.vocab_size, dtype=torch.float32)
         for batch in islice(freq_loader, 1000):
             ids = batch["input_ids"].flatten()
@@ -208,6 +243,7 @@ def main():
         logger.info(f"  inter={config.intermediate_size}, experts={config.num_experts}")
         logger.info(f"  attn={config.attention_type}, mlp={config.mlp_type}, "
                     f"mu_guidance={config.use_mu_guidance}")
+        logger.info(f"  Optimizer: AdamTR (expert_lr_scale=1.5, spectral_conditioning=True)")
 
     # Steps
     if args.max_steps is not None:
@@ -217,18 +253,25 @@ def main():
             target_tokens=args.target_tokens,
             batch_size=args.batch_size * world_size,
             grad_accum=args.gradient_accumulation,
-            seq_len=2048,
+            seq_len=4096,
         )
+    # Auto warmup: 5% of max_steps
+    warmup_steps = args.warmup_steps if args.warmup_steps is not None else max(1, int(max_steps * 0.05))
+
     if is_main:
-        tokens_per_step = args.batch_size * world_size * args.gradient_accumulation * 2048
+        tokens_per_step = args.batch_size * world_size * args.gradient_accumulation * 4096
         logger.info(f"Training: {max_steps:,} steps (~{args.target_tokens/1e9:.1f}B tokens)")
         logger.info(f"  Tokens/step: {tokens_per_step:,} "
-                    f"(batch={args.batch_size} × {world_size} GPUs × accum={args.gradient_accumulation} × seq=2048)")
-        logger.info(f"  Warmup: {args.warmup_steps} steps")
+                    f"(batch={args.batch_size} × {world_size} GPUs × accum={args.gradient_accumulation} × seq=4096)")
+        logger.info(f"  Warmup: {warmup_steps} steps (5%)")
 
     # Dataset
-    dataset = FineWebStreamingDataset(
-        tokenizer=tokenizer, rank=rank, world_size=world_size,
+    dataset = StackV2StreamingDataset(
+        tokenizer=tokenizer,
+        languages=args.languages,
+        max_length=4096,
+        rank=rank,
+        world_size=world_size,
     )
     dataloader = DataLoader(
         dataset,
@@ -237,7 +280,7 @@ def main():
         pin_memory=True,
     )
 
-    # Trainer with FSDP (gradient checkpointing handled by FSDP checkpoint_wrapper)
+    # Trainer with FSDP + AdamTR
     train_config = TrainingConfig(
         max_steps=max_steps,
         batch_size=args.batch_size,
@@ -246,7 +289,7 @@ def main():
         learning_rate=args.lr,
         expert_lr_scale=1.5,
         expert_weight_decay=0.05,
-        warmup_steps=args.warmup_steps,
+        warmup_steps=warmup_steps,
         lr_scheduler=args.lr_scheduler,
         precision="bf16",
         save_steps=args.save_steps,
@@ -287,10 +330,10 @@ def main():
     tqdm_cb = None
     if is_main:
         if args.wandb:
-            wandb_cb = WandBCallback(project=args.wandb, name="1b-v1")
+            wandb_cb = WandBCallback(project=args.wandb, name="tr-code-400m")
             trainer.callbacks.append(wandb_cb)
 
-        tqdm_cb = TqdmCallback(total_steps=max_steps, desc="1B v1")
+        tqdm_cb = TqdmCallback(total_steps=max_steps, desc="TR-Code 400M")
         trainer.callbacks.append(tqdm_cb)
 
         os.makedirs(args.checkpoint_dir, exist_ok=True)
@@ -302,8 +345,6 @@ def main():
             csv_writer.writerow(["step", "loss", "ppl", "elapsed_s"])
         csv_file.flush()
         t_start = time.time()
-
-        accum = args.gradient_accumulation
 
         def csv_callback(trainer_obj, step, loss_val):
             real_loss = loss_val
