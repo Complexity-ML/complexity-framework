@@ -15,11 +15,14 @@ class TrainingConfig:
     gradient_accumulation_steps: int = 1
 
     # Optimizer
-    optimizer_type: str = "adamw"  # adamw, adamw_mup, muon
+    optimizer_type: str = "adamw"  # adamw, adamw_mup, muon, muon_tr
     learning_rate: float = 1e-4
     weight_decay: float = 0.1
-    muon_lr: float = 0.02         # Muon LR for 2D weights (only used when optimizer_type="muon")
+    muon_lr: float = 0.02         # Muon LR for 2D weights (only used when optimizer_type="muon" or "muon_tr")
     mup_base_width: int = 256     # muP reference width (only used when optimizer_type="adamw_mup")
+    expert_lr_scale: float = 1.5  # LR multiplier for routed experts (muon_tr only)
+    expert_weight_decay: float = 0.005  # Weight decay for experts (muon_tr only)
+    adaptive_ns: bool = True      # Adaptive Newton-Schulz iterations per expert (muon_tr only)
     warmup_steps: int = 1000
     lr_scheduler: str = "auto"    # auto, cosine, wsd, linear, constant
     min_lr_ratio: float = 0.1

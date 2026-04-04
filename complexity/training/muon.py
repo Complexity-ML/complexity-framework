@@ -49,6 +49,47 @@ def newton_schulz(M: torch.Tensor, steps: int = 5) -> torch.Tensor:
     return X.to(M.dtype)
 
 
+def newton_schulz_adaptive(
+    M: torch.Tensor,
+    min_steps: int = 5,
+    max_steps: int = 10,
+    tol: float = 1e-2,
+) -> tuple:
+    """
+    Newton-Schulz with adaptive iterations and convergence monitoring.
+
+    Iterates until ||X^T X - I||_F < tol or max_steps reached.
+    Returns (orthogonalized_matrix, residual_norm, steps_used).
+
+    For noisy gradients (tail experts with fewer tokens), the singular
+    value spread is wider → more iterations needed for convergence.
+
+    Ref: KellerJordan/Muon#65
+    """
+    a, b, c = 3.4445, -4.7750, 2.0315
+
+    X = M.bfloat16()
+    X /= X.norm(dim=(-2, -1), keepdim=True).clamp(min=1e-7)
+
+    residual = float('inf')
+    steps_used = 0
+
+    for i in range(max_steps):
+        A = X @ X.mT
+        B = b * A + c * (A @ A)
+        X = a * X + B @ X
+        steps_used = i + 1
+
+        # Check convergence after min_steps
+        if i + 1 >= min_steps:
+            identity = torch.eye(X.shape[-2], device=X.device, dtype=X.dtype)
+            residual = (X @ X.mT - identity).norm().item()
+            if residual < tol:
+                break
+
+    return X.to(M.dtype), residual, steps_used
+
+
 class Muon(Optimizer):
     """
     Muon optimizer for 2D+ weight matrices.

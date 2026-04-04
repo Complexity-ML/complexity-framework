@@ -27,7 +27,10 @@ import torch.distributed as dist
 from torch.optim import Optimizer
 from typing import Optional, Callable, Tuple, List, Dict, Any
 
-from .muon import newton_schulz
+from .muon import newton_schulz, newton_schulz_adaptive
+
+import logging
+logger = logging.getLogger("complexity.muon_tr")
 
 
 class MuonTR(Optimizer):
@@ -37,12 +40,27 @@ class MuonTR(Optimizer):
     Same Newton-Schulz orthogonalization as Muon, plus per-expert
     LR scaling, expert-aware weight decay, and gradient normalization.
 
+    Key difference from standard Muon: **per-expert orthogonalization**.
+    Each expert's [H, I] slice is orthogonalized independently because
+    experts see different token distributions under Zipf routing, giving
+    each expert a different singular value spectrum. Joint orthogonalization
+    across all experts would force a single scaling from the largest SV,
+    shrinking tail expert gradients excessively.
+
+    Tail experts (fewer tokens) get adaptive NS iterations because their
+    noisier gradients have wider SV spread → slower convergence.
+
+    Ref: KellerJordan/Muon#65
+
     Args:
         params: Parameter groups (with param_type metadata).
         lr: Base learning rate (default: 0.02).
         momentum: Momentum coefficient (default: 0.95).
         nesterov: Use Nesterov momentum (default: True).
-        ns_steps: Newton-Schulz iterations (default: 5).
+        ns_steps: Min Newton-Schulz iterations (default: 5).
+        ns_max_steps: Max Newton-Schulz iterations for adaptive mode (default: 10).
+        ns_tol: Convergence tolerance for adaptive NS (default: 1e-2).
+        adaptive_ns: Use adaptive NS iterations per expert (default: True).
         weight_decay: Base weight decay (default: 0.01).
         expert_lr_scale: LR multiplier for routed expert params (default: 1.5).
         shared_lr_scale: LR multiplier for shared expert params (default: 1.0).
@@ -59,6 +77,9 @@ class MuonTR(Optimizer):
         momentum: float = 0.95,
         nesterov: bool = True,
         ns_steps: int = 5,
+        ns_max_steps: int = 10,
+        ns_tol: float = 1e-2,
+        adaptive_ns: bool = True,
         weight_decay: float = 0.01,
         expert_lr_scale: float = 1.5,
         shared_lr_scale: float = 1.0,
@@ -72,6 +93,9 @@ class MuonTR(Optimizer):
             momentum=momentum,
             nesterov=nesterov,
             ns_steps=ns_steps,
+            ns_max_steps=ns_max_steps,
+            ns_tol=ns_tol,
+            adaptive_ns=adaptive_ns,
             weight_decay=weight_decay,
             expert_lr_scale=expert_lr_scale,
             shared_lr_scale=shared_lr_scale,
@@ -81,10 +105,21 @@ class MuonTR(Optimizer):
         super().__init__(params, defaults)
         self.num_experts = num_experts
         self.token_counts = token_counts
+        # Per-expert NS convergence monitoring
+        self._ns_residuals: Dict[int, float] = {}
+        self._ns_steps_used: Dict[int, int] = {}
+        self._step_count = 0
 
     def update_token_counts(self, token_counts: torch.Tensor):
         """Update per-expert token counts for gradient scaling."""
         self.token_counts = token_counts
+
+    def get_ns_diagnostics(self) -> Dict[int, Dict[str, float]]:
+        """Return per-expert NS convergence diagnostics."""
+        return {
+            e: {"residual": self._ns_residuals.get(e, 0.0), "steps": self._ns_steps_used.get(e, 0)}
+            for e in range(self.num_experts)
+        }
 
     @torch.no_grad()
     def step(self, closure: Optional[Callable] = None):
@@ -93,11 +128,16 @@ class MuonTR(Optimizer):
             with torch.enable_grad():
                 loss = closure()
 
+        self._step_count += 1
+
         for group in self.param_groups:
             lr = group['lr']
             beta = group['momentum']
             nesterov = group['nesterov']
             ns_steps = group['ns_steps']
+            ns_max_steps = group.get('ns_max_steps', 10)
+            ns_tol = group.get('ns_tol', 1e-2)
+            adaptive_ns = group.get('adaptive_ns', True)
             param_type = group.get('param_type', 'dense')
 
             for p in group['params']:
@@ -146,7 +186,9 @@ class MuonTR(Optimizer):
                 else:
                     wd = group['weight_decay']
 
-                # For expert tensors [E, H, I], orthogonalize each expert slice
+                # For expert tensors [E, H, I], orthogonalize each expert slice independently
+                # Per-expert NS is more correct because each expert sees different token
+                # distributions under Zipf routing → different SV spectra
                 if p.dim() == 3 and p.shape[0] == self.num_experts and param_type == 'expert':
                     for e in range(self.num_experts):
                         slice_update = update[e]
@@ -154,11 +196,26 @@ class MuonTR(Optimizer):
                         transposed = rows > cols
                         if transposed:
                             slice_update = slice_update.T
-                        slice_update = newton_schulz(slice_update, steps=ns_steps)
+
+                        if adaptive_ns:
+                            slice_update, residual, steps_used = newton_schulz_adaptive(
+                                slice_update, min_steps=ns_steps, max_steps=ns_max_steps, tol=ns_tol,
+                            )
+                            self._ns_residuals[e] = residual
+                            self._ns_steps_used[e] = steps_used
+                        else:
+                            slice_update = newton_schulz(slice_update, steps=ns_steps)
+
                         if transposed:
                             slice_update = slice_update.T
                         slice_update *= max(1, rows / cols) ** 0.5
                         update[e] = slice_update
+
+                    # Log per-expert NS convergence periodically
+                    if self._step_count % 100 == 0 and self._ns_residuals:
+                        parts = [f"E{e}: {self._ns_residuals.get(e, 0):.4f} ({self._ns_steps_used.get(e, 0)} iters)"
+                                 for e in range(self.num_experts)]
+                        logger.info("NS convergence ||X^T X - I||_F: %s", " | ".join(parts))
                 else:
                     # Standard Muon: reshape to 2D, orthogonalize
                     original_shape = update.shape

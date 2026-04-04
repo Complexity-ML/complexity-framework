@@ -176,6 +176,31 @@ class Trainer:
                 logger.info(f"Muon optimizer: {muon_p/1e6:.0f}M orthogonalized, {adam_p/1e6:.0f}M AdamW")
             return optimizer
 
+        if config.optimizer_type == "muon_tr":
+            from .muon_tr import MuonTRWithAdamW, split_params_for_muon_tr
+            num_experts = getattr(getattr(self.model, 'config', None), 'num_experts', 4)
+            muon_groups, adam_groups = split_params_for_muon_tr(self.model, num_experts=num_experts)
+            optimizer = MuonTRWithAdamW(
+                muon_params=muon_groups,
+                adam_params=adam_groups,
+                lr=config.muon_lr,
+                adam_lr=config.learning_rate,
+                weight_decay=config.weight_decay,
+                expert_lr_scale=config.expert_lr_scale,
+                expert_weight_decay=config.expert_weight_decay,
+                num_experts=num_experts,
+            )
+            if self.is_main:
+                expert_p = sum(p.numel() for g in muon_groups for p in g['params'] if g.get('param_type') == 'expert')
+                shared_p = sum(p.numel() for g in muon_groups for p in g['params'] if g.get('param_type') == 'shared')
+                dense_p = sum(p.numel() for g in muon_groups for p in g['params'] if g.get('param_type') == 'dense')
+                adam_p = sum(p.numel() for g in adam_groups for p in g['params'])
+                logger.info(f"MuonTR optimizer: {expert_p/1e6:.0f}M expert, {shared_p/1e6:.0f}M shared, "
+                            f"{dense_p/1e6:.0f}M dense (NS), {adam_p/1e6:.0f}M AdamW")
+                logger.info(f"  expert_lr_scale={config.expert_lr_scale}, "
+                            f"expert_wd={config.expert_weight_decay}, adaptive_ns={config.adaptive_ns}")
+            return optimizer
+
         # Split params: decay vs no-decay, and optionally muP scaling
         embed_params = []
         hidden_params = []
@@ -263,6 +288,7 @@ class Trainer:
                     loss = self._training_step(batch)
 
                     if (batch_idx + 1) % accumulation_steps == 0:
+                        self._update_expert_token_counts(batch)
                         self._optimizer_step()
                         self.global_step += 1
 
@@ -316,6 +342,29 @@ class Trainer:
             scaled_loss.backward()
 
         return loss
+
+    def _update_expert_token_counts(self, batch):
+        """Update per-expert token counts for MuonTR/AdamTR optimizers."""
+        if not hasattr(self.optimizer, 'update_token_counts'):
+            return
+        input_ids = batch.get("input_ids")
+        if input_ids is None:
+            return
+        num_experts = getattr(getattr(self.model, 'config', None), 'num_experts', 1)
+        if num_experts <= 1:
+            return
+        # Find the token_to_expert mapping from the model
+        token_to_expert = None
+        for module in self.model.modules():
+            if hasattr(module, 'token_to_expert'):
+                token_to_expert = module.token_to_expert
+                break
+        if token_to_expert is None:
+            return
+        flat_ids = input_ids.view(-1).clamp(0, len(token_to_expert) - 1)
+        expert_ids = token_to_expert[flat_ids]
+        counts = torch.bincount(expert_ids, minlength=num_experts)
+        self.optimizer.update_token_counts(counts)
 
     def _optimizer_step(self):
         """Optimizer step with gradient clipping."""
