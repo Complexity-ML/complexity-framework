@@ -83,8 +83,8 @@ def make_config() -> ModelConfig:
 # High-quality programming languages for code pre-training
 DEFAULT_LANGS = [
     "python", "javascript", "typescript", "java", "c", "cpp", "go",
-    "rust", "ruby", "php", "swift", "kotlin", "scala", "shell",
-    "lua", "r", "julia", "haskell", "ocaml", "sql",
+    "rust", "ruby", "php", "scala", "shell", "lua", "r", "julia",
+    "haskell", "sql",
 ]
 
 
@@ -108,6 +108,7 @@ class StarCoderStreamingDataset(IterableDataset):
         t0 = time.time()
 
         # Load all requested languages and interleave
+        # Only keep 'content' column to avoid schema conflicts between languages
         datasets = []
         for lang in self.languages:
             try:
@@ -117,6 +118,7 @@ class StarCoderStreamingDataset(IterableDataset):
                     split="train",
                     streaming=True,
                 )
+                ds = ds.select_columns(["content"])
                 datasets.append(ds)
                 logger.info(f"  Loaded {lang}")
             except Exception as e:
