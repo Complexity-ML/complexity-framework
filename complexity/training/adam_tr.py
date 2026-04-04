@@ -188,10 +188,7 @@ class AdamTR(Optimizer):
                 if p.grad is None:
                     continue
 
-                grad = p.grad
-                # FSDP v2 wraps params as DTensor — convert to local for indexing
-                if hasattr(grad, 'to_local'):
-                    grad = grad.to_local()
+                grad = _to_local(p.grad)
                 if grad.is_sparse:
                     raise RuntimeError("AdamTR does not support sparse gradients")
 
@@ -199,8 +196,8 @@ class AdamTR(Optimizer):
 
                 if len(state) == 0:
                     state["step"] = torch.tensor(0.0, dtype=torch.float32)
-                    state["exp_avg"] = torch.zeros_like(p)
-                    state["exp_avg_sq"] = torch.zeros_like(p)
+                    state["exp_avg"] = torch.zeros_like(grad)
+                    state["exp_avg_sq"] = torch.zeros_like(grad)
 
                 exp_avg = state["exp_avg"]
                 exp_avg_sq = state["exp_avg_sq"]
@@ -227,13 +224,15 @@ class AdamTR(Optimizer):
                 else:
                     wd = group["weight_decay"]
 
+                # Work entirely on local tensors (FSDP v2 compat)
+                p_local = _to_local(p)
+
                 # Decoupled weight decay
-                p.mul_(1 - effective_lr * wd)
+                p_local.mul_(1 - effective_lr * wd)
 
                 # === Feature 3: Gradient scaling per expert ===
                 if param_type == "expert" and self.token_counts is not None:
                     mean_count = self.token_counts.float().mean()
-                    p_local = _to_local(p) if hasattr(p, 'to_local') else p
                     if p_local.dim() == 3 and p_local.shape[0] == self.num_experts:
                         for e in range(self.num_experts):
                             if self.token_counts[e] > 0:
@@ -242,41 +241,28 @@ class AdamTR(Optimizer):
                                 grad[e] = grad[e] * scale
 
                 # === Feature 5: Per-expert spectral conditioning ===
-                # Estimate κ_e = σ_max / σ_rms for each expert's gradient
-                # and scale LR inversely. Well-conditioned (κ≈1) → full LR.
-                # Noisy tail expert (κ>>1) → reduced LR to stabilize.
-                p_local = _to_local(p) if hasattr(p, 'to_local') else p
                 if (self.spectral_conditioning
                         and param_type == "expert"
                         and p_local.dim() == 3
                         and p_local.shape[0] == self.num_experts):
-                    per_expert_lr_scale = torch.ones(self.num_experts, device=p.device)
+                    per_expert_lr_scale = torch.ones(self.num_experts, device=grad.device)
                     for e in range(self.num_experts):
                         G_e = grad[e]  # [H, I]
                         rows, cols = G_e.shape
 
-                        # σ_rms = ||G||_F / √min(H, I)
-                        fro_norm = G_e.norm().item()
-                        sigma_rms = fro_norm / math.sqrt(min(rows, cols))
-
+                        sigma_rms = G_e.norm().item() / math.sqrt(min(rows, cols))
                         if sigma_rms < 1e-10:
                             continue
 
-                        # σ_max via 3-step power iteration (cheap)
                         sigma_max = _estimate_spectral_norm(G_e, n_iters=3)
-
-                        # κ = σ_max / σ_rms  (≥ 1, = 1 for perfectly spread SVs)
                         kappa = max(sigma_max / sigma_rms, 1.0)
 
-                        # EMA smoothing to avoid oscillation
                         alpha = self.spectral_ema
                         self._kappa_ema[e] = alpha * self._kappa_ema[e] + (1 - alpha) * kappa
-
-                        # LR scale = 1/κ, floored to prevent stalling
                         spectral_scale = max(1.0 / self._kappa_ema[e], self.spectral_floor)
                         per_expert_lr_scale[e] = spectral_scale
 
-                    # Apply per-expert Adam update with spectral-scaled LR
+                    # Per-expert Adam update with spectral-scaled LR
                     exp_avg.lerp_(grad, 1 - beta1)
                     exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
@@ -285,19 +271,16 @@ class AdamTR(Optimizer):
                     bias_correction2_sqrt = math.sqrt(bias_correction2)
                     denom = (exp_avg_sq.sqrt() / bias_correction2_sqrt).add_(eps)
 
-                    exp_avg_local = _to_local(exp_avg)
-                    denom_local = _to_local(denom)
                     for e in range(self.num_experts):
                         step_size = effective_lr * per_expert_lr_scale[e].item() / bias_correction1
-                        p_local[e].addcdiv_(exp_avg_local[e], denom_local[e], value=-step_size)
+                        p_local[e].addcdiv_(exp_avg[e], denom[e], value=-step_size)
 
-                    # Log diagnostics periodically
                     if self._step_count % 100 == 0:
                         parts = [f"E{e}: κ={self._kappa_ema[e]:.2f} scale={per_expert_lr_scale[e].item():.3f}"
                                  for e in range(self.num_experts)]
                         logger.info("Spectral conditioning: %s", " | ".join(parts))
 
-                    continue  # Skip standard Adam below (already applied per-expert)
+                    continue  # Skip standard Adam below
 
                 # Standard Adam update (non-expert, or expert without spectral)
                 exp_avg.lerp_(grad, 1 - beta1)
@@ -305,12 +288,10 @@ class AdamTR(Optimizer):
 
                 bias_correction1 = 1 - beta1 ** step
                 bias_correction2 = 1 - beta2 ** step
-
                 step_size = effective_lr / bias_correction1
                 bias_correction2_sqrt = math.sqrt(bias_correction2)
-
                 denom = (exp_avg_sq.sqrt() / bias_correction2_sqrt).add_(eps)
-                p.addcdiv_(exp_avg, denom, value=-step_size)
+                p_local.addcdiv_(exp_avg, denom, value=-step_size)
 
         return loss
 

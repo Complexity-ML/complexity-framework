@@ -245,10 +245,10 @@ class MuonTR(Optimizer):
 
                 # Decoupled weight decay
                 if wd != 0:
-                    p.mul_(1 - effective_lr * wd)
+                    p_local.mul_(1 - effective_lr * wd)
 
                 # Update parameters
-                p.add_(update, alpha=-effective_lr)
+                p_local.add_(update, alpha=-effective_lr)
 
         return loss
 
