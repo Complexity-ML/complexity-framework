@@ -109,6 +109,7 @@ class StarCoderStreamingDataset(IterableDataset):
 
         # Load all requested languages and interleave
         # Only keep 'content' column to avoid schema conflicts between languages
+        # Shard per-language BEFORE interleave (shard after interleave crashes)
         datasets = []
         for lang in self.languages:
             try:
@@ -119,6 +120,8 @@ class StarCoderStreamingDataset(IterableDataset):
                     streaming=True,
                 )
                 ds = ds.select_columns(["content"])
+                if world_size > 1:
+                    ds = ds.shard(num_shards=world_size, index=rank)
                 datasets.append(ds)
                 logger.info(f"  Loaded {lang}")
             except Exception as e:
@@ -128,11 +131,7 @@ class StarCoderStreamingDataset(IterableDataset):
             raise RuntimeError("No languages loaded from StarCoderData")
 
         from datasets import interleave_datasets
-        combined = interleave_datasets(datasets, stopping_strategy="all_exhausted")
-
-        if world_size > 1:
-            combined = combined.shard(num_shards=world_size, index=rank)
-        self.dataset = combined
+        self.dataset = interleave_datasets(datasets, stopping_strategy="all_exhausted")
         logger.info(f"Dataset ready in {time.time() - t0:.1f}s ({len(datasets)} languages)")
 
     def __iter__(self):
