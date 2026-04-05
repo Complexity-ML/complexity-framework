@@ -31,12 +31,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 
+import logging
+_logger = logging.getLogger(__name__)
+
 try:
     import triton
     import triton.language as tl
     HAS_TRITON = True
 except ImportError:
     HAS_TRITON = False
+    _logger.warning("Triton not available — fused cross-entropy will use PyTorch chunked fallback (slower)")
 
 
 def fused_cross_entropy(
