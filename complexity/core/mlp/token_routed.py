@@ -21,9 +21,32 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
+import logging
 
 from .base import MLPBase, MLPConfig
 from ..registry import register_mlp
+
+logger = logging.getLogger(__name__)
+
+# Try to import CGGR acceleration
+try:
+    from complexity_cuda.triton_token_routed import (
+        sort_tokens_by_expert,
+        cggr_grouped_gemm_triton,
+        grouped_gemm_pytorch,
+        fused_swiglu_triton,
+        HAS_TRITON,
+    )
+    HAS_CGGR = HAS_TRITON
+except ImportError:
+    HAS_CGGR = False
+
+
+def _to_local(t: torch.Tensor) -> torch.Tensor:
+    """Convert DTensor to local tensor (FSDP v2 compat)."""
+    if hasattr(t, 'to_local'):
+        return t.to_local()
+    return t
 
 
 @register_mlp("token_routed")
@@ -132,17 +155,34 @@ class TokenRoutedMLP(MLPBase):
         else:
             shared_out = 0
 
-        # Routed experts (sparse dispatch)
-        routed_out = torch.zeros_like(flat_x)
-        for e in range(self.num_experts):
-            mask = (flat_expert_ids == e)
-            if not mask.any():
-                continue
-            x_e = flat_x[mask]
-            gate_e = x_e @ self.gate_proj_w[e]
-            up_e = x_e @ self.up_proj_w[e]
-            inter_e = F.silu(gate_e) * up_e
-            routed_out[mask] = (inter_e @ self.down_proj_w[e]).to(routed_out.dtype)
+        # Routed experts — CGGR Triton (5-6x faster) or sparse dispatch fallback
+        gate_w = _to_local(self.gate_proj_w)
+        up_w = _to_local(self.up_proj_w)
+        down_w = _to_local(self.down_proj_w)
+
+        if HAS_CGGR and flat_x.is_cuda:
+            # CGGR: sort tokens by expert → grouped GEMM → fused SwiGLU → unsort
+            sorted_x, sorted_idx, expert_offsets, expert_counts = sort_tokens_by_expert(
+                flat_x, flat_expert_ids, self.num_experts
+            )
+            gate_out = cggr_grouped_gemm_triton(sorted_x, gate_w, expert_offsets)
+            up_out = cggr_grouped_gemm_triton(sorted_x, up_w, expert_offsets)
+            intermediate = fused_swiglu_triton(gate_out, up_out)
+            sorted_routed = cggr_grouped_gemm_triton(intermediate, down_w, expert_offsets)
+            routed_out = torch.zeros_like(flat_x)
+            routed_out[sorted_idx] = sorted_routed.to(routed_out.dtype)
+        else:
+            # Sparse dispatch fallback (loop over experts)
+            routed_out = torch.zeros_like(flat_x)
+            for e in range(self.num_experts):
+                mask = (flat_expert_ids == e)
+                if not mask.any():
+                    continue
+                x_e = flat_x[mask]
+                gate_e = x_e @ gate_w[e]
+                up_e = x_e @ up_w[e]
+                inter_e = F.silu(gate_e) * up_e
+                routed_out[mask] = (inter_e @ down_w[e]).to(routed_out.dtype)
 
         out = routed_out + shared_out
         return out.view(B, S, H)
@@ -150,11 +190,14 @@ class TokenRoutedMLP(MLPBase):
     def _forward_all_experts(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Fallback: average all experts (inference without token_ids)."""
         flat = hidden_states.view(-1, self.hidden_size)
+        gate_w = _to_local(self.gate_proj_w)
+        up_w = _to_local(self.up_proj_w)
+        down_w = _to_local(self.down_proj_w)
         out = torch.zeros_like(flat)
         for e in range(self.num_experts):
-            gate_e = flat @ self.gate_proj_w[e]
-            up_e = flat @ self.up_proj_w[e]
-            out = out + (F.silu(gate_e) * up_e) @ self.down_proj_w[e]
+            gate_e = flat @ gate_w[e]
+            up_e = flat @ up_w[e]
+            out = out + (F.silu(gate_e) * up_e) @ down_w[e]
         out = out / self.num_experts
         if self.use_shared_expert:
             shared = self.shared_down(
