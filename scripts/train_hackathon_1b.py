@@ -141,8 +141,8 @@ def compute_steps_for_tokens(target_tokens: int, batch_size: int,
 def main():
     parser = argparse.ArgumentParser(description="Hackathon B300 — 1B Token-Routed + MuonTR")
     parser.add_argument("--tokenizer", type=str, default="./tokenizer")
-    parser.add_argument("--target-tokens", type=int, default=40_000_000_000,
-                        help="Target token count (default: 40B — 2x Chinchilla for 1B)")
+    parser.add_argument("--target-tokens", type=int, default=25_000_000_000,
+                        help="Target token count (default: 25B — 125%% Chinchilla for 1B)")
     parser.add_argument("--batch-size", type=int, default=128,
                         help="Batch size per GPU")
     parser.add_argument("--gradient-accumulation", type=int, default=1)
