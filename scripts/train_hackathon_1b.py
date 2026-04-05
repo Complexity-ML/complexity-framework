@@ -27,8 +27,11 @@ Complexity-ML — 2026
 """
 
 import os
-from dotenv import load_dotenv
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv optional — cluster may not have it
 
 from complexity.gpu import setup_gpu
 setup_gpu()
