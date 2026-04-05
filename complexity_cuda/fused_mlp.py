@@ -16,12 +16,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
 
+import logging
+_logger = logging.getLogger(__name__)
+
 try:
     import triton
     import triton.language as tl
     HAS_TRITON = True
 except ImportError:
     HAS_TRITON = False
+    _logger.warning("Triton not available — fused MLP will use PyTorch fallback")
+
+
+def _to_local(t: torch.Tensor) -> torch.Tensor:
+    """Convert DTensor to local tensor (FSDP v2 compat)."""
+    if hasattr(t, 'to_local'):
+        return t.to_local()
+    return t
 
 
 # =============================================================================
@@ -577,10 +588,10 @@ class FusedSwiGLUMLP(nn.Module):
         """
         return fused_mlp(
             x,
-            self.norm_weight,
-            self.gate_proj.weight.t(),  # Linear stores [out, in], we need [in, out]
-            self.up_proj.weight.t(),
-            self.down_proj.weight.t(),
+            _to_local(self.norm_weight),
+            _to_local(self.gate_proj.weight).t(),  # Linear stores [out, in], we need [in, out]
+            _to_local(self.up_proj.weight).t(),
+            _to_local(self.down_proj.weight).t(),
             self.eps,
         )
 
@@ -616,7 +627,7 @@ class FusedMLP(nn.Module):
             gate = gate.view(-1, self.intermediate_size)
             up = up.view(-1, self.intermediate_size)
 
-        output = fused_swiglu_down(gate, up, self.down_proj.weight.t())
+        output = fused_swiglu_down(gate, up, _to_local(self.down_proj.weight).t())
 
         if len(original_shape) == 3:
             output = output.view(original_shape[0], original_shape[1], self.hidden_size)

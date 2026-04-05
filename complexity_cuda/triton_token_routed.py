@@ -21,6 +21,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
 
+import logging
+_logger = logging.getLogger(__name__)
+
 # Try to import Triton
 try:
     import triton
@@ -28,6 +31,14 @@ try:
     HAS_TRITON = True
 except ImportError:
     HAS_TRITON = False
+    _logger.warning("Triton not available — Token-Routed MLP will use PyTorch fallback")
+
+
+def _to_local(t: torch.Tensor) -> torch.Tensor:
+    """Convert DTensor to local tensor (FSDP v2 compat)."""
+    if hasattr(t, 'to_local'):
+        return t.to_local()
+    return t
 
 
 # =============================================================================
@@ -333,6 +344,11 @@ class TokenRoutedMLPTriton(nn.Module):
         """
         total_tokens = hidden_states.shape[0]
 
+        # Convert DTensor params to local (FSDP v2 compat)
+        gate_proj = _to_local(self.gate_proj)
+        up_proj = _to_local(self.up_proj)
+        down_proj = _to_local(self.down_proj)
+
         # Sort by expert
         sorted_hidden, sorted_indices, expert_offsets, expert_counts = sort_tokens_by_expert(
             hidden_states, expert_ids, self.num_experts
@@ -340,15 +356,15 @@ class TokenRoutedMLPTriton(nn.Module):
 
         # Gate projection
         if HAS_TRITON and hidden_states.is_cuda:
-            gate_out = cggr_grouped_gemm_triton(sorted_hidden, self.gate_proj, expert_offsets)
+            gate_out = cggr_grouped_gemm_triton(sorted_hidden, gate_proj, expert_offsets)
         else:
-            gate_out = grouped_gemm_pytorch(sorted_hidden, self.gate_proj, expert_offsets, expert_counts)
+            gate_out = grouped_gemm_pytorch(sorted_hidden, gate_proj, expert_offsets, expert_counts)
 
         # Up projection
         if HAS_TRITON and hidden_states.is_cuda:
-            up_out = cggr_grouped_gemm_triton(sorted_hidden, self.up_proj, expert_offsets)
+            up_out = cggr_grouped_gemm_triton(sorted_hidden, up_proj, expert_offsets)
         else:
-            up_out = grouped_gemm_pytorch(sorted_hidden, self.up_proj, expert_offsets, expert_counts)
+            up_out = grouped_gemm_pytorch(sorted_hidden, up_proj, expert_offsets, expert_counts)
 
         # Fused SwiGLU
         if HAS_TRITON and hidden_states.is_cuda:
@@ -358,9 +374,9 @@ class TokenRoutedMLPTriton(nn.Module):
 
         # Down projection
         if HAS_TRITON and hidden_states.is_cuda:
-            sorted_output = cggr_grouped_gemm_triton(intermediate, self.down_proj, expert_offsets)
+            sorted_output = cggr_grouped_gemm_triton(intermediate, down_proj, expert_offsets)
         else:
-            sorted_output = grouped_gemm_pytorch(intermediate, self.down_proj, expert_offsets, expert_counts)
+            sorted_output = grouped_gemm_pytorch(intermediate, down_proj, expert_offsets, expert_counts)
 
         # Unsort
         output = torch.zeros_like(sorted_output)
@@ -376,10 +392,10 @@ class TokenRoutedMLPTriton(nn.Module):
         """
         Fallback bmm-based forward (v1).
         """
-        # Gather weights for each token's expert
-        gate_weights = self.gate_proj[expert_ids]
-        up_weights = self.up_proj[expert_ids]
-        down_weights = self.down_proj[expert_ids]
+        # Gather weights for each token's expert (DTensor compat)
+        gate_weights = _to_local(self.gate_proj)[expert_ids]
+        up_weights = _to_local(self.up_proj)[expert_ids]
+        down_weights = _to_local(self.down_proj)[expert_ids]
 
         # SwiGLU
         gate_out = torch.bmm(hidden_states.unsqueeze(1), gate_weights).squeeze(1)
@@ -709,7 +725,7 @@ class RoboticsTokenRoutedLayer(torch.nn.Module):
         residual = x
 
         # === SENSE: RMSNorm ===
-        x_normed = fused_rmsnorm(x, self.norm_weight, self.eps)
+        x_normed = fused_rmsnorm(x, _to_local(self.norm_weight), self.eps)
 
         # === PROCESS + ACTUATE: Token-Routed MLP ===
         mlp_out = self.mlp(x_normed, token_ids=token_ids)

@@ -17,12 +17,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 
+import logging
+_logger = logging.getLogger(__name__)
+
 try:
     import triton
     import triton.language as tl
     HAS_TRITON = True
 except ImportError:
     HAS_TRITON = False
+    _logger.warning("Triton not available — fused residual+norm will use PyTorch fallback")
+
+
+def _to_local(t: torch.Tensor) -> torch.Tensor:
+    """Convert DTensor to local tensor (FSDP v2 compat)."""
+    if hasattr(t, 'to_local'):
+        return t.to_local()
+    return t
 
 
 # =============================================================================
@@ -574,16 +585,17 @@ class FusedResidualRMSNorm(nn.Module):
             out: Normalized output
             new_residual: Updated residual (x + residual)
         """
+        weight = _to_local(self.weight)
         if self.dropout_p > 0 and self.training:
             return fused_residual_rmsnorm_dropout(
-                x, residual, self.weight,
+                x, residual, weight,
                 dropout_p=self.dropout_p,
                 eps=self.eps,
                 training=self.training,
             )
         else:
             return fused_residual_rmsnorm(
-                x, residual, self.weight,
+                x, residual, weight,
                 eps=self.eps,
                 store_residual=True,
             )
