@@ -198,6 +198,15 @@ class MuonTR(Optimizer):
                 # Per-expert NS is more correct because each expert sees different token
                 # distributions under Zipf routing → different SV spectra
                 if p_local.dim() == 3 and p_local.shape[0] == self.num_experts and param_type == 'expert':
+                    # Per-expert LR scaling based on token count (Zipf-aware)
+                    per_expert_lr = torch.ones(self.num_experts, device=update.device)
+                    if self.token_counts is not None:
+                        mean_count = self.token_counts.float().mean()
+                        for e in range(self.num_experts):
+                            if self.token_counts[e] > 0:
+                                # Tail experts (fewer tokens) get higher LR
+                                per_expert_lr[e] = (mean_count / self.token_counts[e].float()).clamp(0.5, 2.0)
+
                     for e in range(self.num_experts):
                         slice_update = update[e]
                         rows, cols = slice_update.shape
@@ -217,13 +226,15 @@ class MuonTR(Optimizer):
                         if transposed:
                             slice_update = slice_update.T
                         slice_update *= max(1, rows / cols) ** 0.5
+                        # Apply per-expert LR: scale by token count ratio
+                        slice_update *= per_expert_lr[e].item()
                         update[e] = slice_update
 
                     # Log per-expert NS convergence periodically
                     if self._step_count % 100 == 0 and self._ns_residuals:
-                        parts = [f"E{e}: {self._ns_residuals.get(e, 0):.4f} ({self._ns_steps_used.get(e, 0)} iters)"
+                        parts = [f"E{e}: {self._ns_residuals.get(e, 0):.4f} ({self._ns_steps_used.get(e, 0)} iters) lr_scale={per_expert_lr[e].item():.2f}"
                                  for e in range(self.num_experts)]
-                        logger.info("NS convergence ||X^T X - I||_F: %s", " | ".join(parts))
+                        logger.info("NS convergence: %s", " | ".join(parts))
                 else:
                     # Standard Muon: reshape to 2D, orthogonalize
                     original_shape = update.shape
