@@ -425,14 +425,16 @@ class ComplexityModel(nn.Module):
         raw_sd = self.state_dict()
         cpu_sd = {}
         for k, v in raw_sd.items():
-            if hasattr(v, "to_local"):
-                # DTensor: extract the local shard (Replicate placement → full tensor)
-                v = v.to_local()
+            # FSDP v2 DTensor: full_tensor() does all-gather to get the complete
+            # unsharded tensor. Must be called BEFORE to_local() which just
+            # returns the local shard without gathering.
             if hasattr(v, "full_tensor"):
                 try:
                     v = v.full_tensor()
                 except Exception:
-                    v = v.to_local()
+                    pass
+            if hasattr(v, "to_local"):
+                v = v.to_local()
             cpu_sd[k] = v.detach().cpu().contiguous() if hasattr(v, "detach") else v
 
         if safe_serialization:

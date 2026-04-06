@@ -283,15 +283,13 @@ def main():
         pin_memory=True,
     )
 
-    # Trainer with FSDP + AdamTR
+    # Trainer with FSDP + AdamW
     train_config = TrainingConfig(
         max_steps=max_steps,
         batch_size=args.batch_size,
         gradient_accumulation_steps=args.gradient_accumulation,
-        optimizer_type="adam_tr",
+        optimizer_type="adamw",
         learning_rate=args.lr,
-        expert_lr_scale=1.5,
-        expert_weight_decay=0.05,
         warmup_steps=warmup_steps,
         lr_scheduler=args.lr_scheduler,
         precision="bf16",
