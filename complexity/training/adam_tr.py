@@ -116,7 +116,7 @@ class AdamTR(Optimizer):
         num_experts: int = 4,
         spectral_conditioning: bool = True,
         spectral_ema: float = 0.99,
-        spectral_floor: float = 0.3,
+        spectral_floor: float = 0.7,
     ):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
