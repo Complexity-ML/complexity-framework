@@ -239,7 +239,9 @@ class MuonTR(Optimizer):
                     for e in range(self.num_experts):
                         # Per-expert grad-norm (pre-orthogonalization, post-momentum)
                         # for diagnostic — should converge across experts as LR controller balances
-                        self._grad_norms[e] = update[e].norm().item()
+                        # Use grad directly (not update) so the displayed value reflects the
+                        # raw backward signal, independent of momentum/Nesterov mixing.
+                        self._grad_norms[e] = grad[e].float().norm().item()
 
                         slice_update = update[e]
                         rows, cols = slice_update.shape
