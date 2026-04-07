@@ -408,15 +408,32 @@ def main():
             csv_file.close()
         logging.getLogger("complexity.training.trainer").setLevel(logging.INFO)
 
-    if summary is not None and is_main:
-        logger.info(f"Training complete: {summary}")
-        # Unwrap to base model for correct save (DDP/FSDP wrappers shard weights)
+    if is_main:
+        if summary is not None:
+            logger.info(f"Training complete: {summary}")
+        # Unwrap wrappers (DDP/FSDP/ClusterModel) down to the ComplexityModel
+        # which is the one that has `save_pretrained`. Stop at first class
+        # that has save_pretrained — don't descend into internal .model of
+        # a CausalLM (that would reach the backbone submodule).
         base = model
-        while hasattr(base, 'model') or hasattr(base, 'module'):
-            base = getattr(base, 'model', None) or getattr(base, 'module', None)
-        base.save_pretrained(os.path.join(args.checkpoint_dir, "final"))
-        config.save(os.path.join(args.checkpoint_dir, "final", "model_config.yaml"))
-        logger.info(f"Model saved to {args.checkpoint_dir}/final/")
+        try:
+            while not hasattr(base, 'save_pretrained'):
+                next_base = getattr(base, 'module', None) or getattr(base, 'model', None)
+                if next_base is None or next_base is base:
+                    break
+                base = next_base
+            if hasattr(base, 'save_pretrained'):
+                save_dir = os.path.join(args.checkpoint_dir, "final")
+                base.save_pretrained(save_dir)
+                config.save(os.path.join(save_dir, "model_config.yaml"))
+                logger.info(f"Model saved to {save_dir}/")
+            else:
+                logger.error(f"Could not find save_pretrained on model or its wrappers — "
+                             f"use final_{max_steps} checkpoint instead")
+        except Exception as e:
+            import traceback
+            logger.error(f"Failed to save final checkpoint: {e}")
+            traceback.print_exc()
 
     if distributed:
         cleanup()

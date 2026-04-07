@@ -398,8 +398,9 @@ def train_run(run_id, args, rank, world_size, is_main):
         logger.info(f"Run {run_id} complete: {summary}")
         # Unwrap to base model for correct save (DDP/FSDP wrappers shard weights)
         base = model
-        while hasattr(base, 'model') or hasattr(base, 'module'):
-            base = getattr(base, 'model', None) or getattr(base, 'module', None)
+        while not hasattr(base, 'save_pretrained'):
+            next_base = getattr(base, 'module', None) or getattr(base, 'model', None); base = next_base if (next_base is not None and next_base is not base) else base
+            if not hasattr(base, 'save_pretrained'): break
         base.save_pretrained(os.path.join(checkpoint_dir, "final"))
         config.save(os.path.join(checkpoint_dir, "final", "model_config.yaml"))
         logger.info(f"Model saved to {checkpoint_dir}/final/")
