@@ -51,14 +51,17 @@ def newton_schulz(M: torch.Tensor, steps: int = 5) -> torch.Tensor:
 
 def newton_schulz_adaptive(
     M: torch.Tensor,
-    min_steps: int = 5,
+    min_steps: int = 3,
     max_steps: int = 10,
-    tol: float = 1e-2,
+    tol: float = 1e-4,
 ) -> tuple:
     """
     Newton-Schulz with adaptive iterations and convergence monitoring.
 
-    Iterates until ||X^T X - I||_F < tol or max_steps reached.
+    Iterates until ||X_k - X_{k-1}||_F < tol or max_steps reached.
+    Uses iterate-difference (cheap) instead of orthogonality residual
+    (expensive eye + matmul). Per Whatsonyourmind on KellerJordan/Muon#65.
+
     Returns (orthogonalized_matrix, residual_norm, steps_used).
 
     For noisy gradients (tail experts with fewer tokens), the singular
@@ -73,19 +76,22 @@ def newton_schulz_adaptive(
 
     residual = float('inf')
     steps_used = 0
+    X_prev = None
 
     for i in range(max_steps):
         A = X @ X.mT
         B = b * A + c * (A @ A)
-        X = a * X + B @ X
+        X_new = a * X + B @ X
         steps_used = i + 1
 
-        # Check convergence after min_steps
-        if i + 1 >= min_steps:
-            identity = torch.eye(X.shape[-2], device=X.device, dtype=X.dtype)
-            residual = (X @ X.mT - identity).norm().item()
+        # Check iterate-difference convergence after min_steps
+        if i + 1 >= min_steps and X_prev is not None:
+            residual = (X_new - X_prev).norm().item()
             if residual < tol:
+                X = X_new
                 break
+        X_prev = X
+        X = X_new
 
     return X.to(M.dtype), residual, steps_used
 

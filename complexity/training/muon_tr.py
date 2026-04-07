@@ -83,9 +83,9 @@ class MuonTR(Optimizer):
         lr: float = 0.02,
         momentum: float = 0.95,
         nesterov: bool = True,
-        ns_steps: int = 5,
+        ns_steps: int = 3,
         ns_max_steps: int = 10,
-        ns_tol: float = 1e-2,
+        ns_tol: float = 1e-4,
         adaptive_ns: bool = True,
         weight_decay: float = 0.01,
         expert_lr_scale: float = 1.5,
@@ -94,6 +94,8 @@ class MuonTR(Optimizer):
         shared_weight_decay: float = 0.01,
         token_counts: Optional[torch.Tensor] = None,
         num_experts: int = 4,
+        ema_decay: float = 0.998,  # ~500 step half-life for the LR ratio EMA
+        max_lr_ratio: float = 4.0,
     ):
         defaults = dict(
             lr=lr,
@@ -112,21 +114,54 @@ class MuonTR(Optimizer):
         super().__init__(params, defaults)
         self.num_experts = num_experts
         self.token_counts = token_counts
+        self.ema_decay = ema_decay
+        self.max_lr_ratio = max_lr_ratio
         # Per-expert NS convergence monitoring
         self._ns_residuals: Dict[int, float] = {}
         self._ns_steps_used: Dict[int, int] = {}
         self._step_count = 0
+        # Per-expert grad-norm tracking (for diagnostic) and EMA-smoothed LR ratio
+        self._grad_norms: Dict[int, float] = {}
+        self._lr_ratio_ema: Optional[torch.Tensor] = None
 
     def update_token_counts(self, token_counts: torch.Tensor):
         """Update per-expert token counts for gradient scaling."""
         self.token_counts = token_counts
 
     def get_ns_diagnostics(self) -> Dict[int, Dict[str, float]]:
-        """Return per-expert NS convergence diagnostics."""
+        """Return per-expert NS convergence diagnostics + grad-norm + LR ratio."""
         return {
-            e: {"residual": self._ns_residuals.get(e, 0.0), "steps": self._ns_steps_used.get(e, 0)}
+            e: {
+                "residual": self._ns_residuals.get(e, 0.0),
+                "steps": self._ns_steps_used.get(e, 0),
+                "grad_norm": self._grad_norms.get(e, 0.0),
+                "lr_ratio": float(self._lr_ratio_ema[e]) if self._lr_ratio_ema is not None else 1.0,
+            }
             for e in range(self.num_experts)
         }
+
+    def _compute_lr_ratio(self, device: torch.device) -> torch.Tensor:
+        """
+        Per-expert adaptive LR controller (Whatsonyourmind suggestion).
+
+        target_lr_ratio[i] = max(1.0, mean_count / count[i])
+        EMA-smoothed over ~500 steps to avoid oscillation.
+        Clamped to [1.0, max_lr_ratio].
+        """
+        if self.token_counts is None:
+            return torch.ones(self.num_experts, device=device)
+
+        counts = self.token_counts.float().to(device)
+        mean_count = counts.mean()
+        # Tail experts (count < mean) get ratio > 1, head experts get 1.0
+        target = (mean_count / counts.clamp(min=1.0)).clamp(min=1.0, max=self.max_lr_ratio)
+
+        if self._lr_ratio_ema is None or self._lr_ratio_ema.device != device:
+            self._lr_ratio_ema = target.clone()
+        else:
+            self._lr_ratio_ema.mul_(self.ema_decay).add_(target, alpha=1.0 - self.ema_decay)
+
+        return self._lr_ratio_ema
 
     @torch.no_grad()
     def step(self, closure: Optional[Callable] = None):
@@ -198,16 +233,14 @@ class MuonTR(Optimizer):
                 # Per-expert NS is more correct because each expert sees different token
                 # distributions under Zipf routing → different SV spectra
                 if p_local.dim() == 3 and p_local.shape[0] == self.num_experts and param_type == 'expert':
-                    # Per-expert LR scaling based on token count (Zipf-aware)
-                    per_expert_lr = torch.ones(self.num_experts, device=update.device)
-                    if self.token_counts is not None:
-                        mean_count = self.token_counts.float().mean()
-                        for e in range(self.num_experts):
-                            if self.token_counts[e] > 0:
-                                # Tail experts (fewer tokens) get higher LR
-                                per_expert_lr[e] = (mean_count / self.token_counts[e].float()).clamp(0.5, 2.0)
+                    # Adaptive per-expert LR (EMA-smoothed token-count ratio)
+                    per_expert_lr = self._compute_lr_ratio(update.device)
 
                     for e in range(self.num_experts):
+                        # Per-expert grad-norm (pre-orthogonalization, post-momentum)
+                        # for diagnostic — should converge across experts as LR controller balances
+                        self._grad_norms[e] = update[e].norm().item()
+
                         slice_update = update[e]
                         rows, cols = slice_update.shape
                         transposed = rows > cols
@@ -226,15 +259,19 @@ class MuonTR(Optimizer):
                         if transposed:
                             slice_update = slice_update.T
                         slice_update *= max(1, rows / cols) ** 0.5
-                        # Apply per-expert LR: scale by token count ratio
+                        # Apply adaptive per-expert LR ratio
                         slice_update *= per_expert_lr[e].item()
                         update[e] = slice_update
 
-                    # Log per-expert NS convergence periodically
+                    # Log per-expert diagnostics periodically
                     if self._step_count % 100 == 0 and self._ns_residuals:
-                        parts = [f"E{e}: {self._ns_residuals.get(e, 0):.4f} ({self._ns_steps_used.get(e, 0)} iters) lr_scale={per_expert_lr[e].item():.2f}"
-                                 for e in range(self.num_experts)]
-                        logger.info("NS convergence: %s", " | ".join(parts))
+                        parts = [
+                            f"E{e}: gn={self._grad_norms.get(e, 0):.3f} "
+                            f"lr×{per_expert_lr[e].item():.2f} "
+                            f"ns={self._ns_steps_used.get(e, 0)}/{self._ns_residuals.get(e, 0):.1e}"
+                            for e in range(self.num_experts)
+                        ]
+                        logger.info("MuonTR per-expert: %s", " | ".join(parts))
                 else:
                     # Standard Muon: reshape to 2D, orthogonalize
                     original_shape = update.shape
@@ -292,7 +329,7 @@ class MuonTRWithAdamW(Optimizer):
         adam_lr: float = 3e-4,
         momentum: float = 0.95,
         nesterov: bool = True,
-        ns_steps: int = 5,
+        ns_steps: int = 3,
         adam_betas: Tuple[float, float] = (0.9, 0.95),
         adam_eps: float = 1e-8,
         weight_decay: float = 0.01,
@@ -301,6 +338,8 @@ class MuonTRWithAdamW(Optimizer):
         expert_weight_decay: float = 0.005,
         shared_weight_decay: float = 0.01,
         num_experts: int = 4,
+        ema_decay: float = 0.998,
+        max_lr_ratio: float = 4.0,
     ):
         self.muon_tr = MuonTR(
             muon_params,
@@ -314,6 +353,8 @@ class MuonTRWithAdamW(Optimizer):
             expert_weight_decay=expert_weight_decay,
             shared_weight_decay=shared_weight_decay,
             num_experts=num_experts,
+            ema_decay=ema_decay,
+            max_lr_ratio=max_lr_ratio,
         )
         self.adam = torch.optim.AdamW(
             adam_params,
