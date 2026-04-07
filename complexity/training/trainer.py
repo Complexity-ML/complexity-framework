@@ -446,18 +446,18 @@ class Trainer:
     def _check_params_updated(self):
         """Verify that all snapshotted canary params actually moved after step.
 
-        Raises RuntimeError listing every dead param. This catches the
-        forward-only custom kernel failure mode (silent zero gradients).
-        Per Whatsonyourmind on KellerJordan/Muon#65.
+        Logs a WARNING listing dead params instead of raising — the goal is to
+        flag silent zero-grad bugs (e.g. forward-only custom kernels) without
+        killing a long training run that may still produce useful diagnostics.
+        Set config.skip_param_update_check = True to disable entirely.
 
-        On distributed runs, we broadcast the failure flag from rank 0 so
-        every rank raises in sync. Without this, rank 0 crashes alone and
-        the other ranks deadlock on the next collective op (broken pipe spam).
+        Per Whatsonyourmind on KellerJordan/Muon#65.
         """
         if not self._init_snapshot or self._update_check_done:
             return
 
         dead = []
+        ok = []
         for name, p_init in self._init_snapshot.items():
             p_now = dict(self.model.named_parameters()).get(name)
             if p_now is None:
@@ -470,34 +470,31 @@ class Trainer:
                 continue
             if delta == 0.0:
                 dead.append(name)
+            else:
+                ok.append((name, delta))
 
         self._update_check_done = True
 
-        # Broadcast failure to all ranks so they raise in sync (no deadlock)
-        failed = bool(dead)
-        if dist.is_initialized():
-            flag = torch.tensor([1 if failed else 0], device="cuda" if torch.cuda.is_available() else "cpu")
-            dist.all_reduce(flag, op=dist.ReduceOp.MAX)
-            failed = bool(flag.item())
+        if not self.is_main:
+            return
 
-        if failed:
-            if self.is_main and dead:
-                msg = (
-                    "Param-update assertion FAILED — the following learnable params "
-                    "did not move after one optimizer step (likely a silent zero-grad "
-                    "from a forward-only custom kernel without autograd.Function):\n  - "
-                    + "\n  - ".join(dead)
-                    + "\nIf this is intentional (frozen params), set "
-                    "config.skip_param_update_check = True."
-                )
-                logger.error(msg)
-            # All ranks raise so the run dies cleanly with no deadlock
-            raise RuntimeError("Param-update assertion failed (see rank 0 log for details)")
+        if dead:
+            print(
+                "\n========================================\n"
+                "[param-update check] WARNING — the following learnable params "
+                "did not move after one optimizer step (silent zero-grad?):\n  - "
+                + "\n  - ".join(dead)
+                + "\nTraining will continue. Set config.skip_param_update_check = True "
+                "to silence this check.\n========================================\n",
+                flush=True,
+            )
 
-        if self.is_main:
-            logger.info(
-                "[param-update check] all %d canary params received gradients ✓",
-                len(self._init_snapshot),
+        if ok:
+            sample = ", ".join(f"{n.split('.')[-1]}={d:.2e}" for n, d in ok[:6])
+            print(
+                f"[param-update check] {len(ok)} canary params updated "
+                f"({len(dead)} dead). deltas: {sample}",
+                flush=True,
             )
 
     def _optimizer_step(self):
