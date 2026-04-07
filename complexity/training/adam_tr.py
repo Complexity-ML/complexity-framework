@@ -146,6 +146,8 @@ class AdamTR(Optimizer):
         self.spectral_floor = spectral_floor
         # EMA-smoothed condition estimates per expert
         self._kappa_ema: Dict[int, float] = {e: 1.0 for e in range(num_experts)}
+        # Per-expert grad-norm tracking for live diagnostics (matches MuonTR API)
+        self._grad_norms: Dict[int, float] = {}
         self._step_count = 0
 
     def update_token_counts(self, token_counts: Tensor):
@@ -155,6 +157,24 @@ class AdamTR(Optimizer):
     def get_spectral_diagnostics(self) -> Dict[int, float]:
         """Return per-expert smoothed condition numbers."""
         return dict(self._kappa_ema)
+
+    def get_ns_diagnostics(self) -> Dict[int, Dict[str, float]]:
+        """Return per-expert diagnostics in the same format as MuonTR.
+
+        Lets TqdmCallback show live grad-norms and condition numbers
+        without knowing which optimizer is in use.
+        """
+        return {
+            e: {
+                "grad_norm": self._grad_norms.get(e, 0.0),
+                "lr_ratio": 1.0 / max(self._kappa_ema.get(e, 1.0), self.spectral_floor),
+                "kappa": self._kappa_ema.get(e, 1.0),
+                # MuonTR-compat fields (no NS in AdamTR)
+                "residual": 0.0,
+                "steps": 0,
+            }
+            for e in range(self.num_experts)
+        }
 
     def _get_param_type(self, param: Tensor, group: Dict[str, Any]) -> str:
         """Classify parameter as 'expert', 'shared', or 'dense'."""
@@ -249,6 +269,9 @@ class AdamTR(Optimizer):
                     for e in range(self.num_experts):
                         G_e = grad[e]  # [H, I]
                         rows, cols = G_e.shape
+
+                        # Track per-expert grad-norm for live diagnostics
+                        self._grad_norms[e] = G_e.norm().item()
 
                         sigma_rms = G_e.norm().item() / math.sqrt(min(rows, cols))
                         if sigma_rms < 1e-10:
