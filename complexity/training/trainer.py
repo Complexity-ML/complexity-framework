@@ -519,11 +519,14 @@ class Trainer:
             self.optimizer.step()
 
         self.scheduler.step()
-        self.optimizer.zero_grad()
 
-        # After the first real step, verify canary params moved
+        # Check params BEFORE zero_grad so we can read p.grad alongside the
+        # post-update delta — both signals together let us distinguish a real
+        # gradient flow from a weight-decay-only drift.
         if not skip_check and not self._update_check_done:
             self._check_params_updated()
+
+        self.optimizer.zero_grad()
 
     def _save_checkpoint(self, tag: str = "step"):
         """Save checkpoint."""
