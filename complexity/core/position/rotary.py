@@ -71,12 +71,64 @@ class RotaryEmbedding(nn.Module):
             self.sin_cached[:seq_len],
         )
 
+    def apply(self, q: torch.Tensor, k: torch.Tensor,
+              cos: torch.Tensor, sin: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Apply rotary embeddings to full Q and K. Subclasses can override."""
+        return apply_rotary_pos_emb(q, k, cos, sin)
+
 
 @register_position("rope")
 @register_position("standard")
 class StandardRoPE(RotaryEmbedding):
     """Standard RoPE - registered in the framework."""
     pass
+
+
+@register_position("partial_rope")
+class PartialRoPE(RotaryEmbedding):
+    """
+    Partial RoPE — apply rotation to only a fraction of head dimensions.
+
+    The remaining dimensions are left unrotated (NoPE-like). This is faster
+    than full RoPE and often matches or slightly improves quality because
+    some dimensions learn better without positional bias.
+
+    Used by: Qwen2.5, some DeepSeek variants, Parameter Golf winners.
+
+    Args:
+        dim: Full head dimension
+        rope_fraction: Fraction of dims to apply RoPE to (default 0.5 = half)
+
+    Reference: https://arxiv.org/abs/2410.06205 (Partial RoPE ablation)
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        max_seq_len: int = 2048,
+        theta: float = 10000.0,
+        rope_fraction: float = 0.5,
+    ):
+        # Compute rope_dim as a multiple of 2
+        self.rope_dim = int(dim * rope_fraction) // 2 * 2
+        self.nope_dim = dim - self.rope_dim
+        # Build RoPE cache only for the rotated portion
+        super().__init__(self.rope_dim, max_seq_len, theta)
+        self.full_dim = dim
+
+    def apply(self, q: torch.Tensor, k: torch.Tensor,
+              cos: torch.Tensor, sin: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Apply rotation to only the first rope_dim dims of each head."""
+        # Split: first rope_dim gets rotated, remainder is pass-through
+        q_rope, q_pass = q[..., :self.rope_dim], q[..., self.rope_dim:]
+        k_rope, k_pass = k[..., :self.rope_dim], k[..., self.rope_dim:]
+
+        q_rope, k_rope = apply_rotary_pos_emb(q_rope, k_rope, cos, sin)
+
+        return (
+            torch.cat([q_rope, q_pass], dim=-1),
+            torch.cat([k_rope, k_pass], dim=-1),
+        )
 
 
 @register_position("yarn")

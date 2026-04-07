@@ -62,7 +62,8 @@ class ModelConfig:
     # === Position Embeddings ===
     max_position_embeddings: int = 2048
     rope_theta: float = 10000.0
-    rope_type: str = "standard"  # standard, yarn, dynamic_ntk
+    rope_type: str = "standard"  # standard, partial_rope, yarn, dynamic_ntk
+    rope_fraction: float = 1.0  # Fraction of head_dim to apply RoPE to (1.0 = full, 0.5 = partial)
 
     # === MLP / FFN ===
     mlp_type: str = "token_routed"  # token_routed, swiglu, gelu

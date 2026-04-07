@@ -69,8 +69,9 @@ from complexity.parallel.cluster import ClusterConfig, ClusterModel
 # ── Model config (~383M params) ──────────────────────────────────────────
 
 def make_config() -> ModelConfig:
-    """383M Token-Routed + Mu-Guidance + Shared Expert — same archi as v1.
+    """383M Token-Routed + Mu-Guidance + Shared Expert + Partial RoPE.
     hidden=1024, layers=20, heads=16, kv_heads=4, inter=3200, 4 experts, shared=800.
+    rope_fraction=0.5 → 50% of head_dim rotated, 50% NoPE (10-15% faster attention).
     """
     return ModelConfig(
         hidden_size=1024,
@@ -88,6 +89,7 @@ def make_config() -> ModelConfig:
         norm_type="rmsnorm",
         use_qk_norm=True,
         use_mu_guidance=True,
+        rope_fraction=0.5,  # Partial RoPE — 50% rotated, 50% NoPE
     )
 
 

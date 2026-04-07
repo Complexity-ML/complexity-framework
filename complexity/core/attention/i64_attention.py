@@ -18,7 +18,7 @@ from typing import Optional, Tuple
 
 from .base import AttentionBase, AttentionConfig
 from ..registry import register_attention
-from ..position.rotary import RotaryEmbedding, apply_rotary_pos_emb
+from ..position.rotary import RotaryEmbedding, PartialRoPE, apply_rotary_pos_emb
 from ..integer_ops import int8_linear, quantize_weight_int8
 
 
@@ -59,12 +59,21 @@ class I64Attention(AttentionBase):
             self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
             self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
 
-        # RoPE
-        self.rotary_emb = RotaryEmbedding(
-            self.head_dim,
-            max_seq_len=config.max_position_embeddings,
-            theta=config.rope_theta,
-        )
+        # RoPE (Partial if rope_fraction < 1.0)
+        rope_fraction = getattr(config, "rope_fraction", 1.0)
+        if rope_fraction < 1.0:
+            self.rotary_emb = PartialRoPE(
+                self.head_dim,
+                max_seq_len=config.max_position_embeddings,
+                theta=config.rope_theta,
+                rope_fraction=rope_fraction,
+            )
+        else:
+            self.rotary_emb = RotaryEmbedding(
+                self.head_dim,
+                max_seq_len=config.max_position_embeddings,
+                theta=config.rope_theta,
+            )
 
         self.attention_dropout = config.attention_dropout
         self.use_sdpa = config.use_sdpa and HAS_SDPA
@@ -135,7 +144,7 @@ class I64Attention(AttentionBase):
             cos = cos[kv_seq_len - seq_len:]
             sin = sin[kv_seq_len - seq_len:]
 
-        q, k = apply_rotary_pos_emb(q, k, cos, sin)
+        q, k = self.rotary_emb.apply(q, k, cos, sin)
 
         # KV cache
         if past_key_value is not None:
