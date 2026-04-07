@@ -251,6 +251,73 @@ if HAS_TRITON:
 
         return output
 
+
+    class CGGRGroupedGEMM(torch.autograd.Function):
+        """
+        Autograd-aware wrapper around cggr_grouped_gemm_triton.
+
+        Forward:  out[start_e:end_e] = sorted_x[start_e:end_e] @ W[e]   for each expert e
+        Backward:
+            grad_x[start_e:end_e] = grad_out[start_e:end_e] @ W[e].T   for each e
+            grad_W[e]            = sorted_x[start_e:end_e].T @ grad_out[start_e:end_e]
+
+        - grad_x is computed by reusing the same CGGR kernel with a transposed
+          weight tensor (still O(1) Triton launch).
+        - grad_W is a small loop over experts (num_experts iterations, typically
+          4) — fast enough since each iteration is a single GEMM and num_experts
+          is tiny. Could be replaced with a Triton kernel later if it shows up
+          in profiles.
+
+        Without this wrapper, the routed expert weights receive zero gradients
+        because the underlying Triton kernel is forward-only — see commit
+        8f43035 / discussion in KellerJordan/Muon#65 for the failure mode.
+        """
+
+        @staticmethod
+        def forward(ctx, sorted_x: torch.Tensor, expert_weights: torch.Tensor,
+                    expert_offsets: torch.Tensor) -> torch.Tensor:
+            output = cggr_grouped_gemm_triton(sorted_x, expert_weights, expert_offsets)
+            ctx.save_for_backward(sorted_x, expert_weights, expert_offsets)
+            return output
+
+        @staticmethod
+        def backward(ctx, grad_output: torch.Tensor):
+            sorted_x, expert_weights, expert_offsets = ctx.saved_tensors
+            num_experts = expert_weights.shape[0]
+
+            grad_x = None
+            grad_W = None
+
+            # grad_x = grad_output @ W.T per expert. Reuse CGGR with W transposed.
+            if ctx.needs_input_grad[0]:
+                W_T = expert_weights.transpose(-2, -1).contiguous()  # [E, out, in]
+                grad_x = cggr_grouped_gemm_triton(
+                    grad_output.contiguous(), W_T, expert_offsets,
+                )
+
+            # grad_W[e] = sorted_x[e].T @ grad_output[e] — small loop.
+            if ctx.needs_input_grad[1]:
+                grad_W = torch.zeros_like(expert_weights)
+                # expert_offsets is on GPU; pull to CPU once for the slice loop.
+                offsets_cpu = expert_offsets.tolist()
+                for e in range(num_experts):
+                    start = offsets_cpu[e]
+                    end = offsets_cpu[e + 1]
+                    if end > start:
+                        grad_W[e] = sorted_x[start:end].transpose(-2, -1) @ grad_output[start:end]
+
+            return grad_x, grad_W, None  # offsets is non-differentiable
+
+
+    def cggr_grouped_gemm_autograd(
+        sorted_x: torch.Tensor,
+        expert_weights: torch.Tensor,
+        expert_offsets: torch.Tensor,
+    ) -> torch.Tensor:
+        """Autograd-aware entry point. Use this instead of cggr_grouped_gemm_triton
+        whenever the call may be inside a training graph."""
+        return CGGRGroupedGEMM.apply(sorted_x, expert_weights, expert_offsets)
+
 else:
     # PyTorch fallback when Triton is not available
     def fused_swiglu_triton(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
@@ -261,6 +328,22 @@ else:
         """Fused RMSNorm - PyTorch fallback."""
         rms = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
         return x * rms * weight
+
+    def cggr_grouped_gemm_autograd(
+        sorted_x: torch.Tensor,
+        expert_weights: torch.Tensor,
+        expert_offsets: torch.Tensor,
+    ) -> torch.Tensor:
+        """Autograd-aware entry point — PyTorch fallback when Triton is unavailable.
+
+        Identical semantics to the Triton path: per-expert grouped GEMM where
+        each token's row picks the slice of expert_weights it belongs to.
+        Uses regular @ which PyTorch differentiates natively.
+        """
+        return grouped_gemm_pytorch(
+            sorted_x, expert_weights, expert_offsets,
+            torch.diff(expert_offsets),
+        )
 
 
 # =============================================================================

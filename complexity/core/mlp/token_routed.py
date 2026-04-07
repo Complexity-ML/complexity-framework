@@ -33,6 +33,7 @@ try:
     from complexity_cuda.triton_token_routed import (
         sort_tokens_by_expert,
         cggr_grouped_gemm_triton,
+        cggr_grouped_gemm_autograd,
         grouped_gemm_pytorch,
         fused_swiglu_triton,
         HAS_TRITON,
@@ -40,6 +41,7 @@ try:
     HAS_CGGR = HAS_TRITON
 except ImportError:
     HAS_CGGR = False
+    cggr_grouped_gemm_autograd = None
 
 
 def _to_local(t: torch.Tensor) -> torch.Tensor:
@@ -155,29 +157,26 @@ class TokenRoutedMLP(MLPBase):
         else:
             shared_out = 0
 
-        # Routed experts — CGGR Triton (forward-only, inference) or autograd-aware fallback
-        # CRITICAL: CGGR Triton kernels do not implement backward, so they cannot be used
-        # during training — gradients would silently be zero for gate/up/down_proj_w.
-        # We only use CGGR when not training (no grad enabled).
+        # Routed experts — CGGR Triton (autograd-aware) or sparse-loop fallback.
+        # CGGRGroupedGEMM (in complexity_cuda.triton_token_routed) wraps the
+        # forward-only Triton kernel with a proper torch.autograd.Function so
+        # gradients flow back to gate/up/down_proj_w. fused_swiglu_triton stays
+        # forward-only so we use plain F.silu(gate) * up which PyTorch
+        # differentiates natively.
         gate_w = _to_local(self.gate_proj_w)
         up_w = _to_local(self.up_proj_w)
         down_w = _to_local(self.down_proj_w)
 
-        use_cggr = (
-            HAS_CGGR
-            and flat_x.is_cuda
-            and not torch.is_grad_enabled()
-        )
+        use_cggr = HAS_CGGR and flat_x.is_cuda and cggr_grouped_gemm_autograd is not None
 
         if use_cggr:
-            # CGGR: sort tokens by expert → grouped GEMM → fused SwiGLU → unsort
             sorted_x, sorted_idx, expert_offsets, expert_counts = sort_tokens_by_expert(
                 flat_x, flat_expert_ids, self.num_experts
             )
-            gate_out = cggr_grouped_gemm_triton(sorted_x, gate_w, expert_offsets)
-            up_out = cggr_grouped_gemm_triton(sorted_x, up_w, expert_offsets)
-            intermediate = fused_swiglu_triton(gate_out, up_out)
-            sorted_routed = cggr_grouped_gemm_triton(intermediate, down_w, expert_offsets)
+            gate_out = cggr_grouped_gemm_autograd(sorted_x, gate_w, expert_offsets)
+            up_out = cggr_grouped_gemm_autograd(sorted_x, up_w, expert_offsets)
+            intermediate = F.silu(gate_out) * up_out  # autograd-friendly SwiGLU
+            sorted_routed = cggr_grouped_gemm_autograd(intermediate, down_w, expert_offsets)
             routed_out = torch.zeros_like(flat_x)
             routed_out[sorted_idx] = sorted_routed.to(routed_out.dtype)
         else:
