@@ -26,6 +26,10 @@ def safe_main(main_fn):
 
     Ensures dist.destroy_process_group() is called even on crashes,
     then os._exit(0) to kill NCCL heartbeat threads cleanly.
+
+    For multi-rank failures, abort the NCCL communicator first so
+    other ranks waiting on a collective op die immediately instead
+    of looping on broken-pipe warnings.
     """
     exit_code = 0
     try:
@@ -47,6 +51,16 @@ def safe_main(main_fn):
         try:
             import torch.distributed as dist
             if dist.is_initialized():
+                # Abort in-flight collective ops first — this unblocks other
+                # ranks waiting on this rank, so they raise instead of looping.
+                try:
+                    pg = dist.group.WORLD
+                    if hasattr(pg, "abort"):
+                        pg.abort()
+                    elif hasattr(pg, "_shutdown"):
+                        pg._shutdown()
+                except Exception:
+                    pass
                 dist.destroy_process_group()
         except Exception:
             pass

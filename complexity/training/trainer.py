@@ -449,6 +449,10 @@ class Trainer:
         Raises RuntimeError listing every dead param. This catches the
         forward-only custom kernel failure mode (silent zero gradients).
         Per Whatsonyourmind on KellerJordan/Muon#65.
+
+        On distributed runs, we broadcast the failure flag from rank 0 so
+        every rank raises in sync. Without this, rank 0 crashes alone and
+        the other ranks deadlock on the next collective op (broken pipe spam).
         """
         if not self._init_snapshot or self._update_check_done:
             return
@@ -469,18 +473,28 @@ class Trainer:
 
         self._update_check_done = True
 
-        if dead and self.is_main:
-            msg = (
-                "Param-update assertion FAILED — the following learnable params "
-                "did not move after one optimizer step (likely a silent zero-grad "
-                "from a forward-only custom kernel without autograd.Function):\n  - "
-                + "\n  - ".join(dead)
-                + "\nIf this is intentional (frozen params), set "
-                "config.skip_param_update_check = True."
-            )
-            raise RuntimeError(msg)
+        # Broadcast failure to all ranks so they raise in sync (no deadlock)
+        failed = bool(dead)
+        if dist.is_initialized():
+            flag = torch.tensor([1 if failed else 0], device="cuda" if torch.cuda.is_available() else "cpu")
+            dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+            failed = bool(flag.item())
 
-        if self.is_main and not dead:
+        if failed:
+            if self.is_main and dead:
+                msg = (
+                    "Param-update assertion FAILED — the following learnable params "
+                    "did not move after one optimizer step (likely a silent zero-grad "
+                    "from a forward-only custom kernel without autograd.Function):\n  - "
+                    + "\n  - ".join(dead)
+                    + "\nIf this is intentional (frozen params), set "
+                    "config.skip_param_update_check = True."
+                )
+                logger.error(msg)
+            # All ranks raise so the run dies cleanly with no deadlock
+            raise RuntimeError("Param-update assertion failed (see rank 0 log for details)")
+
+        if self.is_main:
             logger.info(
                 "[param-update check] all %d canary params received gradients ✓",
                 len(self._init_snapshot),
