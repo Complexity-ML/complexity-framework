@@ -283,7 +283,11 @@ class ClusterModel(nn.Module):
                     model,
                     device_ids=[dist.get_rank() % torch.cuda.device_count()] if torch.cuda.is_available() else None,
                     process_group=self._dp_group,
-                    find_unused_parameters=False,
+                    # MoE models have params that may not see gradients on every
+                    # forward (e.g. an expert that no token routed to in this batch),
+                    # plus the per-layer mu_init expand path. DDP needs the unused
+                    # detection to avoid 'Expected reduction' errors.
+                    find_unused_parameters=True,
                     gradient_as_bucket_view=True,
                 )
             else:
