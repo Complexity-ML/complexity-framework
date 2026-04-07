@@ -419,23 +419,30 @@ class ComplexityModel(nn.Module):
         with open(config_path, "w") as f:
             json.dump(self.config.to_dict(), f, indent=2)
 
-        # Save model weights
-        # Gather full state dict — handles FSDP v2 (composable) DTensor params
+        # Save model weights — handles FSDP v2 (composable) DTensor params.
+        # CRITICAL: full_tensor() is a collective op (all-gather), so it MUST
+        # be called on every rank — even though only rank 0 writes the file.
+        # Calling it from inside an "if is_main" block deadlocks the others.
         import torch.distributed as dist
+        is_distributed = dist.is_initialized() and dist.get_world_size() > 1
+        is_main = (not is_distributed) or dist.get_rank() == 0
+
         raw_sd = self.state_dict()
         cpu_sd = {}
         for k, v in raw_sd.items():
-            # FSDP v2 DTensor: full_tensor() does all-gather to get the complete
-            # unsharded tensor. Must be called BEFORE to_local() which just
-            # returns the local shard without gathering.
             if hasattr(v, "full_tensor"):
                 try:
+                    # Collective: every rank participates in the all-gather.
                     v = v.full_tensor()
                 except Exception:
                     pass
             if hasattr(v, "to_local"):
                 v = v.to_local()
-            cpu_sd[k] = v.detach().cpu().contiguous() if hasattr(v, "detach") else v
+            if is_main:
+                cpu_sd[k] = v.detach().cpu().contiguous() if hasattr(v, "detach") else v
+
+        if not is_main:
+            return
 
         if safe_serialization:
             try:

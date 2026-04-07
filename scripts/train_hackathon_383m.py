@@ -408,29 +408,30 @@ def main():
             csv_file.close()
         logging.getLogger("complexity.training.trainer").setLevel(logging.INFO)
 
-    if is_main:
-        if summary is not None:
-            logger.info(f"Training complete: {summary}")
-        # Unwrap wrappers (DDP/FSDP/ClusterModel) down to the ComplexityModel
-        # which is the one that has `save_pretrained`. Stop at first class
-        # that has save_pretrained — don't descend into internal .model of
-        # a CausalLM (that would reach the backbone submodule).
-        base = model
-        try:
-            while not hasattr(base, 'save_pretrained'):
-                next_base = getattr(base, 'module', None) or getattr(base, 'model', None)
-                if next_base is None or next_base is base:
-                    break
-                base = next_base
-            if hasattr(base, 'save_pretrained'):
-                save_dir = os.path.join(args.checkpoint_dir, "final")
-                base.save_pretrained(save_dir)
+    if summary is not None and is_main:
+        logger.info(f"Training complete: {summary}")
+
+    # Save final checkpoint — MUST be called on every rank because save_pretrained
+    # uses full_tensor() (collective all-gather). Only rank 0 actually writes
+    # files (handled inside save_pretrained).
+    base = model
+    try:
+        while not hasattr(base, 'save_pretrained'):
+            next_base = getattr(base, 'module', None) or getattr(base, 'model', None)
+            if next_base is None or next_base is base:
+                break
+            base = next_base
+        if hasattr(base, 'save_pretrained'):
+            save_dir = os.path.join(args.checkpoint_dir, "final")
+            base.save_pretrained(save_dir)
+            if is_main:
                 config.save(os.path.join(save_dir, "model_config.yaml"))
                 logger.info(f"Model saved to {save_dir}/")
-            else:
-                logger.error(f"Could not find save_pretrained on model or its wrappers — "
-                             f"use final_{max_steps} checkpoint instead")
-        except Exception as e:
+        elif is_main:
+            logger.error(f"Could not find save_pretrained on model or its wrappers — "
+                         f"use final_{max_steps} checkpoint instead")
+    except Exception as e:
+        if is_main:
             import traceback
             logger.error(f"Failed to save final checkpoint: {e}")
             traceback.print_exc()
