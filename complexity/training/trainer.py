@@ -147,6 +147,14 @@ class Trainer:
         self.global_step = 0
         self.epoch = 0
 
+        # Param-update assertion (catches silent zero-grad bugs from forward-only
+        # custom kernels). At step 0 we snapshot a few canary params, then check
+        # at step 1 that they actually changed. Cheap (one max() call per param).
+        # Triggered by: any learnable param in the model that didn't move after
+        # one optimizer step. Disable with config.skip_param_update_check = True.
+        self._init_snapshot: Dict[str, torch.Tensor] = {}
+        self._update_check_done = False
+
         # Mixed precision scaler (FP16 only, BF16 doesn't need it)
         self.scaler = None
         if config.precision == "fp16":
@@ -391,8 +399,93 @@ class Trainer:
         counts = torch.bincount(expert_ids, minlength=num_experts)
         self.optimizer.update_token_counts(counts)
 
+    def _snapshot_canary_params(self):
+        """Snapshot a small set of canary parameters before the first step.
+
+        We pick at most one param from each class (embed, expert, shared,
+        attention, mu_guidance, norm) so the assertion check is O(few) tensors,
+        not O(num_params). This is the diagnostic that catches silent zero-grad
+        bugs from forward-only custom kernels (per Whatsonyourmind on Muon#65).
+        """
+        if self._init_snapshot:
+            return  # already snapshotted
+
+        seen_classes = set()
+
+        def classify(name: str) -> str:
+            if "embed" in name or "lm_head" in name:
+                return "embed"
+            if "gate_proj_w" in name or "up_proj_w" in name or "down_proj_w" in name:
+                return "expert"
+            if "shared_" in name:
+                return "shared"
+            if "self_attn" in name and "norm" not in name:
+                return "attention"
+            if "mu_guidance" in name or "mu_init" in name or "mu_to_" in name:
+                return "mu"
+            if "norm" in name or "ln_" in name:
+                return "norm"
+            return "dense"
+
+        for name, p in self.model.named_parameters():
+            if not p.requires_grad:
+                continue
+            cls = classify(name)
+            if cls in seen_classes:
+                continue
+            seen_classes.add(cls)
+            self._init_snapshot[name] = p.detach().clone()
+
+    def _check_params_updated(self):
+        """Verify that all snapshotted canary params actually moved after step.
+
+        Raises RuntimeError listing every dead param. This catches the
+        forward-only custom kernel failure mode (silent zero gradients).
+        Per Whatsonyourmind on KellerJordan/Muon#65.
+        """
+        if not self._init_snapshot or self._update_check_done:
+            return
+
+        dead = []
+        for name, p_init in self._init_snapshot.items():
+            p_now = dict(self.model.named_parameters()).get(name)
+            if p_now is None:
+                continue
+            try:
+                p_now_local = p_now.to_local() if hasattr(p_now, "to_local") else p_now
+                p_init_local = p_init.to_local() if hasattr(p_init, "to_local") else p_init
+                delta = (p_now_local.detach() - p_init_local).abs().max().item()
+            except Exception:
+                continue
+            if delta == 0.0:
+                dead.append(name)
+
+        self._update_check_done = True
+
+        if dead and self.is_main:
+            msg = (
+                "Param-update assertion FAILED — the following learnable params "
+                "did not move after one optimizer step (likely a silent zero-grad "
+                "from a forward-only custom kernel without autograd.Function):\n  - "
+                + "\n  - ".join(dead)
+                + "\nIf this is intentional (frozen params), set "
+                "config.skip_param_update_check = True."
+            )
+            raise RuntimeError(msg)
+
+        if self.is_main and not dead:
+            logger.info(
+                "[param-update check] all %d canary params received gradients ✓",
+                len(self._init_snapshot),
+            )
+
     def _optimizer_step(self):
         """Optimizer step with gradient clipping."""
+        # Snapshot canary params on the first call (before any update)
+        skip_check = getattr(self.config, "skip_param_update_check", False)
+        if not skip_check and not self._init_snapshot:
+            self._snapshot_canary_params()
+
         if self.scaler:
             self.scaler.unscale_(self.optimizer)
 
@@ -410,6 +503,10 @@ class Trainer:
 
         self.scheduler.step()
         self.optimizer.zero_grad()
+
+        # After the first real step, verify canary params moved
+        if not skip_check and not self._update_check_done:
+            self._check_params_updated()
 
     def _save_checkpoint(self, tag: str = "step"):
         """Save checkpoint."""

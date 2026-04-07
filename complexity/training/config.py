@@ -32,6 +32,11 @@ class TrainingConfig:
     precision: str = "bf16"  # fp32, fp16, bf16
     grad_clip: float = 1.0
 
+    # Diagnostic: assert all canary params are updated after first step.
+    # Catches silent zero-grad bugs from forward-only custom kernels.
+    # Set True only when intentionally freezing some params.
+    skip_param_update_check: bool = False
+
     # Distributed
     use_fsdp: bool = True
     sharding_mode: str = "full_shard"
