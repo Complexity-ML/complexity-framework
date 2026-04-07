@@ -38,15 +38,15 @@ if ! command -v pip3 &> /dev/null; then
     apt update && apt install -y python3-pip python3-venv
 fi
 
-# Install framework
+# Install framework (editable) with all extras
 echo "Installing complexity-framework..."
-pip3 install --break-system-packages --ignore-installed typing-extensions -e ".[train]" 2>/dev/null \
-    || pip3 install --break-system-packages -e ".[train]" 2>/dev/null \
-    || pip3 install -e ".[train]"
+pip3 install --break-system-packages --ignore-installed typing-extensions -e ".[all]" 2>/dev/null \
+    || pip3 install --break-system-packages -e ".[all]" 2>/dev/null \
+    || pip3 install -e ".[all]"
 
-# Install python-dotenv
-pip3 install --break-system-packages python-dotenv 2>/dev/null \
-    || pip3 install python-dotenv
+# Extra dependencies used by training scripts
+pip3 install --break-system-packages python-dotenv safetensors "huggingface_hub[cli]" 2>/dev/null \
+    || pip3 install python-dotenv safetensors "huggingface_hub[cli]"
 
 # Setup .env if available
 if [ -f "$WORKDIR/.env" ]; then
@@ -75,5 +75,5 @@ NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l
 echo ""
 echo "=== Ready ==="
 echo "  cd $WORKDIR/complexity-framework"
-echo "  torchrun --nproc_per_node=$NUM_GPUS scripts/train_tr_code_400m.py --batch-size 64 --save-steps 1000"
+echo "  torchrun --nproc_per_node=$NUM_GPUS scripts/train_hackathon_383m.py --target-tokens 1000000000 --batch-size 64"
 echo ""
