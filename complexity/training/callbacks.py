@@ -4,6 +4,8 @@ import logging
 import math
 from typing import Optional
 
+import torch
+
 from ..parallel.data_parallel import is_main_process
 
 logger = logging.getLogger(__name__)
@@ -75,7 +77,9 @@ class TqdmCallback:
 
         # Per-expert MuonTR/AdamTR diagnostics — drill into wrapper if needed.
         # Under FSDP shard-on-dim-0, each rank only sees a slice of the experts,
-        # so we all-reduce (MAX) across ranks to surface the global picture.
+        # so the local diags dict has values for some experts and 0 for others.
+        # Every 50 steps we all-reduce (MAX) so the display reflects all experts;
+        # in between we just show whatever this rank has (cheap, no NCCL call).
         opt = trainer.optimizer
         muon_inner = getattr(opt, "muon_tr", None) or (opt if hasattr(opt, "get_ns_diagnostics") else None)
         if muon_inner is not None and hasattr(muon_inner, "get_ns_diagnostics"):
@@ -83,21 +87,27 @@ class TqdmCallback:
                 diags = muon_inner.get_ns_diagnostics()
                 if diags:
                     num_experts = max(diags.keys()) + 1
-                    gn_tensor = torch.tensor(
-                        [diags[e]["grad_norm"] for e in range(num_experts)],
-                        dtype=torch.float32,
-                    )
-                    if torch.distributed.is_initialized() and torch.distributed.get_world_size() > 1:
-                        if torch.cuda.is_available():
-                            gn_tensor = gn_tensor.cuda()
+                    gn_values = [diags[e]["grad_norm"] for e in range(num_experts)]
+
+                    # Only all-reduce occasionally to keep the per-step cost low.
+                    if (step % 50 == 0
+                            and torch.distributed.is_initialized()
+                            and torch.distributed.get_world_size() > 1):
+                        device = "cuda" if torch.cuda.is_available() else "cpu"
+                        gn_tensor = torch.tensor(gn_values, dtype=torch.float32, device=device)
                         torch.distributed.all_reduce(gn_tensor, op=torch.distributed.ReduceOp.MAX)
-                        gn_tensor = gn_tensor.cpu()
-                    gns = "/".join(f"{gn_tensor[e].item():.1e}" for e in range(num_experts))
+                        gn_values = gn_tensor.tolist()
+
+                    gns = "/".join(f"{v:.1e}" for v in gn_values)
                     lrs = "/".join(f"{diags[e]['lr_ratio']:.2f}" for e in sorted(diags))
                     postfix["E-gn"] = gns
                     postfix["E-lr×"] = lrs
-            except Exception:
-                pass
+            except Exception as e:
+                # Surface the failure once instead of silently swallowing — helps
+                # diagnose missing imports or shape errors during dev.
+                if not getattr(self, "_diag_warned", False):
+                    print(f"[TqdmCallback] diagnostics disabled: {type(e).__name__}: {e}", flush=True)
+                    self._diag_warned = True
 
         self.pbar.set_postfix(**postfix, ordered=True)
         self.pbar.update(1)
