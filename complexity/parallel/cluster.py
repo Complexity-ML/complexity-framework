@@ -79,6 +79,11 @@ class ClusterConfig:
     # Gradient checkpointing
     gradient_checkpointing: bool = True
 
+    # Use DDP instead of FSDP for the dp_size > 1 path. Required when using
+    # torchao FP8 training: torchao Float8Linear does mixed Tensor/DTensor
+    # matmuls that crash under FSDP shard but work fine under DDP.
+    use_ddp: bool = False
+
     @property
     def world_size(self) -> int:
         return self.tp_size * self.pp_size * self.dp_size
@@ -263,17 +268,36 @@ class ClusterModel(nn.Module):
             )
             model = PipelineModel(model, pp_config)
 
-        # 3. Apply FSDP (across DP replicas only)
+        # 3. Apply DP wrapping (across DP replicas only)
         if config.dp_size > 1:
-            from .data_parallel import wrap_model_fsdp, ShardingMode, PrecisionMode
-            precision = PrecisionMode.BF16 if config.precision == "bf16" else PrecisionMode.FP32
-            model = wrap_model_fsdp(
-                model,
-                sharding_mode=ShardingMode.FULL_SHARD,
-                precision=precision,
-                gradient_checkpointing=config.gradient_checkpointing,
-                process_group=self._dp_group,
-            )
+            if config.use_ddp:
+                # DDP path — replicate full model on every rank, all-reduce
+                # gradients. Required for torchao FP8 because Float8Linear
+                # cannot handle FSDP DTensor weights.
+                from torch.nn.parallel import DistributedDataParallel as DDP
+                # Move model to the local CUDA device before DDP wrap
+                if torch.cuda.is_available():
+                    local_rank = dist.get_rank() % torch.cuda.device_count()
+                    model = model.to(f"cuda:{local_rank}")
+                model = DDP(
+                    model,
+                    device_ids=[dist.get_rank() % torch.cuda.device_count()] if torch.cuda.is_available() else None,
+                    process_group=self._dp_group,
+                    find_unused_parameters=False,
+                    gradient_as_bucket_view=True,
+                )
+            else:
+                # FSDP path (default) — shard params + grads + optimizer state
+                # across DP replicas. Lower memory but incompatible with FP8.
+                from .data_parallel import wrap_model_fsdp, ShardingMode, PrecisionMode
+                precision = PrecisionMode.BF16 if config.precision == "bf16" else PrecisionMode.FP32
+                model = wrap_model_fsdp(
+                    model,
+                    sharding_mode=ShardingMode.FULL_SHARD,
+                    precision=precision,
+                    gradient_checkpointing=config.gradient_checkpointing,
+                    process_group=self._dp_group,
+                )
 
         # 4. Gradient checkpointing (if no PP — PP handles its own checkpointing)
         if config.gradient_checkpointing and config.pp_size == 1:

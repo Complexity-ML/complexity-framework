@@ -235,16 +235,19 @@ def main():
         logger.info(f"  mlp={config.mlp_type}, mu_guidance={getattr(config, 'use_mu_guidance', False)}")
         logger.info(f"  Optimizer: AdamTR (lr={args.adam_lr}) + per-expert spectral conditioning")
 
-    # ClusterModel — DP, batch per GPU
+    # ClusterModel — DP, batch per GPU.
+    # FP8 forces DDP because torchao Float8Linear cannot handle FSDP DTensor.
     cluster_config = ClusterConfig(
         tp_size=1,
         pp_size=1,
         dp_size=world_size,
         micro_batch_size=args.batch_size,
+        use_ddp=args.fp8,  # FP8 → DDP, BF16 → FSDP (default)
     )
     if is_main:
+        dp_kind = "DDP" if cluster_config.use_ddp else "FSDP"
         logger.info(f"  Cluster: TP={cluster_config.tp_size}, PP={cluster_config.pp_size}, "
-                    f"DP={cluster_config.dp_size}")
+                    f"DP={cluster_config.dp_size} ({dp_kind})")
         logger.info(f"  Effective batch: {cluster_config.effective_batch_size} sequences "
                     f"({cluster_config.effective_batch_size * 2048 / 1e6:.1f}M tokens/step)")
     model = ClusterModel(model, cluster_config)
