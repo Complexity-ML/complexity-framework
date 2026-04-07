@@ -289,13 +289,37 @@ class CheckpointManager:
                 torch.save(opt_sd, checkpoint_path / f"optimizer_rank{rank}.pt")
 
         except Exception as e:
-            logger.warning(f"get_model_state_dict failed ({e}), falling back to legacy save")
-            # Fallback: legacy per-rank save
+            # The new torch.distributed.checkpoint.state_dict API requires
+            # optimizer.state to be a flat {param: state_dict} mapping, which
+            # MuonTRWithAdamW does not expose (it forwards to two underlying
+            # optimizers). Fall back to per-rank legacy save which handles our
+            # wrapper correctly. Logged at debug level since this is expected.
+            logger.debug(f"get_model_state_dict not compatible ({e}), using legacy save")
             if self.is_main:
                 model_sd = {"model": self.model.state_dict()}
                 if self.scheduler is not None:
                     model_sd["scheduler"] = self.scheduler.state_dict()
                 torch.save(model_sd, checkpoint_path / "checkpoint.pt")
+
+                # Also save as safetensors for HF-compatible loading
+                try:
+                    from safetensors.torch import save_file
+                    raw_sd = self.model.state_dict()
+                    clean_sd = {}
+                    for k, v in raw_sd.items():
+                        if hasattr(v, "full_tensor"):
+                            try:
+                                v = v.full_tensor()
+                            except Exception:
+                                pass
+                        if _is_dtensor(v):
+                            v = v.to_local()
+                        if isinstance(v, torch.Tensor):
+                            clean_sd[k] = v.detach().cpu().contiguous()
+                    save_file(clean_sd, checkpoint_path / "model.safetensors")
+                except Exception as ex:
+                    logger.debug(f"safetensors save skipped: {ex}")
+
             if self.optimizer is not None:
                 opt_sd = self.optimizer.state_dict()
                 opt_sd_local = _detensor_state_dict(opt_sd)
