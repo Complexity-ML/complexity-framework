@@ -165,8 +165,8 @@ def main():
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--wandb", type=str, default=None)
-    parser.add_argument("--gradient-checkpointing", action="store_true", default=True,
-                        help="Gradient checkpointing (default: enabled)")
+    parser.add_argument("--gradient-checkpointing", action="store_true", default=False,
+                        help="Gradient checkpointing (default: disabled for max throughput)")
     parser.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing",
                         action="store_false")
     parser.add_argument("--no-compile", action="store_true", default=False,
