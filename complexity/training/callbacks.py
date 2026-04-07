@@ -73,16 +73,26 @@ class TqdmCallback:
         lr = trainer.scheduler.get_last_lr()[0]
         postfix = {"loss": f"{loss:.4f}", "ppl": f"{ppl:.1f}", "lr": f"{lr:.2e}"}
 
-        # MuonTR per-expert diagnostics — drill into wrapper if needed
+        # Per-expert MuonTR/AdamTR diagnostics — drill into wrapper if needed.
+        # Under FSDP shard-on-dim-0, each rank only sees a slice of the experts,
+        # so we all-reduce (MAX) across ranks to surface the global picture.
         opt = trainer.optimizer
         muon_inner = getattr(opt, "muon_tr", None) or (opt if hasattr(opt, "get_ns_diagnostics") else None)
         if muon_inner is not None and hasattr(muon_inner, "get_ns_diagnostics"):
             try:
                 diags = muon_inner.get_ns_diagnostics()
                 if diags:
-                    # Use scientific notation — grad-norms are typically 1e-3 to 1e-1
-                    # so .2f truncates everything to "0.00".
-                    gns = "/".join(f"{diags[e]['grad_norm']:.1e}" for e in sorted(diags))
+                    num_experts = max(diags.keys()) + 1
+                    gn_tensor = torch.tensor(
+                        [diags[e]["grad_norm"] for e in range(num_experts)],
+                        dtype=torch.float32,
+                    )
+                    if torch.distributed.is_initialized() and torch.distributed.get_world_size() > 1:
+                        if torch.cuda.is_available():
+                            gn_tensor = gn_tensor.cuda()
+                        torch.distributed.all_reduce(gn_tensor, op=torch.distributed.ReduceOp.MAX)
+                        gn_tensor = gn_tensor.cpu()
+                    gns = "/".join(f"{gn_tensor[e].item():.1e}" for e in range(num_experts))
                     lrs = "/".join(f"{diags[e]['lr_ratio']:.2f}" for e in sorted(diags))
                     postfix["E-gn"] = gns
                     postfix["E-lr×"] = lrs
