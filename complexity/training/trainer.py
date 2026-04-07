@@ -446,56 +446,55 @@ class Trainer:
     def _check_params_updated(self):
         """Verify that all snapshotted canary params actually moved after step.
 
-        Logs a WARNING listing dead params instead of raising — the goal is to
-        flag silent zero-grad bugs (e.g. forward-only custom kernels) without
-        killing a long training run that may still produce useful diagnostics.
-        Set config.skip_param_update_check = True to disable entirely.
+        Logs both the param delta (W_t - W_init) AND the grad norm at the
+        time of the check. A param can have a non-zero delta from weight
+        decay alone even if grad is zero — so we report both to disambiguate
+        real gradient flow from weight-decay drift.
 
         Per Whatsonyourmind on KellerJordan/Muon#65.
         """
         if not self._init_snapshot or self._update_check_done:
             return
 
-        dead = []
-        ok = []
+        results = []  # list of (name, delta, grad_norm)
+        params_dict = dict(self.model.named_parameters())
         for name, p_init in self._init_snapshot.items():
-            p_now = dict(self.model.named_parameters()).get(name)
+            p_now = params_dict.get(name)
             if p_now is None:
                 continue
             try:
                 p_now_local = p_now.to_local() if hasattr(p_now, "to_local") else p_now
                 p_init_local = p_init.to_local() if hasattr(p_init, "to_local") else p_init
                 delta = (p_now_local.detach() - p_init_local).abs().max().item()
+                # grad may have been zeroed by optimizer.zero_grad() already.
+                # If so, we'll just report 0.0 for grad_norm — the delta is
+                # what matters for confirming the update happened.
+                grad = p_now.grad
+                if grad is not None:
+                    g_local = grad.to_local() if hasattr(grad, "to_local") else grad
+                    grad_norm = g_local.detach().float().norm().item()
+                else:
+                    grad_norm = 0.0
             except Exception:
                 continue
-            if delta == 0.0:
-                dead.append(name)
-            else:
-                ok.append((name, delta))
+            results.append((name, delta, grad_norm))
 
         self._update_check_done = True
 
         if not self.is_main:
             return
 
-        if dead:
-            print(
-                "\n========================================\n"
-                "[param-update check] WARNING — the following learnable params "
-                "did not move after one optimizer step (silent zero-grad?):\n  - "
-                + "\n  - ".join(dead)
-                + "\nTraining will continue. Set config.skip_param_update_check = True "
-                "to silence this check.\n========================================\n",
-                flush=True,
-            )
-
-        if ok:
-            sample = ", ".join(f"{n.split('.')[-1]}={d:.2e}" for n, d in ok[:6])
-            print(
-                f"[param-update check] {len(ok)} canary params updated "
-                f"({len(dead)} dead). deltas: {sample}",
-                flush=True,
-            )
+        # Print full diagnostic table
+        print("\n[param-update check] post-step-1 diagnostic:", flush=True)
+        for name, delta, grad_norm in results:
+            short = name.replace("_orig_mod.", "").replace("module.", "")
+            tag = "OK " if delta > 1e-7 else "DEAD"
+            print(f"  [{tag}] {short:60s}  delta={delta:.3e}  grad_norm={grad_norm:.3e}", flush=True)
+        dead_count = sum(1 for _, d, _ in results if d <= 1e-7)
+        if dead_count:
+            print(f"  ⚠ {dead_count}/{len(results)} canary params did not update — likely silent zero-grad bug", flush=True)
+        else:
+            print(f"  ✓ all {len(results)} canary params updated", flush=True)
 
     def _optimizer_step(self):
         """Optimizer step with gradient clipping."""
