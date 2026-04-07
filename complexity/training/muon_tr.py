@@ -263,17 +263,9 @@ class MuonTR(Optimizer):
                         slice_update *= per_expert_lr[e].item()
                         update[e] = slice_update
 
-                    # Log per-expert diagnostics periodically.
-                    # Use print so the message bypasses any logger filter the
-                    # parent script may have applied to "complexity.muon_tr".
-                    if self._step_count % 10 == 0 and self._ns_residuals:
-                        parts = [
-                            f"E{e}: gn={self._grad_norms.get(e, 0):.3f} "
-                            f"lr×{per_expert_lr[e].item():.2f} "
-                            f"ns={self._ns_steps_used.get(e, 0)}/{self._ns_residuals.get(e, 0):.1e}"
-                            for e in range(self.num_experts)
-                        ]
-                        print(f"[MuonTR step {self._step_count}] " + " | ".join(parts), flush=True)
+                    # Per-expert diagnostics are exposed via get_ns_diagnostics()
+                    # and surfaced live in the tqdm postfix by TqdmCallback.
+                    # No periodic stderr/log spam — read the bar instead.
                 else:
                     # Standard Muon: reshape to 2D, orthogonalize
                     original_shape = update.shape

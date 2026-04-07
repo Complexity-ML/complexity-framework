@@ -54,18 +54,41 @@ class WandBCallback:
 
 
 class TqdmCallback:
-    """tqdm progress bar callback with loss + PPL."""
+    """tqdm progress bar callback with loss + PPL + per-expert MuonTR diagnostics.
+
+    If the optimizer exposes get_ns_diagnostics() (MuonTR), the per-expert
+    grad-norms and adaptive LR ratios are added to the postfix every step
+    so you can watch the routed experts train live without scrolling.
+    """
 
     def __init__(self, total_steps: int, desc: str = "train"):
         from tqdm import tqdm
         self.pbar = tqdm(total=total_steps, desc=desc, unit="step", dynamic_ncols=True)
 
     def __call__(self, trainer, step: int, loss: float):
-        if is_main_process():
-            ppl = math.exp(min(loss, 20))
-            lr = trainer.scheduler.get_last_lr()[0]
-            self.pbar.set_postfix(loss=f"{loss:.4f}", ppl=f"{ppl:.1f}", lr=f"{lr:.2e}", ordered=True)
-            self.pbar.update(1)
+        if not is_main_process():
+            return
+
+        ppl = math.exp(min(loss, 20))
+        lr = trainer.scheduler.get_last_lr()[0]
+        postfix = {"loss": f"{loss:.4f}", "ppl": f"{ppl:.1f}", "lr": f"{lr:.2e}"}
+
+        # MuonTR per-expert diagnostics — drill into wrapper if needed
+        opt = trainer.optimizer
+        muon_inner = getattr(opt, "muon_tr", None) or (opt if hasattr(opt, "get_ns_diagnostics") else None)
+        if muon_inner is not None and hasattr(muon_inner, "get_ns_diagnostics"):
+            try:
+                diags = muon_inner.get_ns_diagnostics()
+                if diags:
+                    gns = "/".join(f"{diags[e]['grad_norm']:.2f}" for e in sorted(diags))
+                    lrs = "/".join(f"{diags[e]['lr_ratio']:.1f}" for e in sorted(diags))
+                    postfix["E-gn"] = gns
+                    postfix["E-lr×"] = lrs
+            except Exception:
+                pass
+
+        self.pbar.set_postfix(**postfix, ordered=True)
+        self.pbar.update(1)
 
     def close(self):
         self.pbar.close()
