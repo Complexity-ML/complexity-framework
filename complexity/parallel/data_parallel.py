@@ -299,8 +299,20 @@ def init_distributed(
     if rank is None:
         return False  # single-GPU, skip distributed silently
 
+    # Enable NCCL async error handling so that any rank that crashes
+    # causes the others to receive a clean error instead of hanging
+    # forever on a collective op (which is what produces the broken
+    # pipe spam when one rank exits early).
+    os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
+    os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")  # legacy name
+
     try:
-        dist.init_process_group(backend=backend, init_method=init_method)
+        from datetime import timedelta
+        dist.init_process_group(
+            backend=backend,
+            init_method=init_method,
+            timeout=timedelta(seconds=120),  # short timeout = fast crash
+        )
         if torch.cuda.is_available():
             local_rank = dist.get_rank() % torch.cuda.device_count()
             torch.cuda.set_device(local_rank)
