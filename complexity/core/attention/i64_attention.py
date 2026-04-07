@@ -144,7 +144,7 @@ class I64Attention(AttentionBase):
             cos = cos[kv_seq_len - seq_len:]
             sin = sin[kv_seq_len - seq_len:]
 
-        q, k = self.rotary_emb.apply(q, k, cos, sin)
+        q, k = self.rotary_emb.rotate(q, k, cos, sin)
 
         # KV cache
         if past_key_value is not None:

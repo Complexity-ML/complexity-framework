@@ -71,8 +71,8 @@ class RotaryEmbedding(nn.Module):
             self.sin_cached[:seq_len],
         )
 
-    def apply(self, q: torch.Tensor, k: torch.Tensor,
-              cos: torch.Tensor, sin: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def rotate(self, q: torch.Tensor, k: torch.Tensor,
+               cos: torch.Tensor, sin: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Apply rotary embeddings to full Q and K. Subclasses can override."""
         return apply_rotary_pos_emb(q, k, cos, sin)
 
@@ -116,8 +116,8 @@ class PartialRoPE(RotaryEmbedding):
         super().__init__(self.rope_dim, max_seq_len, theta)
         self.full_dim = dim
 
-    def apply(self, q: torch.Tensor, k: torch.Tensor,
-              cos: torch.Tensor, sin: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def rotate(self, q: torch.Tensor, k: torch.Tensor,
+               cos: torch.Tensor, sin: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Apply rotation to only the first rope_dim dims of each head."""
         # Split: first rope_dim gets rotated, remainder is pass-through
         q_rope, q_pass = q[..., :self.rope_dim], q[..., self.rope_dim:]
