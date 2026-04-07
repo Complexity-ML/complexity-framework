@@ -1,27 +1,27 @@
 """
-Hackathon B300 — Token-Routed 1B + Mu-Guidance + MuonTR.
+Hackathon B300 — Token-Routed 383M + Mu-Guidance + MuonTR.
 
 GPU MODE IRL Hackathon · PyTorch Conference Europe 2026
 Cluster: 8× B300 (360 PFLOP/s BF16)
 
-Model: hidden=1792, layers=24, heads=28, kv_heads=4, inter=4608, 4 experts
-       → ~1.02B params (Token-Routed + Mu + Shared Expert)
+Model: hidden=1024, layers=20, heads=16, kv_heads=4, inter=3200, 4 experts, shared=800
+       → ~383M params (Token-Routed + Mu + Shared Expert) — same archi as v1
 
 Strategy: MuonTR for fast convergence, CGGR for expert acceleration,
-          overtrain to 40B+ tokens (2x Chinchilla) in 7h.
+          overtrain heavily (25B+ tokens, 50x Chinchilla) in 7h.
 
 Usage:
     # Single node, 8× B300
-    torchrun --nproc_per_node=8 scripts/train_hackathon_1b.py
+    torchrun --nproc_per_node=8 scripts/train_hackathon_383m.py
 
     # Multi-node (e.g. 2 nodes × 8 GPU)
     torchrun --nnodes=2 --nproc_per_node=8 \\
         --master_addr=$MASTER_ADDR --master_port=29500 \\
         --node_rank=$NODE_RANK \\
-        scripts/train_hackathon_1b.py
+        scripts/train_hackathon_383m.py
 
     # Resume
-    torchrun --nproc_per_node=8 scripts/train_hackathon_1b.py --resume checkpoints/hackathon-1b/step_5000
+    torchrun --nproc_per_node=8 scripts/train_hackathon_383m.py --resume checkpoints/hackathon-383m/step_5000
 
 Complexity-ML — 2026
 """
@@ -52,7 +52,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     level=logging.INFO,
 )
-logger = logging.getLogger("hackathon-1b")
+logger = logging.getLogger("hackathon-383m")
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -66,24 +66,25 @@ from complexity.parallel import init_distributed, get_rank, get_world_size, is_m
 from complexity.parallel.cluster import ClusterConfig, ClusterModel
 
 
-# ── Model config (~1.02B params) ─────────────────────────────────────────
+# ── Model config (~383M params) ──────────────────────────────────────────
 
 def make_config() -> ModelConfig:
-    """1B Token-Routed + Mu-Guidance + Shared Expert.
-    hidden=1792, layers=24, heads=28, kv_heads=4, inter=4608, 4 experts → ~1.02B.
+    """383M Token-Routed + Mu-Guidance + Shared Expert — same archi as v1.
+    hidden=1024, layers=20, heads=16, kv_heads=4, inter=3200, 4 experts, shared=800.
     """
     return ModelConfig(
-        hidden_size=1792,
-        num_hidden_layers=24,
-        num_attention_heads=28,
+        hidden_size=1024,
+        num_hidden_layers=20,
+        num_attention_heads=16,
         num_key_value_heads=4,
-        intermediate_size=4608,
+        intermediate_size=3200,
         vocab_size=32000,
         max_position_embeddings=2048,
         attention_type="gqa",
         mlp_type="token_routed",
         num_experts=4,
         shared_expert=True,
+        shared_intermediate_size=800,
         norm_type="rmsnorm",
         use_qk_norm=True,
         use_mu_guidance=True,
@@ -142,10 +143,10 @@ def compute_steps_for_tokens(target_tokens: int, batch_size: int,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Hackathon B300 — 1B Token-Routed + MuonTR")
+    parser = argparse.ArgumentParser(description="Hackathon B300 — 383M Token-Routed + MuonTR")
     parser.add_argument("--tokenizer", type=str, default="./tokenizer")
     parser.add_argument("--target-tokens", type=int, default=25_000_000_000,
-                        help="Target token count (default: 25B — 125%% Chinchilla for 1B)")
+                        help="Target token count (default: 25B — ~50x Chinchilla for 383M)")
     parser.add_argument("--batch-size", type=int, default=128,
                         help="Batch size per GPU")
     parser.add_argument("--gradient-accumulation", type=int, default=1)
@@ -160,12 +161,12 @@ def main():
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--save-steps", type=int, default=1000)
     parser.add_argument("--log-steps", type=int, default=10)
-    parser.add_argument("--checkpoint-dir", type=str, default="./checkpoints/hackathon-1b")
+    parser.add_argument("--checkpoint-dir", type=str, default="./checkpoints/hackathon-383m")
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--wandb", type=str, default=None)
     parser.add_argument("--gradient-checkpointing", action="store_true", default=True,
-                        help="Gradient checkpointing (default: enabled for 1B)")
+                        help="Gradient checkpointing (default: enabled)")
     parser.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing",
                         action="store_false")
     parser.add_argument("--no-compile", action="store_true", default=False,
@@ -184,7 +185,7 @@ def main():
         torch.backends.cudnn.allow_tf32 = True
 
     if is_main:
-        logger.info(f"=== Hackathon B300 — 1B Token-Routed + MuonTR ===")
+        logger.info(f"=== Hackathon B300 — 383M Token-Routed + MuonTR ===")
         logger.info(f"World size: {world_size} GPU(s)")
 
     # Tokenizer
@@ -195,7 +196,7 @@ def main():
         )
     tokenizer = PreTrainedTokenizerFast.from_pretrained(args.tokenizer)
 
-    # Model — 1B Token-Routed
+    # Model — 383M Token-Routed
     config = make_config()
     config.vocab_size = min(len(tokenizer), 32000)
 
@@ -333,10 +334,10 @@ def main():
     tqdm_cb = None
     if is_main:
         if args.wandb:
-            wandb_cb = WandBCallback(project=args.wandb, name="hackathon-1b")
+            wandb_cb = WandBCallback(project=args.wandb, name="hackathon-383m")
             trainer.callbacks.append(wandb_cb)
 
-        tqdm_cb = TqdmCallback(total_steps=max_steps, desc="Hackathon 1B")
+        tqdm_cb = TqdmCallback(total_steps=max_steps, desc="Hackathon 383M")
         trainer.callbacks.append(tqdm_cb)
 
         os.makedirs(args.checkpoint_dir, exist_ok=True)
