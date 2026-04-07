@@ -54,6 +54,9 @@ cuda = [
     "triton>=2.0.0",
     "flash-attn>=2.0.0",
 ]
+fp8 = [
+    "torchao>=0.7.0",
+]
 all = [
     "triton>=2.0.0",
     "transformers>=4.30.0",

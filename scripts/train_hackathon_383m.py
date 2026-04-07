@@ -171,6 +171,10 @@ def main():
                         action="store_false")
     parser.add_argument("--no-compile", action="store_true", default=False,
                         help="Disable torch.compile")
+    parser.add_argument("--fp8", action="store_true", default=False,
+                        help="Enable FP8 training via torchao (B300/H100+ only, ~2x throughput)")
+    parser.add_argument("--seq-len", type=int, default=2048,
+                        help="Sequence length (default 2048)")
     args = parser.parse_args()
 
     # Initialize distributed
@@ -254,15 +258,15 @@ def main():
             target_tokens=args.target_tokens,
             batch_size=args.batch_size * world_size,
             grad_accum=args.gradient_accumulation,
-            seq_len=2048,
+            seq_len=args.seq_len,
         )
     if args.warmup_steps == 0:
         args.warmup_steps = max(1, int(max_steps * 0.05))
     if is_main:
-        tokens_per_step = args.batch_size * world_size * args.gradient_accumulation * 2048
+        tokens_per_step = args.batch_size * world_size * args.gradient_accumulation * args.seq_len
         logger.info(f"Training: {max_steps:,} steps (~{args.target_tokens/1e9:.1f}B tokens)")
         logger.info(f"  Tokens/step: {tokens_per_step:,} "
-                    f"(batch={args.batch_size} × {world_size} GPUs × accum={args.gradient_accumulation} × seq=2048)")
+                    f"(batch={args.batch_size} × {world_size} GPUs × accum={args.gradient_accumulation} × seq={args.seq_len})")
         logger.info(f"  Warmup: {args.warmup_steps} steps (auto 5%)")
         est_hours = max_steps * 2.5 / 3600  # rough estimate
         logger.info(f"  Estimated time: ~{est_hours:.1f}h (at ~2.5s/step)")
@@ -270,6 +274,7 @@ def main():
     # Dataset
     dataset = FineWebStreamingDataset(
         tokenizer=tokenizer, rank=rank, world_size=world_size,
+        max_length=args.seq_len,
     )
     dataloader = DataLoader(
         dataset,
@@ -300,6 +305,29 @@ def main():
     )
 
     trainer = Trainer(model=model, config=train_config, train_dataloader=dataloader)
+
+    # FP8 training (B300/H100+) — ~2x throughput vs BF16
+    if args.fp8:
+        try:
+            from torchao.float8 import convert_to_float8_training, Float8LinearConfig
+            fp8_config = Float8LinearConfig.from_recipe_name("tensorwise")
+            # Only convert nn.Linear modules (skip LayerNorm, embeddings, expert 3D weights)
+            convert_to_float8_training(
+                trainer.model,
+                config=fp8_config,
+                module_filter_fn=lambda m, fqn: isinstance(m, torch.nn.Linear)
+                    and "shared_" not in fqn  # keep shared experts in bf16 for safety
+                    and "lm_head" not in fqn
+                    and "embed" not in fqn,
+            )
+            if is_main:
+                logger.info("FP8 training enabled via torchao (nn.Linear → Float8Linear)")
+        except ImportError:
+            if is_main:
+                logger.warning("--fp8 requested but torchao not installed. `pip install torchao`")
+        except Exception as e:
+            if is_main:
+                logger.warning(f"FP8 conversion failed: {e}")
 
     # torch.compile
     if not args.no_compile and hasattr(torch, 'compile'):
