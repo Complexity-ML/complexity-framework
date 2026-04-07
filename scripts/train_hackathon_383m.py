@@ -308,12 +308,17 @@ def main():
 
     trainer = Trainer(model=model, config=train_config, train_dataloader=dataloader)
 
-    # FP8 training (B300/H100+) — ~2x throughput vs BF16
+    # FP8 training (B300/H100+) — ~2x throughput vs BF16.
+    # Uses rowwise scaling which has better FSDP DTensor support than tensorwise.
     if args.fp8:
         try:
             from torchao.float8 import convert_to_float8_training, Float8LinearConfig
-            fp8_config = Float8LinearConfig.from_recipe_name("tensorwise")
-            # Only convert nn.Linear modules (skip LayerNorm, embeddings, expert 3D weights)
+            # rowwise recipe is FSDP-compatible (tensorwise crashes with
+            # 'mixed torch.Tensor and DTensor' on sharded weights)
+            try:
+                fp8_config = Float8LinearConfig.from_recipe_name("rowwise")
+            except Exception:
+                fp8_config = Float8LinearConfig.from_recipe_name("tensorwise")
             convert_to_float8_training(
                 trainer.model,
                 config=fp8_config,
@@ -323,7 +328,7 @@ def main():
                     and "embed" not in fqn,
             )
             if is_main:
-                logger.info("FP8 training enabled via torchao (nn.Linear → Float8Linear)")
+                logger.info(f"FP8 training enabled via torchao ({fp8_config.__class__.__name__})")
         except ImportError:
             if is_main:
                 logger.warning("--fp8 requested but torchao not installed. `pip install torchao`")
