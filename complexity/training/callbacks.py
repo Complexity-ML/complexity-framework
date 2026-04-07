@@ -76,10 +76,12 @@ class TqdmCallback:
         postfix = {"loss": f"{loss:.4f}", "ppl": f"{ppl:.1f}", "lr": f"{lr:.2e}"}
 
         # Per-expert MuonTR/AdamTR diagnostics — drill into wrapper if needed.
-        # Under FSDP shard-on-dim-0, each rank only sees a slice of the experts,
-        # so the local diags dict has values for some experts and 0 for others.
-        # Every 50 steps we all-reduce (MAX) so the display reflects all experts;
-        # in between we just show whatever this rank has (cheap, no NCCL call).
+        # Under FSDP shard-on-dim-0, each rank only sees a slice of the experts.
+        # We display only rank-0's local view (2/4 experts on a 2-GPU run) — no
+        # all-reduce, because this callback runs ONLY on rank 0 (early return
+        # above) and a collective op called from one rank deadlocks the others.
+        # The param-update check at step 1 already confirms gradients flow to
+        # all experts globally, so the live tqdm view is just a sanity signal.
         opt = trainer.optimizer
         muon_inner = getattr(opt, "muon_tr", None) or (opt if hasattr(opt, "get_ns_diagnostics") else None)
         if muon_inner is not None and hasattr(muon_inner, "get_ns_diagnostics"):
@@ -88,16 +90,6 @@ class TqdmCallback:
                 if diags:
                     num_experts = max(diags.keys()) + 1
                     gn_values = [diags[e]["grad_norm"] for e in range(num_experts)]
-
-                    # Only all-reduce occasionally to keep the per-step cost low.
-                    if (step % 50 == 0
-                            and torch.distributed.is_initialized()
-                            and torch.distributed.get_world_size() > 1):
-                        device = "cuda" if torch.cuda.is_available() else "cpu"
-                        gn_tensor = torch.tensor(gn_values, dtype=torch.float32, device=device)
-                        torch.distributed.all_reduce(gn_tensor, op=torch.distributed.ReduceOp.MAX)
-                        gn_values = gn_tensor.tolist()
-
                     gns = "/".join(f"{v:.1e}" for v in gn_values)
                     lrs = "/".join(f"{diags[e]['lr_ratio']:.2f}" for e in sorted(diags))
                     postfix["E-gn"] = gns
