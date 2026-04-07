@@ -80,8 +80,10 @@ class TqdmCallback:
             try:
                 diags = muon_inner.get_ns_diagnostics()
                 if diags:
-                    gns = "/".join(f"{diags[e]['grad_norm']:.2f}" for e in sorted(diags))
-                    lrs = "/".join(f"{diags[e]['lr_ratio']:.1f}" for e in sorted(diags))
+                    # Use scientific notation — grad-norms are typically 1e-3 to 1e-1
+                    # so .2f truncates everything to "0.00".
+                    gns = "/".join(f"{diags[e]['grad_norm']:.1e}" for e in sorted(diags))
+                    lrs = "/".join(f"{diags[e]['lr_ratio']:.2f}" for e in sorted(diags))
                     postfix["E-gn"] = gns
                     postfix["E-lr×"] = lrs
             except Exception:
