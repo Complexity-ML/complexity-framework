@@ -188,6 +188,15 @@ class MuonTR(Optimizer):
 
                 grad = _to_local(p.grad)
 
+                # Per-expert grad-norm diagnostic — populated unconditionally
+                # so the live tqdm always has data, even when the per-expert
+                # ortho path below is skipped (e.g. shard mismatch under FSDP).
+                if param_type == 'expert' and grad.dim() == 3:
+                    local_E = grad.shape[0]
+                    for e in range(local_E):
+                        if e < self.num_experts:
+                            self._grad_norms[e] = grad[e].float().norm().item()
+
                 state = self.state[p]
                 if len(state) == 0:
                     state['momentum_buffer'] = torch.zeros_like(grad)

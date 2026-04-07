@@ -228,6 +228,15 @@ class AdamTR(Optimizer):
 
                 param_type = self._get_param_type(p, group)
 
+                # Per-expert grad-norm diagnostic — populated unconditionally
+                # so the live tqdm always has data, regardless of whether the
+                # spectral conditioning branch fires later in this step.
+                if param_type == "expert" and grad.dim() == 3:
+                    local_E = grad.shape[0]
+                    for e in range(local_E):
+                        if e < self.num_experts:
+                            self._grad_norms[e] = grad[e].float().norm().item()
+
                 # === Feature 1: Per-expert LR ===
                 if param_type == "expert":
                     effective_lr = lr * group["expert_lr_scale"]
