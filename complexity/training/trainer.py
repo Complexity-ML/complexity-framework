@@ -403,9 +403,13 @@ class Trainer:
         """Snapshot a small set of canary parameters before the first step.
 
         We pick at most one param from each class (embed, expert, shared,
-        attention, mu_guidance, norm) so the assertion check is O(few) tensors,
-        not O(num_params). This is the diagnostic that catches silent zero-grad
-        bugs from forward-only custom kernels (per Whatsonyourmind on Muon#65).
+        attention, mu_guidance) so the assertion check is O(few) tensors,
+        not O(num_params). Norms are intentionally skipped — they init to
+        1.0 and the AdamW weight-decay update (1 - lr*wd)*1.0 rounds back
+        to 1.0 in bf16, producing false-positive 'no update' warnings.
+
+        This is the diagnostic that catches silent zero-grad bugs from
+        forward-only custom kernels (per Whatsonyourmind on Muon#65).
         """
         if self._init_snapshot:
             return  # already snapshotted
@@ -424,13 +428,16 @@ class Trainer:
             if "mu_guidance" in name or "mu_init" in name or "mu_to_" in name:
                 return "mu"
             if "norm" in name or "ln_" in name:
-                return "norm"
+                return "norm_skipped"  # explicitly skipped
             return "dense"
 
         for name, p in self.model.named_parameters():
             if not p.requires_grad:
                 continue
             cls = classify(name)
+            # Skip norms — bf16 rounding makes the update invisible
+            if cls == "norm_skipped":
+                continue
             if cls in seen_classes:
                 continue
             seen_classes.add(cls)
