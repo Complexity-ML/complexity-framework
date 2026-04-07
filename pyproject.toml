@@ -56,7 +56,6 @@ cuda = [
 ]
 all = [
     "triton>=2.0.0",
-    "flash-attn>=2.0.0",
     "transformers>=4.30.0",
     "tokenizers>=0.13.0",
     "datasets>=2.0.0",
