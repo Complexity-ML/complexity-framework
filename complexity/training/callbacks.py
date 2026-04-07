@@ -68,20 +68,11 @@ class TqdmCallback:
         self.pbar = tqdm(total=total_steps, desc=desc, unit="step", dynamic_ncols=True)
 
     def __call__(self, trainer, step: int, loss: float):
-        if not is_main_process():
-            return
-
-        ppl = math.exp(min(loss, 20))
-        lr = trainer.scheduler.get_last_lr()[0]
-        postfix = {"loss": f"{loss:.4f}", "ppl": f"{ppl:.1f}", "lr": f"{lr:.2e}"}
-
-        # Per-expert MuonTR/AdamTR diagnostics — drill into wrapper if needed.
-        # Under FSDP shard-on-dim-0, each rank only sees a slice of the experts.
-        # We display only rank-0's local view (2/4 experts on a 2-GPU run) — no
-        # all-reduce, because this callback runs ONLY on rank 0 (early return
-        # above) and a collective op called from one rank deadlocks the others.
-        # The param-update check at step 1 already confirms gradients flow to
-        # all experts globally, so the live tqdm view is just a sanity signal.
+        # Compute the per-expert grad-norm sync on ALL ranks first (collective
+        # ops cannot be called from a subset of ranks — that deadlocks NCCL).
+        # Then only rank 0 actually updates the bar.
+        gn_values = None
+        lr_values = None
         opt = trainer.optimizer
         muon_inner = getattr(opt, "muon_tr", None) or (opt if hasattr(opt, "get_ns_diagnostics") else None)
         if muon_inner is not None and hasattr(muon_inner, "get_ns_diagnostics"):
@@ -90,16 +81,30 @@ class TqdmCallback:
                 if diags:
                     num_experts = max(diags.keys()) + 1
                     gn_values = [diags[e]["grad_norm"] for e in range(num_experts)]
-                    gns = "/".join(f"{v:.1e}" for v in gn_values)
-                    lrs = "/".join(f"{diags[e]['lr_ratio']:.2f}" for e in sorted(diags))
-                    postfix["E-gn"] = gns
-                    postfix["E-lr×"] = lrs
+                    lr_values = [diags[e]["lr_ratio"] for e in range(num_experts)]
+                    # All-reduce (MAX) so each rank's local-view gets merged
+                    # into the global per-expert picture. Called from EVERY rank.
+                    if (torch.distributed.is_initialized()
+                            and torch.distributed.get_world_size() > 1):
+                        device = "cuda" if torch.cuda.is_available() else "cpu"
+                        gn_tensor = torch.tensor(gn_values, dtype=torch.float32, device=device)
+                        torch.distributed.all_reduce(gn_tensor, op=torch.distributed.ReduceOp.MAX)
+                        gn_values = gn_tensor.tolist()
             except Exception as e:
-                # Surface the failure once instead of silently swallowing — helps
-                # diagnose missing imports or shape errors during dev.
                 if not getattr(self, "_diag_warned", False):
                     print(f"[TqdmCallback] diagnostics disabled: {type(e).__name__}: {e}", flush=True)
                     self._diag_warned = True
+
+        if not is_main_process():
+            return
+
+        ppl = math.exp(min(loss, 20))
+        lr = trainer.scheduler.get_last_lr()[0]
+        postfix = {"loss": f"{loss:.4f}", "ppl": f"{ppl:.1f}", "lr": f"{lr:.2e}"}
+        if gn_values is not None:
+            postfix["E-gn"] = "/".join(f"{v:.1e}" for v in gn_values)
+        if lr_values is not None:
+            postfix["E-lr×"] = "/".join(f"{v:.2f}" for v in lr_values)
 
         self.pbar.set_postfix(**postfix, ordered=True)
         self.pbar.update(1)
