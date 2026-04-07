@@ -283,28 +283,41 @@ if HAS_TRITON:
         @staticmethod
         def backward(ctx, grad_output: torch.Tensor):
             sorted_x, expert_weights, expert_offsets = ctx.saved_tensors
-            num_experts = expert_weights.shape[0]
+            num_experts, in_dim, out_dim = expert_weights.shape
 
             grad_x = None
             grad_W = None
+            grad_output = grad_output.contiguous()
 
             # grad_x = grad_output @ W.T per expert. Reuse CGGR with W transposed.
             if ctx.needs_input_grad[0]:
                 W_T = expert_weights.transpose(-2, -1).contiguous()  # [E, out, in]
-                grad_x = cggr_grouped_gemm_triton(
-                    grad_output.contiguous(), W_T, expert_offsets,
-                )
+                grad_x = cggr_grouped_gemm_triton(grad_output, W_T, expert_offsets)
 
-            # grad_W[e] = sorted_x[e].T @ grad_output[e] — small loop.
+            # grad_W[e] = sorted_x[e].T @ grad_output[e]
+            # Vectorized via padded bmm: pad each expert slice to max_len, then a
+            # single batched matmul produces all E grad_W slices in one kernel.
+            # With Zipf-balanced routing the imbalance is ~1.5x so padding overhead
+            # is small, and we trade num_experts kernel launches for one bmm.
             if ctx.needs_input_grad[1]:
-                grad_W = torch.zeros_like(expert_weights)
-                # expert_offsets is on GPU; pull to CPU once for the slice loop.
                 offsets_cpu = expert_offsets.tolist()
-                for e in range(num_experts):
-                    start = offsets_cpu[e]
-                    end = offsets_cpu[e + 1]
-                    if end > start:
-                        grad_W[e] = sorted_x[start:end].transpose(-2, -1) @ grad_output[start:end]
+                lens = [offsets_cpu[e + 1] - offsets_cpu[e] for e in range(num_experts)]
+                max_len = max(lens) if lens else 0
+
+                if max_len == 0:
+                    grad_W = torch.zeros_like(expert_weights)
+                else:
+                    # [E, max_len, in_dim] and [E, max_len, out_dim], padded with zeros
+                    x_padded = sorted_x.new_zeros((num_experts, max_len, in_dim))
+                    g_padded = grad_output.new_zeros((num_experts, max_len, out_dim))
+                    for e in range(num_experts):
+                        start = offsets_cpu[e]
+                        L = lens[e]
+                        if L > 0:
+                            x_padded[e, :L].copy_(sorted_x[start:start + L])
+                            g_padded[e, :L].copy_(grad_output[start:start + L])
+                    # Single bmm: [E, in_dim, max_len] @ [E, max_len, out_dim] = [E, in_dim, out_dim]
+                    grad_W = torch.bmm(x_padded.transpose(1, 2), g_padded)
 
             return grad_x, grad_W, None  # offsets is non-differentiable
 
