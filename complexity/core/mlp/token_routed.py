@@ -155,12 +155,21 @@ class TokenRoutedMLP(MLPBase):
         else:
             shared_out = 0
 
-        # Routed experts — CGGR Triton (5-6x faster) or sparse dispatch fallback
+        # Routed experts — CGGR Triton (forward-only, inference) or autograd-aware fallback
+        # CRITICAL: CGGR Triton kernels do not implement backward, so they cannot be used
+        # during training — gradients would silently be zero for gate/up/down_proj_w.
+        # We only use CGGR when not training (no grad enabled).
         gate_w = _to_local(self.gate_proj_w)
         up_w = _to_local(self.up_proj_w)
         down_w = _to_local(self.down_proj_w)
 
-        if HAS_CGGR and flat_x.is_cuda:
+        use_cggr = (
+            HAS_CGGR
+            and flat_x.is_cuda
+            and not torch.is_grad_enabled()
+        )
+
+        if use_cggr:
             # CGGR: sort tokens by expert → grouped GEMM → fused SwiGLU → unsort
             sorted_x, sorted_idx, expert_offsets, expert_counts = sort_tokens_by_expert(
                 flat_x, flat_expert_ids, self.num_experts
@@ -172,7 +181,9 @@ class TokenRoutedMLP(MLPBase):
             routed_out = torch.zeros_like(flat_x)
             routed_out[sorted_idx] = sorted_routed.to(routed_out.dtype)
         else:
-            # Sparse dispatch fallback (loop over experts)
+            # Autograd-aware path: sparse dispatch (loop over experts with masking).
+            # Used during training (gradients flow back to gate_w/up_w/down_w) and as
+            # the CPU/no-Triton fallback.
             routed_out = torch.zeros_like(flat_x)
             for e in range(self.num_experts):
                 mask = (flat_expert_ids == e)
