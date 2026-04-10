@@ -1,5 +1,5 @@
 """
-Reward functions for GRPO training.
+Reward functions for DAPO/GRPO training.
 
 QCM (Multiple Choice) exact match is the primary reward:
 - Clean binary signal (0 or 1), no reward hacking
@@ -96,3 +96,96 @@ def combined_reward(
     correct = mcq_exact_match_reward(completions, answer)
     fmt = format_reward(completions)
     return [c + format_weight * f for c, f in zip(correct, fmt)]
+
+
+# ── Language Quality Rewards (rule-based) ────────────────────────────
+
+def _repetition_score(text: str) -> float:
+    """Penalize repetitive text. Returns 0.0 (all repeated) to 1.0 (no repetition)."""
+    words = text.lower().split()
+    if len(words) < 5:
+        return 0.0
+    # Trigram repetition ratio
+    trigrams = [tuple(words[i:i+3]) for i in range(len(words) - 2)]
+    if not trigrams:
+        return 0.0
+    unique_ratio = len(set(trigrams)) / len(trigrams)
+    return min(1.0, unique_ratio)
+
+
+def _length_score(text: str, target_min: int = 20, target_max: int = 200) -> float:
+    """Reward appropriate length. Too short or too long = penalty."""
+    words = text.split()
+    n = len(words)
+    if n < 5:
+        return 0.0
+    if target_min <= n <= target_max:
+        return 1.0
+    if n < target_min:
+        return n / target_min
+    # Soft penalty for too long
+    return max(0.0, 1.0 - (n - target_max) / target_max)
+
+
+def _coherence_score(text: str) -> float:
+    """
+    Basic coherence heuristics:
+    - Has proper sentence structure (periods, capitals)
+    - No garbage characters
+    - Vocabulary diversity
+    """
+    score = 0.0
+
+    # Has at least one sentence-ending punctuation
+    if re.search(r'[.!?]', text):
+        score += 0.3
+
+    # Has capitalized sentence starts
+    sentences = re.split(r'[.!?]\s+', text)
+    if sentences and any(s and s[0].isupper() for s in sentences if s.strip()):
+        score += 0.2
+
+    # Low garbage ratio (non-alphanumeric, non-punctuation)
+    if text:
+        clean = re.sub(r'[a-zA-Z0-9\s.,!?;:\'"()\-]', '', text)
+        garbage_ratio = len(clean) / len(text)
+        if garbage_ratio < 0.1:
+            score += 0.3
+
+    # Word diversity (unique words / total words)
+    words = text.lower().split()
+    if len(words) >= 5:
+        diversity = len(set(words)) / len(words)
+        if diversity > 0.4:
+            score += 0.2
+
+    return score
+
+
+def language_quality_reward(completions: List[str], **kwargs) -> List[float]:
+    """
+    Rule-based language quality reward for text generation.
+
+    Scores 4 components (each 0-1, weighted):
+      - Repetition: 0.3  (no repeated trigrams)
+      - Length:      0.2  (appropriate length)
+      - Coherence:   0.3  (punctuation, structure, no garbage)
+      - Non-empty:   0.2  (produced meaningful output)
+
+    Returns list of scores in [0.0, 1.0].
+    """
+    rewards = []
+    for text in completions:
+        text = text.strip()
+        if len(text) < 3:
+            rewards.append(0.0)
+            continue
+
+        rep = _repetition_score(text)
+        length = _length_score(text)
+        coh = _coherence_score(text)
+        non_empty = 1.0 if len(text.split()) >= 5 else 0.0
+
+        score = 0.3 * rep + 0.2 * length + 0.3 * coh + 0.2 * non_empty
+        rewards.append(round(score, 4))
+    return rewards
