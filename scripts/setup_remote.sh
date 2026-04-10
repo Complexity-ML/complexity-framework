@@ -45,8 +45,8 @@ pip3 install --break-system-packages --ignore-installed typing-extensions -e ".[
     || pip3 install -e ".[all]"
 
 # Extra dependencies used by training scripts
-pip3 install --break-system-packages python-dotenv safetensors "huggingface_hub[cli]" datasets tokenizers 2>/dev/null \
-    || pip3 install python-dotenv safetensors "huggingface_hub[cli]" datasets tokenizers
+pip3 install --break-system-packages python-dotenv safetensors "huggingface_hub[cli]" datasets tokenizers hf-xet 2>/dev/null \
+    || pip3 install python-dotenv safetensors "huggingface_hub[cli]" datasets tokenizers hf-xet
 
 # Setup .env if available
 if [ -f "$WORKDIR/.env" ]; then
