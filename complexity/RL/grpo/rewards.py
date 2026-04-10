@@ -162,15 +162,72 @@ def _coherence_score(text: str) -> float:
     return score
 
 
-def language_quality_reward(completions: List[str], **kwargs) -> List[float]:
+def _topic_drift_score(prompt: str, completion: str) -> float:
+    """
+    Measure if completion stays on topic with the prompt.
+
+    Compares vocabulary overlap between prompt and chunks of the completion.
+    If later chunks share fewer words with the prompt → drift detected.
+
+    Returns 0.0 (total drift) to 1.0 (stays on topic).
+    """
+    # Extract content words (>3 chars, no stopwords)
+    stopwords = {
+        "the", "and", "that", "this", "with", "from", "have", "has",
+        "been", "were", "was", "are", "for", "not", "but", "what",
+        "all", "can", "had", "her", "his", "one", "our", "out",
+        "their", "there", "they", "which", "will", "would", "your",
+        "about", "also", "into", "more", "some", "than", "them",
+        "then", "these", "when", "who", "how", "its", "may", "each",
+    }
+    def content_words(text):
+        words = set(re.findall(r'[a-z]{4,}', text.lower()))
+        return words - stopwords
+
+    prompt_words = content_words(prompt)
+    if not prompt_words:
+        return 1.0  # Can't measure drift without prompt content
+
+    comp_words = completion.split()
+    if len(comp_words) < 20:
+        return 1.0  # Too short to drift
+
+    # Split completion into first half and second half
+    mid = len(comp_words) // 2
+    first_half = content_words(" ".join(comp_words[:mid]))
+    second_half = content_words(" ".join(comp_words[mid:]))
+
+    # Overlap with prompt
+    first_overlap = len(first_half & prompt_words) / max(1, len(prompt_words))
+    second_overlap = len(second_half & prompt_words) / max(1, len(prompt_words))
+
+    # If second half loses topic compared to first half → drift
+    if first_overlap > 0:
+        drift_ratio = second_overlap / first_overlap
+        return min(1.0, drift_ratio)
+
+    # Both halves have low overlap — might be on a subtopic
+    return min(1.0, second_overlap * 5)
+
+
+def language_quality_reward(
+    completions: List[str],
+    prompt: str = "",
+    **kwargs,
+) -> List[float]:
     """
     Rule-based language quality reward for text generation.
 
-    Scores 4 components (each 0-1, weighted):
-      - Repetition: 0.3  (no repeated trigrams)
-      - Length:      0.2  (appropriate length)
-      - Coherence:   0.3  (punctuation, structure, no garbage)
-      - Non-empty:   0.2  (produced meaningful output)
+    Scores 5 components (each 0-1, weighted):
+      - Repetition:   0.25  (no repeated trigrams)
+      - Length:        0.15  (appropriate length)
+      - Coherence:    0.25  (punctuation, structure, no garbage)
+      - Topic drift:  0.20  (stays on topic with prompt)
+      - Non-empty:    0.15  (produced meaningful output)
+
+    Args:
+        completions: List of G model completions.
+        prompt: The input prompt (used for topic drift detection).
 
     Returns list of scores in [0.0, 1.0].
     """
@@ -184,8 +241,10 @@ def language_quality_reward(completions: List[str], **kwargs) -> List[float]:
         rep = _repetition_score(text)
         length = _length_score(text)
         coh = _coherence_score(text)
+        drift = _topic_drift_score(prompt, text) if prompt else 1.0
         non_empty = 1.0 if len(text.split()) >= 5 else 0.0
 
-        score = 0.3 * rep + 0.2 * length + 0.3 * coh + 0.2 * non_empty
+        score = (0.25 * rep + 0.15 * length + 0.25 * coh
+                 + 0.20 * drift + 0.15 * non_empty)
         rewards.append(round(score, 4))
     return rewards
