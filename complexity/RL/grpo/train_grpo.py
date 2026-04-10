@@ -70,10 +70,9 @@ def load_mmlu_dataset(
     max_samples: int = 0,
 ) -> List[Dict]:
     """Load MMLU and return list of {prompt, answer} dicts."""
-    if subset != "all":
-        ds = load_dataset(dataset_name, subset, split=split, trust_remote_code=True)
-    else:
-        ds = load_dataset(dataset_name, split=split, trust_remote_code=True)
+    # cais/mmlu requires a config name; "all" loads every subject
+    config = subset if subset != "all" else "all"
+    ds = load_dataset(dataset_name, config, split=split)
 
     if max_samples > 0:
         ds = ds.select(range(min(max_samples, len(ds))))
