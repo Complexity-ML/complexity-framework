@@ -168,8 +168,11 @@ class ModelConfig:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ModelConfig":
-        """Create config from dictionary."""
-        return cls(**data)
+        """Create config from dictionary, ignoring unknown keys."""
+        import dataclasses
+        valid_keys = {f.name for f in dataclasses.fields(cls)}
+        filtered = {k: v for k, v in data.items() if k in valid_keys}
+        return cls(**filtered)
 
     @classmethod
     def load(cls, path: str) -> "ModelConfig":
