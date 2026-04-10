@@ -46,7 +46,7 @@ from datasets import load_dataset
 from complexity.config import ModelConfig
 from complexity.models.builder import ComplexityModel
 
-from .rewards import mcq_exact_match_reward, combined_reward
+from .rewards import mcq_exact_match_reward, combined_reward, language_quality_reward
 
 
 # ── Dataset ──────────────────────────────────────────────────────────
@@ -93,6 +93,32 @@ def load_mmlu_dataset(
             "prompt": format_mmlu_prompt(row["question"], row["choices"], row.get("subject", "")),
             "answer": answer,
         })
+    return examples
+
+
+def load_fineweb_edu_dataset(
+    dataset_name: str = "HuggingFaceFW/fineweb-edu",
+    split: str = "train",
+    max_samples: int = 10000,
+    prompt_words: int = 50,
+) -> List[Dict]:
+    """
+    Load FineWeb-Edu and create prompts from document beginnings.
+    Each example = first ~50 words as prompt, rest is what the model should continue.
+    """
+    ds = load_dataset(dataset_name, split=split, streaming=True)
+
+    examples = []
+    for row in ds:
+        text = row.get("text", "")
+        words = text.split()
+        if len(words) < prompt_words + 20:
+            continue
+        prompt = " ".join(words[:prompt_words])
+        examples.append({"prompt": prompt, "answer": ""})
+        if len(examples) >= max_samples:
+            break
+
     return examples
 
 
@@ -380,7 +406,12 @@ def train_grpo(
 
     # ── Dataset ──
     log(f"[dapo] Loading {dataset_name} (subset={dataset_subset})...")
-    examples = load_mmlu_dataset(dataset_name, dataset_subset, max_samples=max_samples)
+    if reward_type == "language_quality":
+        examples = load_fineweb_edu_dataset(
+            dataset_name=dataset_name, max_samples=max_samples or 10000,
+        )
+    else:
+        examples = load_mmlu_dataset(dataset_name, dataset_subset, max_samples=max_samples)
     log(f"[dapo] {len(examples)} examples")
 
     # ── Optimizer (AdamW) ──
@@ -405,6 +436,8 @@ def train_grpo(
         reward_fn = mcq_exact_match_reward
     elif reward_type == "combined":
         reward_fn = combined_reward
+    elif reward_type == "language_quality":
+        reward_fn = language_quality_reward
     else:
         raise ValueError(f"Unknown reward_type: {reward_type}")
 
@@ -486,7 +519,10 @@ def train_grpo(
                     comp_ids = sequences[g, prompt_len:]
                     completions_text.append(decode_tokens(tokenizer, comp_ids))
 
-            rewards = reward_fn(completions_text, answer)
+            if reward_type == "language_quality":
+                rewards = reward_fn(completions_text, prompt=prompt)
+            else:
+                rewards = reward_fn(completions_text, answer)
             rewards_t = torch.tensor(rewards, device=device, dtype=torch.float32)
             std_r = rewards_t.std()
 
@@ -623,7 +659,7 @@ def main():
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--max_samples", type=int, default=0)
     parser.add_argument("--reward_type", type=str, default="exact_match",
-                        choices=["exact_match", "combined"])
+                        choices=["exact_match", "combined", "language_quality"])
     parser.add_argument("--log_steps", type=int, default=10)
     parser.add_argument("--save_steps", type=int, default=100)
     parser.add_argument("--bf16", action="store_true", default=True)
