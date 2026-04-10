@@ -45,8 +45,8 @@ pip3 install --break-system-packages --ignore-installed typing-extensions -e ".[
     || pip3 install -e ".[all]"
 
 # Extra dependencies used by training scripts
-pip3 install --break-system-packages python-dotenv safetensors "huggingface_hub[cli]" 2>/dev/null \
-    || pip3 install python-dotenv safetensors "huggingface_hub[cli]"
+pip3 install --break-system-packages python-dotenv safetensors "huggingface_hub[cli]" datasets tokenizers 2>/dev/null \
+    || pip3 install python-dotenv safetensors "huggingface_hub[cli]" datasets tokenizers
 
 # Setup .env if available
 if [ -f "$WORKDIR/.env" ]; then
@@ -75,5 +75,11 @@ NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l
 echo ""
 echo "=== Ready ==="
 echo "  cd $WORKDIR/complexity-framework"
+echo ""
+echo "  # Pretraining:"
 echo "  torchrun --nproc_per_node=$NUM_GPUS scripts/train_hackathon_383m.py --target-tokens 1000000000 --batch-size 64"
+echo ""
+echo "  # GRPO (download model first):"
+echo "  huggingface-cli download Pacific-i64/TR-MoE-400M --local-dir checkpoints/400m"
+echo "  torchrun --nproc_per_node=$NUM_GPUS -m complexity.RL.grpo.train_grpo --model_path checkpoints/400m --dataset cais/mmlu --bf16"
 echo ""
