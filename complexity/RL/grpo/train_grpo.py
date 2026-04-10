@@ -113,6 +113,41 @@ def decode_tokens(tokenizer, token_ids: torch.Tensor) -> str:
 
 # ── Generation ───────────────────────────────────────────────────────
 
+def _init_vllm_engine(model_path: str, gpu_memory_utilization: float = 0.4):
+    """Initialize vLLM LLM engine for fast generation."""
+    from vllm import LLM
+    return LLM(
+        model=model_path,
+        trust_remote_code=True,
+        gpu_memory_utilization=gpu_memory_utilization,
+        dtype="bfloat16",
+        enforce_eager=False,  # Enable CUDA graphs
+    )
+
+
+def generate_group_vllm(
+    vllm_engine,
+    prompt_text: str,
+    group_size: int,
+    max_new_tokens: int,
+    temperature: float = 1.0,
+    top_p: float = 0.9,
+) -> List[str]:
+    """
+    Generate G completions using vLLM (CUDA graphs, PagedAttention).
+    Returns list of completion strings.
+    """
+    from vllm import SamplingParams
+    params = SamplingParams(
+        n=group_size,
+        max_tokens=max_new_tokens,
+        temperature=temperature,
+        top_p=top_p,
+    )
+    outputs = vllm_engine.generate([prompt_text], params)
+    return [out.text for out in outputs[0].outputs]
+
+
 @torch.no_grad()
 def generate_group(
     model: ComplexityModel,
@@ -124,17 +159,15 @@ def generate_group(
     eos_token_id: Optional[int] = None,
 ) -> torch.Tensor:
     """
-    Generate G completions for a single prompt.
-    mu-guidance and MoE routing are handled internally by ComplexityModel.
+    Fallback: generate G completions with native PyTorch (no vLLM).
+    Used when --use_vllm is not set.
     """
     model.eval()
     device = next(model.parameters()).device
     prompt_len = prompt_ids.shape[0]
 
-    # Expand prompt for all G completions: [G, prompt_len]
     input_ids = prompt_ids.unsqueeze(0).expand(group_size, -1).to(device)
 
-    # Autoregressive generation with KV cache
     past_key_values = None
     for step in range(max_new_tokens):
         if past_key_values is None:
@@ -143,9 +176,8 @@ def generate_group(
             outputs = model(input_ids[:, -1:], past_key_values=past_key_values, use_cache=True)
 
         past_key_values = outputs["past_key_values"]
-        logits = outputs["logits"][:, -1, :]  # [G, vocab]
+        logits = outputs["logits"][:, -1, :]
 
-        # Temperature + nucleus sampling
         logits = logits / temperature
         if top_p < 1.0:
             sorted_logits, sorted_idx = torch.sort(logits, descending=True)
@@ -155,14 +187,13 @@ def generate_group(
             logits = sorted_logits.scatter(1, sorted_idx, sorted_logits)
 
         probs = F.softmax(logits, dim=-1)
-        next_token = torch.multinomial(probs, num_samples=1)  # [G, 1]
+        next_token = torch.multinomial(probs, num_samples=1)
         input_ids = torch.cat([input_ids, next_token], dim=1)
 
-        # Check EOS
         if eos_token_id is not None and (next_token == eos_token_id).all():
             break
 
-    return input_ids  # [G, prompt_len + generated_len]
+    return input_ids
 
 
 # ── Log-probability computation ──────────────────────────────────────
@@ -289,6 +320,9 @@ def train_grpo(
     log_steps: int = 10,
     save_steps: int = 100,
     bf16: bool = True,
+    # vLLM
+    use_vllm: bool = False,
+    vllm_gpu_memory: float = 0.4,
     # Compat (ignored, kept for CLI backwards compat)
     beta: float = 0.0,
     clip_eps: float = 0.0,
@@ -312,6 +346,15 @@ def train_grpo(
         model = model.to(torch.bfloat16)
     log(f"[dapo] {model.num_parameters() / 1e6:.1f}M params, mu_guidance={model._has_mu}")
     log(f"[dapo] No reference model (DAPO: clipping only, no KL)")
+
+    # ── vLLM engine (for fast generation) ──
+    vllm_engine = None
+    if use_vllm:
+        log(f"[dapo] Initializing vLLM engine (gpu_mem={vllm_gpu_memory})...")
+        vllm_engine = _init_vllm_engine(model_path, gpu_memory_utilization=vllm_gpu_memory)
+        log("[dapo] vLLM engine ready (CUDA graphs + PagedAttention)")
+    else:
+        log("[dapo] Using native PyTorch generation (use --use_vllm for faster sampling)")
 
     # ── Tokenizer ──
     tokenizer_path = os.path.join(model_path, "tokenizer.json")
@@ -410,18 +453,38 @@ def train_grpo(
         completions_text = None
 
         for resample_attempt in range(max_resample + 1):
-            with torch.no_grad():
-                sequences = generate_group(
-                    model, prompt_ids, group_size,
+            if vllm_engine is not None:
+                # ── vLLM fast path ──
+                completions_text = generate_group_vllm(
+                    vllm_engine, prompt, group_size,
                     max_new_tokens=max_completion_length,
                     temperature=temperature,
-                    eos_token_id=tokenizer.eos_token_id,
+                    top_p=0.9,
                 )
-
-            completions_text = []
-            for g in range(group_size):
-                comp_ids = sequences[g, prompt_len:]
-                completions_text.append(decode_tokens(tokenizer, comp_ids))
+                # Encode completions back to token IDs for log-prob computation
+                all_ids = []
+                for comp_text in completions_text:
+                    comp_ids = tokenizer.encode(comp_text, add_bos=False)
+                    full_ids = prompt_ids.tolist() + comp_ids
+                    all_ids.append(full_ids)
+                # Pad to same length
+                max_len = max(len(ids) for ids in all_ids)
+                for i in range(len(all_ids)):
+                    all_ids[i] += [0] * (max_len - len(all_ids[i]))
+                sequences = torch.tensor(all_ids, device=device, dtype=torch.long)
+            else:
+                # ── Native PyTorch fallback ──
+                with torch.no_grad():
+                    sequences = generate_group(
+                        model, prompt_ids, group_size,
+                        max_new_tokens=max_completion_length,
+                        temperature=temperature,
+                        eos_token_id=tokenizer.eos_token_id,
+                    )
+                completions_text = []
+                for g in range(group_size):
+                    comp_ids = sequences[g, prompt_len:]
+                    completions_text.append(decode_tokens(tokenizer, comp_ids))
 
             rewards = reward_fn(completions_text, answer)
             rewards_t = torch.tensor(rewards, device=device, dtype=torch.float32)
@@ -564,6 +627,9 @@ def main():
     parser.add_argument("--log_steps", type=int, default=10)
     parser.add_argument("--save_steps", type=int, default=100)
     parser.add_argument("--bf16", action="store_true", default=True)
+    # vLLM
+    parser.add_argument("--use_vllm", action="store_true", help="Use vLLM for fast generation")
+    parser.add_argument("--vllm_gpu_memory", type=float, default=0.4)
     # Backwards compat (ignored by DAPO)
     parser.add_argument("--beta", type=float, default=0.0)
     parser.add_argument("--clip_eps", type=float, default=0.0)
@@ -591,6 +657,8 @@ def main():
         log_steps=args.log_steps,
         save_steps=args.save_steps,
         bf16=args.bf16,
+        use_vllm=args.use_vllm,
+        vllm_gpu_memory=args.vllm_gpu_memory,
     )
 
 
