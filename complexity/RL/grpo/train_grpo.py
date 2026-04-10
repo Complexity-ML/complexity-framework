@@ -293,8 +293,8 @@ def train_grpo(
     # Training
     lr: float = 5e-6,
     weight_decay: float = 0.01,
-    max_steps: int = 500,
-    warmup_steps: int = 25,
+    max_steps: int = 2000,
+    warmup_steps: int = 100,
     grad_clip: float = 1.0,
     # Data
     max_samples: int = 0,
@@ -508,8 +508,8 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--lr", type=float, default=5e-6)
     parser.add_argument("--weight_decay", type=float, default=0.01)
-    parser.add_argument("--max_steps", type=int, default=500)
-    parser.add_argument("--warmup_steps", type=int, default=25)
+    parser.add_argument("--max_steps", type=int, default=2000)
+    parser.add_argument("--warmup_steps", type=int, default=100)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--max_samples", type=int, default=0)
     parser.add_argument("--reward_type", type=str, default="exact_match",
