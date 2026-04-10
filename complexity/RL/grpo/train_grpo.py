@@ -28,6 +28,7 @@ Usage:
 """
 
 import argparse
+import csv
 import math
 import os
 import time
@@ -376,6 +377,16 @@ def train_grpo(
     skipped_resample = 0
     t0 = time.time()
 
+    # ── CSV logging ──
+    csv_path = os.path.join(output_dir, "metrics.csv")
+    csv_file = None
+    csv_writer = None
+    if rank == 0:
+        csv_file = open(csv_path, "w", newline="")
+        csv_writer = csv.writer(csv_file)
+        csv_writer.writerow(["step", "loss", "reward", "acc", "avg_reward", "avg_acc", "lr", "skipped", "s_per_step"])
+        log(f"[dapo] Logging to {csv_path}")
+
     pbar = tqdm(total=max_steps, desc="DAPO", disable=(rank != 0))
 
     while global_step < max_steps:
@@ -485,6 +496,22 @@ def train_grpo(
             "skip": skipped_resample,
         })
 
+        # Write to CSV every step
+        if csv_writer is not None:
+            elapsed = time.time() - t0
+            csv_writer.writerow([
+                global_step,
+                f"{loss.item():.6f}",
+                f"{mean_r.item():.4f}",
+                f"{batch_correct / group_size:.4f}",
+                f"{avg_reward:.4f}",
+                f"{accuracy:.4f}",
+                f"{current_lr:.2e}",
+                skipped_resample,
+                f"{elapsed / global_step:.2f}",
+            ])
+            csv_file.flush()
+
         # ── Save checkpoint ──
         if global_step % save_steps == 0 and rank == 0:
             ckpt_dir = os.path.join(output_dir, f"step-{global_step}")
@@ -492,6 +519,8 @@ def train_grpo(
             log(f"[dapo] Checkpoint saved → {ckpt_dir}")
 
     pbar.close()
+    if csv_file is not None:
+        csv_file.close()
 
     # ── Final save ──
     if rank == 0:
