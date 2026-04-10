@@ -29,11 +29,14 @@ Usage:
 
 import argparse
 import csv
+import logging
 import math
 import os
 import time
 from typing import List, Dict, Optional
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 import torch
 import torch.nn.functional as F
@@ -300,7 +303,7 @@ def train_grpo(
 
     def log(msg):
         if rank == 0:
-            print(msg)
+            logger.info(msg)
 
     # ── Load model ──
     log(f"[dapo] Loading model from {model_path}...")
@@ -533,6 +536,11 @@ def train_grpo(
 # ── CLI ──────────────────────────────────────────────────────────────
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
     parser = argparse.ArgumentParser(description="DAPO for ComplexityModel")
     parser.add_argument("--model_path", type=str, required=True)
     parser.add_argument("--dataset", type=str, default="cais/mmlu")
