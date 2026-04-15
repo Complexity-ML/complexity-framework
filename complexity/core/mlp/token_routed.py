@@ -43,6 +43,17 @@ except ImportError:
     HAS_CGGR = False
     cggr_grouped_gemm_autograd = None
 
+    def sort_tokens_by_expert(tokens, expert_ids, num_experts):
+        """Pure-PyTorch fallback — stable sort + cumsum offsets.
+        Used when complexity_cuda is not installed (Mac/CPU dev setups).
+        """
+        sorted_expert_ids, sorted_indices = torch.sort(expert_ids, stable=True)
+        sorted_tokens = tokens[sorted_indices]
+        expert_counts = torch.bincount(expert_ids, minlength=num_experts)
+        expert_offsets = torch.zeros(num_experts + 1, dtype=torch.long, device=tokens.device)
+        expert_offsets[1:] = torch.cumsum(expert_counts, dim=0)
+        return sorted_tokens, sorted_indices, expert_offsets, expert_counts
+
 
 def _to_local(t: torch.Tensor) -> torch.Tensor:
     """Convert DTensor to local tensor (FSDP v2 compat)."""
@@ -201,30 +212,38 @@ class TokenRoutedMLP(MLPBase):
 
         use_cggr = HAS_CGGR and flat_x.is_cuda and cggr_grouped_gemm_autograd is not None
 
+        # Always sort-then-dispatch: contiguous slicing is ~2× faster than
+        # boolean masking on MPS/CPU (no .any() sync per expert, no scatter
+        # via bool mask). Deterministic Zipf routing makes this a stable
+        # permutation every step.
+        sorted_x, sorted_idx, expert_offsets, _ = sort_tokens_by_expert(
+            flat_x, flat_expert_ids, self.num_experts
+        )
+
         if use_cggr:
-            sorted_x, sorted_idx, expert_offsets, expert_counts = sort_tokens_by_expert(
-                flat_x, flat_expert_ids, self.num_experts
-            )
             gate_out = cggr_grouped_gemm_autograd(sorted_x, gate_w, expert_offsets)
             up_out = cggr_grouped_gemm_autograd(sorted_x, up_w, expert_offsets)
             intermediate = F.silu(gate_out) * up_out  # autograd-friendly SwiGLU
             sorted_routed = cggr_grouped_gemm_autograd(intermediate, down_w, expert_offsets)
-            routed_out = torch.zeros_like(flat_x)
-            routed_out[sorted_idx] = sorted_routed.to(routed_out.dtype)
         else:
-            # Autograd-aware path: sparse dispatch (loop over experts with masking).
-            # Used during training (gradients flow back to gate_w/up_w/down_w) and as
-            # the CPU/no-Triton fallback.
-            routed_out = torch.zeros_like(flat_x)
+            # Pure-PyTorch grouped dispatch. One CPU sync for offsets (single
+            # transfer of a [E+1] int tensor), then Python-scalar slicing —
+            # no .any() sync, no boolean mask indexing.
+            offsets_cpu = expert_offsets.cpu().tolist()
+            sorted_routed = torch.empty_like(sorted_x)
             for e in range(self.num_experts):
-                mask = (flat_expert_ids == e)
-                if not mask.any():
+                start, end = offsets_cpu[e], offsets_cpu[e + 1]
+                if start == end:
                     continue
-                x_e = flat_x[mask]
+                x_e = sorted_x[start:end]
                 gate_e = x_e @ gate_w[e]
                 up_e = x_e @ up_w[e]
                 inter_e = F.silu(gate_e) * up_e
-                routed_out[mask] = (inter_e @ down_w[e]).to(routed_out.dtype)
+                sorted_routed[start:end] = (inter_e @ down_w[e]).to(sorted_routed.dtype)
+
+        # Scatter back to original token order
+        routed_out = torch.empty_like(flat_x)
+        routed_out[sorted_idx] = sorted_routed.to(routed_out.dtype)
 
         if self.routed_gate:
             out = shared_out + self.routed_alpha * routed_out
