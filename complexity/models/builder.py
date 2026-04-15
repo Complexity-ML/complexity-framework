@@ -120,7 +120,7 @@ class ComplexityModel(nn.Module):
             attn = layer.self_attn
             if hasattr(attn, 'o_proj') and isinstance(attn.o_proj, nn.Linear):
                 nn.init.normal_(attn.o_proj.weight, mean=0.0, std=residual_std)
-            # MLP down projection (nn.Linear or nn.Parameter)
+            # MLP down projection (nn.Linear or nn.Parameter) — routed experts and dense SwiGLU
             mlp = layer.mlp
             if hasattr(mlp, 'down_proj'):
                 if isinstance(mlp.down_proj, nn.Linear):
@@ -129,6 +129,9 @@ class ComplexityModel(nn.Module):
                     nn.init.normal_(mlp.down_proj, mean=0.0, std=residual_std)
             if hasattr(mlp, 'down_proj_w') and isinstance(mlp.down_proj_w, nn.Parameter):
                 nn.init.normal_(mlp.down_proj_w, mean=0.0, std=residual_std)
+            # Shared expert down projection (TokenRoutedMLP with shared=True)
+            if hasattr(mlp, 'shared_down') and isinstance(mlp.shared_down, nn.Linear):
+                nn.init.normal_(mlp.shared_down.weight, mean=0.0, std=residual_std)
 
     def gradient_checkpointing_enable(self):
         self._gradient_checkpointing = True

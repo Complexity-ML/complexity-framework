@@ -29,8 +29,6 @@ class MLPConfig:
     shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
     routed_gate: bool = False  # Learnable α on routed path: out = shared + α·routed
     routed_gate_init: float = 0.0  # Initial value of α (0 = pure dense start, >0 = experts contribute early)
-    gpt2_residual_init: bool = False  # Scale down_proj init by 1/sqrt(2·num_hidden_layers) — GPT-2 style
-    num_hidden_layers: int = 1  # Required for gpt2_residual_init scaling
 
 
 class MLPBase(nn.Module, ABC):

@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader, IterableDataset
 from tqdm import tqdm
 
 from complexity.config import ModelConfig
+from complexity.core.losses import causal_lm_loss
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
 from complexity.utils import (
@@ -64,12 +65,12 @@ def make_config() -> ModelConfig:
         norm_type="rmsnorm",
         use_qk_norm=True,
         use_mu_guidance=True,
-        # MoE recipe to beat dense: full-width shared + gated routed experts + GPT-2 init
+        # MoE recipe to beat dense: full-width shared + gated routed experts
+        # (GPT-2 residual init is now applied automatically by _init_residual_scaling)
         shared_expert=True,
         shared_intermediate_size=None,  # None → full intermediate_size (dense-equivalent)
         routed_gate=True,               # α·routed on routed path
-        routed_gate_init=0.1,           # α start = 0.1 → experts contribute from step 0 (vs 0 = pure-dense start)
-        gpt2_residual_init=True,        # down_proj std = 0.02/sqrt(2·L)
+        routed_gate_init=0.1,           # α start = 0.1 → experts contribute from step 0
     )
 
 
@@ -144,6 +145,13 @@ def main():
                         help="Call empty_cache every N steps (0 = never)")
     parser.add_argument("--run-name",    type=str,   default="moe",
                         help="Subdir under runs/ for CSV logs")
+    parser.add_argument("--label-smoothing", type=float, default=0.1,
+                        help="Cross-entropy label smoothing (0.0 disables)")
+    parser.add_argument("--lr-schedule", type=str, default="cosine",
+                        choices=["cosine", "wsd"],
+                        help="cosine: classic warmup+cosine. wsd: warmup+stable+1-sqrt decay")
+    parser.add_argument("--z-loss",      type=float, default=0.0,
+                        help="Coefficient of logit z-loss (e.g. 1e-4). 0 disables")
     args = parser.parse_args()
 
     # CSV logger
@@ -172,8 +180,7 @@ def main():
         f"Config: hidden={config.hidden_size}, layers={config.num_hidden_layers}, "
         f"heads={config.num_attention_heads}/{config.num_key_value_heads} (GQA), "
         f"mlp={config.mlp_type}, experts={config.num_experts}, "
-        f"shared={config.shared_expert}, routed_gate={config.routed_gate}, "
-        f"gpt2_init={config.gpt2_residual_init}"
+        f"shared={config.shared_expert}, routed_gate={config.routed_gate}"
     )
 
     amp_dtype = autocast_dtype(device) if args.bf16 else None
@@ -199,18 +206,31 @@ def main():
         eps=1e-8,
     )
 
-    # LR schedule: linear warmup (5%) + cosine decay to min_lr=10% of peak
     warmup    = max(1, int(args.steps * 0.05))
     min_ratio = 0.1
 
-    def lr_lambda(step):
-        if step < warmup:
-            return step / warmup
-        progress = (step - warmup) / max(1, args.steps - warmup)
-        cosine   = 0.5 * (1.0 + math.cos(math.pi * progress))
-        return min_ratio + (1.0 - min_ratio) * cosine
+    if args.lr_schedule == "cosine":
+        def lr_lambda(step):
+            if step < warmup:
+                return step / warmup
+            progress = (step - warmup) / max(1, args.steps - warmup)
+            return min_ratio + (1.0 - min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
+    else:  # wsd: warmup → stable (until 75%) → 1-sqrt decay
+        decay_start = int(args.steps * 0.75)
+        def lr_lambda(step):
+            if step < warmup:
+                return step / warmup
+            if step < decay_start:
+                return 1.0
+            p = (step - decay_start) / max(1, args.steps - decay_start)
+            return min_ratio + (1.0 - min_ratio) * (1.0 - math.sqrt(p))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    logger.info(f"LR schedule: {args.lr_schedule} (warmup={warmup}, min_ratio={min_ratio})")
+    if args.label_smoothing > 0:
+        logger.info(f"Label smoothing: {args.label_smoothing}")
+    if args.z_loss > 0:
+        logger.info(f"Z-loss coefficient: {args.z_loss}")
 
     # Tokenizer + Dataset
     if args.dataset == "fineweb":
@@ -253,9 +273,10 @@ def main():
                 outputs = model(input_ids)
                 hidden  = outputs["last_hidden_state"]
                 logits  = F.linear(hidden, model.embed_tokens.weight)
-                loss    = F.cross_entropy(
-                    logits.view(-1, config.vocab_size),
-                    labels.view(-1),
+                loss, loss_metrics = causal_lm_loss(
+                    logits, labels,
+                    label_smoothing=args.label_smoothing,
+                    z_loss_coef=args.z_loss,
                 )
 
             loss.backward()
@@ -272,7 +293,8 @@ def main():
                 dt        = now - t_log
                 tok_s     = tokens_since_log / dt if dt > 0 else 0
                 last_loss = loss.item()
-                ppl       = math.exp(min(last_loss, 20))
+                # PPL reported from raw CE (excluding label_smoothing + z_loss contributions)
+                ppl       = math.exp(min(loss_metrics.ce, 20))
                 lr_now    = scheduler.get_last_lr()[0]
 
                 # Mean of learnable α across MoE layers (None if gate disabled)

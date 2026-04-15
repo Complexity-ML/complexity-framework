@@ -22,20 +22,21 @@ Usage:
 INL / Complexity-ML — 2026
 """
 
-import torch
-import torch.distributed as dist
-from torch.optim import Optimizer
-from typing import Optional, Callable, Tuple, List, Dict, Any
+import logging
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import torch
+from torch.optim import Optimizer
+
+from .adam_tr import _classify_param
 from .muon import newton_schulz, newton_schulz_adaptive
 
-import logging
 logger = logging.getLogger("complexity.muon_tr")
 
 
 def _to_local(t: torch.Tensor) -> torch.Tensor:
     """Convert DTensor to local tensor (FSDP v2 compat)."""
-    if hasattr(t, 'to_local'):
+    if hasattr(t, "to_local"):
         return t.to_local()
     return t
 
@@ -80,13 +81,13 @@ class MuonTR(Optimizer):
     def __init__(
         self,
         params,
-        lr: float = 0.02,
+        lr: float = 0.01,                 # 0.02 diverges on ~100M bf16; 0.01 is safe
         momentum: float = 0.95,
         nesterov: bool = True,
-        ns_steps: int = 3,
+        ns_steps: int = 5,
         ns_max_steps: int = 10,
         ns_tol: float = 1e-4,
-        adaptive_ns: bool = True,
+        adaptive_ns: bool = False,        # fixed NS is ~20% faster and as accurate in practice
         weight_decay: float = 0.01,
         expert_lr_scale: float = 1.5,
         shared_lr_scale: float = 1.0,
@@ -94,8 +95,14 @@ class MuonTR(Optimizer):
         shared_weight_decay: float = 0.01,
         token_counts: Optional[torch.Tensor] = None,
         num_experts: int = 4,
-        ema_decay: float = 0.998,  # ~500 step half-life for the LR ratio EMA
-        max_lr_ratio: float = 4.0,
+        ema_decay: float = 0.998,         # ~500 step half-life for the LR ratio EMA
+        max_lr_ratio: float = 2.0,        # cap tail-expert LR boost (was 4.0 → diverged at lr=0.02)
+        lr_warmup_steps: int = 50,        # linear 0→lr ramp — required, orthogonalized updates
+                                          # are full-norm and blow up without warmup
+        skip_ns_warmup_steps: int = 0,    # N steps without ortho (plain momentum update)
+        max_update_rms: Optional[float] = 1.0,  # trust-region clamp: max RMS of the update
+                                                # tensor per param. None disables.
+        sanitize_nan: bool = True,        # replace NaN/Inf in update by 0 before applying
     ):
         defaults = dict(
             lr=lr,
@@ -116,26 +123,40 @@ class MuonTR(Optimizer):
         self.token_counts = token_counts
         self.ema_decay = ema_decay
         self.max_lr_ratio = max_lr_ratio
-        # Per-expert NS convergence monitoring
-        self._ns_residuals: Dict[int, float] = {}
-        self._ns_steps_used: Dict[int, int] = {}
+        self.lr_warmup_steps = max(0, int(lr_warmup_steps))
+        self.skip_ns_warmup_steps = max(0, int(skip_ns_warmup_steps))
+        self.max_update_rms = max_update_rms
+        self.sanitize_nan = sanitize_nan
+        # Per-expert diagnostics kept as device tensors to avoid MPS/CUDA syncs;
+        # converted to Python floats only when get_ns_diagnostics() is called.
+        self._ns_residual: float = 0.0    # scalar, last batched NS residual
+        self._ns_steps_used: int = 0       # scalar, last batched NS iter count
+        self._grad_norms: Optional[torch.Tensor] = None  # [E]
+        self._lr_ratio_ema: Optional[torch.Tensor] = None  # [E]
         self._step_count = 0
-        # Per-expert grad-norm tracking (for diagnostic) and EMA-smoothed LR ratio
-        self._grad_norms: Dict[int, float] = {}
-        self._lr_ratio_ema: Optional[torch.Tensor] = None
+
+        # Auto-disable MoE-specific features if there's nothing to route
+        self._moe_enabled = num_experts > 1
 
     def update_token_counts(self, token_counts: torch.Tensor):
         """Update per-expert token counts for gradient scaling."""
         self.token_counts = token_counts
 
     def get_ns_diagnostics(self) -> Dict[int, Dict[str, float]]:
-        """Return per-expert NS convergence diagnostics + grad-norm + LR ratio."""
+        """Per-expert NS convergence diagnostics + grad-norm + LR ratio.
+
+        Only this call syncs the GPU tensors to Python floats.
+        """
+        gnorm = (self._grad_norms.detach().cpu().tolist()
+                 if self._grad_norms is not None else [0.0] * self.num_experts)
+        lr_ratio = (self._lr_ratio_ema.detach().cpu().tolist()
+                    if self._lr_ratio_ema is not None else [1.0] * self.num_experts)
         return {
             e: {
-                "residual": self._ns_residuals.get(e, 0.0),
-                "steps": self._ns_steps_used.get(e, 0),
-                "grad_norm": self._grad_norms.get(e, 0.0),
-                "lr_ratio": float(self._lr_ratio_ema[e]) if self._lr_ratio_ema is not None else 1.0,
+                "residual":  self._ns_residual,
+                "steps":     self._ns_steps_used,
+                "grad_norm": float(gnorm[e]),
+                "lr_ratio":  float(lr_ratio[e]),
             }
             for e in range(self.num_experts)
         }
@@ -172,112 +193,104 @@ class MuonTR(Optimizer):
 
         self._step_count += 1
 
-        for group in self.param_groups:
-            lr = group['lr']
-            beta = group['momentum']
-            nesterov = group['nesterov']
-            ns_steps = group['ns_steps']
-            ns_max_steps = group.get('ns_max_steps', 10)
-            ns_tol = group.get('ns_tol', 1e-2)
-            adaptive_ns = group.get('adaptive_ns', True)
-            param_type = group.get('param_type', 'dense')
+        # Linear LR warmup from 0 → peak over lr_warmup_steps.
+        # Applied as a global multiplier so the group's scheduler (cosine/WSD)
+        # continues to work as-is on top.
+        if self.lr_warmup_steps > 0 and self._step_count <= self.lr_warmup_steps:
+            warmup_mult = self._step_count / self.lr_warmup_steps
+        else:
+            warmup_mult = 1.0
 
-            for p in group['params']:
+        # Skip Newton-Schulz during the very first steps to let momentum build
+        # on a non-orthogonalized signal — avoids blowing up the residual
+        # stream with full-norm updates before the model has settled.
+        skip_ns = self._step_count <= self.skip_ns_warmup_steps
+
+        for group in self.param_groups:
+            lr = group["lr"] * warmup_mult
+            beta = group["momentum"]
+            nesterov = group["nesterov"]
+            ns_steps = group["ns_steps"]
+            ns_max_steps = group.get("ns_max_steps", 10)
+            ns_tol = group.get("ns_tol", 1e-2)
+            adaptive_ns = group.get("adaptive_ns", False)
+            param_type = group.get("param_type", "dense")
+
+            # Resolve effective LR / WD once per group
+            if param_type == "expert":
+                effective_lr = lr * group["expert_lr_scale"]
+                wd = group["expert_weight_decay"]
+            elif param_type == "shared":
+                effective_lr = lr * group["shared_lr_scale"]
+                wd = group["shared_weight_decay"]
+            else:
+                effective_lr = lr
+                wd = group["weight_decay"]
+
+            for p in group["params"]:
                 if p.grad is None:
                     continue
 
                 grad = _to_local(p.grad)
-
-                # Per-expert grad-norm diagnostic — populated unconditionally
-                # so the live tqdm always has data, even when the per-expert
-                # ortho path below is skipped (e.g. shard mismatch under FSDP).
-                if param_type == 'expert' and grad.dim() == 3:
-                    local_E = grad.shape[0]
-                    for e in range(local_E):
-                        if e < self.num_experts:
-                            self._grad_norms[e] = grad[e].float().norm().item()
-
                 state = self.state[p]
                 if len(state) == 0:
-                    state['momentum_buffer'] = torch.zeros_like(grad)
-
-                buf = state['momentum_buffer']
-
-                # === Feature 3: Gradient scaling per expert ===
+                    state["momentum_buffer"] = torch.zeros_like(grad)
+                buf = state["momentum_buffer"]
                 p_local = _to_local(p)
-                if param_type == 'expert' and self.token_counts is not None:
-                    if p_local.dim() == 3 and p_local.shape[0] == self.num_experts:
-                        mean_count = self.token_counts.float().mean()
-                        for e in range(self.num_experts):
-                            if self.token_counts[e] > 0:
-                                scale = (mean_count / self.token_counts[e].float()).clamp(0.5, 2.0)
-                                grad[e] = grad[e] * scale
 
-                # Momentum update
+                is_expert_3d = (
+                    param_type == "expert"
+                    and grad.dim() == 3
+                    and grad.shape[0] == self.num_experts
+                    and self._moe_enabled
+                )
+
+                # --- Feature 3: Token-count grad scaling (vectorized) ---
+                if is_expert_3d and self.token_counts is not None:
+                    tc = self.token_counts.to(grad.device, dtype=torch.float32).clamp(min=1.0)
+                    mean_count = tc.mean().clamp(min=1.0)
+                    scale = (mean_count / tc).clamp(0.5, 2.0).to(grad.dtype)
+                    grad = grad * scale.view(-1, 1, 1)
+
+                # Momentum update + Nesterov lookahead (dtype-preserving)
                 buf.lerp_(grad, 1 - beta)
+                update = grad.lerp(buf, beta) if nesterov else buf.clone()
 
-                # Nesterov lookahead
-                if nesterov:
-                    update = grad.lerp(buf, beta)
-                else:
-                    update = buf.clone()
+                # --- Expert path: batched Newton-Schulz over [E, H, I] ---
+                if is_expert_3d:
+                    # Track per-expert grad norms (tensor, synced only in diagnostics)
+                    self._grad_norms = grad.float().flatten(1).norm(dim=-1)
 
-                # === Feature 1: Per-expert LR ===
-                if param_type == 'expert':
-                    effective_lr = lr * group['expert_lr_scale']
-                elif param_type == 'shared':
-                    effective_lr = lr * group['shared_lr_scale']
-                else:
-                    effective_lr = lr
+                    rows, cols = update.shape[1], update.shape[2]
 
-                # === Feature 2: Expert-aware weight decay ===
-                if param_type == 'expert':
-                    wd = group['expert_weight_decay']
-                elif param_type == 'shared':
-                    wd = group['shared_weight_decay']
-                else:
-                    wd = group['weight_decay']
-
-                # For expert tensors [E, H, I], orthogonalize each expert slice independently
-                # Per-expert NS is more correct because each expert sees different token
-                # distributions under Zipf routing → different SV spectra
-                if p_local.dim() == 3 and p_local.shape[0] == self.num_experts and param_type == 'expert':
-                    # Adaptive per-expert LR (EMA-smoothed token-count ratio)
-                    per_expert_lr = self._compute_lr_ratio(update.device)
-
-                    for e in range(self.num_experts):
-                        # Per-expert grad-norm (pre-orthogonalization, post-momentum)
-                        # for diagnostic — should converge across experts as LR controller balances
-                        # Use grad directly (not update) so the displayed value reflects the
-                        # raw backward signal, independent of momentum/Nesterov mixing.
-                        self._grad_norms[e] = grad[e].float().norm().item()
-
-                        slice_update = update[e]
-                        rows, cols = slice_update.shape
+                    if not skip_ns:
                         transposed = rows > cols
                         if transposed:
-                            slice_update = slice_update.T
+                            update = update.transpose(1, 2).contiguous()
 
+                        # newton_schulz / newton_schulz_adaptive are batch-compatible:
+                        # X @ X.mT and X.norm(dim=(-2,-1)) both operate per-slice on dim 0.
                         if adaptive_ns:
-                            slice_update, residual, steps_used = newton_schulz_adaptive(
-                                slice_update, min_steps=ns_steps, max_steps=ns_max_steps, tol=ns_tol,
+                            update, residual, steps_used = newton_schulz_adaptive(
+                                update, min_steps=ns_steps, max_steps=ns_max_steps, tol=ns_tol,
                             )
-                            self._ns_residuals[e] = residual
-                            self._ns_steps_used[e] = steps_used
+                            self._ns_residual = float(residual)
+                            self._ns_steps_used = int(steps_used)
                         else:
-                            slice_update = newton_schulz(slice_update, steps=ns_steps)
+                            update = newton_schulz(update, steps=ns_steps)
+                            self._ns_steps_used = int(ns_steps)
 
                         if transposed:
-                            slice_update = slice_update.T
-                        slice_update *= max(1, rows / cols) ** 0.5
-                        # Apply adaptive per-expert LR ratio
-                        slice_update *= per_expert_lr[e].item()
-                        update[e] = slice_update
+                            update = update.transpose(1, 2).contiguous()
 
-                    # Per-expert diagnostics are exposed via get_ns_diagnostics()
-                    # and surfaced live in the tqdm postfix by TqdmCallback.
-                    # No periodic stderr/log spam — read the bar instead.
-                else:
+                        # Shape scaling (same for all experts since H, I uniform)
+                        update *= max(1.0, rows / cols) ** 0.5
+                    # else: keep raw momentum update (no ortho) for the first N steps
+
+                    # Per-expert adaptive LR ratio (EMA on token counts)
+                    per_expert_lr = self._compute_lr_ratio(update.device)
+                    update *= per_expert_lr.to(update.dtype).view(-1, 1, 1)
+                elif not skip_ns:
                     # Standard Muon: reshape to 2D, orthogonalize
                     original_shape = update.shape
                     if update.ndim > 2:
@@ -293,14 +306,31 @@ class MuonTR(Optimizer):
                     if transposed:
                         update = update.T
 
-                    update *= max(1, rows / cols) ** 0.5
+                    update *= max(1.0, rows / cols) ** 0.5
                     update = update.reshape(original_shape)
+                # else: skip_ns path for non-expert — use raw momentum update as-is
+
+                # --- Safety: NaN/Inf sanitization ---
+                # Orthogonalization in bf16 with tiny grads can produce NaN/Inf.
+                # In-place replace; no CPU sync, no branch on tensor state.
+                if self.sanitize_nan:
+                    torch.nan_to_num_(update, nan=0.0, posinf=0.0, neginf=0.0)
+
+                # --- Safety: trust-region clamp on update RMS ---
+                # RMS = sqrt(mean(update²)) — scalar per param tensor. If it
+                # exceeds max_update_rms, rescale so RMS == max_update_rms.
+                # Protects against the slow-drift divergence seen at lr=0.02
+                # where tail-expert updates grow unbounded.
+                if self.max_update_rms is not None:
+                    rms = update.pow(2).mean().sqrt().clamp(min=1e-12)
+                    scale = (self.max_update_rms / rms).clamp(max=1.0)
+                    update.mul_(scale)
 
                 # Decoupled weight decay
                 if wd != 0:
                     p_local.mul_(1 - effective_lr * wd)
 
-                # Update parameters
+                # Parameter update
                 p_local.add_(update, alpha=-effective_lr)
 
         return loss
@@ -330,11 +360,11 @@ class MuonTRWithAdamW(Optimizer):
         self,
         muon_params,
         adam_params,
-        lr: float = 0.02,
+        lr: float = 0.01,
         adam_lr: float = 3e-4,
         momentum: float = 0.95,
         nesterov: bool = True,
-        ns_steps: int = 3,
+        ns_steps: int = 5,
         adam_betas: Tuple[float, float] = (0.9, 0.95),
         adam_eps: float = 1e-8,
         weight_decay: float = 0.01,
@@ -344,7 +374,12 @@ class MuonTRWithAdamW(Optimizer):
         shared_weight_decay: float = 0.01,
         num_experts: int = 4,
         ema_decay: float = 0.998,
-        max_lr_ratio: float = 4.0,
+        max_lr_ratio: float = 2.0,
+        lr_warmup_steps: int = 50,
+        skip_ns_warmup_steps: int = 0,
+        adaptive_ns: bool = False,
+        max_update_rms: Optional[float] = 1.0,
+        sanitize_nan: bool = True,
     ):
         self.muon_tr = MuonTR(
             muon_params,
@@ -352,6 +387,7 @@ class MuonTRWithAdamW(Optimizer):
             momentum=momentum,
             nesterov=nesterov,
             ns_steps=ns_steps,
+            adaptive_ns=adaptive_ns,
             weight_decay=weight_decay,
             expert_lr_scale=expert_lr_scale,
             shared_lr_scale=shared_lr_scale,
@@ -360,6 +396,10 @@ class MuonTRWithAdamW(Optimizer):
             num_experts=num_experts,
             ema_decay=ema_decay,
             max_lr_ratio=max_lr_ratio,
+            lr_warmup_steps=lr_warmup_steps,
+            skip_ns_warmup_steps=skip_ns_warmup_steps,
+            max_update_rms=max_update_rms,
+            sanitize_nan=sanitize_nan,
         )
         self.adam = torch.optim.AdamW(
             adam_params,
@@ -413,38 +453,41 @@ def split_params_for_muon_tr(
     Returns:
         (muon_params, adam_params): Parameter groups with metadata.
     """
-    expert_params = []
-    shared_params = []
-    dense_params = []
-    adam_decay = []
-    adam_no_decay = []
+    expert_params: List[torch.Tensor] = []
+    shared_params: List[torch.Tensor] = []
+    dense_params: List[torch.Tensor] = []
+    adam_decay: List[torch.Tensor] = []
+    adam_no_decay: List[torch.Tensor] = []
 
-    adam_keywords = {
-        'embed', 'lm_head', 'head',
-        'bias',
-        'norm', 'ln_',
-        '.mu', 'mu_', 'dynamics',
-    }
+    # Params that stay on AdamW: 1D (norms/bias/α/mu scalars), embeddings, LM head
+    adam_keywords = ("embed", "lm_head", "head", "bias", "norm", "ln_",
+                     ".mu", "mu_", "dynamics", "alpha")
+    no_decay_keywords = ("bias", "norm", ".mu", "alpha")
 
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
 
-        is_adam = param.ndim < 2 or any(k in name for k in adam_keywords)
+        lowered = name.lower()
+        is_adam = param.ndim < 2 or any(k in lowered for k in adam_keywords)
 
         if is_adam:
-            if param.ndim < 2 or 'bias' in name or 'norm' in name or '.mu' in name:
+            if param.ndim < 2 or any(k in lowered for k in no_decay_keywords):
                 adam_no_decay.append(param)
             else:
                 adam_decay.append(param)
-        elif any(k in name for k in ('gate_proj_w', 'up_proj_w', 'down_proj_w')):
+            continue
+
+        # Reuse the shared classifier for the Muon groups
+        ptype = _classify_param(name, param, num_experts)
+        if ptype == "expert":
             expert_params.append(param)
-        elif any(k in name for k in ('shared_gate', 'shared_up', 'shared_down')):
+        elif ptype == "shared":
             shared_params.append(param)
         else:
             dense_params.append(param)
 
-    muon_groups = []
+    muon_groups: List[Dict[str, Any]] = []
     if expert_params:
         muon_groups.append({"params": expert_params, "param_type": "expert"})
     if shared_params:
@@ -452,7 +495,7 @@ def split_params_for_muon_tr(
     if dense_params:
         muon_groups.append({"params": dense_params, "param_type": "dense"})
 
-    adam_groups = []
+    adam_groups: List[Dict[str, Any]] = []
     if adam_decay:
         adam_groups.append({"params": adam_decay})
     if adam_no_decay:

@@ -17,8 +17,6 @@ Usage:
     out = mlp(hidden_states, token_ids=token_ids)
 """
 
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -73,12 +71,9 @@ class TokenRoutedMLP(MLPBase):
         self.vocab_size = config.vocab_size
         self.expert_intermediate_size = self.intermediate_size // self.num_experts
 
-        # GPT-2 residual init: scale down_proj by 1/sqrt(2·L) to keep residual stream variance ~1
-        self.gpt2_residual_init = getattr(config, 'gpt2_residual_init', False)
-        n_layers = max(1, getattr(config, 'num_hidden_layers', 1))
-        down_init_std = 0.02 / math.sqrt(2.0 * n_layers) if self.gpt2_residual_init else 0.02
-
-        # Routed expert weights: gate, up, down — separate like supplementary code
+        # Routed expert weights: gate, up, down.
+        # down_proj_w will be re-initialized with GPT-2 residual scaling by
+        # ComplexityModel._init_residual_scaling() after the module tree is built.
         self.gate_proj_w = nn.Parameter(
             torch.randn(self.num_experts, self.hidden_size,
                         self.expert_intermediate_size) * 0.02
@@ -89,7 +84,7 @@ class TokenRoutedMLP(MLPBase):
         )
         self.down_proj_w = nn.Parameter(
             torch.randn(self.num_experts, self.expert_intermediate_size,
-                        self.hidden_size) * down_init_std
+                        self.hidden_size) * 0.02
         )
 
         # Learnable α gate on routed path: out = shared + α·routed
@@ -98,16 +93,15 @@ class TokenRoutedMLP(MLPBase):
             alpha_init = float(getattr(config, 'routed_gate_init', 0.0))
             self.routed_alpha = nn.Parameter(torch.full((1,), alpha_init))
 
-        # Shared lexical expert: dense SwiGLU all tokens pass through
-        # Default size = intermediate_size (full dense width), matching docstring contract
+        # Shared lexical expert: dense SwiGLU all tokens pass through.
+        # Default size = intermediate_size (full dense width). shared_down is
+        # also rescaled by _init_residual_scaling() (residual output projection).
         self.use_shared_expert = getattr(config, 'shared_expert', False)
         if self.use_shared_expert:
             shared_size = getattr(config, 'shared_intermediate_size', None) or self.intermediate_size
             self.shared_gate = nn.Linear(self.hidden_size, shared_size, bias=False)
             self.shared_up = nn.Linear(self.hidden_size, shared_size, bias=False)
             self.shared_down = nn.Linear(shared_size, self.hidden_size, bias=False)
-            if self.gpt2_residual_init:
-                nn.init.normal_(self.shared_down.weight, std=down_init_std)
 
         # Token -> expert mapping (Zipf-balanced or modulo)
         self.register_buffer(

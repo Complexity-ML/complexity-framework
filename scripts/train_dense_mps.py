@@ -29,6 +29,7 @@ from torch.utils.data import DataLoader, IterableDataset
 from tqdm import tqdm
 
 from complexity.config import ModelConfig
+from complexity.core.losses import causal_lm_loss
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
 from complexity.utils import (
@@ -129,6 +130,10 @@ def main():
     parser.add_argument("--num-workers", type=int,   default=2)
     parser.add_argument("--empty-cache-every", type=int, default=50)
     parser.add_argument("--run-name",    type=str,   default="dense")
+    parser.add_argument("--label-smoothing", type=float, default=0.1)
+    parser.add_argument("--lr-schedule", type=str, default="cosine",
+                        choices=["cosine", "wsd"])
+    parser.add_argument("--z-loss",      type=float, default=0.0)
     args = parser.parse_args()
 
     device = setup_mps(unlimited_watermark=True, cpu_fallback=True, seed=args.seed)
@@ -182,12 +187,21 @@ def main():
     warmup    = max(1, int(args.steps * 0.05))
     min_ratio = 0.1
 
-    def lr_lambda(step):
-        if step < warmup:
-            return step / warmup
-        progress = (step - warmup) / max(1, args.steps - warmup)
-        cosine   = 0.5 * (1.0 + math.cos(math.pi * progress))
-        return min_ratio + (1.0 - min_ratio) * cosine
+    if args.lr_schedule == "cosine":
+        def lr_lambda(step):
+            if step < warmup:
+                return step / warmup
+            progress = (step - warmup) / max(1, args.steps - warmup)
+            return min_ratio + (1.0 - min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
+    else:  # wsd: warmup → stable (until 75%) → 1-sqrt decay
+        decay_start = int(args.steps * 0.75)
+        def lr_lambda(step):
+            if step < warmup:
+                return step / warmup
+            if step < decay_start:
+                return 1.0
+            p = (step - decay_start) / max(1, args.steps - decay_start)
+            return min_ratio + (1.0 - min_ratio) * (1.0 - math.sqrt(p))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
@@ -227,9 +241,10 @@ def main():
                 outputs = model(input_ids)
                 hidden  = outputs["last_hidden_state"]
                 logits  = F.linear(hidden, model.embed_tokens.weight)
-                loss    = F.cross_entropy(
-                    logits.view(-1, config.vocab_size),
-                    labels.view(-1),
+                loss, loss_metrics = causal_lm_loss(
+                    logits, labels,
+                    label_smoothing=args.label_smoothing,
+                    z_loss_coef=args.z_loss,
                 )
 
             loss.backward()
@@ -246,7 +261,7 @@ def main():
                 dt        = now - t_log
                 tok_s     = tokens_since_log / dt if dt > 0 else 0
                 last_loss = loss.item()
-                ppl       = math.exp(min(last_loss, 20))
+                ppl       = math.exp(min(loss_metrics.ce, 20))
                 lr_now    = scheduler.get_last_lr()[0]
 
                 csv_writer.writerow([

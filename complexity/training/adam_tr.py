@@ -2,47 +2,29 @@
 AdamTR — Adam for Token-Routed MoE architectures.
 
 MoE-aware optimizer that treats expert parameters differently from shared/dense
-parameters. Based on AdamW with five key innovations:
+parameters. Based on AdamW with five innovations:
 
-1. **Per-expert LR**: Each expert group gets its own adaptive learning rate
-   based on how many tokens it processes (Zipf-aware scaling).
-2. **Expert-aware weight decay**: Different decay rates for routed experts
-   vs shared expert vs attention/embeddings.
-3. **Gradient scaling per expert**: Normalizes gradients by the number of
-   tokens routed to each expert, preventing high-frequency experts from
-   dominating updates.
-4. **Separate momentum**: First and second moments (m, v) are tracked
-   per expert group, not globally, so expert specialization isn't diluted
-   by cross-expert momentum.
-5. **Per-expert spectral conditioning**: Estimates the condition number
-   κ = σ_max / σ_rms of each expert's gradient matrix and scales the
-   LR inversely. Well-conditioned experts (κ ≈ 1) get full LR; noisy
-   tail experts (κ >> 1) get reduced LR to prevent oscillation.
-   This is the Adam-native equivalent of Muon's per-expert Newton-Schulz
-   orthogonalization — both address the same problem (different SV spectra
-   per expert under Zipf routing) through different mechanisms.
+1. **Per-expert LR**: each expert group gets its own LR scale.
+2. **Expert-aware weight decay**: different decay rates for routed / shared / dense.
+3. **Gradient scaling per expert**: normalizes by tokens-per-expert (Zipf-aware).
+4. **Separate momentum**: exp_avg / exp_avg_sq tracked per expert slice so
+   cross-expert momentum doesn't dilute specialization.
+5. **Per-expert spectral conditioning**: estimates κ = σ_max / σ_rms of each
+   expert's gradient matrix and scales the LR by 1/κ (floored). This is the
+   Adam-native equivalent of Muon's Newton-Schulz orthogonalization.
 
-   Ref: KellerJordan/Muon#65
+The core update is vectorized across the [E, H, I] expert dim — power iteration,
+σ_rms, κ, EMA and the final addcdiv are done with tensor ops, avoiding the
+per-expert Python loop + `.item()` syncs that kill MPS throughput.
 
-Usage:
-    optimizer = AdamTR(
-        model.parameters(),
-        lr=3e-4,
-        expert_lr_scale=1.5,       # experts get 1.5x base LR
-        shared_lr_scale=1.0,       # shared expert gets base LR
-        expert_weight_decay=0.05,  # lighter decay for experts
-        shared_weight_decay=0.1,   # standard decay for shared
-        token_counts=token_counts, # [E] tokens per expert for grad scaling
-        spectral_conditioning=True,
-    )
-
-Reference: Complexity-ML (2026) — Token-Routed MoE training optimization.
-INL / Complexity-ML — 2026
+Reference: KellerJordan/Muon#65, Complexity-ML (2026)
 """
 
-import math
+from __future__ import annotations
+
 import logging
-from typing import List, Optional, Tuple, Dict, Any
+import math
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from torch import Tensor
@@ -51,54 +33,75 @@ from torch.optim.optimizer import Optimizer
 logger = logging.getLogger("complexity.adam_tr")
 
 
+# Param type tags used throughout
+_EXPERT = "expert"
+_SHARED = "shared"
+_DENSE  = "dense"
+
+
 def _to_local(t: Tensor) -> Tensor:
     """Convert DTensor to local tensor (FSDP v2 compat)."""
-    if hasattr(t, 'to_local'):
+    if hasattr(t, "to_local"):
         return t.to_local()
     return t
 
 
-def _estimate_spectral_norm(G: Tensor, n_iters: int = 3) -> float:
-    """Estimate largest singular value via power iteration (cheap)."""
-    G = _to_local(G)
-    if G.shape[0] == 0 or G.shape[1] == 0:
-        return 1.0
-    # Random init, power iteration on G^T G
-    v = torch.randn(G.shape[1], device=G.device, dtype=G.dtype)
-    v = v / v.norm().clamp(min=1e-7)
+def _classify_param(name: str, param: Tensor, num_experts: int) -> str:
+    """Classify a parameter into expert / shared / dense.
+
+    Resilient to naming: checks name first, falls back to shape signature
+    ([E, *, *] tensor matching num_experts counts as expert).
+    """
+    lowered = name.lower()
+    if any(k in lowered for k in ("gate_proj_w", "up_proj_w", "down_proj_w")):
+        return _EXPERT
+    if any(k in lowered for k in ("shared_gate", "shared_up", "shared_down")):
+        return _SHARED
+    if (
+        num_experts > 1
+        and param.dim() == 3
+        and param.shape[0] == num_experts
+    ):
+        return _EXPERT
+    return _DENSE
+
+
+def _power_iteration_batched(
+    G: Tensor,
+    n_iters: int = 3,
+    eps: float = 1e-7,
+) -> Tensor:
+    """Estimate σ_max(G[e]) for each e, in one vectorized pass.
+
+    Args:
+        G: [E, H, I] gradient tensor (float32 recommended).
+        n_iters: number of power iteration steps.
+        eps: floor on norms to avoid div-by-zero.
+
+    Returns:
+        sigma_max: [E] tensor of largest singular values (same dtype as G).
+    """
+    E = G.shape[0]
+    I = G.shape[2]
+    # Random init, stable in fp32
+    v = torch.randn(E, I, device=G.device, dtype=G.dtype)
+    v = v / v.norm(dim=-1, keepdim=True).clamp(min=eps)
+
+    Gt = G.transpose(1, 2)  # [E, I, H]
     for _ in range(n_iters):
-        u = G @ v
-        u_norm = u.norm().clamp(min=1e-7)
-        u = u / u_norm
-        v = G.T @ u
-        v_norm = v.norm().clamp(min=1e-7)
-        v = v / v_norm
-    return (G @ v).norm().item()
+        u = torch.bmm(G, v.unsqueeze(-1)).squeeze(-1)        # [E, H]
+        u = u / u.norm(dim=-1, keepdim=True).clamp(min=eps)
+        v = torch.bmm(Gt, u.unsqueeze(-1)).squeeze(-1)       # [E, I]
+        v = v / v.norm(dim=-1, keepdim=True).clamp(min=eps)
+
+    # σ_max ≈ ||G v||
+    return torch.bmm(G, v.unsqueeze(-1)).squeeze(-1).norm(dim=-1)  # [E]
 
 
 class AdamTR(Optimizer):
-    """
-    AdamTR: Adam optimizer specialized for Token-Routed MoE.
+    """AdamTR: Adam optimizer specialized for Token-Routed MoE.
 
-    Extends AdamW with per-expert learning rates, expert-aware weight decay,
-    gradient normalization by token count, spectral conditioning, and separate
-    momentum tracking.
-
-    Args:
-        params: Model parameters or parameter groups.
-        lr: Base learning rate (default: 3e-4).
-        betas: Coefficients for computing running averages (default: (0.9, 0.999)).
-        eps: Numerical stability term (default: 1e-8).
-        weight_decay: Base weight decay for non-expert params (default: 0.1).
-        expert_lr_scale: LR multiplier for routed expert params (default: 1.5).
-        shared_lr_scale: LR multiplier for shared expert params (default: 1.0).
-        expert_weight_decay: Weight decay for routed expert params (default: 0.05).
-        shared_weight_decay: Weight decay for shared expert params (default: 0.1).
-        token_counts: Optional [E] tensor of tokens per expert for grad scaling.
-        num_experts: Number of experts (for auto-detecting expert params).
-        spectral_conditioning: Scale per-expert LR by inverse condition number (default: True).
-        spectral_ema: EMA decay for smoothing condition estimates (default: 0.99).
-        spectral_floor: Minimum spectral scaling factor (default: 0.3).
+    Constructor is API-compatible with the previous implementation.
     """
 
     def __init__(
@@ -117,15 +120,14 @@ class AdamTR(Optimizer):
         spectral_conditioning: bool = True,
         spectral_ema: float = 0.99,
         spectral_floor: float = 0.7,
+        spectral_warmup_steps: int = 50,
     ):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if eps < 0.0:
             raise ValueError(f"Invalid epsilon value: {eps}")
-        if not 0.0 <= betas[0] < 1.0:
-            raise ValueError(f"Invalid beta parameter at index 0: {betas[0]}")
-        if not 0.0 <= betas[1] < 1.0:
-            raise ValueError(f"Invalid beta parameter at index 1: {betas[1]}")
+        if not 0.0 <= betas[0] < 1.0 or not 0.0 <= betas[1] < 1.0:
+            raise ValueError(f"Invalid betas: {betas}")
 
         defaults = dict(
             lr=lr,
@@ -141,54 +143,75 @@ class AdamTR(Optimizer):
 
         self.num_experts = num_experts
         self.token_counts = token_counts
-        self.spectral_conditioning = spectral_conditioning
+        # Auto-disable MoE features when there's nothing to route
+        self._moe_enabled = num_experts > 1
+        self.spectral_conditioning = spectral_conditioning and self._moe_enabled
         self.spectral_ema = spectral_ema
         self.spectral_floor = spectral_floor
-        # EMA-smoothed condition estimates per expert
-        self._kappa_ema: Dict[int, float] = {e: 1.0 for e in range(num_experts)}
-        # Per-expert grad-norm tracking for live diagnostics (matches MuonTR API)
-        self._grad_norms: Dict[int, float] = {}
+        self.spectral_warmup_steps = spectral_warmup_steps
+
+        # Kappa EMA as a device tensor — updated without forcing CPU syncs
+        self._kappa_ema: Optional[Tensor] = None
+        self._grad_norms: Optional[Tensor] = None
         self._step_count = 0
 
-    def update_token_counts(self, token_counts: Tensor):
+        # Ensure every group has a resolved `param_type` (idempotent if already set)
+        self._resolve_param_types()
+
+    # --- setup helpers ----------------------------------------------------
+
+    def _resolve_param_types(self) -> None:
+        """Tag each param group with its type once, so step() doesn't re-parse names."""
+        for group in self.param_groups:
+            if "param_type" in group:
+                continue
+            name = group.get("param_name", "")
+            params = group["params"]
+            # All params in a group share a type. Use the first to classify.
+            if not params:
+                group["param_type"] = _DENSE
+                continue
+            group["param_type"] = _classify_param(name, params[0], self.num_experts)
+
+    def _ensure_diag_buffers(self, device: torch.device) -> None:
+        if self._kappa_ema is None:
+            self._kappa_ema = torch.ones(self.num_experts, device=device)
+            self._grad_norms = torch.zeros(self.num_experts, device=device)
+
+    # --- public diagnostics (sync only on demand) -------------------------
+
+    def update_token_counts(self, token_counts: Tensor) -> None:
         """Update per-expert token counts for gradient scaling."""
         self.token_counts = token_counts
 
     def get_spectral_diagnostics(self) -> Dict[int, float]:
-        """Return per-expert smoothed condition numbers."""
-        return dict(self._kappa_ema)
+        if self._kappa_ema is None:
+            return {e: 1.0 for e in range(self.num_experts)}
+        vals = self._kappa_ema.detach().cpu().tolist()
+        return {e: float(v) for e, v in enumerate(vals)}
 
     def get_ns_diagnostics(self) -> Dict[int, Dict[str, float]]:
-        """Return per-expert diagnostics in the same format as MuonTR.
-
-        Lets TqdmCallback show live grad-norms and condition numbers
-        without knowing which optimizer is in use.
-        """
+        """Per-expert diagnostics in MuonTR-compatible format."""
+        if self._kappa_ema is None:
+            return {
+                e: {"grad_norm": 0.0, "lr_ratio": 1.0, "kappa": 1.0,
+                    "residual": 0.0, "steps": 0}
+                for e in range(self.num_experts)
+            }
+        kappa = self._kappa_ema.detach().cpu().tolist()
+        gnorm = self._grad_norms.detach().cpu().tolist()
         return {
             e: {
-                "grad_norm": self._grad_norms.get(e, 0.0),
-                "lr_ratio": 1.0 / max(self._kappa_ema.get(e, 1.0), self.spectral_floor),
-                "kappa": self._kappa_ema.get(e, 1.0),
-                # MuonTR-compat fields (no NS in AdamTR)
-                "residual": 0.0,
-                "steps": 0,
+                "grad_norm": float(gnorm[e]),
+                "lr_ratio":  1.0 / max(float(kappa[e]), self.spectral_floor),
+                "kappa":     float(kappa[e]),
+                "residual":  0.0,
+                "steps":     0,
             }
             for e in range(self.num_experts)
         }
 
-    def _get_param_type(self, param: Tensor, group: Dict[str, Any]) -> str:
-        """Classify parameter as 'expert', 'shared', or 'dense'."""
-        param_name = group.get("param_name", "")
-
-        if any(k in param_name for k in ("gate_proj_w", "up_proj_w", "down_proj_w")):
-            return "expert"
-        if any(k in param_name for k in ("shared_gate", "shared_up", "shared_down")):
-            return "shared"
-
-        if param.dim() == 3 and param.shape[0] == self.num_experts:
-            return "expert"
-
-        return "dense"
+    # --- main step --------------------------------------------------------
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -198,11 +221,27 @@ class AdamTR(Optimizer):
                 loss = closure()
 
         self._step_count += 1
+        do_spectral = (
+            self.spectral_conditioning
+            and self._step_count > self.spectral_warmup_steps
+        )
 
         for group in self.param_groups:
             beta1, beta2 = group["betas"]
-            lr = group["lr"]
+            base_lr = group["lr"]
             eps = group["eps"]
+            ptype = group["param_type"]
+
+            # Resolve effective LR and weight decay once per group
+            if ptype == _EXPERT:
+                effective_lr = base_lr * group["expert_lr_scale"]
+                wd = group["expert_weight_decay"]
+            elif ptype == _SHARED:
+                effective_lr = base_lr * group["shared_lr_scale"]
+                wd = group["shared_weight_decay"]
+            else:
+                effective_lr = base_lr
+                wd = group["weight_decay"]
 
             for p in group["params"]:
                 if p.grad is None:
@@ -213,116 +252,104 @@ class AdamTR(Optimizer):
                     raise RuntimeError("AdamTR does not support sparse gradients")
 
                 state = self.state[p]
-
                 if len(state) == 0:
-                    state["step"] = torch.tensor(0.0, dtype=torch.float32)
+                    state["step"] = 0
                     state["exp_avg"] = torch.zeros_like(grad)
                     state["exp_avg_sq"] = torch.zeros_like(grad)
 
+                state["step"] += 1
+                step = state["step"]
                 exp_avg = state["exp_avg"]
                 exp_avg_sq = state["exp_avg_sq"]
-                step_t = state["step"]
 
-                step_t += 1
-                step = step_t.item()
-
-                param_type = self._get_param_type(p, group)
-
-                # Per-expert grad-norm diagnostic — populated unconditionally
-                # so the live tqdm always has data, regardless of whether the
-                # spectral conditioning branch fires later in this step.
-                if param_type == "expert" and grad.dim() == 3:
-                    local_E = grad.shape[0]
-                    for e in range(local_E):
-                        if e < self.num_experts:
-                            self._grad_norms[e] = grad[e].float().norm().item()
-
-                # === Feature 1: Per-expert LR ===
-                if param_type == "expert":
-                    effective_lr = lr * group["expert_lr_scale"]
-                elif param_type == "shared":
-                    effective_lr = lr * group["shared_lr_scale"]
-                else:
-                    effective_lr = lr
-
-                # === Feature 2: Expert-aware weight decay ===
-                if param_type == "expert":
-                    wd = group["expert_weight_decay"]
-                elif param_type == "shared":
-                    wd = group["shared_weight_decay"]
-                else:
-                    wd = group["weight_decay"]
-
-                # Work entirely on local tensors (FSDP v2 compat)
                 p_local = _to_local(p)
 
-                # Decoupled weight decay
-                p_local.mul_(1 - effective_lr * wd)
+                # Decoupled weight decay (skip if wd==0 for a tiny win)
+                if wd != 0.0:
+                    p_local.mul_(1 - effective_lr * wd)
 
-                # === Feature 3: Gradient scaling per expert ===
-                if param_type == "expert" and self.token_counts is not None:
-                    mean_count = self.token_counts.float().mean()
-                    if p_local.dim() == 3 and p_local.shape[0] == self.num_experts:
-                        for e in range(self.num_experts):
-                            if self.token_counts[e] > 0:
-                                scale = mean_count / self.token_counts[e].float()
-                                scale = scale.clamp(0.5, 2.0)
-                                grad[e] = grad[e] * scale
+                # Expert-specific path: 3D [E, H, I] params with MoE features
+                is_expert_3d = (
+                    ptype == _EXPERT
+                    and grad.dim() == 3
+                    and grad.shape[0] == self.num_experts
+                    and self._moe_enabled
+                )
 
-                # === Feature 5: Per-expert spectral conditioning ===
-                if (self.spectral_conditioning
-                        and param_type == "expert"
-                        and p_local.dim() == 3
-                        and p_local.shape[0] == self.num_experts):
-                    per_expert_lr_scale = torch.ones(self.num_experts, device=grad.device)
-                    for e in range(self.num_experts):
-                        G_e = grad[e]  # [H, I]
-                        rows, cols = G_e.shape
+                if is_expert_3d:
+                    self._ensure_diag_buffers(grad.device)
 
-                        # Track per-expert grad-norm for live diagnostics
-                        self._grad_norms[e] = G_e.norm().item()
+                    # --- Feature 3: Token-count gradient scaling (vectorized) ---
+                    if self.token_counts is not None:
+                        tc = self.token_counts.to(grad.device, dtype=torch.float32)
+                        mean_count = tc.mean().clamp(min=1.0)
+                        scale = (mean_count / tc.clamp(min=1.0)).clamp(0.5, 2.0)
+                        grad = grad * scale.to(grad.dtype).view(-1, 1, 1)
 
-                        sigma_rms = G_e.norm().item() / math.sqrt(min(rows, cols))
-                        if sigma_rms < 1e-10:
-                            continue
-
-                        sigma_max = _estimate_spectral_norm(G_e, n_iters=3)
-                        kappa = max(sigma_max / sigma_rms, 1.0)
-
-                        alpha = self.spectral_ema
-                        self._kappa_ema[e] = alpha * self._kappa_ema[e] + (1 - alpha) * kappa
-                        spectral_scale = max(1.0 / self._kappa_ema[e], self.spectral_floor)
-                        per_expert_lr_scale[e] = spectral_scale
-
-                    # Per-expert Adam update with spectral-scaled LR
+                    # --- Update momentum ---
                     exp_avg.lerp_(grad, 1 - beta1)
                     exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
                     bias_correction1 = 1 - beta1 ** step
                     bias_correction2 = 1 - beta2 ** step
-                    bias_correction2_sqrt = math.sqrt(bias_correction2)
-                    denom = (exp_avg_sq.sqrt() / bias_correction2_sqrt).add_(eps)
+                    bc2_sqrt = math.sqrt(bias_correction2)
+                    denom = (exp_avg_sq.sqrt() / bc2_sqrt).add_(eps)
 
-                    for e in range(self.num_experts):
-                        step_size = effective_lr * per_expert_lr_scale[e].item() / bias_correction1
-                        p_local[e].addcdiv_(exp_avg[e], denom[e], value=-step_size)
+                    # --- Feature 5: Spectral conditioning (batched, fp32) ---
+                    if do_spectral:
+                        G32 = grad.float()
+                        H, I = G32.shape[1], G32.shape[2]
+                        # σ_rms per expert (Frobenius / sqrt(min(H,I)))
+                        frob = G32.flatten(1).norm(dim=-1)                    # [E]
+                        sigma_rms = frob / math.sqrt(min(H, I))               # [E]
+                        sigma_max = _power_iteration_batched(G32, n_iters=3)  # [E]
 
-                    if self._step_count % 100 == 0:
-                        parts = [f"E{e}: κ={self._kappa_ema[e]:.2f} scale={per_expert_lr_scale[e].item():.3f}"
+                        # Guard against NaN / zero / tiny grads
+                        valid = (sigma_rms > 1e-10) & torch.isfinite(sigma_max) & torch.isfinite(sigma_rms)
+                        kappa = torch.where(
+                            valid,
+                            (sigma_max / sigma_rms.clamp(min=1e-10)).clamp(min=1.0),
+                            torch.ones_like(sigma_rms),
+                        )
+
+                        # EMA update only on valid experts
+                        a = self.spectral_ema
+                        new_kappa = a * self._kappa_ema + (1 - a) * kappa
+                        self._kappa_ema = torch.where(valid, new_kappa, self._kappa_ema)
+                        self._grad_norms = frob  # fresh per-expert grad norms
+
+                        spectral_scale = (1.0 / self._kappa_ema).clamp(min=self.spectral_floor)
+                    else:
+                        # Track grad norms even without spectral conditioning
+                        self._grad_norms = grad.float().flatten(1).norm(dim=-1)
+                        spectral_scale = torch.ones(
+                            self.num_experts, device=grad.device, dtype=torch.float32
+                        )
+
+                    # Final per-expert update, vectorized:
+                    # p -= (effective_lr / bc1) * spectral_scale[e] * exp_avg[e] / denom[e]
+                    step_size = (effective_lr / bias_correction1) * spectral_scale  # [E]
+                    step_size = step_size.to(exp_avg.dtype).view(-1, 1, 1)
+                    p_local.sub_(step_size * exp_avg / denom)
+
+                    # Periodic debug log (cheap, one sync per log interval)
+                    if do_spectral and self._step_count % 100 == 0 and logger.isEnabledFor(logging.DEBUG):
+                        kvals = self._kappa_ema.detach().cpu().tolist()
+                        svals = spectral_scale.detach().cpu().tolist()
+                        parts = [f"E{e}: κ={kvals[e]:.2f} scale={svals[e]:.3f}"
                                  for e in range(self.num_experts)]
-                        logger.info("Spectral conditioning: %s", " | ".join(parts))
+                        logger.debug("Spectral: %s", " | ".join(parts))
+                    continue
 
-                    continue  # Skip standard Adam below
-
-                # Standard Adam update (non-expert, or expert without spectral)
+                # --- Standard Adam path (dense, shared, 1D params, etc.) ---
                 exp_avg.lerp_(grad, 1 - beta1)
                 exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
                 bias_correction1 = 1 - beta1 ** step
                 bias_correction2 = 1 - beta2 ** step
                 step_size = effective_lr / bias_correction1
-                bias_correction2_sqrt = math.sqrt(bias_correction2)
-                denom = (exp_avg_sq.sqrt() / bias_correction2_sqrt).add_(eps)
+                bc2_sqrt = math.sqrt(bias_correction2)
+                denom = (exp_avg_sq.sqrt() / bc2_sqrt).add_(eps)
                 p_local.addcdiv_(exp_avg, denom, value=-step_size)
 
         return loss
@@ -335,43 +362,31 @@ def adamtr_param_groups(
     expert_lr_scale: float = 1.5,
     expert_weight_decay: float = 0.05,
     shared_weight_decay: float = 0.1,
-    no_decay_patterns: Tuple[str, ...] = ("bias", "layernorm", "rmsnorm", "mu"),
+    num_experts: int = 4,
+    no_decay_patterns: Tuple[str, ...] = ("bias", "layernorm", "rmsnorm", "mu", "alpha"),
 ) -> List[Dict[str, Any]]:
-    """Create parameter groups with proper classification for AdamTR.
+    """Build parameter groups for AdamTR with pre-resolved param_type.
 
-    Automatically classifies parameters into expert, shared, and dense
-    groups with appropriate hyperparameters.
-
-    Args:
-        model: The model to create parameter groups for.
-        lr: Base learning rate.
-        weight_decay: Weight decay for dense params.
-        expert_lr_scale: LR multiplier for expert params.
-        expert_weight_decay: Weight decay for expert params.
-        shared_weight_decay: Weight decay for shared expert params.
-        no_decay_patterns: Parameter name patterns that should have zero weight decay.
-
-    Returns:
-        List of parameter group dicts suitable for AdamTR constructor.
+    Tagging happens here (once), so AdamTR.step() never has to re-classify.
     """
-    param_groups = []
-
+    groups: List[Dict[str, Any]] = []
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
 
-        no_decay = any(nd in name.lower() for nd in no_decay_patterns)
+        no_decay = (param.dim() < 2) or any(nd in name.lower() for nd in no_decay_patterns)
+        ptype = _classify_param(name, param, num_experts)
 
-        group = {
+        groups.append({
             "params": [param],
             "param_name": name,
+            "param_type": ptype,
             "lr": lr,
             "weight_decay": 0.0 if no_decay else weight_decay,
             "expert_lr_scale": expert_lr_scale,
             "shared_lr_scale": 1.0,
             "expert_weight_decay": 0.0 if no_decay else expert_weight_decay,
             "shared_weight_decay": 0.0 if no_decay else shared_weight_decay,
-        }
-        param_groups.append(group)
+        })
 
-    return param_groups
+    return groups
