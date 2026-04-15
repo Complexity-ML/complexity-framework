@@ -288,16 +288,21 @@ def main():
         csv_file = open(csv_path, file_mode, newline="")
         csv_writer = csv.writer(csv_file)
         if file_mode == "w":
-            csv_writer.writerow(["step", "loss", "ppl", "elapsed_s"])
+            csv_writer.writerow(["step", "loss", "ppl", "lr", "tokens_seen", "elapsed_s"])
         csv_file.flush()
         t_start = time.time()
-
-        accum = args.gradient_accumulation
+        tokens_per_step_local = tokens_per_step  # capture from outer scope
 
         def csv_callback(trainer_obj, step, loss_val):
             real_loss = loss_val
             ppl = math.exp(min(real_loss, 20))
-            csv_writer.writerow([step, f"{real_loss:.6f}", f"{ppl:.2f}", f"{time.time() - t_start:.1f}"])
+            lr = trainer_obj.optimizer.param_groups[0]["lr"]
+            tokens_seen = step * tokens_per_step_local
+            csv_writer.writerow([
+                step, f"{real_loss:.6f}", f"{ppl:.2f}",
+                f"{lr:.6e}", tokens_seen,
+                f"{time.time() - t_start:.1f}",
+            ])
             if step % 100 == 0:
                 csv_file.flush()
         trainer.callbacks.append(csv_callback)

@@ -307,14 +307,33 @@ def main():
         csv_file = open(csv_path, file_mode, newline="")
         csv_writer = csv.writer(csv_file)
         if file_mode == "w":
-            csv_writer.writerow(["step", "loss", "ppl", "elapsed_s"])
+            csv_writer.writerow(["step", "loss", "ppl", "lr", "gamma_mean", "tokens_seen", "elapsed_s"])
         csv_file.flush()
         t_start = time.time()
+        tokens_per_step_local = tokens_per_step  # capture from outer scope
+
+        def _get_gamma_mean(model) -> float:
+            """Mean of all routed_alpha (γ) params across layers. FSDP-safe."""
+            vals = []
+            for name, p in model.named_parameters():
+                if "routed_alpha" in name:
+                    t = p.detach()
+                    if hasattr(t, "to_local"):
+                        t = t.to_local()
+                    vals.append(t.float().mean().item())
+            return sum(vals) / len(vals) if vals else float("nan")
 
         def csv_callback(trainer_obj, step, loss_val):
             real_loss = loss_val
             ppl = math.exp(min(real_loss, 20))
-            csv_writer.writerow([step, f"{real_loss:.6f}", f"{ppl:.2f}", f"{time.time() - t_start:.1f}"])
+            lr = trainer_obj.optimizer.param_groups[0]["lr"]
+            gamma = _get_gamma_mean(trainer_obj.model)
+            tokens_seen = step * tokens_per_step_local
+            csv_writer.writerow([
+                step, f"{real_loss:.6f}", f"{ppl:.2f}",
+                f"{lr:.6e}", f"{gamma:.6f}", tokens_seen,
+                f"{time.time() - t_start:.1f}",
+            ])
             if step % 100 == 0:
                 csv_file.flush()
         trainer.callbacks.append(csv_callback)
