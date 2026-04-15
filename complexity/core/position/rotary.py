@@ -272,15 +272,22 @@ def apply_rotary_pos_emb(
     Returns:
         Rotated Q and K tensors
     """
-    # Liger Triton kernel on CUDA (fused Q+K rotation, ~2-3% tok/s)
+    # Reshape cos/sin for broadcasting [1, 1, seq, dim] — Liger's Triton
+    # kernel AND the PyTorch fallback both want the 4-D layout aligned
+    # with q/k = [batch, heads, seq, head_dim]. Passing [seq, dim] directly
+    # to Liger caused illegal-memory-access on sm_100 (B200).
+    cos_b = cos.unsqueeze(0).unsqueeze(0).contiguous()
+    sin_b = sin.unsqueeze(0).unsqueeze(0).contiguous()
+
     if q.is_cuda and _liger_rope_available():
         from liger_kernel.ops.rope import LigerRopeFunction  # type: ignore[import-not-found]
-        # Liger expects cos/sin as [seq, dim] and handles the broadcast internally
-        return LigerRopeFunction.apply(q, k, cos, sin)
+        try:
+            return LigerRopeFunction.apply(q, k, cos_b, sin_b)
+        except RuntimeError:
+            # Fall through to the PyTorch path — the cuda context may now
+            # be in an error state, but re-raising would lose the training.
+            pass
 
-    # PyTorch fallback: reshape cos/sin for broadcasting [1, 1, seq, dim]
-    cos_b = cos.unsqueeze(0).unsqueeze(0)
-    sin_b = sin.unsqueeze(0).unsqueeze(0)
     q_embed = (q * cos_b) + (rotate_half(q) * sin_b)
     k_embed = (k * cos_b) + (rotate_half(k) * sin_b)
     return q_embed, k_embed
