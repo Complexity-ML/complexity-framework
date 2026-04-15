@@ -26,7 +26,7 @@ def _liger_available() -> bool:
     """Cache-friendly check so we don't re-import on every step."""
     if not hasattr(_liger_available, "_cache"):
         try:
-            from liger_kernel.transformers.fused_linear_cross_entropy import (
+            from liger_kernel.transformers.fused_linear_cross_entropy import (  # type: ignore[import-not-found]
                 LigerFusedLinearCrossEntropyFunction,  # noqa: F401
             )
             _liger_available._cache = True

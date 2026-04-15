@@ -16,7 +16,7 @@ def _liger_rmsnorm_available() -> bool:
     """Cached import check for Liger's fused RMSNorm."""
     if not hasattr(_liger_rmsnorm_available, "_cache"):
         try:
-            from liger_kernel.ops.rms_norm import LigerRMSNormFunction  # noqa: F401
+            from liger_kernel.ops.rms_norm import LigerRMSNormFunction  # type: ignore[import-not-found] # noqa: F401
             _liger_rmsnorm_available._cache = True
         except Exception:
             _liger_rmsnorm_available._cache = False
@@ -47,7 +47,7 @@ class RMSNorm(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Liger Triton kernel on CUDA (fused forward+backward, ~5-8% tok/s)
         if x.is_cuda and _liger_rmsnorm_available():
-            from liger_kernel.ops.rms_norm import LigerRMSNormFunction
+            from liger_kernel.ops.rms_norm import LigerRMSNormFunction  # type: ignore[import-not-found]
             # signature: (X, W, eps, offset, casting_mode, in_place)
             return LigerRMSNormFunction.apply(x, self.weight, self.eps, 0.0, "llama", False)
         # PyTorch fallback (MPS/CPU or Liger not installed)

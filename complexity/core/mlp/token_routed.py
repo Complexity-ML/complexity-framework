@@ -24,6 +24,7 @@ from typing import Optional
 import logging
 
 from .base import MLPBase, MLPConfig
+from .fused_activations import fused_silu_mul
 from ..registry import register_mlp
 
 logger = logging.getLogger(__name__)
@@ -192,10 +193,10 @@ class TokenRoutedMLP(MLPBase):
             batch_counts = torch.bincount(flat_expert_ids, minlength=self.num_experts)
             self.expert_counts += batch_counts.to(self.expert_counts.dtype)
 
-        # Shared expert (dense, all tokens)
+        # Shared expert (dense, all tokens) — fused SwiGLU via Liger on CUDA
         if self.use_shared_expert:
             shared_out = self.shared_down(
-                F.silu(self.shared_gate(flat_x)) * self.shared_up(flat_x)
+                fused_silu_mul(self.shared_gate(flat_x), self.shared_up(flat_x))
             ).to(flat_x.dtype)
         else:
             shared_out = 0
@@ -223,7 +224,7 @@ class TokenRoutedMLP(MLPBase):
         if use_cggr:
             gate_out = cggr_grouped_gemm_autograd(sorted_x, gate_w, expert_offsets)
             up_out = cggr_grouped_gemm_autograd(sorted_x, up_w, expert_offsets)
-            intermediate = F.silu(gate_out) * up_out  # autograd-friendly SwiGLU
+            intermediate = fused_silu_mul(gate_out, up_out)  # autograd-friendly, Liger-fused on CUDA
             sorted_routed = cggr_grouped_gemm_autograd(intermediate, down_w, expert_offsets)
         else:
             # Pure-PyTorch grouped dispatch. One CPU sync for offsets (single
@@ -238,7 +239,7 @@ class TokenRoutedMLP(MLPBase):
                 x_e = sorted_x[start:end]
                 gate_e = x_e @ gate_w[e]
                 up_e = x_e @ up_w[e]
-                inter_e = F.silu(gate_e) * up_e
+                inter_e = fused_silu_mul(gate_e, up_e)
                 sorted_routed[start:end] = (inter_e @ down_w[e]).to(sorted_routed.dtype)
 
         # Scatter back to original token order
@@ -261,11 +262,11 @@ class TokenRoutedMLP(MLPBase):
         for e in range(self.num_experts):
             gate_e = flat @ gate_w[e]
             up_e = flat @ up_w[e]
-            out = out + (F.silu(gate_e) * up_e) @ down_w[e]
+            out = out + fused_silu_mul(gate_e, up_e) @ down_w[e]
         out = out / self.num_experts
         if self.use_shared_expert:
             shared = self.shared_down(
-                F.silu(self.shared_gate(flat)) * self.shared_up(flat)
+                fused_silu_mul(self.shared_gate(flat), self.shared_up(flat))
             )
             out = out + shared
         return out.view_as(hidden_states)

@@ -247,7 +247,7 @@ def _liger_rope_available() -> bool:
     """Cached import check for Liger's fused RoPE."""
     if not hasattr(_liger_rope_available, "_cache"):
         try:
-            from liger_kernel.ops.rope import LigerRopeFunction  # noqa: F401
+            from liger_kernel.ops.rope import LigerRopeFunction  # type: ignore[import-not-found] # noqa: F401
             _liger_rope_available._cache = True
         except Exception:
             _liger_rope_available._cache = False
@@ -274,7 +274,7 @@ def apply_rotary_pos_emb(
     """
     # Liger Triton kernel on CUDA (fused Q+K rotation, ~2-3% tok/s)
     if q.is_cuda and _liger_rope_available():
-        from liger_kernel.ops.rope import LigerRopeFunction
+        from liger_kernel.ops.rope import LigerRopeFunction  # type: ignore[import-not-found]
         # Liger expects cos/sin as [seq, dim] and handles the broadcast internally
         return LigerRopeFunction.apply(q, k, cos, sin)
 

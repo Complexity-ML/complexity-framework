@@ -74,10 +74,16 @@ class SwiGLUMLP(MLPBase):
         token_ids: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor:
-        # SwiGLU: swish(gate) * up
-        gate = self.act_fn(self.gate_proj(hidden_states))
+        gate = self.gate_proj(hidden_states)
         up = self.up_proj(hidden_states)
-        return self.down_proj(gate * up)
+        # Fused silu(gate)*up Triton path when activation is SiLU (default);
+        # generic act_fn(gate) * up for other activations (gelu/relu/etc.).
+        if self.act_fn is F.silu:
+            from .fused_activations import fused_silu_mul
+            inter = fused_silu_mul(gate, up)
+        else:
+            inter = self.act_fn(gate) * up
+        return self.down_proj(inter)
 
 
 @register_mlp("geglu")
