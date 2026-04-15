@@ -153,8 +153,6 @@ def main():
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--wandb", type=str, default=None)
-    parser.add_argument("--compile", action="store_true",
-                        help="Wrap model in torch.compile for +10-15%% tok/s on CUDA.")
     parser.add_argument("--gradient-checkpointing", action="store_true", default=True,
                         help="Gradient checkpointing (default: enabled)")
     parser.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing",
@@ -250,15 +248,6 @@ def main():
     )
 
     trainer = Trainer(model=model, config=train_config, train_dataloader=dataloader)
-
-    if args.compile:
-        if is_main:
-            logger.info("torch.compile: wrapping trainer.model (first step will compile ~1-3 min)")
-        try:
-            trainer.model = torch.compile(trainer.model, mode="default", fullgraph=False)
-        except Exception as e:
-            if is_main:
-                logger.warning(f"torch.compile failed, continuing uncompiled: {e}")
 
     if is_main:
         logger.info(f"FSDP enabled ({world_size} GPUs, full_shard)")
