@@ -96,12 +96,20 @@ def fused_linear_causal_lm_loss(
             None,               # softcap
             z_loss_coef > 0.0,  # return_z_loss
         )
-        if z_loss_coef > 0.0:
-            loss, z_loss_tensor = out
+        # Normalize Liger output: recent versions always return a tuple
+        # (loss, z_loss) where z_loss is None when not requested; older
+        # versions return just `loss` when return_z_loss=False.
+        if isinstance(out, tuple):
+            loss = out[0]
+            z_loss_tensor = out[1] if len(out) > 1 else None
+        else:
+            loss = out
+            z_loss_tensor = None
+
+        if z_loss_tensor is not None and z_loss_coef > 0.0:
             z_val = float(z_loss_tensor.detach().item())
             ce_val = float((loss - z_loss_coef * z_loss_tensor).detach().item())
         else:
-            loss = out
             ce_val = float(loss.detach().item())
             z_val = 0.0
         metrics = CausalLMLossMetrics(
