@@ -61,11 +61,13 @@ class GroupedQueryAttention(AttentionBase):
         self.mu_to_q = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
         self.mu_to_v = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
 
-        # QK Normalization (2024 innovation - stabilizes training)
+        # QK Normalization (2024 innovation - stabilizes training).
+        # Uses framework RMSNorm so the Liger Triton fast-path applies on CUDA.
         self.use_qk_norm = config.use_qk_norm
         if self.use_qk_norm:
-            self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
-            self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
+            from ..normalization.norms import RMSNorm as _RMSNorm
+            self.q_norm = _RMSNorm(self.head_dim, eps=1e-6)
+            self.k_norm = _RMSNorm(self.head_dim, eps=1e-6)
 
         # LayerScale on attention output (Touvron et al. 2021) — learnable per-channel
         # gain on o_proj output. Init 1.0 = identity; lower values dampen attention

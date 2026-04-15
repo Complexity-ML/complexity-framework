@@ -243,6 +243,17 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat([-x2, x1], dim=-1)
 
 
+def _liger_rope_available() -> bool:
+    """Cached import check for Liger's fused RoPE."""
+    if not hasattr(_liger_rope_available, "_cache"):
+        try:
+            from liger_kernel.ops.rope import LigerRopeFunction  # noqa: F401
+            _liger_rope_available._cache = True
+        except Exception:
+            _liger_rope_available._cache = False
+    return _liger_rope_available._cache
+
+
 def apply_rotary_pos_emb(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -261,14 +272,17 @@ def apply_rotary_pos_emb(
     Returns:
         Rotated Q and K tensors
     """
-    # Reshape cos/sin for broadcasting: [1, 1, seq, dim]
-    cos = cos.unsqueeze(0).unsqueeze(0)
-    sin = sin.unsqueeze(0).unsqueeze(0)
+    # Liger Triton kernel on CUDA (fused Q+K rotation, ~2-3% tok/s)
+    if q.is_cuda and _liger_rope_available():
+        from liger_kernel.ops.rope import LigerRopeFunction
+        # Liger expects cos/sin as [seq, dim] and handles the broadcast internally
+        return LigerRopeFunction.apply(q, k, cos, sin)
 
-    # Apply rotation
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
-
+    # PyTorch fallback: reshape cos/sin for broadcasting [1, 1, seq, dim]
+    cos_b = cos.unsqueeze(0).unsqueeze(0)
+    sin_b = sin.unsqueeze(0).unsqueeze(0)
+    q_embed = (q * cos_b) + (rotate_half(q) * sin_b)
+    k_embed = (k * cos_b) + (rotate_half(k) * sin_b)
     return q_embed, k_embed
 
 

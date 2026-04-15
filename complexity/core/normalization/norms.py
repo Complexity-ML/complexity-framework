@@ -12,6 +12,17 @@ import torch.nn as nn
 from ..registry import register_normalization
 
 
+def _liger_rmsnorm_available() -> bool:
+    """Cached import check for Liger's fused RMSNorm."""
+    if not hasattr(_liger_rmsnorm_available, "_cache"):
+        try:
+            from liger_kernel.ops.rms_norm import LigerRMSNormFunction  # noqa: F401
+            _liger_rmsnorm_available._cache = True
+        except Exception:
+            _liger_rmsnorm_available._cache = False
+    return _liger_rmsnorm_available._cache
+
+
 @register_normalization("rmsnorm")
 @register_normalization("rms")
 @register_normalization("llama")
@@ -34,6 +45,12 @@ class RMSNorm(nn.Module):
         self.hidden_size = hidden_size
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Liger Triton kernel on CUDA (fused forward+backward, ~5-8% tok/s)
+        if x.is_cuda and _liger_rmsnorm_available():
+            from liger_kernel.ops.rms_norm import LigerRMSNormFunction
+            # signature: (X, W, eps, offset, casting_mode, in_place)
+            return LigerRMSNormFunction.apply(x, self.weight, self.eps, 0.0, "llama", False)
+        # PyTorch fallback (MPS/CPU or Liger not installed)
         variance = x.pow(2).mean(-1, keepdim=True)
         x = x * torch.rsqrt(variance + self.eps)
         return self.weight * x
