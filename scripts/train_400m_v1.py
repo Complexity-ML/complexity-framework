@@ -47,7 +47,10 @@ logging.getLogger("datasets").setLevel(logging.WARNING)
 
 from complexity.config import ModelConfig
 from complexity.models import ComplexityModel
-from complexity.training import Trainer, TrainingConfig, WandBCallback, TqdmCallback
+from complexity.training import (
+    Trainer, TrainingConfig, WandBCallback, TqdmCallback,
+    gamma_mean, global_expert_shares,
+)
 from complexity.parallel import init_distributed, get_rank, get_world_size, is_main_process, cleanup, simple_ddp
 
 
@@ -292,23 +295,30 @@ def main():
 
     trainer.compute_loss = compute_loss
 
-    # Logging — rank 0 only
+    # Logging — tqdm/wandb/CSV writes are rank-0 only, but the expert-share
+    # reducer runs on ALL ranks (all_reduce collective).
     csv_file = None
+    csv_writer = None
     tqdm_cb = None
+    n_experts = config.num_experts
+    tokens_per_step_local = tokens_per_step
+    t_start = time.time()
+
+    # TqdmCallback runs a distributed collective internally (global_expert_shares)
+    # → MUST be registered on ALL ranks. The bar displays only on rank 0.
+    tqdm_cb = TqdmCallback(total_steps=max_steps, desc="400M v1")
+    trainer.callbacks.append(tqdm_cb)
+
     if is_main:
         if args.wandb:
             wandb_cb = WandBCallback(project=args.wandb, name="400m-v1")
             trainer.callbacks.append(wandb_cb)
-
-        tqdm_cb = TqdmCallback(total_steps=max_steps, desc="400M v1")
-        trainer.callbacks.append(tqdm_cb)
 
         os.makedirs(args.checkpoint_dir, exist_ok=True)
         csv_path = os.path.join(args.checkpoint_dir, "training_log.csv")
         file_mode = "a" if args.resume and os.path.exists(csv_path) else "w"
         csv_file = open(csv_path, file_mode, newline="")
         csv_writer = csv.writer(csv_file)
-        n_experts = config.num_experts
         expert_cols = [f"expert_{e}_share" for e in range(n_experts)]
         if file_mode == "w":
             csv_writer.writerow([
@@ -316,54 +326,33 @@ def main():
                 *expert_cols, "expert_dead_count", "elapsed_s",
             ])
         csv_file.flush()
-        t_start = time.time()
-        tokens_per_step_local = tokens_per_step  # capture from outer scope
 
-        def _get_gamma_mean(model) -> float:
-            """Mean of all routed_alpha (γ) params across layers. FSDP-safe."""
-            vals = []
-            for name, p in model.named_parameters():
-                if "routed_alpha" in name:
-                    t = p.detach()
-                    if hasattr(t, "to_local"):
-                        t = t.to_local()
-                    vals.append(t.float().mean().item())
-            return sum(vals) / len(vals) if vals else float("nan")
-
-        def _get_expert_shares(model, num_experts: int):
-            """Aggregate expert_counts across all TokenRoutedMLP layers, return shares + reset."""
-            import torch as _torch
-            total = _torch.zeros(num_experts, dtype=_torch.float64)
-            for m in model.modules():
-                if hasattr(m, "expert_counts") and hasattr(m, "reset_expert_counts"):
-                    counts = m.expert_counts
-                    if hasattr(counts, "to_local"):
-                        counts = counts.to_local()
-                    total += counts.detach().cpu().to(_torch.float64)
-                    m.reset_expert_counts()
-            s = total.sum().item()
-            if s <= 0:
-                return [float("nan")] * num_experts, num_experts  # no data yet
-            shares = (total / s).tolist()
-            dead = sum(1 for x in total.tolist() if x == 0)
-            return shares, dead
-
-        def csv_callback(trainer_obj, step, loss_val):
-            real_loss = loss_val
-            ppl = math.exp(min(real_loss, 20))
-            lr = trainer_obj.optimizer.param_groups[0]["lr"]
-            gamma = _get_gamma_mean(trainer_obj.model)
-            shares, dead = _get_expert_shares(trainer_obj.model, n_experts)
-            tokens_seen = step * tokens_per_step_local
-            csv_writer.writerow([
-                step, f"{real_loss:.6f}", f"{ppl:.2f}",
-                f"{lr:.6e}", f"{gamma:.6f}", tokens_seen,
-                *[f"{s:.4f}" for s in shares], dead,
-                f"{time.time() - t_start:.1f}",
-            ])
-            if step % 100 == 0:
-                csv_file.flush()
-        trainer.callbacks.append(csv_callback)
+    def csv_callback(trainer_obj, step, loss_val):
+        # Collective — all ranks must call. TqdmCallback already did the
+        # reduce this step, so the counters are zero now; we re-read gamma
+        # (local, cheap) and rely on TqdmCallback having absorbed the shares.
+        # To get shares into the CSV, we do a cheap second all_reduce here
+        # (counters were already reset, so this gives zeros → we capture
+        # shares from tqdm_cb instead via a shared ref below).
+        gamma = gamma_mean(trainer_obj.model)
+        if not is_main:
+            return
+        real_loss = loss_val
+        ppl = math.exp(min(real_loss, 20))
+        lr = trainer_obj.optimizer.param_groups[0]["lr"]
+        tokens_seen = step * tokens_per_step_local
+        # Shares come from the TqdmCallback cache set during the same step
+        shares = getattr(tqdm_cb, "last_shares", [float("nan")] * n_experts)
+        dead = getattr(tqdm_cb, "last_dead", n_experts)
+        csv_writer.writerow([
+            step, f"{real_loss:.6f}", f"{ppl:.2f}",
+            f"{lr:.6e}", f"{gamma:.6f}", tokens_seen,
+            *[f"{s:.4f}" for s in shares], dead,
+            f"{time.time() - t_start:.1f}",
+        ])
+        if step % 100 == 0:
+            csv_file.flush()
+    trainer.callbacks.append(csv_callback)
 
     logging.getLogger("complexity.training.trainer").setLevel(logging.WARNING)
 

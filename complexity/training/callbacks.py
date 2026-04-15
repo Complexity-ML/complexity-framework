@@ -56,18 +56,37 @@ class WandBCallback:
 
 
 class TqdmCallback:
-    """tqdm progress bar callback with loss + PPL + per-expert MuonTR diagnostics.
+    """tqdm progress bar callback with loss + PPL + MoE telemetry.
 
-    If the optimizer exposes get_ns_diagnostics() (MuonTR), the per-expert
-    grad-norms and adaptive LR ratios are added to the postfix every step
-    so you can watch the routed experts train live without scrolling.
+    Postfix auto-populated with (when available):
+      - loss, ppl, lr
+      - γ (routed_gate, TokenRoutedMLP)
+      - E shares (expert utilization, reduced across ranks)
+      - per-expert diagnostics from MuonTR/AdamTR
+
+    **Must be registered on ALL ranks** — global_expert_shares() issues an
+    all_reduce collective. The display itself is rank-0 only.
     """
 
     def __init__(self, total_steps: int, desc: str = "train"):
         from tqdm import tqdm
-        self.pbar = tqdm(total=total_steps, desc=desc, unit="step", dynamic_ncols=True)
+        self.pbar = tqdm(
+            total=total_steps, desc=desc, unit="step", dynamic_ncols=True,
+            disable=not is_main_process(),
+        )
 
     def __call__(self, trainer, step: int, loss: float):
+        # Collective reductions — ALL ranks must participate at the same step.
+        from .moe_telemetry import gamma_mean, global_expert_shares
+        shares, dead = global_expert_shares(trainer.model)
+        gamma = gamma_mean(trainer.model) if shares else float("nan")
+
+        # Cache so later callbacks (CSV loggers) can read without triggering
+        # a second collective on already-reset counters.
+        self.last_shares = shares
+        self.last_dead = dead
+        self.last_gamma = gamma
+
         if not is_main_process():
             return
 
@@ -75,12 +94,15 @@ class TqdmCallback:
         lr = trainer.scheduler.get_last_lr()[0]
         postfix = {"loss": f"{loss:.4f}", "ppl": f"{ppl:.1f}", "lr": f"{lr:.2e}"}
 
-        # Per-expert MuonTR/AdamTR diagnostics — local view only.
-        # Under FSDP shard-on-dim-0, rank 0 only sees a slice of the experts,
-        # so the display may have zeros for shards owned by other ranks. The
-        # param-update check at step 1 already confirms gradients flow to all
-        # experts globally. We do NOT call any collective op here — this
-        # callback only runs on rank 0 and any all-reduce would deadlock.
+        # MoE-specific telemetry (only if the model has TokenRoutedMLP layers)
+        if shares:
+            postfix["γ"] = f"{gamma:.3f}"
+            postfix["E"] = "/".join(f"{s:.2f}" for s in shares)
+            if dead > 0:
+                postfix["dead"] = str(dead)
+
+        # Per-expert MuonTR/AdamTR diagnostics — local view (no collective).
+        # These reflect rank 0's shard only under FSDP, kept for live insight.
         opt = trainer.optimizer
         muon_inner = getattr(opt, "muon_tr", None) or (opt if hasattr(opt, "get_ns_diagnostics") else None)
         if muon_inner is not None and hasattr(muon_inner, "get_ns_diagnostics"):

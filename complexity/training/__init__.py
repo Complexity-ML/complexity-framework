@@ -33,6 +33,7 @@ from .trainer import Trainer
 from .scheduler import get_lr_scheduler, resolve_scheduler_name
 from .metrics import MetricsTracker
 from .callbacks import EarlyStoppingCallback, WandBCallback, TensorBoardCallback, TqdmCallback
+from .moe_telemetry import gamma_mean, global_expert_shares, detect_num_experts
 
 __all__ = [
     "Trainer",
@@ -44,4 +45,7 @@ __all__ = [
     "WandBCallback",
     "TensorBoardCallback",
     "TqdmCallback",
+    "gamma_mean",
+    "global_expert_shares",
+    "detect_num_experts",
 ]

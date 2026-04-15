@@ -26,6 +26,7 @@ from complexity.config import ModelConfig
 from complexity.core.losses import causal_lm_loss
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
+from complexity.training import gamma_mean, global_expert_shares
 from complexity.utils import (
     autocast,
     autocast_dtype,
@@ -71,6 +72,8 @@ def make_config() -> ModelConfig:
         shared_intermediate_size=None,  # None → full intermediate_size (dense-equivalent)
         routed_gate=True,               # α·routed on routed path
         routed_gate_init=0.1,           # α start = 0.1 → experts contribute from step 0
+        use_attn_scale=True,            # LayerScale on attn.o_proj output
+        attn_scale_init=1.0,            # identity init, learns to re-weight per-channel
     )
 
 
@@ -154,21 +157,28 @@ def main():
                         help="Coefficient of logit z-loss (e.g. 1e-4). 0 disables")
     args = parser.parse_args()
 
-    # CSV logger
-    run_dir = Path("runs") / args.run_name
-    run_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = run_dir / "metrics.csv"
-    csv_file = csv_path.open("w", newline="")
-    csv_writer = csv.writer(csv_file)
-    csv_writer.writerow(["step", "loss", "ppl", "lr", "tok_s", "alpha_mean"])
-    csv_file.flush()
-    logger.info(f"CSV: {csv_path}")
-
     # Centralized MPS setup: watermark, CPU fallback, seed, device
     device = setup_mps(unlimited_watermark=True, cpu_fallback=True, seed=args.seed)
 
     # Model
     config = make_config()
+
+    # CSV logger (depends on config.num_experts for the expert-share columns)
+    run_dir = Path("runs") / args.run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = run_dir / "metrics.csv"
+    csv_file = csv_path.open("w", newline="")
+    csv_writer = csv.writer(csv_file)
+    n_experts = config.num_experts
+    expert_cols = [f"expert_{e}_share" for e in range(n_experts)]
+    csv_writer.writerow([
+        "step", "loss", "ppl", "lr", "tok_s", "alpha_mean",
+        *expert_cols, "expert_dead_count",
+    ])
+    csv_file.flush()
+    logger.info(f"CSV: {csv_path}")
+
+
     model = ComplexityModel(config).to(device)
     if args.grad_ckpt:
         model.gradient_checkpointing_enable()
@@ -297,15 +307,13 @@ def main():
                 ppl       = math.exp(min(loss_metrics.ce, 20))
                 lr_now    = scheduler.get_last_lr()[0]
 
-                # Mean of learnable α across MoE layers (None if gate disabled)
-                alphas = [m.routed_alpha.detach().float().item()
-                          for m in model.modules()
-                          if hasattr(m, "routed_alpha")]
-                alpha_mean = sum(alphas) / len(alphas) if alphas else float("nan")
+                alpha_mean = gamma_mean(model)
+                shares, dead = global_expert_shares(model, n_experts)
 
                 csv_writer.writerow([
                     step + 1, f"{last_loss:.6f}", f"{ppl:.2f}",
                     f"{lr_now:.6e}", f"{tok_s:.0f}", f"{alpha_mean:.6f}",
+                    *[f"{s:.4f}" for s in shares], dead,
                 ])
                 csv_file.flush()
 
