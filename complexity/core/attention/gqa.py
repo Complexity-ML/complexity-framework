@@ -123,21 +123,28 @@ class GroupedQueryAttention(AttentionBase):
         """
         batch_size, seq_len, _ = hidden_states.shape
 
-        # v0.3.0: Fused Mu-KQV via concat+cuBLAS (2x faster)
-        # KQV order: K first, then Q, then V (industry standard)
+        # Fused Mu-KQV: ONE matmul instead of 3 (K, Q, V concatenated on output).
+        # Input concat: [x, mu] — Output concat: [K; Q; V] along feature dim.
+        # 3× fewer kernel launches than the previous 3-matmul fused path,
+        # and cuBLAS/Triton utilizes the wider GEMM shape better.
+        k_dim = self.num_kv_heads * self.head_dim
+        q_dim = self.num_heads * self.head_dim
+        v_dim = self.num_kv_heads * self.head_dim
         if USE_FUSED_MU_KQV and mu_prev is not None:
             x_mu = torch.cat([hidden_states, mu_prev], dim=-1)
-            wk = torch.cat([self.k_proj.weight, self.mu_to_k.weight], dim=1)
-            wq = torch.cat([self.q_proj.weight, self.mu_to_q.weight], dim=1)
-            wv = torch.cat([self.v_proj.weight, self.mu_to_v.weight], dim=1)
-            k = F.linear(x_mu, wk)
-            q = F.linear(x_mu, wq)
-            v = F.linear(x_mu, wv)
+            # Stack weights: [K_total, Q_total, V_total] rows × [H + H_mu] cols
+            w_kqv = torch.cat([
+                torch.cat([self.k_proj.weight, self.mu_to_k.weight], dim=1),
+                torch.cat([self.q_proj.weight, self.mu_to_q.weight], dim=1),
+                torch.cat([self.v_proj.weight, self.mu_to_v.weight], dim=1),
+            ], dim=0)
+            kqv = F.linear(x_mu, w_kqv)
+            k, q, v = kqv.split([k_dim, q_dim, v_dim], dim=-1)
         else:
-            # Standard path - KQV order
-            k = self.k_proj(hidden_states)
-            q = self.q_proj(hidden_states)
-            v = self.v_proj(hidden_states)
+            # Also fuse the vanilla path (no mu): single [K, Q, V] matmul on x.
+            w_kqv = torch.cat([self.k_proj.weight, self.q_proj.weight, self.v_proj.weight], dim=0)
+            kqv = F.linear(hidden_states, w_kqv)
+            k, q, v = kqv.split([k_dim, q_dim, v_dim], dim=-1)
             if mu_prev is not None:
                 k = k + self.mu_to_k(mu_prev)
                 q = q + self.mu_to_q(mu_prev)

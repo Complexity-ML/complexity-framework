@@ -116,6 +116,122 @@ if HAS_TRITON:
         triton.Config({"BLOCK_M": 64,  "BLOCK_N": 256, "BLOCK_K": 32},  num_warps=8, num_stages=3),
     ]
 
+    # Separate autotune config list for grad_W — different reduction pattern
+    # (reduce over tokens, tiles are (in_dim, out_dim)) benefits from narrower
+    # BLOCK_M (tokens per block in K dim) and wider (BLOCK_N, BLOCK_O) tiles.
+    _CGGR_GRAD_W_CONFIGS = [
+        triton.Config({"BLOCK_M": 32,  "BLOCK_N": 64,  "BLOCK_O": 64},  num_warps=4, num_stages=3),
+        triton.Config({"BLOCK_M": 32,  "BLOCK_N": 128, "BLOCK_O": 64},  num_warps=4, num_stages=3),
+        triton.Config({"BLOCK_M": 32,  "BLOCK_N": 64,  "BLOCK_O": 128}, num_warps=4, num_stages=3),
+        triton.Config({"BLOCK_M": 64,  "BLOCK_N": 128, "BLOCK_O": 128}, num_warps=8, num_stages=3),
+        triton.Config({"BLOCK_M": 64,  "BLOCK_N": 64,  "BLOCK_O": 64},  num_warps=4, num_stages=4),
+    ]
+
+    @triton.autotune(configs=_CGGR_GRAD_W_CONFIGS, key=["in_dim", "out_dim"])
+    @triton.jit
+    def _cggr_grad_w_kernel(
+        sorted_x_ptr,       # [total_tokens, in_dim]  (fwd sorted activations)
+        grad_out_ptr,       # [total_tokens, out_dim] (grad of fwd output)
+        offsets_ptr,        # [num_experts + 1]
+        grad_w_ptr,         # [num_experts, in_dim, out_dim]  OUT
+        in_dim,
+        out_dim,
+        stride_x_row, stride_x_col,
+        stride_g_row, stride_g_col,
+        stride_w_exp, stride_w_in, stride_w_out,
+        BLOCK_M: tl.constexpr,   # tokens per reduction step
+        BLOCK_N: tl.constexpr,   # in_dim tile
+        BLOCK_O: tl.constexpr,   # out_dim tile
+    ):
+        """
+        Compute grad_W[e] = sorted_x[expert_e].T @ grad_output[expert_e]
+        per expert WITHOUT padding. Each kernel instance owns one
+        (expert, in_tile, out_tile) and reduces over the expert's token range.
+
+        Output shape: [num_experts, in_dim, out_dim] = same layout as forward
+        weights so it can be used directly as the grad in .backward().
+        """
+        pid_n = tl.program_id(0)   # in_dim tile
+        pid_o = tl.program_id(1)   # out_dim tile
+        pid_e = tl.program_id(2)   # expert id
+
+        expert_start = tl.load(offsets_ptr + pid_e)
+        expert_end = tl.load(offsets_ptr + pid_e + 1)
+        if expert_end == expert_start:
+            # Still write zeros so grad_W[e] is defined
+            n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+            o_offs = pid_o * BLOCK_O + tl.arange(0, BLOCK_O)
+            n_mask = n_offs < in_dim
+            o_mask = o_offs < out_dim
+            w_ptrs = (grad_w_ptr + pid_e * stride_w_exp
+                      + n_offs[:, None] * stride_w_in
+                      + o_offs[None, :] * stride_w_out)
+            tl.store(w_ptrs, tl.zeros([BLOCK_N, BLOCK_O], dtype=grad_w_ptr.dtype.element_ty),
+                     mask=n_mask[:, None] & o_mask[None, :])
+            return
+
+        n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+        o_offs = pid_o * BLOCK_O + tl.arange(0, BLOCK_O)
+        n_mask = n_offs < in_dim
+        o_mask = o_offs < out_dim
+
+        acc = tl.zeros([BLOCK_N, BLOCK_O], dtype=tl.float32)
+
+        # Reduce over token range for this expert. Each step loads a
+        # [BLOCK_M, BLOCK_N] slice of x and [BLOCK_M, BLOCK_O] slice of g,
+        # then accumulates x.T @ g into the [BLOCK_N, BLOCK_O] tile.
+        for m_start in range(expert_start, expert_end, BLOCK_M):
+            m_offs = m_start + tl.arange(0, BLOCK_M)
+            m_mask = m_offs < expert_end
+
+            x_ptrs = (sorted_x_ptr
+                      + m_offs[:, None] * stride_x_row
+                      + n_offs[None, :] * stride_x_col)
+            g_ptrs = (grad_out_ptr
+                      + m_offs[:, None] * stride_g_row
+                      + o_offs[None, :] * stride_g_col)
+
+            x_blk = tl.load(x_ptrs, mask=m_mask[:, None] & n_mask[None, :], other=0.0)
+            g_blk = tl.load(g_ptrs, mask=m_mask[:, None] & o_mask[None, :], other=0.0)
+
+            # x.T @ g : [BLOCK_N, BLOCK_M] @ [BLOCK_M, BLOCK_O] → [BLOCK_N, BLOCK_O]
+            # Native bf16×bf16→fp32 acc (Tensor Cores).
+            acc += tl.dot(tl.trans(x_blk), g_blk)
+
+        w_ptrs = (grad_w_ptr + pid_e * stride_w_exp
+                  + n_offs[:, None] * stride_w_in
+                  + o_offs[None, :] * stride_w_out)
+        tl.store(w_ptrs, acc.to(grad_w_ptr.dtype.element_ty),
+                 mask=n_mask[:, None] & o_mask[None, :])
+
+
+    def cggr_grad_w_triton(
+        sorted_x: torch.Tensor,       # [T, in_dim]
+        grad_output: torch.Tensor,    # [T, out_dim]
+        expert_offsets: torch.Tensor, # [E + 1]
+        num_experts: int,
+    ) -> torch.Tensor:
+        """Compute grad_W [E, in_dim, out_dim] without padding."""
+        in_dim = sorted_x.shape[1]
+        out_dim = grad_output.shape[1]
+        grad_W = torch.empty(num_experts, in_dim, out_dim,
+                             device=sorted_x.device, dtype=sorted_x.dtype)
+
+        grid = lambda META: (
+            triton.cdiv(in_dim, META["BLOCK_N"]),
+            triton.cdiv(out_dim, META["BLOCK_O"]),
+            num_experts,
+        )
+        _cggr_grad_w_kernel[grid](
+            sorted_x, grad_output, expert_offsets, grad_W,
+            in_dim, out_dim,
+            sorted_x.stride(0), sorted_x.stride(1),
+            grad_output.stride(0), grad_output.stride(1),
+            grad_W.stride(0), grad_W.stride(1), grad_W.stride(2),
+        )
+        return grad_W
+
+
     @triton.autotune(configs=_CGGR_CONFIGS, key=["in_dim", "out_dim"])
     @triton.jit
     def _cggr_grouped_gemm_kernel(
@@ -318,30 +434,14 @@ if HAS_TRITON:
                 W_T = expert_weights.transpose(-2, -1).contiguous()  # [E, out, in]
                 grad_x = cggr_grouped_gemm_triton(grad_output, W_T, expert_offsets)
 
-            # grad_W[e] = sorted_x[e].T @ grad_output[e]
-            # Vectorized via padded bmm: pad each expert slice to max_len, then a
-            # single batched matmul produces all E grad_W slices in one kernel.
-            # With Zipf-balanced routing the imbalance is ~1.5x so padding overhead
-            # is small, and we trade num_experts kernel launches for one bmm.
+            # grad_W[e] = sorted_x[e].T @ grad_output[e] — unpadded CGGR kernel.
+            # No zero-padding waste: each expert's token range is reduced directly
+            # by the grad_w Triton kernel. Saves ~30% FLOPs under Zipf imbalance
+            # vs the old padded bmm, and avoids the Python copy loop.
             if ctx.needs_input_grad[1]:
-                offsets_cpu = expert_offsets.tolist()
-                lens = [offsets_cpu[e + 1] - offsets_cpu[e] for e in range(num_experts)]
-                max_len = max(lens) if lens else 0
-
-                if max_len == 0:
-                    grad_W = torch.zeros_like(expert_weights)
-                else:
-                    # [E, max_len, in_dim] and [E, max_len, out_dim], padded with zeros
-                    x_padded = sorted_x.new_zeros((num_experts, max_len, in_dim))
-                    g_padded = grad_output.new_zeros((num_experts, max_len, out_dim))
-                    for e in range(num_experts):
-                        start = offsets_cpu[e]
-                        L = lens[e]
-                        if L > 0:
-                            x_padded[e, :L].copy_(sorted_x[start:start + L])
-                            g_padded[e, :L].copy_(grad_output[start:start + L])
-                    # Single bmm: [E, in_dim, max_len] @ [E, max_len, out_dim] = [E, in_dim, out_dim]
-                    grad_W = torch.bmm(x_padded.transpose(1, 2), g_padded)
+                grad_W = cggr_grad_w_triton(
+                    sorted_x, grad_output, expert_offsets, num_experts,
+                )
 
             return grad_x, grad_W, None  # offsets is non-differentiable
 

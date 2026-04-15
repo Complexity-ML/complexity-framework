@@ -162,6 +162,11 @@ def main():
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--wandb", type=str, default=None)
+    parser.add_argument("--compile", action="store_true",
+                        help="Wrap the model in torch.compile (mode='default'). "
+                             "On CUDA can give +10-15%% tok/s but adds 1-3 min "
+                             "compile time at first step and may fail on certain "
+                             "dynamic-shape paths (MoE dispatch). Use at your own risk.")
     parser.add_argument("--gradient-checkpointing", action="store_true", default=True,
                         help="Gradient checkpointing (default: enabled)")
     parser.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing",
@@ -272,6 +277,18 @@ def main():
     )
 
     trainer = Trainer(model=model, config=train_config, train_dataloader=dataloader)
+
+    # Optional: torch.compile the wrapped model for kernel fusion.
+    # Inductor can fuse attention + RMSNorm + MLP stages; typical gain on CUDA
+    # is +10-15% tok/s. First step triggers 1-3 minutes of compilation.
+    if args.compile:
+        if is_main:
+            logger.info("torch.compile: wrapping trainer.model (first step will compile ~1-3 min)")
+        try:
+            trainer.model = torch.compile(trainer.model, mode="default", fullgraph=False)
+        except Exception as e:
+            if is_main:
+                logger.warning(f"torch.compile failed, continuing uncompiled: {e}")
 
     if is_main:
         logger.info(f"FSDP enabled ({world_size} GPUs, full_shard)")
