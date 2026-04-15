@@ -76,7 +76,7 @@ def fused_linear_causal_lm_loss(
     labels_flat = labels.reshape(-1)
 
     if use_liger and hidden_flat.is_cuda and _liger_available():
-        from liger_kernel.transformers.fused_linear_cross_entropy import (
+        from liger_kernel.transformers.fused_linear_cross_entropy import (  # type: ignore[import-not-found]
             LigerFusedLinearCrossEntropyFunction,
         )
 
