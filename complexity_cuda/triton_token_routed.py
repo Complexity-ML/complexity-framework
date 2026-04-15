@@ -102,6 +102,21 @@ if HAS_TRITON:
     # CGGR TRITON KERNELS
     # =========================================================================
 
+    # Autotune configs cover the MoE shapes we actually run:
+    #   hidden ∈ {640, 1024}, expert_inter ∈ {448, 502, 2008}, shared_inter ∈ {..., 2008}
+    # Tuning keys are the matmul dims (in_dim, out_dim); num_experts is
+    # dispatch-only and doesn't affect per-block perf.
+    _CGGR_CONFIGS = [
+        triton.Config({"BLOCK_M": 64,  "BLOCK_N": 64,  "BLOCK_K": 32},  num_warps=4, num_stages=3),
+        triton.Config({"BLOCK_M": 64,  "BLOCK_N": 128, "BLOCK_K": 32},  num_warps=4, num_stages=3),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 64,  "BLOCK_K": 32},  num_warps=4, num_stages=3),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 32},  num_warps=8, num_stages=3),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 64},  num_warps=8, num_stages=4),
+        triton.Config({"BLOCK_M": 256, "BLOCK_N": 64,  "BLOCK_K": 32},  num_warps=8, num_stages=3),
+        triton.Config({"BLOCK_M": 64,  "BLOCK_N": 256, "BLOCK_K": 32},  num_warps=8, num_stages=3),
+    ]
+
+    @triton.autotune(configs=_CGGR_CONFIGS, key=["in_dim", "out_dim"])
     @triton.jit
     def _cggr_grouped_gemm_kernel(
         tokens_ptr,
@@ -128,6 +143,9 @@ if HAS_TRITON:
 
         Computes matmuls for all experts in parallel.
         Tokens are pre-sorted by expert for coalesced access.
+
+        Keeps bf16/fp16 inputs native to tl.dot so Tensor Cores are used;
+        accumulator stays fp32, output is cast back to the buffer dtype.
         """
         pid_m = tl.program_id(0)
         pid_n = tl.program_id(1)
@@ -163,13 +181,15 @@ if HAS_TRITON:
             w_ptrs = weights_ptr + pid_expert * stride_w_exp + k_offs[:, None] * stride_w_in + out_offs[None, :] * stride_w_out
             w = tl.load(w_ptrs, mask=k_mask[:, None] & out_mask[None, :], other=0.0)
 
-            # Cast to same dtype for tl.dot
-            t = t.to(tl.float32)
-            w = w.to(tl.float32)
+            # Native bf16/fp16 × bf16/fp16 → fp32 accumulator. This is the
+            # canonical Tensor Core path; previously we upcast to fp32 here
+            # which disabled Tensor Cores and gave 3-4× slower throughput.
             acc += tl.dot(t, w)
 
         o_ptrs = output_ptr + token_offs[:, None] * stride_o_row + out_offs[None, :] * stride_o_col
-        tl.store(o_ptrs, acc, mask=token_mask[:, None] & out_mask[None, :])
+        # Cast back to the output buffer dtype (bf16/fp16) before store
+        tl.store(o_ptrs, acc.to(output_ptr.dtype.element_ty),
+                 mask=token_mask[:, None] & out_mask[None, :])
 
 
     @triton.jit
@@ -205,21 +225,26 @@ if HAS_TRITON:
     ) -> torch.Tensor:
         """
         CGGR Grouped GEMM using Triton.
+
+        BLOCK_M/N/K are picked by @triton.autotune per (in_dim, out_dim) key,
+        cached across calls. The grid uses total_tokens as a safe upper bound
+        on the M axis — blocks outside an expert's range early-return (line
+        ~155). This avoids a CPU sync on `max(expert_counts).item()` every
+        step; a handful of no-op SM launches is cheaper than a sync on
+        modern GPUs.
         """
         total_tokens, in_dim = sorted_tokens.shape
         num_experts, _, out_dim = expert_weights.shape
 
-        output = torch.zeros(total_tokens, out_dim, device=sorted_tokens.device, dtype=sorted_tokens.dtype)
+        output = torch.empty(total_tokens, out_dim, device=sorted_tokens.device, dtype=sorted_tokens.dtype)
 
-        BLOCK_M = 64
-        BLOCK_N = 64
-        BLOCK_K = 32
-
-        max_tokens_per_expert = (expert_offsets[1:] - expert_offsets[:-1]).max().item()
-        grid = (
-            triton.cdiv(max_tokens_per_expert, BLOCK_M),
-            triton.cdiv(out_dim, BLOCK_N),
-            num_experts
+        # Grid: (ceil_div(total_tokens, BLOCK_M), ceil_div(out_dim, BLOCK_N), num_experts).
+        # Autotune picks BLOCK_M / BLOCK_N; we pass the grid as a lambda so
+        # it re-evaluates once autotune has chosen the config.
+        grid = lambda META: (
+            triton.cdiv(total_tokens, META["BLOCK_M"]),
+            triton.cdiv(out_dim, META["BLOCK_N"]),
+            num_experts,
         )
 
         _cggr_grouped_gemm_kernel[grid](
@@ -229,7 +254,6 @@ if HAS_TRITON:
             sorted_tokens.stride(0), sorted_tokens.stride(1),
             expert_weights.stride(0), expert_weights.stride(1), expert_weights.stride(2),
             output.stride(0), output.stride(1),
-            BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
         )
 
         return output
