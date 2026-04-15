@@ -54,22 +54,25 @@ from complexity.parallel import init_distributed, get_rank, get_world_size, is_m
 # ── Model config (~400M params) ─────────────────────────────────────────
 
 def make_config() -> ModelConfig:
-    """Full v1: Token-Routed MLP + Mu-Guidance + INL Dynamics.
-    hidden=1024, layers=20, heads=16, kv_heads=4, inter=3200, 4 experts
-    shared=expert_inter=800 → ~384M (run2 architecture scaled up).
+    """Full v1: Token-Routed MLP + full-width Shared + Mu-Guidance + γ-gate.
+    hidden=1024, layers=20, heads=16, kv_heads=4, inter=2008, 4 experts
+    → ~384.4M, iso-params with train_400m_dense (dense inter=4358).
+    Shared expert = full intermediate_size (2008); routed experts = inter/4 (502).
     """
     return ModelConfig(
         hidden_size=1024,
         num_hidden_layers=20,
         num_attention_heads=16,
         num_key_value_heads=4,
-        intermediate_size=3200,
+        intermediate_size=2008,        # tuned to match dense params exactly
         vocab_size=32000,
         max_position_embeddings=4096,
         attention_type="gqa",
         mlp_type="token_routed",
         num_experts=4,
         shared_expert=True,
+        routed_gate=True,              # γ·routed learnable gate
+        routed_gate_init=0.1,          # γ init 0.1 → experts contribute from step 0
         norm_type="rmsnorm",
         use_qk_norm=True,
         use_mu_guidance=True,
