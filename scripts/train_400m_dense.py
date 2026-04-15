@@ -253,8 +253,9 @@ def main():
         logger.info(f"FSDP enabled ({world_size} GPUs, full_shard)")
         logger.info(f"  Device: {trainer.device}")
 
-    # Fused cross-entropy: never materializes full [B*S, vocab] logits
-    from complexity_cuda.fused_cross_entropy import fused_cross_entropy
+    # Fused linear + cross-entropy: Liger Triton kernel when available,
+    # otherwise pure-PyTorch causal_lm_loss. Supports label_smoothing + z_loss.
+    from complexity.core.losses import fused_linear_causal_lm_loss
 
     def compute_loss(model, batch):
         input_ids = batch["input_ids"].to(trainer.device)
@@ -262,12 +263,17 @@ def main():
         outputs = model(input_ids)
         hidden = outputs["last_hidden_state"] if isinstance(outputs, dict) else outputs
         m = model
-        while hasattr(m, 'model') or hasattr(m, 'module'):
-            m = getattr(m, 'model', None) or getattr(m, 'module', None)
+        while hasattr(m, "model") or hasattr(m, "module"):
+            m = getattr(m, "model", None) or getattr(m, "module", None)
         weight = m.embed_tokens.weight
         shift_hidden = hidden[:, :-1, :].contiguous()
         shift_labels = labels[:, :shift_hidden.size(1)].contiguous()
-        return fused_cross_entropy(shift_hidden, weight, shift_labels)
+        loss, _ = fused_linear_causal_lm_loss(
+            shift_hidden, weight, shift_labels,
+            label_smoothing=0.1,
+            z_loss_coef=0.0,
+        )
+        return loss
 
     trainer.compute_loss = compute_loss
 
