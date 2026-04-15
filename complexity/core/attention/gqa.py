@@ -67,6 +67,15 @@ class GroupedQueryAttention(AttentionBase):
             self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
             self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
 
+        # LayerScale on attention output (Touvron et al. 2021) — learnable per-channel
+        # gain on o_proj output. Init 1.0 = identity; lower values dampen attention
+        # contribution to residual stream early in training, letting the MLP/residual
+        # path stabilize first.
+        self.use_attn_scale = getattr(config, "use_attn_scale", False)
+        if self.use_attn_scale:
+            init_val = float(getattr(config, "attn_scale_init", 1.0))
+            self.attn_scale = nn.Parameter(torch.full((self.hidden_size,), init_val))
+
         # Rotary embeddings (Partial RoPE if rope_fraction < 1.0)
         rope_fraction = getattr(config, "rope_fraction", 1.0)
         if rope_fraction < 1.0:
@@ -180,6 +189,8 @@ class GroupedQueryAttention(AttentionBase):
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(batch_size, seq_len, -1)
         attn_output = self.o_proj(attn_output)
+        if self.use_attn_scale:
+            attn_output = attn_output * self.attn_scale
 
         return attn_output, new_past_key_value
 

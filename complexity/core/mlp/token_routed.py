@@ -109,6 +109,23 @@ class TokenRoutedMLP(MLPBase):
             self._create_token_mapping(self.vocab_size, self.num_experts),
         )
 
+        # Expert utilization counters — accumulated across forward calls.
+        # Reset manually via reset_expert_counts() (e.g. once per CSV log step).
+        # Non-persistent so checkpoint save/load doesn't snapshot stale counters.
+        self.register_buffer(
+            "expert_counts",
+            torch.zeros(self.num_experts, dtype=torch.long),
+            persistent=False,
+        )
+
+    def reset_expert_counts(self) -> None:
+        """Zero the expert utilization counter. Call once per log interval."""
+        self.expert_counts.zero_()
+
+    def get_expert_counts(self) -> torch.Tensor:
+        """Return current expert counts [num_experts] on-device."""
+        return self.expert_counts
+
     def _create_token_mapping(self, vocab_size: int, num_experts: int) -> torch.Tensor:
         """
         Create deterministic mapping from token ID to expert ID.
@@ -158,6 +175,11 @@ class TokenRoutedMLP(MLPBase):
 
         flat_x = hidden_states.view(-1, H)
         flat_expert_ids = expert_ids.view(-1)
+
+        # Track expert utilization (in-place, non-differentiable)
+        with torch.no_grad():
+            batch_counts = torch.bincount(flat_expert_ids, minlength=self.num_experts)
+            self.expert_counts += batch_counts.to(self.expert_counts.dtype)
 
         # Shared expert (dense, all tokens)
         if self.use_shared_expert:

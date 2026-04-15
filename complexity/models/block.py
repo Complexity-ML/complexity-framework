@@ -79,6 +79,8 @@ class TransformerBlock(nn.Module):
             sliding_window=config.sliding_window,
             use_sdpa=config.use_sdpa,
             rope_type=config.rope_type,
+            use_attn_scale=getattr(config, "use_attn_scale", False),
+            attn_scale_init=getattr(config, "attn_scale_init", 1.0),
         )
         self.self_attn = ATTENTION_REGISTRY.build(config.attention_type, attn_config)
 

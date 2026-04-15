@@ -73,6 +73,8 @@ def make_config() -> ModelConfig:
         shared_expert=True,
         routed_gate=True,              # γ·routed learnable gate
         routed_gate_init=0.1,          # γ init 0.1 → experts contribute from step 0
+        use_attn_scale=True,           # LayerScale on attn.o_proj output
+        attn_scale_init=1.0,           # identity init, learns to re-weight per-channel
         norm_type="rmsnorm",
         use_qk_norm=True,
         use_mu_guidance=True,
@@ -306,8 +308,13 @@ def main():
         file_mode = "a" if args.resume and os.path.exists(csv_path) else "w"
         csv_file = open(csv_path, file_mode, newline="")
         csv_writer = csv.writer(csv_file)
+        n_experts = config.num_experts
+        expert_cols = [f"expert_{e}_share" for e in range(n_experts)]
         if file_mode == "w":
-            csv_writer.writerow(["step", "loss", "ppl", "lr", "gamma_mean", "tokens_seen", "elapsed_s"])
+            csv_writer.writerow([
+                "step", "loss", "ppl", "lr", "gamma_mean", "tokens_seen",
+                *expert_cols, "expert_dead_count", "elapsed_s",
+            ])
         csv_file.flush()
         t_start = time.time()
         tokens_per_step_local = tokens_per_step  # capture from outer scope
@@ -323,15 +330,35 @@ def main():
                     vals.append(t.float().mean().item())
             return sum(vals) / len(vals) if vals else float("nan")
 
+        def _get_expert_shares(model, num_experts: int):
+            """Aggregate expert_counts across all TokenRoutedMLP layers, return shares + reset."""
+            import torch as _torch
+            total = _torch.zeros(num_experts, dtype=_torch.float64)
+            for m in model.modules():
+                if hasattr(m, "expert_counts") and hasattr(m, "reset_expert_counts"):
+                    counts = m.expert_counts
+                    if hasattr(counts, "to_local"):
+                        counts = counts.to_local()
+                    total += counts.detach().cpu().to(_torch.float64)
+                    m.reset_expert_counts()
+            s = total.sum().item()
+            if s <= 0:
+                return [float("nan")] * num_experts, num_experts  # no data yet
+            shares = (total / s).tolist()
+            dead = sum(1 for x in total.tolist() if x == 0)
+            return shares, dead
+
         def csv_callback(trainer_obj, step, loss_val):
             real_loss = loss_val
             ppl = math.exp(min(real_loss, 20))
             lr = trainer_obj.optimizer.param_groups[0]["lr"]
             gamma = _get_gamma_mean(trainer_obj.model)
+            shares, dead = _get_expert_shares(trainer_obj.model, n_experts)
             tokens_seen = step * tokens_per_step_local
             csv_writer.writerow([
                 step, f"{real_loss:.6f}", f"{ppl:.2f}",
                 f"{lr:.6e}", f"{gamma:.6f}", tokens_seen,
+                *[f"{s:.4f}" for s in shares], dead,
                 f"{time.time() - t_start:.1f}",
             ])
             if step % 100 == 0:

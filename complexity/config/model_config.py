@@ -57,6 +57,8 @@ class ModelConfig:
     attention_type: str = "gqa"  # gqa, mha, mqa
     attention_dropout: float = 0.0
     use_qk_norm: bool = True
+    use_attn_scale: bool = False      # LayerScale on attention o_proj output
+    attn_scale_init: float = 1.0      # init value for LayerScale (1.0 = identity)
     sliding_window: Optional[int] = None  # None = full attention
 
     # === Position Embeddings ===
