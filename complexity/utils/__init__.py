@@ -70,6 +70,21 @@ from .security import (
     UnsafeCheckpointError,
 )
 
+from .mps import (
+    is_mps_available,
+    select_device,
+    set_memory_watermark,
+    enable_cpu_fallback,
+    mps_memory_stats,
+    empty_cache,
+    synchronize,
+    seed_all,
+    autocast,
+    autocast_dtype,
+    setup_mps,
+    MPSMemoryStats,
+)
+
 from .safety import (
     SafetyConfig,
     SafetyClamp,
@@ -121,4 +136,17 @@ __all__ = [
     "SafetyCallback",
     "load_harm_direction",
     "save_harm_direction",
+    # MPS / device
+    "is_mps_available",
+    "select_device",
+    "set_memory_watermark",
+    "enable_cpu_fallback",
+    "mps_memory_stats",
+    "empty_cache",
+    "synchronize",
+    "seed_all",
+    "autocast",
+    "autocast_dtype",
+    "setup_mps",
+    "MPSMemoryStats",
 ]

@@ -99,6 +99,10 @@ class TransformerBlock(nn.Module):
             token_frequencies=config.token_frequencies,
             shared_expert=getattr(config, 'shared_expert', False),
             shared_intermediate_size=getattr(config, 'shared_intermediate_size', None),
+            routed_gate=getattr(config, 'routed_gate', False),
+            routed_gate_init=getattr(config, 'routed_gate_init', 0.0),
+            gpt2_residual_init=getattr(config, 'gpt2_residual_init', False),
+            num_hidden_layers=getattr(config, 'num_hidden_layers', 1),
         )
         self.mlp = MLP_REGISTRY.build(config.mlp_type, mlp_config)
 

@@ -17,6 +17,8 @@ Usage:
     out = mlp(hidden_states, token_ids=token_ids)
 """
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -71,6 +73,11 @@ class TokenRoutedMLP(MLPBase):
         self.vocab_size = config.vocab_size
         self.expert_intermediate_size = self.intermediate_size // self.num_experts
 
+        # GPT-2 residual init: scale down_proj by 1/sqrt(2·L) to keep residual stream variance ~1
+        self.gpt2_residual_init = getattr(config, 'gpt2_residual_init', False)
+        n_layers = max(1, getattr(config, 'num_hidden_layers', 1))
+        down_init_std = 0.02 / math.sqrt(2.0 * n_layers) if self.gpt2_residual_init else 0.02
+
         # Routed expert weights: gate, up, down — separate like supplementary code
         self.gate_proj_w = nn.Parameter(
             torch.randn(self.num_experts, self.hidden_size,
@@ -82,16 +89,25 @@ class TokenRoutedMLP(MLPBase):
         )
         self.down_proj_w = nn.Parameter(
             torch.randn(self.num_experts, self.expert_intermediate_size,
-                        self.hidden_size) * 0.02
+                        self.hidden_size) * down_init_std
         )
 
+        # Learnable α gate on routed path: out = shared + α·routed
+        self.routed_gate = getattr(config, 'routed_gate', False)
+        if self.routed_gate:
+            alpha_init = float(getattr(config, 'routed_gate_init', 0.0))
+            self.routed_alpha = nn.Parameter(torch.full((1,), alpha_init))
+
         # Shared lexical expert: dense SwiGLU all tokens pass through
+        # Default size = intermediate_size (full dense width), matching docstring contract
         self.use_shared_expert = getattr(config, 'shared_expert', False)
         if self.use_shared_expert:
-            shared_size = getattr(config, 'shared_intermediate_size', None) or self.expert_intermediate_size
+            shared_size = getattr(config, 'shared_intermediate_size', None) or self.intermediate_size
             self.shared_gate = nn.Linear(self.hidden_size, shared_size, bias=False)
             self.shared_up = nn.Linear(self.hidden_size, shared_size, bias=False)
             self.shared_down = nn.Linear(shared_size, self.hidden_size, bias=False)
+            if self.gpt2_residual_init:
+                nn.init.normal_(self.shared_down.weight, std=down_init_std)
 
         # Token -> expert mapping (Zipf-balanced or modulo)
         self.register_buffer(
@@ -194,7 +210,10 @@ class TokenRoutedMLP(MLPBase):
                 inter_e = F.silu(gate_e) * up_e
                 routed_out[mask] = (inter_e @ down_w[e]).to(routed_out.dtype)
 
-        out = routed_out + shared_out
+        if self.routed_gate:
+            out = shared_out + self.routed_alpha * routed_out
+        else:
+            out = shared_out + routed_out
         return out.view(B, S, H)
 
     def _forward_all_experts(self, hidden_states: torch.Tensor) -> torch.Tensor:

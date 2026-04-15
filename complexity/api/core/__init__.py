@@ -53,7 +53,6 @@ from .mlp import (
     GeGLUMLP,
     StandardMLP,
     TokenRoutedMLP,
-    TokenRoutedMLPParallel,
     MLPBase,
     MLPConfig,
 )
@@ -184,7 +183,6 @@ __all__ = [
     "GeGLUMLP",
     "StandardMLP",
     "TokenRoutedMLP",
-    "TokenRoutedMLPParallel",
     "MLPBase",
     "MLPConfig",
 

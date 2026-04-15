@@ -1,0 +1,329 @@
+"""
+Train 70M ComplexityModel on Apple Silicon (MPS) / CPU fallback.
+
+Token-Routed MoE + GQA + SwiGLU — ~70M params.
+
+Usage:
+    python scripts/train_70m_mps.py
+    python scripts/train_70m_mps.py --steps 500 --batch-size 8 --bf16 --grad-ckpt
+
+Complexity-ML — 2026
+"""
+
+import argparse
+import csv
+import logging
+import math
+import time
+from pathlib import Path
+
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, IterableDataset
+from tqdm import tqdm
+
+from complexity.config import ModelConfig
+from complexity.models import ComplexityModel
+from complexity.tokenizer import Tokenizer
+from complexity.utils import (
+    autocast,
+    autocast_dtype,
+    empty_cache,
+    mps_memory_stats,
+    setup_mps,
+    synchronize,
+)
+
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%H:%M:%S",
+    level=logging.INFO,
+)
+logger = logging.getLogger("train_70m")
+
+for lib in ("httpx", "httpcore", "huggingface_hub", "datasets", "transformers"):
+    logging.getLogger(lib).setLevel(logging.WARNING)
+
+
+# ---------------------------------------------------------------------------
+# Config: ~70M params
+# hidden=640, 10 layers, GQA 10h/2kv, SwiGLU, Token-Routed MoE x4
+# ---------------------------------------------------------------------------
+
+def make_config() -> ModelConfig:
+    return ModelConfig(
+        hidden_size=640,
+        num_hidden_layers=10,
+        num_attention_heads=10,
+        num_key_value_heads=2,
+        vocab_size=32000,
+        max_position_embeddings=2048,
+        attention_type="gqa",
+        mlp_type="token_routed",
+        num_experts=4,
+        norm_type="rmsnorm",
+        use_qk_norm=True,
+        use_mu_guidance=True,
+        # MoE recipe to beat dense: full-width shared + gated routed experts + GPT-2 init
+        shared_expert=True,
+        shared_intermediate_size=None,  # None → full intermediate_size (dense-equivalent)
+        routed_gate=True,               # α·routed on routed path
+        routed_gate_init=0.1,           # α start = 0.1 → experts contribute from step 0 (vs 0 = pure-dense start)
+        gpt2_residual_init=True,        # down_proj std = 0.02/sqrt(2·L)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Datasets
+# ---------------------------------------------------------------------------
+
+class FineWebDataset(IterableDataset):
+    """FineWeb-Edu streaming — tokenized chunks, next-token prediction."""
+
+    def __init__(self, tokenizer, seq_len: int = 512):
+        from datasets import load_dataset
+        self.tokenizer = tokenizer
+        self.seq_len   = seq_len
+        self.dataset   = load_dataset(
+            "HuggingFaceFW/fineweb-edu",
+            name="sample-10BT",
+            split="train",
+            streaming=True,
+        )
+
+    def __iter__(self):
+        buffer = []
+        for example in self.dataset:
+            text = example.get("text", "")
+            if not text:
+                continue
+            buffer.extend(self.tokenizer.encode(text))
+            while len(buffer) >= self.seq_len + 1:
+                chunk  = buffer[: self.seq_len + 1]
+                buffer = buffer[self.seq_len :]
+                yield {
+                    "input_ids": torch.tensor(chunk[:-1], dtype=torch.long),
+                    "labels":    torch.tensor(chunk[1:],  dtype=torch.long),
+                }
+
+
+class RandomTokenDataset(IterableDataset):
+    """Fallback: random tokens — no download needed."""
+
+    def __init__(self, vocab_size: int = 32000, seq_len: int = 512):
+        self.vocab_size = vocab_size
+        self.seq_len    = seq_len
+
+    def __iter__(self):
+        while True:
+            ids = torch.randint(0, self.vocab_size, (self.seq_len + 1,))
+            yield {"input_ids": ids[:-1], "labels": ids[1:]}
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="Train 70M on MPS/CPU")
+    parser.add_argument("--tokenizer",   type=str,   default="./tokenizer")
+    parser.add_argument("--dataset",     type=str,   default="fineweb",
+                        help="fineweb | random")
+    parser.add_argument("--steps",       type=int,   default=200)
+    parser.add_argument("--batch-size",  type=int,   default=8)
+    parser.add_argument("--seq-len",     type=int,   default=512)
+    parser.add_argument("--lr",          type=float, default=3e-4)
+    parser.add_argument("--log-steps",   type=int,   default=10)
+    parser.add_argument("--seed",        type=int,   default=42)
+    parser.add_argument("--bf16",        action="store_true",
+                        help="Enable bfloat16 autocast (recommended on MPS)")
+    parser.add_argument("--grad-ckpt",   action="store_true",
+                        help="Enable gradient checkpointing")
+    parser.add_argument("--num-workers", type=int,   default=2)
+    parser.add_argument("--empty-cache-every", type=int, default=50,
+                        help="Call empty_cache every N steps (0 = never)")
+    parser.add_argument("--run-name",    type=str,   default="moe",
+                        help="Subdir under runs/ for CSV logs")
+    args = parser.parse_args()
+
+    # CSV logger
+    run_dir = Path("runs") / args.run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = run_dir / "metrics.csv"
+    csv_file = csv_path.open("w", newline="")
+    csv_writer = csv.writer(csv_file)
+    csv_writer.writerow(["step", "loss", "ppl", "lr", "tok_s", "alpha_mean"])
+    csv_file.flush()
+    logger.info(f"CSV: {csv_path}")
+
+    # Centralized MPS setup: watermark, CPU fallback, seed, device
+    device = setup_mps(unlimited_watermark=True, cpu_fallback=True, seed=args.seed)
+
+    # Model
+    config = make_config()
+    model = ComplexityModel(config).to(device)
+    if args.grad_ckpt:
+        model.gradient_checkpointing_enable()
+        logger.info("Gradient checkpointing: enabled")
+
+    total_params = sum(p.numel() for p in model.parameters())
+    logger.info(f"Model: {total_params / 1e6:.1f}M params")
+    logger.info(
+        f"Config: hidden={config.hidden_size}, layers={config.num_hidden_layers}, "
+        f"heads={config.num_attention_heads}/{config.num_key_value_heads} (GQA), "
+        f"mlp={config.mlp_type}, experts={config.num_experts}, "
+        f"shared={config.shared_expert}, routed_gate={config.routed_gate}, "
+        f"gpt2_init={config.gpt2_residual_init}"
+    )
+
+    amp_dtype = autocast_dtype(device) if args.bf16 else None
+    if amp_dtype is not None:
+        logger.info(f"Autocast: {amp_dtype}")
+
+    # Optimizer — GPT-3 style: betas=(0.9, 0.95), wd=0.1, no decay on bias/norm
+    decay_params, no_decay_params = [], []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if p.ndim < 2 or "bias" in name:
+            no_decay_params.append(p)
+        else:
+            decay_params.append(p)
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": decay_params,    "weight_decay": 0.1},
+            {"params": no_decay_params, "weight_decay": 0.0},
+        ],
+        lr=args.lr,
+        betas=(0.9, 0.95),
+        eps=1e-8,
+    )
+
+    # LR schedule: linear warmup (5%) + cosine decay to min_lr=10% of peak
+    warmup    = max(1, int(args.steps * 0.05))
+    min_ratio = 0.1
+
+    def lr_lambda(step):
+        if step < warmup:
+            return step / warmup
+        progress = (step - warmup) / max(1, args.steps - warmup)
+        cosine   = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return min_ratio + (1.0 - min_ratio) * cosine
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    # Tokenizer + Dataset
+    if args.dataset == "fineweb":
+        tokenizer = Tokenizer.load(args.tokenizer)
+        logger.info(f"Tokenizer: {args.tokenizer} (vocab={tokenizer.vocab_size})")
+        dataset = FineWebDataset(tokenizer, seq_len=args.seq_len)
+        logger.info("Dataset: FineWeb-Edu sample-10BT (streaming)")
+    else:
+        dataset = RandomTokenDataset(vocab_size=config.vocab_size, seq_len=args.seq_len)
+        logger.info("Dataset: random tokens (dev mode)")
+
+    # pin_memory is useless on MPS unified memory; persistent_workers avoids respawn cost
+    loader_kwargs = dict(batch_size=args.batch_size, pin_memory=False)
+    if args.num_workers > 0:
+        loader_kwargs.update(num_workers=args.num_workers, persistent_workers=True)
+    loader = DataLoader(dataset, **loader_kwargs)
+
+    # Training loop
+    model.train()
+    t_start          = time.perf_counter()
+    t_log            = t_start
+    tokens_since_log = 0
+    last_loss        = float("nan")
+
+    logger.info(f"Training {args.steps} steps | batch={args.batch_size} | seq={args.seq_len}")
+
+    pbar = tqdm(total=args.steps, desc="train 70M", unit="step", dynamic_ncols=True)
+
+    try:
+        for step, batch in enumerate(loader):
+            if step >= args.steps:
+                break
+
+            input_ids = batch["input_ids"].to(device, non_blocking=True)
+            labels    = batch["labels"].to(device, non_blocking=True)
+
+            optimizer.zero_grad(set_to_none=True)
+
+            with autocast(device, dtype=amp_dtype, enabled=amp_dtype is not None):
+                outputs = model(input_ids)
+                hidden  = outputs["last_hidden_state"]
+                logits  = F.linear(hidden, model.embed_tokens.weight)
+                loss    = F.cross_entropy(
+                    logits.view(-1, config.vocab_size),
+                    labels.view(-1),
+                )
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            scheduler.step()
+
+            tokens_since_log += args.batch_size * args.seq_len
+            pbar.update(1)
+
+            if (step + 1) % args.log_steps == 0 or step == 0:
+                synchronize(device)
+                now       = time.perf_counter()
+                dt        = now - t_log
+                tok_s     = tokens_since_log / dt if dt > 0 else 0
+                last_loss = loss.item()
+                ppl       = math.exp(min(last_loss, 20))
+                lr_now    = scheduler.get_last_lr()[0]
+
+                # Mean of learnable α across MoE layers (None if gate disabled)
+                alphas = [m.routed_alpha.detach().float().item()
+                          for m in model.modules()
+                          if hasattr(m, "routed_alpha")]
+                alpha_mean = sum(alphas) / len(alphas) if alphas else float("nan")
+
+                csv_writer.writerow([
+                    step + 1, f"{last_loss:.6f}", f"{ppl:.2f}",
+                    f"{lr_now:.6e}", f"{tok_s:.0f}", f"{alpha_mean:.6f}",
+                ])
+                csv_file.flush()
+
+                postfix = dict(
+                    loss=f"{last_loss:.4f}",
+                    ppl=f"{ppl:.1f}",
+                    lr=f"{lr_now:.2e}",
+                    tok_s=f"{tok_s:,.0f}",
+                    α=f"{alpha_mean:.3f}",
+                )
+                stats = mps_memory_stats()
+                if stats is not None:
+                    postfix["mem"] = f"{stats.driver_allocated_mb:.0f}/{stats.recommended_max_mb:.0f}MB"
+                pbar.set_postfix(postfix)
+                t_log            = now
+                tokens_since_log = 0
+
+            if args.empty_cache_every > 0 and (step + 1) % args.empty_cache_every == 0:
+                empty_cache(device)
+
+    except KeyboardInterrupt:
+        logger.info(f"Interrupted at step {step + 1}")
+
+    pbar.close()
+
+    # Summary
+    synchronize(device)
+    elapsed      = time.perf_counter() - t_start
+    total_tokens = args.steps * args.batch_size * args.seq_len
+    logger.info(
+        f"Done — {args.steps} steps in {elapsed:.1f}s | "
+        f"{total_tokens / elapsed:,.0f} tok/s overall"
+    )
+    stats = mps_memory_stats()
+    if stats is not None:
+        logger.info(str(stats))
+
+    csv_file.close()
+    logger.info(f"Metrics saved: {csv_path}")
+
+
+if __name__ == "__main__":
+    main()

@@ -59,6 +59,6 @@ class MuProjection(nn.Module):
             h: Hidden states [batch, seq_len, hidden_size]
 
         Returns:
-            mu_contextual: [batch, seq_len, hidden_size], clamped
+            mu_contextual: [batch, seq_len, hidden_size]
         """
-        return torch.clamp(self.mu + self.mu_proj(h), self.mu_min, self.mu_max)
+        return self.mu + self.mu_proj(h)

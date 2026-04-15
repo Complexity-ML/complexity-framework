@@ -74,6 +74,9 @@ class ModelConfig:
     token_frequencies: Optional[torch.Tensor] = None  # Zipf-balanced routing
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
     shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
+    routed_gate: bool = False  # Learnable α on routed path: out = shared + α·routed
+    routed_gate_init: float = 0.0  # Initial value of α (0 = pure dense start, >0 = experts contribute early)
+    gpt2_residual_init: bool = False  # Scale down_proj init by 1/sqrt(2·num_hidden_layers) — GPT-2 style
 
     # === Mu-Guidance (Complexity innovation) ===
     use_mu_guidance: bool = False  # Enable contextual mu flowing between layers

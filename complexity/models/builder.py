@@ -213,10 +213,9 @@ class ComplexityModel(nn.Module):
                     mu_prev=mu_prev,
                 )
 
-            # mu from this layer guides next layer's attention.
-            # Clamp to [-2, 2] to prevent autoregressive feedback explosion.
+            # mu from this layer guides next layer's attention — free (no clamp).
             if mu_contextual is not None and not getattr(self.config, 'disable_mu_guidance', False):
-                mu_prev = torch.clamp(mu_contextual, -2.0, 2.0)
+                mu_prev = mu_contextual
 
             if use_cache:
                 new_past_key_values.append(new_kv)

@@ -16,7 +16,6 @@ from complexity.core import (
     SwiGLUMLP,
     GeGLUMLP,
     TokenRoutedMLP,
-    TokenRoutedMLPParallel,
 )
 
 
@@ -38,7 +37,6 @@ class MLP:
         "geglu": GeGLUMLP,
         "gated": SwiGLUMLP,  # alias
         "moe": TokenRoutedMLP,  # Deterministic (our innovation)
-        "moe_parallel": TokenRoutedMLPParallel,
     }
 
     @classmethod
@@ -104,7 +102,6 @@ __all__ = [
     "GeGLUMLP",
     "StandardMLP",
     "TokenRoutedMLP",
-    "TokenRoutedMLPParallel",
     "MLPBase",
     "MLPConfig",
 ]

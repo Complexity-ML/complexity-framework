@@ -29,14 +29,14 @@ class TestCoreImports:
     def test_import_core_mlp(self):
         """Test MLP imports."""
         from complexity.core.mlp import (
-            MLP,
-            SwiGLU,
-            GeGLU,
+            MLPBase,
+            SwiGLUMLP,
+            GeGLUMLP,
             TokenRoutedMLP,
         )
-        assert MLP is not None
-        assert SwiGLU is not None
-        assert GeGLU is not None
+        assert MLPBase is not None
+        assert SwiGLUMLP is not None
+        assert GeGLUMLP is not None
         assert TokenRoutedMLP is not None
 
     def test_import_core_normalization(self):
@@ -51,13 +51,13 @@ class TestCoreImports:
     def test_import_core_position(self):
         """Test position encoding imports."""
         from complexity.core.position import (
-            RoPE,
-            ALiBi,
-            YaRN,
+            StandardRoPE,
+            ALiBiPositionBias,
+            YaRNRoPE,
         )
-        assert RoPE is not None
-        assert ALiBi is not None
-        assert YaRN is not None
+        assert StandardRoPE is not None
+        assert ALiBiPositionBias is not None
+        assert YaRNRoPE is not None
 
 
 class TestAPIImports:
@@ -69,12 +69,12 @@ class TestAPIImports:
             Attention,
             MLP,
             RMSNorm,
-            RoPE,
+            StandardRoPE,
         )
         assert Attention is not None
         assert MLP is not None
         assert RMSNorm is not None
-        assert RoPE is not None
+        assert StandardRoPE is not None
 
     def test_import_api_cuda(self):
         """Test CUDA namespace from API."""
@@ -100,10 +100,11 @@ class TestModelsImports:
     """Test models module imports."""
 
     def test_import_transformer(self):
-        """Test Transformer import."""
-        from complexity.models import Transformer, TransformerConfig
-        assert Transformer is not None
-        assert TransformerConfig is not None
+        """Test ComplexityModel import."""
+        from complexity.models import ComplexityModel
+        from complexity.config import ModelConfig
+        assert ComplexityModel is not None
+        assert ModelConfig is not None
 
 
 class TestCLIImports:

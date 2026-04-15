@@ -97,7 +97,6 @@ from .core import (
     GeGLUMLP,
     StandardMLP,
     TokenRoutedMLP,
-    TokenRoutedMLPParallel,
     MLPBase,
     MLPConfig,
     # Position
@@ -257,7 +256,6 @@ __all__ = [
     "GeGLUMLP",
     "StandardMLP",
     "TokenRoutedMLP",
-    "TokenRoutedMLPParallel",
     "MLPBase",
     "MLPConfig",
 
