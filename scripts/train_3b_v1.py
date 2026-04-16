@@ -158,9 +158,10 @@ def main():
     config.token_frequencies = token_counts.float()
 
     model = ComplexityModel(config)
+    model.gradient_checkpointing_enable()  # recompute activations in backward → ~60% VRAM saved
     total_params = sum(p.numel() for p in model.parameters())
     if is_main:
-        logger.info(f"Model: {total_params / 1e9:.2f}B params")
+        logger.info(f"Model: {total_params / 1e9:.2f}B params (gradient checkpointing ON)")
 
     # Steps
     if args.max_steps is not None:
