@@ -199,7 +199,7 @@ def main():
         batch_size=args.batch_size,
         gradient_accumulation_steps=args.gradient_accumulation,
         use_fsdp=True,
-        bf16=True,
+        precision="bf16",
     )
 
     trainer = Trainer(model=model, config=train_config, train_dataloader=dataloader)
