@@ -74,8 +74,7 @@ def make_config() -> ModelConfig:
         mlp_type="token_routed",
         num_experts=4,
         shared_expert=True,
-        routed_gate=True,              # γ·routed learnable gate
-        routed_gate_init=0.1,          # γ init 0.1 → experts contribute from step 0
+        routed_gate=False,             # γ gate removed: stalls at bf16 precision, no benefit
         use_attn_scale=True,           # LayerScale on attn.o_proj output
         attn_scale_init=1.0,           # identity init, learns to re-weight per-channel
         norm_type="rmsnorm",
