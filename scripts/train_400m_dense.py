@@ -334,18 +334,24 @@ def main():
             csv_file.close()
         logging.getLogger("complexity.training.trainer").setLevel(logging.INFO)
 
-    if summary is not None and is_main:
+    if is_main and summary is not None:
         logger.info(f"Training complete: {summary}")
-        # Unwrap to base model for correct save (DDP/FSDP wrappers shard weights)
+
+    # save_pretrained contains full_tensor() which is a collective (all-gather).
+    # ALL ranks must call it, not just rank 0.
+    if summary is not None:
         base = model
         while not hasattr(base, 'save_pretrained'):
             next_base = getattr(base, 'module', None) or getattr(base, 'model', None); base = next_base if (next_base is not None and next_base is not base) else base
             if not hasattr(base, 'save_pretrained'): break
         base.save_pretrained(os.path.join(args.checkpoint_dir, "final"))
-        config.save(os.path.join(args.checkpoint_dir, "final", "model_config.yaml"))
-        logger.info(f"Model saved to {args.checkpoint_dir}/final/")
+        if is_main:
+            config.save(os.path.join(args.checkpoint_dir, "final", "model_config.yaml"))
+            logger.info(f"Model saved to {args.checkpoint_dir}/final/")
 
     if distributed:
+        import torch.distributed as dist
+        dist.barrier()
         cleanup()
 
 
