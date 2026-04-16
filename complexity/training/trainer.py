@@ -90,19 +90,12 @@ class Trainer:
         else:
             self.model = model.to(self.device)
 
-        # Auto-scale LR by effective batch size (sqrt scaling)
-        # Base LR is calibrated for batch=64 on 1 GPU.
-        base_batch = 64
-        effective_batch = config.batch_size * self.world_size * config.gradient_accumulation_steps
-        if effective_batch != base_batch:
-            import math
-            lr_scale = math.sqrt(effective_batch / base_batch)
-            config.learning_rate = config.learning_rate * lr_scale
-            if hasattr(config, 'muon_lr'):
-                config.muon_lr = config.muon_lr * lr_scale
-            if self.is_main:
-                logger.info(f"  LR auto-scaled: x{lr_scale:.2f} for effective_batch={effective_batch} "
-                            f"(base={base_batch}) -> lr={config.learning_rate:.2e}")
+        # LR auto-scaling REMOVED: the sqrt(batch) heuristic silently
+        # multiplied the user's --lr by up to 3× on multi-GPU, causing
+        # instability on MoE models. The user now controls the actual LR.
+        if self.is_main:
+            effective_batch = config.batch_size * self.world_size * config.gradient_accumulation_steps
+            logger.info(f"  LR: {config.learning_rate:.2e} (effective_batch={effective_batch})")
 
         # Optimizer
         if optimizer is None:
