@@ -193,6 +193,7 @@ def main():
         warmup_steps=warmup_steps,
         lr_scheduler=args.lr_scheduler,
         save_steps=args.save_steps,
+        save_total_limit=2,  # keep only 2 most recent checkpoints (disk space)
         log_steps=args.log_steps,
         checkpoint_dir=args.checkpoint_dir,
         batch_size=args.batch_size,
