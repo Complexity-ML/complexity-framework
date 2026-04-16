@@ -70,7 +70,8 @@ def make_config() -> ModelConfig:
         # (GPT-2 residual init is now applied automatically by _init_residual_scaling)
         shared_expert=True,
         shared_intermediate_size=None,  # None → full intermediate_size (dense-equivalent)
-        routed_gate=False,              # γ gate removed: stalls at bf16 precision, no benefit
+        routed_gate=True,              # γ=0.1 fixed scalar
+        routed_gate_init=0.1,
         use_attn_scale=True,            # LayerScale on attn.o_proj output
         attn_scale_init=1.0,            # identity init, learns to re-weight per-channel
     )

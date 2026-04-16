@@ -37,14 +37,21 @@ def _to_local(t: torch.Tensor) -> torch.Tensor:
 
 def gamma_mean(model: nn.Module) -> float:
     """
-    Mean of all ``routed_alpha`` (γ) parameters across TokenRoutedMLP layers.
+    Return γ (routed gate value) from TokenRoutedMLP layers.
 
-    Returns NaN if the model has no ``routed_alpha`` params (γ-gate disabled).
-    This is a purely local computation — if you need the value to match
-    across FSDP ranks, the parameters are already replicated/sharded
-    identically so each rank returns the same number.
+    With fixed γ (not nn.Parameter), reads from ``routed_gamma`` attribute.
+    With learnable γ (legacy), reads from ``routed_alpha`` nn.Parameter.
+    Returns NaN if the model has no gate.
     """
+    # Fixed γ (current default)
     vals: List[float] = []
+    for m in model.modules():
+        if hasattr(m, "routed_gamma"):
+            vals.append(float(m.routed_gamma))
+    if vals:
+        return sum(vals) / len(vals)
+
+    # Learnable γ (legacy)
     for name, p in model.named_parameters():
         if "routed_alpha" not in name:
             continue

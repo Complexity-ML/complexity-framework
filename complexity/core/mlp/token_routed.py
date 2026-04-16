@@ -99,11 +99,13 @@ class TokenRoutedMLP(MLPBase):
                         self.hidden_size) * 0.02
         )
 
-        # Learnable α gate on routed path: out = shared + α·routed
+        # Routed gate: out = shared + γ·routed
+        # γ is a fixed scalar (not nn.Parameter) to avoid bf16 truncation
+        # under FSDP. On MPS (fp32 params) γ barely moved (0.10→0.14),
+        # confirming that a fixed value works.
         self.routed_gate = getattr(config, 'routed_gate', False)
         if self.routed_gate:
-            alpha_init = float(getattr(config, 'routed_gate_init', 0.0))
-            self.routed_alpha = nn.Parameter(torch.full((1,), alpha_init))
+            self.routed_gamma = float(getattr(config, 'routed_gate_init', 0.1))
 
         # Shared lexical expert: dense SwiGLU all tokens pass through.
         # Default size = intermediate_size (full dense width). shared_down is
@@ -247,7 +249,7 @@ class TokenRoutedMLP(MLPBase):
         routed_out[sorted_idx] = sorted_routed.to(routed_out.dtype)
 
         if self.routed_gate:
-            out = shared_out + self.routed_alpha * routed_out
+            out = shared_out + self.routed_gamma * routed_out
         else:
             out = shared_out + routed_out
         return out.view(B, S, H)
