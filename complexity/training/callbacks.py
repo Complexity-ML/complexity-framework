@@ -96,7 +96,8 @@ class TqdmCallback:
 
         # MoE-specific telemetry (only if the model has TokenRoutedMLP layers)
         if shares:
-            postfix["γ"] = f"{gamma:.3f}"
+            if not math.isnan(gamma):
+                postfix["γ"] = f"{gamma:.3f}"
             postfix["E"] = "/".join(f"{s:.2f}" for s in shares)
             if dead > 0:
                 postfix["dead"] = str(dead)
