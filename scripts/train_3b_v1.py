@@ -77,7 +77,7 @@ def make_config() -> ModelConfig:
 class FineWebStreamingDataset(IterableDataset):
     """FineWeb-Edu streaming with multi-GPU sharding."""
 
-    def __init__(self, tokenizer, max_length=4096, rank=0, world_size=1):
+    def __init__(self, tokenizer, max_length=2048, rank=0, world_size=1):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.rank = rank
@@ -170,15 +170,15 @@ def main():
             target_tokens=args.target_tokens,
             batch_size=args.batch_size * world_size,
             grad_accum=args.gradient_accumulation,
-            seq_len=4096,
+            seq_len=2048,
         )
     warmup_steps = args.warmup_steps if args.warmup_steps is not None else max(1, int(max_steps * 0.05))
 
-    tokens_per_step = args.batch_size * world_size * args.gradient_accumulation * 4096
+    tokens_per_step = args.batch_size * world_size * args.gradient_accumulation * 2048
     if is_main:
         logger.info(f"Training: {max_steps:,} steps (~{args.target_tokens/1e9:.0f}B tokens)")
         logger.info(f"  Tokens/step: {tokens_per_step:,} "
-                     f"(batch={args.batch_size} × {world_size} GPUs × accum={args.gradient_accumulation} × seq=4096)")
+                     f"(batch={args.batch_size} × {world_size} GPUs × accum={args.gradient_accumulation} × seq=2048)")
         logger.info(f"  Warmup: {warmup_steps} steps")
 
     # Dataset
