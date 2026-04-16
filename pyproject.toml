@@ -52,8 +52,8 @@ dependencies = [
 [project.optional-dependencies]
 cuda = [
     "triton>=2.0.0",
-    "flash-attn>=2.0.0",
     "liger-kernel>=0.5.0",  # fused linear+CE, RMSNorm, RoPE (Triton)
+    # flash-attn removed: builds from source (~30min), SDPA covers the same path
 ]
 fp8 = [
     "torchao>=0.7.0",
