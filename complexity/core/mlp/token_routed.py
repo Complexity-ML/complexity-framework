@@ -213,6 +213,18 @@ class TokenRoutedMLP(MLPBase):
         up_w = _to_local(self.up_proj_w)
         down_w = _to_local(self.down_proj_w)
 
+        # FSDP diagnostic: verify expert weights are fully gathered (not sharded)
+        if not hasattr(self, "_fsdp_checked"):
+            expected = (self.num_experts, self.hidden_size, self.expert_intermediate_size)
+            if gate_w.shape != expected:
+                logger.error(
+                    f"FSDP BUG: gate_proj_w shape {tuple(gate_w.shape)} != expected {expected}. "
+                    f"Expert weights are SHARDED — matmuls are corrupted!"
+                )
+            else:
+                logger.info(f"FSDP OK: expert weights shape {tuple(gate_w.shape)}")
+            self._fsdp_checked = True
+
         use_cggr = HAS_CGGR and flat_x.is_cuda and cggr_grouped_gemm_autograd is not None
 
         # Always sort-then-dispatch: contiguous slicing is ~2× faster than
