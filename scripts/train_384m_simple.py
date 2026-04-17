@@ -26,7 +26,7 @@ from complexity.config import ModelConfig
 from complexity.core.losses import causal_lm_loss
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
-from complexity.training import gamma_mean, global_expert_shares
+from complexity.training import global_expert_shares
 from complexity.utils import (
     autocast,
     autocast_dtype,
@@ -69,10 +69,6 @@ def make_config() -> ModelConfig:
         use_mu_guidance=True,
         shared_expert=True,
         shared_intermediate_size=None,
-        routed_gate=True,
-        routed_gate_init=0.1,
-        use_attn_scale=True,
-        attn_scale_init=1.0,
     )
 
 
@@ -189,7 +185,6 @@ def main():
         f"Config: hidden={config.hidden_size}, layers={config.num_hidden_layers}, "
         f"heads={config.num_attention_heads}/{config.num_key_value_heads} (GQA), "
         f"mlp={config.mlp_type}, experts={config.num_experts}, "
-        f"shared={config.shared_expert}, routed_gate={config.routed_gate}"
     )
 
     amp_dtype = autocast_dtype(device) if args.bf16 else None
@@ -306,7 +301,7 @@ def main():
                 ppl       = math.exp(min(loss_metrics.ce, 20))
                 lr_now    = scheduler.get_last_lr()[0]
 
-                alpha_mean = gamma_mean(model)
+                alpha_mean = float("nan")  # γ-gate removed
                 shares, dead = global_expert_shares(model, n_experts)
 
                 csv_writer.writerow([

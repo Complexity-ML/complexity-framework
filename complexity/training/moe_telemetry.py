@@ -3,8 +3,8 @@ Telemetry helpers for Token-Routed MoE training.
 
 Distributed-safe utilities for logging MoE internals from training scripts:
 
-- gamma_mean(model)           — mean of routed_alpha (γ) gates across layers
 - global_expert_shares(model) — all-reduced expert utilization shares + dead count
+- detect_num_experts(model)   — auto-detect num_experts from first TokenRoutedMLP
 
 These helpers are meant to be called from a training callback registered on
 ALL ranks (the all_reduce is collective). The caller decides whether to write
@@ -33,31 +33,6 @@ def _to_local(t: torch.Tensor) -> torch.Tensor:
     if hasattr(t, "to_local"):
         return t.to_local()
     return t
-
-
-def gamma_mean(model: nn.Module) -> float:
-    """
-    Return γ (routed gate value) from TokenRoutedMLP layers.
-
-    With fixed γ (not nn.Parameter), reads from ``routed_gamma`` attribute.
-    With learnable γ (legacy), reads from ``routed_alpha`` nn.Parameter.
-    Returns NaN if the model has no gate.
-    """
-    # Fixed γ (current default)
-    vals: List[float] = []
-    for m in model.modules():
-        if hasattr(m, "routed_gamma"):
-            vals.append(float(m.routed_gamma))
-    if vals:
-        return sum(vals) / len(vals)
-
-    # Learnable γ (legacy)
-    for name, p in model.named_parameters():
-        if "routed_alpha" not in name:
-            continue
-        t = _to_local(p.detach())
-        vals.append(t.float().mean().item())
-    return sum(vals) / len(vals) if vals else float("nan")
 
 
 def global_expert_shares(

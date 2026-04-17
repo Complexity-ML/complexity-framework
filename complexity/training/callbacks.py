@@ -60,7 +60,6 @@ class TqdmCallback:
 
     Postfix auto-populated with (when available):
       - loss, ppl, lr
-      - γ (routed_gate, TokenRoutedMLP)
       - E shares (expert utilization, reduced across ranks)
       - per-expert diagnostics from MuonTR/AdamTR
 
@@ -77,15 +76,13 @@ class TqdmCallback:
 
     def __call__(self, trainer, step: int, loss: float):
         # Collective reductions — ALL ranks must participate at the same step.
-        from .moe_telemetry import gamma_mean, global_expert_shares
+        from .moe_telemetry import global_expert_shares
         shares, dead = global_expert_shares(trainer.model)
-        gamma = gamma_mean(trainer.model) if shares else float("nan")
 
         # Cache so later callbacks (CSV loggers) can read without triggering
         # a second collective on already-reset counters.
         self.last_shares = shares
         self.last_dead = dead
-        self.last_gamma = gamma
 
         if not is_main_process():
             return
@@ -96,8 +93,6 @@ class TqdmCallback:
 
         # MoE-specific telemetry (only if the model has TokenRoutedMLP layers)
         if shares:
-            if not math.isnan(gamma):
-                postfix["γ"] = f"{gamma:.3f}"
             postfix["E"] = "/".join(f"{s:.2f}" for s in shares)
             if dead > 0:
                 postfix["dead"] = str(dead)

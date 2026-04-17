@@ -27,8 +27,6 @@ class MLPConfig:
     token_frequencies: Optional[torch.Tensor] = None  # [vocab_size] token counts for frequency-balanced routing
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
     shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
-    routed_gate: bool = False  # Learnable α on routed path: out = shared + α·routed
-    routed_gate_init: float = 0.0  # Initial value of α (0 = pure dense start, >0 = experts contribute early)
 
 
 class MLPBase(nn.Module, ABC):

@@ -25,8 +25,6 @@ class AttentionConfig:
     sliding_window: Optional[int] = None
     use_sdpa: bool = True
     rope_type: str = "standard"  # standard, yarn, dynamic
-    use_attn_scale: bool = False      # LayerScale on o_proj output (learnable [H] gain)
-    attn_scale_init: float = 1.0      # init value for LayerScale (1.0 = identity, 0.1 = dampened)
 
     def __post_init__(self):
         if self.head_dim is None:

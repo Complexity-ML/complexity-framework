@@ -57,8 +57,6 @@ class ModelConfig:
     attention_type: str = "gqa"  # gqa, mha, mqa
     attention_dropout: float = 0.0
     use_qk_norm: bool = True
-    use_attn_scale: bool = False      # LayerScale on attention o_proj output
-    attn_scale_init: float = 1.0      # init value for LayerScale (1.0 = identity)
     sliding_window: Optional[int] = None  # None = full attention
 
     # === Position Embeddings ===
@@ -76,8 +74,6 @@ class ModelConfig:
     token_frequencies: Optional[torch.Tensor] = None  # Zipf-balanced routing
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
     shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
-    routed_gate: bool = False  # Learnable α on routed path: out = shared + α·routed
-    routed_gate_init: float = 0.0  # Initial value of α (0 = pure dense start, >0 = experts contribute early)
 
     # === Mu-Guidance (Complexity innovation) ===
     use_mu_guidance: bool = False  # Enable contextual mu flowing between layers

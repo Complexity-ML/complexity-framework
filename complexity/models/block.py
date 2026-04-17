@@ -79,8 +79,6 @@ class TransformerBlock(nn.Module):
             sliding_window=config.sliding_window,
             use_sdpa=config.use_sdpa,
             rope_type=config.rope_type,
-            use_attn_scale=getattr(config, "use_attn_scale", False),
-            attn_scale_init=getattr(config, "attn_scale_init", 1.0),
         )
         self.self_attn = ATTENTION_REGISTRY.build(config.attention_type, attn_config)
 
@@ -101,8 +99,6 @@ class TransformerBlock(nn.Module):
             token_frequencies=config.token_frequencies,
             shared_expert=getattr(config, 'shared_expert', False),
             shared_intermediate_size=getattr(config, 'shared_intermediate_size', None),
-            routed_gate=getattr(config, 'routed_gate', False),
-            routed_gate_init=getattr(config, 'routed_gate_init', 0.0),
         )
         self.mlp = MLP_REGISTRY.build(config.mlp_type, mlp_config)
 

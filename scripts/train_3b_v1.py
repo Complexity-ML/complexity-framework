@@ -44,7 +44,7 @@ logging.getLogger("datasets").setLevel(logging.WARNING)
 from complexity.config import ModelConfig
 from complexity.models import ComplexityModel
 from complexity.training import Trainer, TrainingConfig, WandBCallback, TqdmCallback
-from complexity.training import gamma_mean, global_expert_shares
+from complexity.training import global_expert_shares
 from complexity.parallel import init_distributed, get_rank, get_world_size, is_main_process, cleanup
 
 
@@ -65,7 +65,6 @@ def make_config() -> ModelConfig:
         mlp_type="token_routed",
         num_experts=8,
         shared_expert=True,
-        routed_gate=False,
         norm_type="rmsnorm",
         use_qk_norm=True,
         use_mu_guidance=True,

@@ -49,7 +49,7 @@ from complexity.config import ModelConfig
 from complexity.models import ComplexityModel
 from complexity.training import (
     Trainer, TrainingConfig, WandBCallback, TqdmCallback,
-    gamma_mean, global_expert_shares,
+    global_expert_shares,
 )
 from complexity.parallel import init_distributed, get_rank, get_world_size, is_main_process, cleanup, simple_ddp
 
@@ -74,9 +74,6 @@ def make_config() -> ModelConfig:
         mlp_type="token_routed",
         num_experts=4,
         shared_expert=True,
-        routed_gate=False,
-        use_attn_scale=True,           # LayerScale on attn.o_proj output
-        attn_scale_init=1.0,           # identity init, learns to re-weight per-channel
         norm_type="rmsnorm",
         use_qk_norm=True,
         use_mu_guidance=True,
@@ -339,7 +336,7 @@ def main():
         # To get shares into the CSV, we do a cheap second all_reduce here
         # (counters were already reset, so this gives zeros → we capture
         # shares from tqdm_cb instead via a shared ref below).
-        gamma = gamma_mean(trainer_obj.model)
+        gamma = float("nan")  # γ-gate removed
         if not is_main:
             return
         real_loss = loss_val
