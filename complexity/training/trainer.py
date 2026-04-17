@@ -321,6 +321,25 @@ class Trainer:
             self.epoch = self.state.epoch
             logger.info(f"Resumed from step {self.global_step}")
 
+            # PyTorch footgun: scheduler.load_state_dict() restores base_lrs from
+            # the checkpoint, silently overriding the --lr passed on the CLI.
+            # If the caller changed learning_rate for the resume (e.g. lowering
+            # after divergence), we must re-apply it to the optimizer and to the
+            # scheduler's base_lrs so the cosine/WSD decay recomputes correctly.
+            new_lr = self.config.learning_rate
+            current_base_lr = self._scheduler_base_lr()
+            if current_base_lr is not None and abs(new_lr - current_base_lr) > 1e-12:
+                if self.is_main:
+                    logger.warning(
+                        f"Overriding loaded scheduler base_lr {current_base_lr:.2e} → "
+                        f"{new_lr:.2e} (from --lr). This is the intended behavior when "
+                        f"resuming with a different LR."
+                    )
+                for group in self.optimizer.param_groups:
+                    group["initial_lr"] = new_lr
+                    group["lr"] = new_lr
+                self._scheduler_set_base_lr(new_lr)
+
         accumulation_steps = self.config.gradient_accumulation_steps
 
         try:
@@ -539,6 +558,27 @@ class Trainer:
             self._check_params_updated()
 
         self.optimizer.zero_grad()
+
+    def _iter_schedulers(self):
+        """Yield the scheduler and any nested sub-schedulers (SequentialLR/ChainedLR)."""
+        yield self.scheduler
+        for sub in getattr(self.scheduler, "_schedulers", []) or []:
+            yield sub
+
+    def _scheduler_base_lr(self):
+        """Read the first base_lr across the scheduler tree (all sub-LRs should match)."""
+        for sch in self._iter_schedulers():
+            base = getattr(sch, "base_lrs", None)
+            if base:
+                return float(base[0])
+        return None
+
+    def _scheduler_set_base_lr(self, new_lr: float) -> None:
+        """Rewrite every base_lr in the scheduler tree (SequentialLR/ChainedLR safe)."""
+        for sch in self._iter_schedulers():
+            base = getattr(sch, "base_lrs", None)
+            if base is not None:
+                sch.base_lrs = [new_lr for _ in base]
 
     def _save_checkpoint(self, tag: str = "step"):
         """Save checkpoint."""
