@@ -116,6 +116,7 @@ class TrainRunner:
         default_target_tokens: int = 8_000_000_000,
         default_gradient_accumulation: int = 1,
         default_gradient_checkpointing: bool = True,
+        default_save_steps: int = 5000,
         optimizer_type: str = "adamw",
         label_smoothing: float = 0.1,
         z_loss: float = 0.0,
@@ -129,6 +130,7 @@ class TrainRunner:
         self.default_target_tokens = default_target_tokens
         self.default_gradient_accumulation = default_gradient_accumulation
         self.default_gradient_checkpointing = default_gradient_checkpointing
+        self.default_save_steps = default_save_steps
         self.optimizer_type = optimizer_type
         self.label_smoothing = label_smoothing
         self.z_loss = z_loss
@@ -192,7 +194,7 @@ class TrainRunner:
                        choices=["auto", "cosine", "linear", "constant", "wsd"])
         p.add_argument("--max-steps", type=int, default=None,
                        help="Override max_steps (bypasses --target-tokens)")
-        p.add_argument("--save-steps", type=int, default=5000)
+        p.add_argument("--save-steps", type=int, default=self.default_save_steps)
         p.add_argument("--log-steps", type=int, default=10)
         p.add_argument("--checkpoint-dir", type=str, default=self.checkpoint_dir)
         p.add_argument("--resume", type=str, default=None)
