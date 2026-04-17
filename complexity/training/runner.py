@@ -236,6 +236,19 @@ class TrainRunner:
     def run(self) -> None:
         args = self._build_parser().parse_args()
 
+        # Without basicConfig the root logger defaults to WARNING, swallowing
+        # every logger.info() in the framework — including the TRAINING CONFIG
+        # banner, "Saved checkpoint: ...", and FSDP init messages. Set once
+        # here so users see what's happening.
+        if not logging.getLogger().handlers:
+            logging.basicConfig(
+                format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+                datefmt="%H:%M:%S",
+                level=logging.INFO,
+            )
+        for lib in ("httpx", "httpcore", "huggingface_hub", "datasets", "transformers"):
+            logging.getLogger(lib).setLevel(logging.WARNING)
+
         distributed = init_distributed()
         rank = get_rank()
         world_size = get_world_size()

@@ -112,6 +112,8 @@ class Trainer:
             logger.info(f"  batch (per rank): {config.batch_size}    grad_accum: {config.gradient_accumulation_steps}")
             logger.info(f"  world_size      : {self.world_size}    effective_batch: {effective_batch}")
             logger.info(f"  FSDP            : {config.use_fsdp}    sharding: {config.sharding_mode}")
+            logger.info(f"  save_steps      : {config.save_steps}   save_total_limit: {config.save_total_limit}")
+            logger.info(f"  checkpoint_dir  : {config.checkpoint_dir}")
             logger.info("=" * 70)
 
         # Optimizer
