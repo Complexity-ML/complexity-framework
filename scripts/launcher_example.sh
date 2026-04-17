@@ -3,7 +3,7 @@
 # Cluster Launcher Examples — Complexity Framework
 #
 # Choose your launcher based on what the cluster provides.
-# All examples: 2 nodes × 8 GPUs, 1B model, hackathon config.
+# All examples: 2 nodes × 8 GPUs, 3B model (scripts/train_3b_v1.py).
 #
 # Complexity-ML — 2026
 # =============================================================================
@@ -31,7 +31,7 @@ srun torchrun \
     --master_addr=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n1) \
     --master_port=29500 \
     --node_rank=$SLURM_NODEID \
-    scripts/train_hackathon.py
+    scripts/train_3b_v1.py
 
 
 # ── Option 2: pdsh / SSH (bare metal, cloud VMs) ────────────────────────
@@ -60,7 +60,7 @@ launch_pdsh() {
             --master_addr=$MASTER_ADDR \
             --master_port=29500 \
             --node_rank=\$(echo $NODES | tr ',' '\n' | grep -n \$(hostname) | cut -d: -f1 | head -1) \
-            scripts/train_hackathon.py
+            scripts/train_3b_v1.py
     "
 }
 
@@ -70,12 +70,12 @@ launch_pdsh() {
 # Terminal 1 (node 0):
 #   torchrun --nnodes=2 --nproc_per_node=8 \
 #       --master_addr=<NODE0_IP> --master_port=29500 --node_rank=0 \
-#       scripts/train_hackathon.py
+#       scripts/train_3b_v1.py
 #
 # Terminal 2 (node 1):
 #   torchrun --nnodes=2 --nproc_per_node=8 \
 #       --master_addr=<NODE0_IP> --master_port=29500 --node_rank=1 \
-#       scripts/train_hackathon.py
+#       scripts/train_3b_v1.py
 
 
 # ── Option 4: Docker / Kubernetes ────────────────────────────────────────
@@ -98,7 +98,7 @@ launch_pdsh() {
 #             containers:
 #               - name: worker
 #                 image: complexity-ml/train:latest
-#                 args: ["--nnodes=2", "--nproc_per_node=8", "scripts/train_hackathon.py"]
+#                 args: ["--nnodes=2", "--nproc_per_node=8", "scripts/train_3b_v1.py"]
 #                 resources:
 #                   limits:
 #                     nvidia.com/gpu: 8
@@ -106,11 +106,11 @@ launch_pdsh() {
 
 # ── Option 5: Single node (test/dev) ────────────────────────────────────
 #
-#   torchrun --nproc_per_node=8 scripts/train_hackathon.py
+#   torchrun --nproc_per_node=8 scripts/train_3b_v1.py
 #
 # Or even single GPU:
 #
-#   python scripts/train_hackathon.py --batch-size 64
+#   python scripts/train_3b_v1.py --batch-size 64
 
 
 # ── Dispatcher ───────────────────────────────────────────────────────────

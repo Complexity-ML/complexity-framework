@@ -390,29 +390,6 @@ def llama_1_5b_config() -> ModelConfig:
 
 
 # === I64 Integer Presets (train float, deploy INT8) ===
-def hackathon_b300_config() -> ModelConfig:
-    """Hackathon B300 — ~1B (993M), Token-Routed + Mu + Zipf, Muon-ready.
-
-    2 nodes × 8 B200, 8h budget, ~15B tokens achievable.
-    TP=8 within node, DP=2 across nodes.
-    """
-    return ModelConfig(
-        hidden_size=1792,
-        num_hidden_layers=24,
-        num_attention_heads=28,
-        num_key_value_heads=7,
-        intermediate_size=4864,
-        vocab_size=32000,
-        max_position_embeddings=2048,
-        attention_type="gqa",
-        mlp_type="token_routed",
-        num_experts=4,
-        norm_type="rmsnorm",
-        use_qk_norm=True,
-        use_mu_guidance=True,
-    )
-
-
 def i64_1b_config() -> ModelConfig:
     """I64 1.5B — Integer-native, train float deploy INT8."""
     return ModelConfig(
@@ -485,8 +462,6 @@ PRESET_CONFIGS = {
     # Dense baselines (paper comparisons)
     "llama-1.5b": llama_1_5b_config,
     "dense-1.5b": llama_1_5b_config,
-    # Hackathon
-    "hackathon-b300": hackathon_b300_config,
     # I64 Integer presets
     "i64-1b": i64_1b_config,
     "i64-3b": i64_3b_config,

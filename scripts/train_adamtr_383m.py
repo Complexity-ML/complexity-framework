@@ -1,10 +1,10 @@
 """
 AdamTR Token-Routed 383M + Mu-Guidance + Per-Expert Spectral Conditioning.
 
-Same model architecture as the MuonTR hackathon script (hidden=1024,
-layers=20, heads=16, kv_heads=4, inter=3200, 4 experts, shared=800),
-but uses AdamTR with per-expert spectral conditioning instead of
-MuonTR with Newton-Schulz orthogonalization.
+Architecture mirrors the MuonTR 383M run (hidden=1024, layers=20,
+heads=16, kv_heads=4, inter=3200, 4 experts, shared=800), but uses
+AdamTR with per-expert spectral conditioning instead of MuonTR with
+Newton-Schulz orthogonalization.
 
 Used to compare optimizer geometry head-to-head on identical architecture,
 data, batch size, and step budget.

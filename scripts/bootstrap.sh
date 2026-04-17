@@ -189,10 +189,10 @@ echo "  cd $(pwd)"
 if [ "$NPROC" -gt 1 ]; then
     echo ""
     echo "  # Single node"
-    echo "  torchrun --nproc_per_node=$NPROC scripts/train_hackathon.py"
+    echo "  torchrun --nproc_per_node=$NPROC scripts/train_400m_v1.py"
     echo ""
     echo "  # Multi-node"
-    echo "  torchrun --nnodes=N --nproc_per_node=$NPROC --master_addr=<ip> --master_port=29500 --node_rank=<0..N-1> scripts/train_hackathon.py"
+    echo "  torchrun --nnodes=N --nproc_per_node=$NPROC --master_addr=<ip> --master_port=29500 --node_rank=<0..N-1> scripts/train_400m_v1.py"
 else
-    echo "  python scripts/train_hackathon.py"
+    echo "  python scripts/train_400m_v1.py"
 fi
