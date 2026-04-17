@@ -47,6 +47,9 @@ dependencies = [
     "datasets>=2.0.0",
     "tqdm>=4.0.0",
     "wandb>=0.15.0",
+    "safetensors>=0.4.0",   # save_pretrained + checkpointing
+    "pyyaml>=6.0",          # imported at module load in config/model_config.py
+    "typer>=0.9.0",         # CLI (complexity.cli)
 ]
 
 [project.optional-dependencies]
@@ -57,13 +60,6 @@ cuda = [
 ]
 fp8 = [
     "torchao>=0.7.0",
-]
-all = [
-    "triton>=2.0.0",
-    "transformers>=4.30.0",
-    "tokenizers>=0.13.0",
-    "datasets>=2.0.0",
-    "wandb>=0.15.0",
 ]
 dev = [
     "pytest>=7.0.0",
