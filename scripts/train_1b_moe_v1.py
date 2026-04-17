@@ -49,6 +49,6 @@ if __name__ == "__main__":
         default_lr=3e-4,
         default_batch_size=64,
         default_seq_len=2048,
-        default_gradient_accumulation=2,
+        default_gradient_accumulation=1,
         default_target_tokens=100_000_000_000,
     ).run())
