@@ -116,7 +116,7 @@ class TrainRunner:
         default_target_tokens: int = 8_000_000_000,
         default_gradient_accumulation: int = 1,
         default_gradient_checkpointing: bool = True,
-        default_save_steps: int = 5000,
+        default_save_steps: int = 1000,
         optimizer_type: str = "adamw",
         label_smoothing: float = 0.1,
         z_loss: float = 0.0,
