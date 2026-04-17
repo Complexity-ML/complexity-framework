@@ -3,8 +3,8 @@ Convert FSDP v2 checkpoint to plain safetensors (full model).
 
 Single-process (CPU or GPU), no torchrun needed:
     python scripts/convert_checkpoint.py \
-        --checkpoint checkpoints/1b-v1/final_4296 \
-        --output checkpoints/1b-v1/final_4296_hf
+        --checkpoint checkpoints/1b-moe-v1/final \
+        --output checkpoints/1b-moe-v1/final_hf
 
 The checkpoint.pt saved by the trainer already contains the full model
 (saved with full_state_dict=True), so no multi-GPU gather is needed.
