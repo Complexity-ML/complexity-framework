@@ -34,6 +34,7 @@ from .scheduler import get_lr_scheduler, resolve_scheduler_name
 from .metrics import MetricsTracker
 from .callbacks import EarlyStoppingCallback, WandBCallback, TensorBoardCallback, TqdmCallback
 from .moe_telemetry import global_expert_shares, detect_num_experts
+from .runner import TrainRunner, FineWebStreamingDataset
 
 __all__ = [
     "Trainer",
@@ -47,4 +48,6 @@ __all__ = [
     "TqdmCallback",
     "global_expert_shares",
     "detect_num_experts",
+    "TrainRunner",
+    "FineWebStreamingDataset",
 ]
