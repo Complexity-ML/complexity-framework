@@ -429,19 +429,58 @@ class ComplexityModel(nn.Module):
         is_distributed = dist.is_initialized() and dist.get_world_size() > 1
         is_main = (not is_distributed) or dist.get_rank() == 0
 
+        # Collective barrier at entry: if a caller forgot to invoke this on
+        # every rank (e.g. wrapped it in `if rank == 0`), the missing ranks
+        # will fail the barrier with a clear NCCL timeout instead of hanging
+        # silently inside full_tensor() for 30 minutes.
+        if is_distributed:
+            try:
+                dist.barrier()
+            except Exception as e:
+                print(f"[save_pretrained] barrier failed on rank {dist.get_rank()}: {e}", flush=True)
+                raise
+            if is_main:
+                print(f"[save_pretrained] collecting weights across {dist.get_world_size()} ranks → {save_directory}", flush=True)
+
         raw_sd = self.state_dict()
         cpu_sd = {}
+        n_gathered = 0
+        n_local_only = 0
+        first_error: Optional[Exception] = None
         for k, v in raw_sd.items():
-            if hasattr(v, "full_tensor"):
+            is_dtensor = hasattr(v, "full_tensor")
+            if is_dtensor:
+                # Collective: every rank participates in the all-gather.
+                # We MUST NOT swallow errors silently here — falling back to
+                # .to_local() would write rank 0's shard only, producing a
+                # corrupted checkpoint with ~1/world_size of the weights.
                 try:
-                    # Collective: every rank participates in the all-gather.
                     v = v.full_tensor()
-                except Exception:
-                    pass
-            if hasattr(v, "to_local"):
+                    n_gathered += 1
+                except Exception as e:
+                    if first_error is None:
+                        first_error = e
+                    if is_main:
+                        print(f"[save_pretrained] full_tensor() failed on '{k}': "
+                              f"{type(e).__name__}: {e}", flush=True)
+                    if hasattr(v, "to_local"):
+                        v = v.to_local()
+                        n_local_only += 1
+            elif hasattr(v, "to_local"):
+                # Non-sharded DTensor (replicated); to_local is safe.
                 v = v.to_local()
             if is_main:
                 cpu_sd[k] = v.detach().cpu().contiguous() if hasattr(v, "detach") else v
+
+        if is_main and n_local_only > 0:
+            print(
+                f"[save_pretrained] WARNING: {n_local_only}/{len(raw_sd)} params "
+                f"fell back to to_local() after full_tensor() failed "
+                f"(first error: {type(first_error).__name__}: {first_error}). "
+                f"The saved checkpoint is INCOMPLETE — it only contains rank 0's "
+                f"shard for those params. Investigate before using this file.",
+                flush=True,
+            )
 
         if not is_main:
             return

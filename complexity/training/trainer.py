@@ -95,7 +95,24 @@ class Trainer:
         # instability on MoE models. The user now controls the actual LR.
         if self.is_main:
             effective_batch = config.batch_size * self.world_size * config.gradient_accumulation_steps
-            logger.info(f"  LR: {config.learning_rate:.2e} (effective_batch={effective_batch})")
+            logger.info("=" * 70)
+            logger.info("TRAINING CONFIG")
+            logger.info("=" * 70)
+            logger.info(f"  optimizer       : {config.optimizer_type}")
+            logger.info(f"  learning_rate   : {config.learning_rate:.2e}  (NO auto-scaling — value is used as-is)")
+            if config.optimizer_type in ("muon", "muon_tr"):
+                logger.info(f"  muon_lr         : {config.muon_lr:.2e}")
+            if config.optimizer_type in ("muon_tr", "adam_tr"):
+                logger.info(f"  expert_lr_scale : ×{config.expert_lr_scale}  "
+                            f"(effective expert LR: {config.learning_rate * config.expert_lr_scale:.2e})")
+            logger.info(f"  weight_decay    : {config.weight_decay}")
+            logger.info(f"  warmup_steps    : {config.warmup_steps}   max_steps: {config.max_steps}")
+            logger.info(f"  scheduler       : {config.lr_scheduler}   min_lr_ratio: {config.min_lr_ratio}")
+            logger.info(f"  precision       : {config.precision}    grad_clip: {config.grad_clip}")
+            logger.info(f"  batch (per rank): {config.batch_size}    grad_accum: {config.gradient_accumulation_steps}")
+            logger.info(f"  world_size      : {self.world_size}    effective_batch: {effective_batch}")
+            logger.info(f"  FSDP            : {config.use_fsdp}    sharding: {config.sharding_mode}")
+            logger.info("=" * 70)
 
         # Optimizer
         if optimizer is None:
