@@ -86,7 +86,12 @@ class TokenRoutedMLP(MLPBase):
         # of the Zipf primary. K=1 is the classic single-expert Zipf routing.
         # K>1 increases active FLOPs linearly while keeping zero learned routing
         # and zero load-balance loss (Zipf guarantees uniform load at every k).
+        # The primary expert always keeps weight 0.95 in the combination; the
+        # remaining 0.05 is split equally across the (K-1) cyclic-shifted
+        # secondaries. Preserves specialization (near-top-1 behavior) while
+        # recovering ~K× active compute at scale.
         self.top_k = max(1, int(getattr(config, "top_k", 1)))
+        self._primary_weight = 0.95 if self.top_k > 1 else 1.0
 
         # Routed expert weights: gate, up, down.
         # down_proj_w will be re-initialized with GPT-2 residual scaling by
@@ -144,6 +149,12 @@ class TokenRoutedMLP(MLPBase):
         With token_frequencies: greedy bin-packing so each expert gets
         equal corpus frequency load (Zipf-balanced).
         Without: simple modulo fallback (token_id % E).
+
+        When config.per_layer_routing is True, a deterministic permutation
+        of the expert indices specific to this layer is applied after the
+        mapping is built. This keeps Zipf balance intact (a permutation
+        preserves load distribution) while giving each layer a different
+        token→expert assignment, enriching specialization.
         """
         if getattr(self.config, 'token_frequencies', None) is not None:
             freqs = self.config.token_frequencies
@@ -155,8 +166,18 @@ class TokenRoutedMLP(MLPBase):
                 e = min(range(num_experts), key=lambda i: expert_loads[i])
                 mapping[token_id] = e
                 expert_loads[e] += freqs[token_id].item()
-            return mapping
-        return torch.arange(vocab_size, dtype=torch.long) % num_experts
+        else:
+            mapping = torch.arange(vocab_size, dtype=torch.long) % num_experts
+
+        # Per-layer routing is always on: a deterministic layer-dependent
+        # permutation of expert indices. Preserves Zipf load balance (a
+        # permutation is measure-preserving) while forcing each layer to
+        # route differently → richer specialization, zero runtime cost.
+        layer_idx = int(getattr(self.config, 'layer_idx', 0))
+        g = torch.Generator().manual_seed(0xC0DE + layer_idx)
+        permutation = torch.randperm(num_experts, generator=g)
+        mapping = permutation[mapping]
+        return mapping
 
     def forward(
         self,
@@ -232,21 +253,24 @@ class TokenRoutedMLP(MLPBase):
                     and cggr_grouped_gemm_autograd is not None)
 
         # Top-K deterministic Zipf: dispatch K times with cyclic-shifted expert
-        # IDs `(primary + k) % E`. Because Zipf primary is already perfectly
-        # balanced (each expert ≈ 1/E of the frequency mass), any cyclic shift
-        # preserves that balance. Outputs are averaged.
-        routed_out = torch.zeros_like(flat_x)
-        for k in range(self.top_k):
-            if k == 0:
-                expert_ids_k = flat_expert_ids
-            else:
-                expert_ids_k = (flat_expert_ids + k) % self.num_experts
-            part = self._dispatch_once(
-                flat_x, expert_ids_k, gate_w, up_w, down_w, use_cggr, H,
+        # IDs `(primary + k) % E`. Primary expert keeps weight 0.95, the
+        # remaining 0.05 is split equally across the (K-1) secondaries. This
+        # asymmetric weighting preserves specialization (near-top-1 behavior)
+        # while recovering ~K× active compute.
+        if self.top_k == 1:
+            routed_out = self._dispatch_once(
+                flat_x, flat_expert_ids, gate_w, up_w, down_w, use_cggr, H,
             )
-            routed_out = routed_out + part
-        if self.top_k > 1:
-            routed_out = routed_out / float(self.top_k)
+        else:
+            secondary_w = (1.0 - self._primary_weight) / (self.top_k - 1)
+            routed_out = torch.zeros_like(flat_x)
+            for k in range(self.top_k):
+                w = self._primary_weight if k == 0 else secondary_w
+                expert_ids_k = flat_expert_ids if k == 0 else (flat_expert_ids + k) % self.num_experts
+                part = self._dispatch_once(
+                    flat_x, expert_ids_k, gate_w, up_w, down_w, use_cggr, H,
+                )
+                routed_out = routed_out + w * part
 
         out = shared_out + routed_out
         return out.view(B, S, H)

@@ -210,9 +210,7 @@ class TrainRunner:
                        choices=["adamw", "adamw_mup", "muon", "muon_tr", "adam_tr"],
                        help="Overrides the script's default optimizer (e.g. adam_tr for MoE ablations)")
         p.add_argument("--top-k", type=int, default=None,
-                       help="Token-Routed top-K deterministic (overrides config.top_k). K=1 classic Zipf.")
-        p.add_argument("--top-k-primary-weight", type=float, default=None,
-                       help="Weight of primary expert in top-K combo (0.5=uniform, 1.0=degenerate top-1). Default 0.75.")
+                       help="Token-Routed top-K deterministic (overrides config.top_k). K=1 classic Zipf, K>1 activates K experts/token with primary weighted 0.95.")
         self.add_args(p)
         return p
 
@@ -273,8 +271,6 @@ class TrainRunner:
         config.vocab_size = min(len(tokenizer), config.vocab_size)
         if args.top_k is not None:
             config.top_k = args.top_k
-        if args.top_k_primary_weight is not None:
-            config.top_k_primary_weight = args.top_k_primary_weight
 
         if config.num_experts > 1 and is_main:
             config.token_frequencies = self._compute_zipf_frequencies(
