@@ -151,6 +151,9 @@ def main():
                         help="cosine: classic warmup+cosine. wsd: warmup+stable+1-sqrt decay")
     parser.add_argument("--z-loss",      type=float, default=0.0,
                         help="Coefficient of logit z-loss (e.g. 1e-4). 0 disables")
+    parser.add_argument("--optimizer",   type=str, default="adamw",
+                        choices=["adamw", "adamtr"],
+                        help="adamw (baseline) or adamtr (per-expert spectral conditioning)")
     args = parser.parse_args()
 
     # Centralized MPS setup: watermark, CPU fallback, seed, device
@@ -193,23 +196,35 @@ def main():
         logger.info(f"Autocast: {amp_dtype}")
 
     # Optimizer — GPT-3 style: betas=(0.9, 0.95), wd=0.1, no decay on bias/norm
-    decay_params, no_decay_params = [], []
-    for name, p in model.named_parameters():
-        if not p.requires_grad:
-            continue
-        if p.ndim < 2 or "bias" in name:
-            no_decay_params.append(p)
-        else:
-            decay_params.append(p)
-    optimizer = torch.optim.AdamW(
-        [
-            {"params": decay_params,    "weight_decay": 0.1},
-            {"params": no_decay_params, "weight_decay": 0.0},
-        ],
-        lr=args.lr,
-        betas=(0.9, 0.95),
-        eps=1e-8,
-    )
+    if args.optimizer == "adamtr":
+        from complexity.training.adam_tr import AdamTR, adamtr_param_groups
+        param_groups = adamtr_param_groups(
+            model, lr=args.lr, weight_decay=0.1, expert_lr_scale=1.5,
+        )
+        optimizer = AdamTR(
+            param_groups, lr=args.lr, weight_decay=0.1,
+            num_experts=config.num_experts, spectral_conditioning=True,
+        )
+        logger.info(f"Optimizer: AdamTR (experts={config.num_experts}, spectral_conditioning=True)")
+    else:
+        decay_params, no_decay_params = [], []
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            if p.ndim < 2 or "bias" in name:
+                no_decay_params.append(p)
+            else:
+                decay_params.append(p)
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": decay_params,    "weight_decay": 0.1},
+                {"params": no_decay_params, "weight_decay": 0.0},
+            ],
+            lr=args.lr,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+        )
+        logger.info("Optimizer: AdamW")
 
     warmup    = max(1, int(args.steps * 0.05))
     min_ratio = 0.1
