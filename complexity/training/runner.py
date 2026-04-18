@@ -206,6 +206,9 @@ class TrainRunner:
                        default=self.default_gradient_checkpointing)
         p.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing",
                        action="store_false")
+        p.add_argument("--optimizer", type=str, default=self.optimizer_type,
+                       choices=["adamw", "adamw_mup", "muon", "muon_tr", "adam_tr"],
+                       help="Overrides the script's default optimizer (e.g. adam_tr for MoE ablations)")
         self.add_args(p)
         return p
 
@@ -311,7 +314,7 @@ class TrainRunner:
             max_steps=max_steps,
             batch_size=args.batch_size,
             gradient_accumulation_steps=args.gradient_accumulation,
-            optimizer_type=self.optimizer_type,
+            optimizer_type=args.optimizer,
             learning_rate=args.lr,
             warmup_steps=warmup_steps,
             lr_scheduler=args.lr_scheduler,
