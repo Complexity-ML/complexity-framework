@@ -154,6 +154,8 @@ def main():
     parser.add_argument("--optimizer",   type=str, default="adamw",
                         choices=["adamw", "adamtr"],
                         help="adamw (baseline) or adamtr (per-expert spectral conditioning)")
+    parser.add_argument("--top-k",       type=int, default=1,
+                        help="Token-Routed top-K deterministic (1=classic Zipf, 2+ activates K experts/token)")
     args = parser.parse_args()
 
     # Centralized MPS setup: watermark, CPU fallback, seed, device
@@ -161,6 +163,9 @@ def main():
 
     # Model
     config = make_config()
+    config.top_k = args.top_k
+    if args.top_k > 1:
+        logger.info(f"Token-Routed top-K = {args.top_k} (active experts per token)")
 
     # CSV logger (depends on config.num_experts for the expert-share columns)
     run_dir = Path("runs") / args.run_name

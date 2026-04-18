@@ -82,6 +82,11 @@ class TokenRoutedMLP(MLPBase):
         self.num_experts = config.num_experts
         self.vocab_size = config.vocab_size
         self.expert_intermediate_size = self.intermediate_size // self.num_experts
+        # Top-K deterministic: each token activates K experts via cyclic shift
+        # of the Zipf primary. K=1 is the classic single-expert Zipf routing.
+        # K>1 increases active FLOPs linearly while keeping zero learned routing
+        # and zero load-balance loss (Zipf guarantees uniform load at every k).
+        self.top_k = max(1, int(getattr(config, "top_k", 1)))
 
         # Routed expert weights: gate, up, down.
         # down_proj_w will be re-initialized with GPT-2 residual scaling by
@@ -222,15 +227,46 @@ class TokenRoutedMLP(MLPBase):
         #     cuBLAS on CUDA, MPS-native on Apple, perfectly autograd-friendly.
         #   - CGGR Triton (cuda + opt-in) : custom grouped-GEMM kernel,
         #     kept as fallback via config flag `use_cggr=True`.
-        #   - Python for-loop : last-resort debug path.
-        # Zipf routing makes bucket sizes ≈ balanced so bmm padding waste is
-        # ~5-10% — smaller than the overhead of K separate kernel launches.
         use_cggr = (getattr(self.config, "use_cggr", False)
                     and HAS_CGGR and flat_x.is_cuda
                     and cggr_grouped_gemm_autograd is not None)
 
+        # Top-K deterministic Zipf: dispatch K times with cyclic-shifted expert
+        # IDs `(primary + k) % E`. Because Zipf primary is already perfectly
+        # balanced (each expert ≈ 1/E of the frequency mass), any cyclic shift
+        # preserves that balance. Outputs are averaged.
+        routed_out = torch.zeros_like(flat_x)
+        for k in range(self.top_k):
+            if k == 0:
+                expert_ids_k = flat_expert_ids
+            else:
+                expert_ids_k = (flat_expert_ids + k) % self.num_experts
+            part = self._dispatch_once(
+                flat_x, expert_ids_k, gate_w, up_w, down_w, use_cggr, H,
+            )
+            routed_out = routed_out + part
+        if self.top_k > 1:
+            routed_out = routed_out / float(self.top_k)
+
+        out = shared_out + routed_out
+        return out.view(B, S, H)
+
+    def _dispatch_once(
+        self,
+        flat_x: torch.Tensor,
+        expert_ids: torch.Tensor,
+        gate_w: torch.Tensor,
+        up_w: torch.Tensor,
+        down_w: torch.Tensor,
+        use_cggr: bool,
+        H: int,
+    ) -> torch.Tensor:
+        """Run one expert-dispatch pass for a given [N] expert assignment.
+
+        Returns an [N, H] tensor in the same token order as flat_x.
+        """
         sorted_x, sorted_idx, expert_offsets, expert_counts = sort_tokens_by_expert(
-            flat_x, flat_expert_ids, self.num_experts
+            flat_x, expert_ids, self.num_experts
         )
 
         if use_cggr:
@@ -239,44 +275,39 @@ class TokenRoutedMLP(MLPBase):
             intermediate = fused_silu_mul(gate_out, up_out)
             sorted_routed = cggr_grouped_gemm_autograd(intermediate, down_w, expert_offsets)
 
-            routed_out = torch.empty_like(flat_x)
-            routed_out[sorted_idx] = sorted_routed.to(routed_out.dtype)
-        else:
-            # bmm path — pad each expert's bucket to capacity = max(counts),
-            # run 3 × torch.bmm (gate/up/down), unpad, scatter back.
-            # One CPU sync for capacity + per-expert counts (single [E] tensor
-            # transfer, bounded size K ≤ 16 in practice).
-            counts_cpu = expert_counts.cpu().tolist()
-            offsets_cpu = expert_offsets.cpu().tolist()
-            capacity = max(counts_cpu) if counts_cpu else 0
+            out = torch.empty_like(flat_x)
+            out[sorted_idx] = sorted_routed.to(out.dtype)
+            return out
 
-            if capacity == 0:
-                routed_out = torch.zeros_like(flat_x)
-            else:
-                padded = sorted_x.new_zeros(self.num_experts, capacity, H)
-                for e in range(self.num_experts):
-                    n = counts_cpu[e]
-                    if n == 0:
-                        continue
-                    s = offsets_cpu[e]
-                    padded[e, :n] = sorted_x[s:s + n]
+        # bmm path — pad each bucket to max(counts), three torch.bmm.
+        counts_cpu = expert_counts.cpu().tolist()
+        offsets_cpu = expert_offsets.cpu().tolist()
+        capacity = max(counts_cpu) if counts_cpu else 0
 
-                # [E, C, H] @ [E, H, I/E] → [E, C, I/E]
-                gate = torch.bmm(padded, gate_w)
-                up = torch.bmm(padded, up_w)
-                inter = fused_silu_mul(gate, up)
-                out_padded = torch.bmm(inter, down_w)  # [E, C, H]
+        if capacity == 0:
+            return torch.zeros_like(flat_x)
 
-                routed_out = torch.empty_like(flat_x)
-                for e in range(self.num_experts):
-                    n = counts_cpu[e]
-                    if n == 0:
-                        continue
-                    s = offsets_cpu[e]
-                    routed_out[sorted_idx[s:s + n]] = out_padded[e, :n].to(routed_out.dtype)
+        padded = sorted_x.new_zeros(self.num_experts, capacity, H)
+        for e in range(self.num_experts):
+            n = counts_cpu[e]
+            if n == 0:
+                continue
+            s = offsets_cpu[e]
+            padded[e, :n] = sorted_x[s:s + n]
 
-        out = shared_out + routed_out
-        return out.view(B, S, H)
+        gate = torch.bmm(padded, gate_w)
+        up = torch.bmm(padded, up_w)
+        inter = fused_silu_mul(gate, up)
+        out_padded = torch.bmm(inter, down_w)
+
+        out = torch.empty_like(flat_x)
+        for e in range(self.num_experts):
+            n = counts_cpu[e]
+            if n == 0:
+                continue
+            s = offsets_cpu[e]
+            out[sorted_idx[s:s + n]] = out_padded[e, :n].to(out.dtype)
+        return out
 
     def _forward_all_experts(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Fallback: average all experts (inference without token_ids)."""

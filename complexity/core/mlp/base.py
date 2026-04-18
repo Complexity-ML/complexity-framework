@@ -27,6 +27,7 @@ class MLPConfig:
     token_frequencies: Optional[torch.Tensor] = None  # [vocab_size] token counts for frequency-balanced routing
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
     shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
+    top_k: int = 1  # Token-Routed top-K deterministic: each token activates K experts via cyclic shift of the Zipf primary (K=1 = classic). Still zero learned routing.
 
 
 class MLPBase(nn.Module, ABC):
