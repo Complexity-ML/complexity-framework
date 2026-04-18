@@ -114,6 +114,10 @@ class Trainer:
             logger.info(f"  FSDP            : {config.use_fsdp}    sharding: {config.sharding_mode}")
             logger.info(f"  save_steps      : {config.save_steps}   save_total_limit: {config.save_total_limit}")
             logger.info(f"  checkpoint_dir  : {config.checkpoint_dir}")
+            model_cfg = getattr(self.model, "config", None) or getattr(getattr(self.model, "module", None), "config", None)
+            if model_cfg is not None and getattr(model_cfg, "num_experts", 1) > 1:
+                logger.info(f"  MoE top_k       : {getattr(model_cfg, 'top_k', 1)}   "
+                            f"primary_weight: {getattr(model_cfg, 'top_k_primary_weight', 0.75)}")
             logger.info("=" * 70)
 
         # Optimizer
