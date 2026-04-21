@@ -29,6 +29,8 @@ from .standard import StandardMLP, SwiGLUMLP, GeGLUMLP
 from .token_routed import TokenRoutedMLP
 from .mixtral_moe import MixtralMoE
 from .i64_mlp import I64SwiGLUMLP, I64TokenRoutedMLP
+from .dense_hadamard import DenseHadamardMLP
+from .hadamard_init import hadamard_init_, hadamard_sylvester
 
 __all__ = [
     "MLPBase",
@@ -40,4 +42,7 @@ __all__ = [
     "MixtralMoE",
     "I64SwiGLUMLP",
     "I64TokenRoutedMLP",
+    "DenseHadamardMLP",
+    "hadamard_init_",
+    "hadamard_sylvester",
 ]
