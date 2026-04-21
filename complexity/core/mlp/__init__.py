@@ -5,8 +5,10 @@ Available MLP types:
 - standard / gelu: Standard FFN with GELU
 - swiglu / silu / llama: SwiGLU (Llama-style)
 - geglu: GeGLU variant
+- dense_deterministic: SwiGLU with deterministic (RNG-free) init
 - token_routed / deterministic_moe / complexity: Token-Routed MoE (Complexity innovation)
 - token_routed_parallel / batched_moe: Optimized batched version
+
 Usage:
     from complexity.core.mlp import SwiGLUMLP, MLPConfig
     from complexity.core.registry import MLP_REGISTRY
@@ -29,8 +31,8 @@ from .standard import StandardMLP, SwiGLUMLP, GeGLUMLP
 from .token_routed import TokenRoutedMLP
 from .mixtral_moe import MixtralMoE
 from .i64_mlp import I64SwiGLUMLP, I64TokenRoutedMLP
-from .dense_hadamard import DenseHadamardMLP
-from .hadamard_init import hadamard_init_, hadamard_sylvester
+from .dense_deterministic import DenseDeterministicMLP
+from .deterministic_init import deterministic_gaussian_init_
 
 __all__ = [
     "MLPBase",
@@ -42,7 +44,6 @@ __all__ = [
     "MixtralMoE",
     "I64SwiGLUMLP",
     "I64TokenRoutedMLP",
-    "DenseHadamardMLP",
-    "hadamard_init_",
-    "hadamard_sylvester",
+    "DenseDeterministicMLP",
+    "deterministic_gaussian_init_",
 ]

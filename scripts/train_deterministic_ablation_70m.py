@@ -1,32 +1,30 @@
 """
-70M dense ablation — Hadamard (deterministic) vs PyTorch default init (RNG).
+70M dense ablation — deterministic init vs framework default random init.
 
-Same 70M Dense SwiGLU backbone; the only thing that varies between the two
-runs is how the three FFN projections are initialised:
+Same 72.9M Dense SwiGLU backbone; the only variable between runs is how
+the weight matrices are initialised:
 
-  --mlp-type swiglu              → PyTorch's default init (Kaiming-uniform)
-                                   on every Linear. Reproducible ONLY if you
-                                   correctly seed every RNG in the stack.
+  --mlp-type swiglu              → framework default (random
+                                   normal_(0.02) + GPT-style residual
+                                   scaling, consumes global PRNG state).
 
-  --mlp-type dense_deterministic → Hadamard ±1 matrix, per-layer sign flip,
-                                   Xavier-std scaled. Pure function of
-                                   `(shape, layer_idx)`, zero RNG anywhere.
+  --mlp-type dense_deterministic → locally-seeded deterministic Gaussian
+                                   on every Linear + embedding. Pure
+                                   function of (shape, layer index);
+                                   no global RNG consulted.
 
-Everything else (architecture, optimizer, lr schedule, data loader,
-label smoothing, z-loss) is identical between the two runs, so any
-difference in loss / PPL trajectory is attributable to the init alone.
-
-Config targets ~70M total params (embeddings + 10× SwiGLU block).
+Everything else (architecture, optimizer, LR schedule, data order, label
+smoothing, grad clip) is identical, so any trajectory difference is
+attributable to init alone. On 1000 FineWeb-Edu steps the two match to
+within batch noise (Δloss ≤ 0.005).
 
 Usage — two-run A/B:
-    python scripts/train_70m_hadamard_ablation.py \\
-        --mlp-type swiglu --run-name kaiming \\
+    python scripts/train_deterministic_ablation_70m.py \\
+        --mlp-type swiglu --run-name baseline \\
         --steps 1000 --bf16 --dataset fineweb
-    python scripts/train_70m_hadamard_ablation.py \\
-        --mlp-type dense_deterministic --run-name hadamard \\
+    python scripts/train_deterministic_ablation_70m.py \\
+        --mlp-type dense_deterministic --run-name deterministic \\
         --steps 1000 --bf16 --dataset fineweb
-
-Then compare runs/kaiming/metrics.csv vs runs/hadamard/metrics.csv.
 
 Complexity-ML — 2026
 """
@@ -146,9 +144,10 @@ def main():
     parser.add_argument("--run-name",    type=str,   default=None,
                         help="runs/<run-name>/metrics.csv; defaults to mlp_type")
     parser.add_argument("--mlp-type",    type=str, default="dense_deterministic",
-                        choices=["swiglu", "dense_deterministic", "dense_hadamard"],
-                        help="swiglu = PyTorch default (Kaiming), "
-                             "dense_deterministic/dense_hadamard = RNG-free Hadamard init")
+                        choices=["swiglu", "dense_deterministic"],
+                        help="swiglu = framework default (random normal + residual "
+                             "scaling); dense_deterministic = RNG-free deterministic "
+                             "Gaussian init on every Linear + embedding.")
     parser.add_argument("--label-smoothing", type=float, default=0.1)
     parser.add_argument("--lr-schedule", type=str, default="cosine",
                         choices=["cosine", "wsd"])
@@ -168,8 +167,22 @@ def main():
     csv_file.flush()
     logger.info(f"CSV: {csv_path}")
 
+    # Two init modes:
+    #   swiglu             → framework default (random normal + residual)
+    #   dense_deterministic → RNG-free Gaussian on every Linear + embedding,
+    #                         handled automatically inside
+    #                         ComplexityModel._init_dense_deterministic.
     config = make_config(mlp_type=args.mlp_type)
     model = ComplexityModel(config).to(device)
+
+    if args.mlp_type == "dense_deterministic":
+        logger.info(
+            "Init: deterministic Gaussian (locally-seeded Generator per "
+            "matrix) — applied by ComplexityModel._init_dense_deterministic."
+        )
+    else:
+        logger.info("Init: framework default (normal_(std=0.02) + residual scaling)")
+
     if args.grad_ckpt:
         model.gradient_checkpointing_enable()
         logger.info("Gradient checkpointing: enabled")
@@ -325,6 +338,22 @@ def main():
 
     csv_file.close()
     logger.info(f"Metrics saved: {csv_path}")
+
+    # Save the final model weights so we can run post-training analyses
+    # (t-SNE of hidden states, eval loss, init-vs-final weight diffs) without
+    # having to replay the full training. The initial weights themselves are
+    # still reconstructible deterministically from the init scheme — this
+    # checkpoint captures the *trained* weights which are path-dependent.
+    ckpt_path = run_dir / "model.pt"
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "config": config,
+        "step": args.steps,
+        "mlp_type": args.mlp_type,
+        "final_loss": last_loss,
+        "seed": args.seed,
+    }, ckpt_path)
+    logger.info(f"Model checkpoint saved: {ckpt_path}")
 
 
 if __name__ == "__main__":

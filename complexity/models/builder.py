@@ -86,6 +86,13 @@ class ComplexityModel(nn.Module):
         # Initialize weights (GPT-style: residual projections scaled by 1/√(2N))
         self.apply(self._init_weights)
         self._init_residual_scaling()
+        # Deterministic Hadamard pass: after the default GPT-style init runs,
+        # walk the block list and re-initialise the three projections of any
+        # DenseHadamardMLP with Hadamard weights. This preserves the original
+        # semantic of ``mlp_type="dense_deterministic"`` — deterministic,
+        # RNG-free weights — which the generic ``_init_weights`` pass would
+        # otherwise silently overwrite.
+        self._init_dense_deterministic()
 
     def _init_weights(self, module: nn.Module):
         """
@@ -132,6 +139,93 @@ class ComplexityModel(nn.Module):
             # Shared expert down projection (TokenRoutedMLP with shared=True)
             if hasattr(mlp, 'shared_down') and isinstance(mlp.shared_down, nn.Linear):
                 nn.init.normal_(mlp.shared_down.weight, mean=0.0, std=residual_std)
+
+    def _init_dense_deterministic(self):
+        """
+        Deterministic, RNG-free initialisation pass.
+
+        Activates when at least one block uses ``DenseDeterministicMLP``.
+        In that case, every weight matrix that would otherwise consume
+        PRNG state is re-initialised via ``deterministic_gaussian_init_``
+        (a locally-seeded Generator), keyed on layer index + matrix
+        role:
+
+            - token embedding table,
+            - attention Q, K, V, O in every block,
+            - FFN gate, up, down in every block.
+
+        Attention ``o_proj`` and FFN ``down_proj`` keep the GPT-style
+        residual scaling std = σ / √(2N) so the residual-stream variance
+        remains bounded with depth, matching the policy of
+        ``_init_residual_scaling``.
+
+        After this pass the model is a pure function of its config: two
+        instantiations produce bit-identical weights, no seed consulted.
+
+        Called *after* ``_init_weights`` and ``_init_residual_scaling``
+        so the deterministic state is final.
+        """
+        try:
+            from ..core.mlp.dense_deterministic import DenseDeterministicMLP
+            from ..core.mlp.deterministic_init import deterministic_gaussian_init_
+        except ImportError:
+            return
+
+        uses_deterministic = any(
+            isinstance(getattr(layer, "mlp", None), DenseDeterministicMLP)
+            for layer in self.layers
+        )
+        if not uses_deterministic:
+            return
+
+        std = float(getattr(self.config, "initializer_range", 0.02))
+        n_layers = len(self.layers)
+        res_std = std / (2 * n_layers) ** 0.5
+
+        # Embedding table.
+        emb = getattr(self, "embed_tokens", None)
+        if isinstance(emb, nn.Embedding):
+            deterministic_gaussian_init_(emb.weight, key=7_000_001, std=std)
+
+        # Attention + FFN in every block. Each matrix gets a unique key so
+        # its Gaussian sample is independent of every other matrix.
+        for b, layer in enumerate(self.layers):
+            base = b * 10 + 1_000_000
+
+            attn = getattr(layer, "self_attn", None)
+            if attn is not None:
+                # q_proj / k_proj / v_proj / o_proj have fixed offsets 1-4.
+                # o_proj gets the residual-scaled std; the rest get plain std.
+                known = {"q_proj": (1, std), "k_proj": (2, std),
+                         "v_proj": (3, std), "o_proj": (4, res_std)}
+                for name, (off, s) in known.items():
+                    lin = getattr(attn, name, None)
+                    if isinstance(lin, nn.Linear):
+                        deterministic_gaussian_init_(lin.weight, key=base + off, std=s)
+                        if lin.bias is not None:
+                            nn.init.zeros_(lin.bias)
+                # Any extra Linear inside attention (e.g. mu_to_q / mu_to_k /
+                # mu_to_v for mu-guidance variants) gets a distinct key too.
+                extra_off = 20
+                for child_name, child in attn.named_children():
+                    if child_name in known or not isinstance(child, nn.Linear):
+                        continue
+                    deterministic_gaussian_init_(child.weight, key=base + extra_off, std=std)
+                    if child.bias is not None:
+                        nn.init.zeros_(child.bias)
+                    extra_off += 1
+
+            mlp = getattr(layer, "mlp", None)
+            if isinstance(mlp, DenseDeterministicMLP):
+                for name, off in (("gate_proj", 5), ("up_proj", 6),
+                                  ("down_proj", 7)):
+                    lin = getattr(mlp, name, None)
+                    if not isinstance(lin, nn.Linear):
+                        continue
+                    s = res_std if name == "down_proj" else std
+                    deterministic_gaussian_init_(lin.weight, key=base + off, std=s)
+                    if lin.bias is not None:
+                        nn.init.zeros_(lin.bias)
 
     def gradient_checkpointing_enable(self):
         self._gradient_checkpointing = True
