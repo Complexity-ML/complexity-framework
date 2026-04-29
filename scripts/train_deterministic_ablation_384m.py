@@ -1,44 +1,59 @@
 """
-384M dense A/B: Kaiming vs Hadamard initialization, Chinchilla-scale.
+384M dense ablation, Chinchilla-scale — three init / parametrisation arms.
 
-This script is a direct twin of the `abl-dense-adamw` run
-(checkpoints/abl-dense-adamw/, 3815 steps, 8B tokens on 8 GPUs).
-Everything is identical to that baseline — architecture, tokenizer,
-data pipeline, batch size, learning rate, schedule, gradient clipping
-— with a single variable: the weight initialization of the three
-SwiGLU projections.
+Direct twin of the existing ``abl-dense-adamw`` run
+(checkpoints/abl-dense-adamw/, 3815 steps, 8B tokens on 8 GPUs). Same
+architecture, tokenizer, data, batch size, schedule, grad clipping —
+only the init / parametrisation differs:
 
-  --init-type default   → PyTorch's default nn.Linear init (Kaiming-
-                          uniform with a=sqrt(5)). Consumes global
-                          RNG state. This is the baseline, and it
-                          should reproduce `abl-dense-adamw` when the
-                          same seed is used.
+  --init-type default                 → framework default
+                                        (random normal_(0.02) + GPT-style
+                                        residual scaling 1/√(2N)).
+                                        Reproduces ``abl-dense-adamw``
+                                        when seeded identically.
 
-  --init-type hadamard  → Deterministic Hadamard init (Sylvester +
-                          per-layer Walsh sign pattern + Xavier-std
-                          scaling). No PRNG consumed anywhere.
+  --init-type deterministic           → ``mlp_type=dense_deterministic`` —
+                                        locally-seeded RNG-free Gaussian
+                                        on every Linear + embedding (see
+                                        complexity/core/mlp/
+                                        deterministic_init.py).
 
-Hardware: built for an 8×B200 (or 8×H100 / 8×A100) FSDP setup.
-Runs through the framework's Trainer API, so checkpoints, resume,
-gradient accumulation, and mixed-precision all behave identically to
-other ablations in this codebase.
+  --init-type deterministic --use-mup → above + the full μP triplet:
+                                        init scaled by 1/√width_mult on
+                                        hidden→hidden, attention logits
+                                        / d_head (vs / √d_head), lm_head
+                                        output divided by width_mult.
+                                        Optimiser switches to
+                                        ``adamw_mup`` so the LR side of
+                                        μP matches the init side.
+
+Hardware: built for 8×B200 (or 8×H100 / 8×A100) FSDP. Runs through the
+framework's ``Trainer`` API, so checkpoints, resume, gradient
+accumulation, and bf16 mixed-precision behave identically to other
+ablations in this codebase.
 
 Usage:
-    # Kaiming baseline (reproduces abl-dense-adamw)
-    torchrun --nproc_per_node 8 \\
-        scripts/train_hadamard_ablation_384m.py \\
+    # Reproduce the existing AdamW dense baseline
+    torchrun --nproc_per_node 8 scripts/train_deterministic_ablation_384m.py \\
         --init-type default \\
-        --checkpoint-dir ./checkpoints/abl-dense-kaiming
+        --checkpoint-dir ./checkpoints/abl-dense-default
 
-    # Hadamard treatment (same config, only init differs)
-    torchrun --nproc_per_node 8 \\
-        scripts/train_hadamard_ablation_384m.py \\
-        --init-type hadamard \\
-        --checkpoint-dir ./checkpoints/abl-dense-hadamard
+    # Deterministic init, same optimiser
+    torchrun --nproc_per_node 8 scripts/train_deterministic_ablation_384m.py \\
+        --init-type deterministic \\
+        --checkpoint-dir ./checkpoints/abl-dense-deterministic
 
-Compare the final metrics.csv files head-to-head; if
-|Δloss| < 0.01 at convergence, Hadamard is validated at
-Chinchilla-scale on this codebase.
+    # Deterministic + μP (matches abl-dense-adamw at 1× width; transfers
+    # to wider widths without re-tuning)
+    torchrun --nproc_per_node 8 scripts/train_deterministic_ablation_384m.py \\
+        --init-type deterministic --use-mup \\
+        --checkpoint-dir ./checkpoints/abl-dense-mup
+
+Compare metrics.csv files head-to-head against
+``./checkpoints/abl-dense-adamw/abl-dense-adamw.csv`` — at convergence,
+|Δloss| < 0.01 between ``default`` and ``deterministic`` validates that
+the deterministic re-init does not regress, and the μP arm is expected
+to track within batch noise at this width while remaining transferable.
 
 Complexity-ML — 2026
 """
@@ -49,18 +64,14 @@ import argparse
 import logging
 import math
 import os
-import time
-from itertools import islice
 from pathlib import Path
 
 import torch
-import torch.nn as nn
 from datasets import load_dataset
 from torch.utils.data import DataLoader, IterableDataset
 from transformers import PreTrainedTokenizerFast
 
 from complexity.config import ModelConfig
-from complexity.core.mlp import hadamard_init_
 from complexity.models import ComplexityModel
 from complexity.training import Trainer, TrainingConfig
 from complexity.parallel import (
@@ -76,23 +87,38 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     level=logging.INFO,
 )
-logger = logging.getLogger("hadamard_ablation_384m")
+logger = logging.getLogger("ablation_384m")
 
 
 # --------------------------------------------------------------------------
 # Model config — 384M dense SwiGLU, matches abl-dense-adamw exactly
 # --------------------------------------------------------------------------
 
-def make_config() -> ModelConfig:
-    """~384M dense SwiGLU baseline — same shape as `abl-dense-adamw`.
+def make_config(
+    *,
+    init_type: str,
+    use_mup: bool,
+    mup_base_width: int,
+) -> ModelConfig:
+    """~384M dense SwiGLU baseline — same shape as ``abl-dense-adamw``.
 
     Identical backbone to the 383M MoE ablation set in this repository
-    (hidden=1024, 20 layers, GQA 16/4, RMSNorm + QK-norm), but with a
-    dense SwiGLU FFN (`mlp_type="swiglu"`) instead of the Token-Routed
-    MoE. Intermediate size is 3200, matching the sum of routed +
-    shared expert widths in the MoE recipe, so the parameter budget is
-    comparable across init schemes.
+    (hidden=1024, 20 layers, GQA 16/4, RMSNorm + QK-norm). Intermediate
+    size 3200 matches the sum of routed + shared expert widths in the
+    MoE recipe so the parameter budget is comparable across init schemes.
+
+    The ``mlp_type`` switches between the framework-default SwiGLU
+    (random init, consumes the global PRNG) and the deterministic
+    variant (``dense_deterministic`` — RNG-free Gaussian per matrix).
+    The μP knobs are wired here too; they are no-ops at base width.
     """
+    if init_type == "deterministic":
+        mlp_type = "dense_deterministic"
+    elif init_type == "default":
+        mlp_type = "swiglu"
+    else:
+        raise ValueError(f"Unknown init_type: {init_type}")
+
     return ModelConfig(
         hidden_size=1024,
         num_hidden_layers=20,
@@ -102,48 +128,19 @@ def make_config() -> ModelConfig:
         vocab_size=32000,
         max_position_embeddings=2048,
         attention_type="gqa",
-        mlp_type="swiglu",        # dense, no MoE
+        mlp_type=mlp_type,
         num_experts=1,
         shared_expert=False,
         norm_type="rmsnorm",
         use_qk_norm=True,
         use_mu_guidance=False,
-        rope_fraction=0.5,        # Partial RoPE, matches the MoE recipe
+        rope_fraction=0.5,             # Partial RoPE, matches the MoE recipe
+        # μP triplet — no-ops when use_mup=False or hidden_size == mup_base_width.
+        use_mup_init=use_mup,
+        use_mup_attn_scale=use_mup,
+        use_mup_output_mult=use_mup,
+        mup_base_width=mup_base_width,
     )
-
-
-# --------------------------------------------------------------------------
-# Hadamard re-init pass
-# --------------------------------------------------------------------------
-
-def reinit_with_hadamard(model: nn.Module) -> int:
-    """Walk the model, re-initialise every SwiGLU projection with Hadamard.
-
-    We target exactly the three linear matrices that differ between
-    Kaiming and Hadamard in this ablation: ``gate_proj``, ``up_proj``,
-    ``down_proj`` inside each transformer block's MLP. Attention
-    projections, embeddings, and LayerNorms retain their PyTorch
-    defaults so that the only variable is the FFN init — matching the
-    setup described in the paper.
-
-    Returns the number of matrices re-initialised, for logging.
-    """
-    count = 0
-    for block_idx, block in enumerate(model.layers):
-        mlp = block.mlp
-        # Three linears inside a SwiGLU block. Distinct layer_idx
-        # offsets (×4 + k) so the three projections receive distinct
-        # Walsh sign patterns.
-        base = block_idx * 4
-        for name, offset in (("gate_proj", 1), ("up_proj", 2), ("down_proj", 3)):
-            linear = getattr(mlp, name, None)
-            if linear is None:
-                continue
-            hadamard_init_(linear.weight, layer_idx=base + offset)
-            if linear.bias is not None:
-                nn.init.zeros_(linear.bias)
-            count += 1
-    return count
 
 
 # --------------------------------------------------------------------------
@@ -159,76 +156,89 @@ class FineWebStreamingDataset(IterableDataset):
         self.max_length = max_length
         self.rank = rank
         self.world_size = world_size
-        logger.info(f"Connecting to FineWeb-Edu (streaming) [rank {rank}/{world_size}]")
-        t0 = time.time()
+
+    def __iter__(self):
         ds = load_dataset(
             "HuggingFaceFW/fineweb-edu",
+            name="sample-10BT",
             split="train",
             streaming=True,
         )
-        if world_size > 1:
-            ds = ds.shard(num_shards=world_size, index=rank)
-        self.dataset = ds
-        logger.info(f"Dataset ready in {time.time() - t0:.1f}s")
-
-    def __iter__(self):
-        buffer = []
-        for example in self.dataset:
-            text = example.get("text", "")
+        # Rank sharding so each worker sees a disjoint slice.
+        for idx, sample in enumerate(ds):
+            if (idx % self.world_size) != self.rank:
+                continue
+            text = sample.get("text", "")
             if not text:
                 continue
-            buffer.extend(self.tokenizer.encode(text))
-            while len(buffer) >= self.max_length + 1:
-                chunk = buffer[: self.max_length + 1]
-                buffer = buffer[self.max_length :]
-                yield {
-                    "input_ids": torch.tensor(chunk[:-1], dtype=torch.long),
-                    "labels":    torch.tensor(chunk[1:], dtype=torch.long),
-                }
+            tok = self.tokenizer(
+                text,
+                truncation=True,
+                max_length=self.max_length,
+                return_tensors="pt",
+            )
+            yield {"input_ids": tok["input_ids"][0]}
+
+
+# --------------------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------------------
+
+def compute_steps_for_tokens(
+    *,
+    target_tokens: int,
+    batch_size: int,
+    grad_accum: int,
+    seq_len: int,
+    world_size: int,
+) -> int:
+    tokens_per_step = batch_size * grad_accum * seq_len * world_size
+    return max(1, math.ceil(target_tokens / tokens_per_step))
 
 
 # --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
 
-def compute_steps_for_tokens(target_tokens: int, batch_size: int,
-                             grad_accum: int, seq_len: int,
-                             world_size: int) -> int:
-    tokens_per_step = batch_size * grad_accum * seq_len * world_size
-    return math.ceil(target_tokens / tokens_per_step)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="384M dense Kaiming↔Hadamard A/B ablation"
+        description="384M dense ablation: default ↔ deterministic ↔ μP"
     )
-    parser.add_argument("--init-type", type=str, default="hadamard",
-                        choices=["default", "hadamard"],
-                        help="default = PyTorch nn.Linear default "
-                             "(Kaiming-uniform); hadamard = deterministic "
-                             "Hadamard init (ours).")
+    parser.add_argument(
+        "--init-type",
+        type=str,
+        default="deterministic",
+        choices=["default", "deterministic"],
+        help="default = framework SwiGLU + random init; "
+             "deterministic = dense_deterministic (RNG-free Gaussian).",
+    )
+    parser.add_argument(
+        "--use-mup",
+        action="store_true",
+        help="Enable the μP triplet (init / attn-scale / output mult). "
+             "Switches the optimiser to adamw_mup so the LR side "
+             "matches the init side.",
+    )
+    parser.add_argument("--mup-base-width", type=int, default=256,
+                        help="Reference width for μP scaling (default: 256).")
     parser.add_argument("--tokenizer", type=str, default="./tokenizer")
     parser.add_argument("--target-tokens", type=int, default=8_000_000_000,
-                        help="Target token count (default: 8B, matching "
-                             "abl-dense-adamw).")
+                        help="Token budget — default 8B matches abl-dense-adamw.")
     parser.add_argument("--batch-size", type=int, default=128,
-                        help="Batch size per GPU.")
+                        help="Per-GPU batch size.")
     parser.add_argument("--gradient-accumulation", type=int, default=1)
     parser.add_argument("--seq-len", type=int, default=2048)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--warmup-steps", type=int, default=0,
-                        help="Warmup steps (0 = auto 5%% of total steps).")
+                        help="0 = auto 5%% of total steps.")
     parser.add_argument("--lr-scheduler", type=str, default="cosine",
                         choices=["cosine", "wsd", "constant"])
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--label-smoothing", type=float, default=0.1)
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Seed for the PyTorch RNG. Relevant only "
-                             "for --init-type default (and for data "
-                             "ordering under both init types).")
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--checkpoint-dir", type=str, default=None,
-                        help="Defaults to ./checkpoints/abl-dense-<init>.")
+                        help="Defaults to ./checkpoints/abl-dense-<init>"
+                             "[+'-mup' when --use-mup].")
     parser.add_argument("--save-steps", type=int, default=500)
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -240,7 +250,8 @@ def main() -> None:
     world_size = get_world_size()
 
     if args.checkpoint_dir is None:
-        args.checkpoint_dir = f"./checkpoints/abl-dense-{args.init_type}"
+        suffix = "-mup" if args.use_mup else ""
+        args.checkpoint_dir = f"./checkpoints/abl-dense-{args.init_type}{suffix}"
     if is_main_process():
         Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
 
@@ -265,35 +276,45 @@ def main() -> None:
     )
 
     # --- Model ---------------------------------------------------------------
-    config = make_config()
+    config = make_config(
+        init_type=args.init_type,
+        use_mup=args.use_mup,
+        mup_base_width=args.mup_base_width,
+    )
     config.vocab_size = len(tokenizer)
     model = ComplexityModel(config)
 
     if is_main_process():
         n_params = sum(p.numel() for p in model.parameters())
-        logger.info(f"Model: 384M dense SwiGLU — {n_params/1e6:.1f}M params")
+        logger.info(
+            f"Model: 384M dense SwiGLU — {n_params/1e6:.1f}M params, "
+            f"mlp_type={config.mlp_type}"
+        )
         logger.info(
             f"Config: hidden={config.hidden_size}, "
             f"layers={config.num_hidden_layers}, "
             f"heads={config.num_attention_heads}/{config.num_key_value_heads}, "
-            f"inter={config.intermediate_size}, mlp={config.mlp_type}"
+            f"inter={config.intermediate_size}"
         )
-
-    # --- Initialization: this is the single experimental variable ------------
-    if args.init_type == "hadamard":
-        count = reinit_with_hadamard(model)
-        if is_main_process():
+        if args.init_type == "deterministic":
             logger.info(
-                f"Init: Hadamard — re-initialised {count} FFN matrices "
-                f"({config.num_hidden_layers} layers × 3 projections). "
-                f"Attention/embedding/norm params keep PyTorch defaults."
+                "Init: dense_deterministic — locally-seeded Gaussian on "
+                "every Linear + embedding (RNG-free). Residual scaling "
+                "1/√(2N) preserved."
             )
-    else:
-        if is_main_process():
+        else:
             logger.info(
-                f"Init: PyTorch default (Kaiming-uniform). "
-                f"Seeded with torch.manual_seed({args.seed})."
+                f"Init: framework default (normal_(0.02) + residual "
+                f"scaling). Seeded with torch.manual_seed({args.seed})."
             )
+        if args.use_mup:
+            wm = config.hidden_size / args.mup_base_width
+            logger.info(
+                f"μP: enabled (base_width={args.mup_base_width}, "
+                f"width_mult={wm:.2f}). Optimiser → adamw_mup."
+            )
+        else:
+            logger.info("μP: disabled (standard parametrisation).")
 
     # --- Steps budget to match abl-dense-adamw -------------------------------
     max_steps = compute_steps_for_tokens(
@@ -303,10 +324,14 @@ def main() -> None:
         seq_len=args.seq_len,
         world_size=world_size,
     )
-    warmup = args.warmup_steps if args.warmup_steps > 0 else max(1, int(max_steps * 0.05))
+    warmup = (args.warmup_steps if args.warmup_steps > 0
+              else max(1, int(max_steps * 0.05)))
 
     if is_main_process():
-        tokens_per_step = args.batch_size * args.gradient_accumulation * args.seq_len * world_size
+        tokens_per_step = (
+            args.batch_size * args.gradient_accumulation
+            * args.seq_len * world_size
+        )
         logger.info(
             f"Budget: target {args.target_tokens/1e9:.1f}B tokens, "
             f"{tokens_per_step/1e6:.2f}M tokens/step → {max_steps} steps"
@@ -318,19 +343,22 @@ def main() -> None:
         max_steps=max_steps,
         batch_size=args.batch_size,
         gradient_accumulation_steps=args.gradient_accumulation,
+        optimizer_type="adamw_mup" if args.use_mup else "adamw",
         learning_rate=args.lr,
         warmup_steps=warmup,
         lr_scheduler=args.lr_scheduler,
         weight_decay=args.weight_decay,
         grad_clip=args.grad_clip,
-        label_smoothing=args.label_smoothing,
         precision="bf16",
         save_steps=args.save_steps,
         checkpoint_dir=args.checkpoint_dir,
         resume_from=args.resume,
+        mup_base_width=args.mup_base_width,
     )
 
-    trainer = Trainer(model=model, config=train_config, train_dataloader=dataloader)
+    trainer = Trainer(
+        model=model, config=train_config, train_dataloader=dataloader,
+    )
     summary = trainer.train()
 
     if is_main_process():
