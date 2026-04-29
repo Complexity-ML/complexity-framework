@@ -99,6 +99,19 @@ class ModelConfig:
     # === Initialization ===
     initializer_range: float = 0.02
 
+    # === μP (Maximal Update Parametrization, Yang et al. 2022) ===
+    # When use_mup_init=True, hidden→hidden Linears (FFN gate/up/down,
+    # attention Q/K/V/O) are initialised with std = initializer_range /
+    # √(hidden_size / mup_base_width). Embeddings keep their base std.
+    # Combined with use_mup_attn_scale and use_mup_output_mult and the
+    # adamw_mup optimiser (LR side), this enables hyper-parameter
+    # transfer from a small proxy width (mup_base_width) to wider
+    # variants without re-tuning.
+    use_mup_init: bool = False
+    use_mup_attn_scale: bool = False     # Attention logits / d_head (vs / √d_head)
+    use_mup_output_mult: bool = False    # Divide lm_head output by width_mult
+    mup_base_width: int = 256            # Reference width (proxy size)
+
     # === Extra (for custom extensions) ===
     extra_config: Dict[str, Any] = field(default_factory=dict)
 
@@ -146,6 +159,17 @@ class ModelConfig:
     def num_kv_groups(self) -> int:
         """Number of query heads per KV head (for GQA)."""
         return self.num_attention_heads // self.num_key_value_heads
+
+    @property
+    def mup_width_mult(self) -> float:
+        """μP width multiplier: hidden_size / mup_base_width.
+
+        Returns 1.0 when at base width or μP disabled — in that case the
+        scaling factor 1/√width_mult equals 1 and is a no-op.
+        """
+        if not getattr(self, "use_mup_init", False):
+            return 1.0
+        return float(self.hidden_size) / float(self.mup_base_width)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary (skips non-serializable fields like Tensors)."""

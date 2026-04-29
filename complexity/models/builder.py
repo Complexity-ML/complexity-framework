@@ -86,12 +86,16 @@ class ComplexityModel(nn.Module):
         # Initialize weights (GPT-style: residual projections scaled by 1/√(2N))
         self.apply(self._init_weights)
         self._init_residual_scaling()
-        # Deterministic Hadamard pass: after the default GPT-style init runs,
+        # μP: scale hidden→hidden Linears by 1/√(hidden_size / mup_base_width).
+        # No-op at base width or when use_mup_init=False. Applied AFTER
+        # _init_residual_scaling so the GPT-style 1/√(2N) factor on output
+        # projections compounds with μP correctly: down/o_proj end up at
+        # σ_base / (√(2N) · √width_mult).
+        self._apply_mup_init_scaling()
+        # Deterministic init pass: after the default GPT-style init runs,
         # walk the block list and re-initialise the three projections of any
-        # DenseHadamardMLP with Hadamard weights. This preserves the original
-        # semantic of ``mlp_type="dense_deterministic"`` — deterministic,
-        # RNG-free weights — which the generic ``_init_weights`` pass would
-        # otherwise silently overwrite.
+        # DenseDeterministicMLP via a locally-seeded Generator. Preserves
+        # both the residual scaling and the μP scaling (when enabled).
         self._init_dense_deterministic()
 
     def _init_weights(self, module: nn.Module):
@@ -140,6 +144,31 @@ class ComplexityModel(nn.Module):
             if hasattr(mlp, 'shared_down') and isinstance(mlp.shared_down, nn.Linear):
                 nn.init.normal_(mlp.shared_down.weight, mean=0.0, std=residual_std)
 
+    def _apply_mup_init_scaling(self):
+        """
+        μP init scaling: multiply every Linear weight that is *not* an
+        embedding/output by 1/√width_mult, where
+        width_mult = hidden_size / mup_base_width.
+
+        Skipped when ``use_mup_init`` is False or width_mult ≤ 1.
+        Embeddings keep their base std (μP convention: σ_emb is
+        width-independent). The lm_head — when untied — *is* scaled here:
+        the output side of μP relies on the ``use_mup_output_mult`` flag
+        which divides the logits by width_mult at forward time, NOT on a
+        differentiated init.
+        """
+        if not getattr(self.config, "use_mup_init", False):
+            return
+        width_mult = float(self.config.hidden_size) / float(self.config.mup_base_width)
+        if width_mult <= 1.0:
+            return
+        scale = 1.0 / (width_mult ** 0.5)
+        # Walk all Linears, skip embeddings (named with 'embed_tokens').
+        # The lm_head, when not tied, is scaled like any other Linear.
+        for name, module in self.named_modules():
+            if isinstance(module, nn.Linear):
+                module.weight.data.mul_(scale)
+
     def _init_dense_deterministic(self):
         """
         Deterministic, RNG-free initialisation pass.
@@ -180,9 +209,17 @@ class ComplexityModel(nn.Module):
 
         std = float(getattr(self.config, "initializer_range", 0.02))
         n_layers = len(self.layers)
-        res_std = std / (2 * n_layers) ** 0.5
+        # μP: hidden→hidden std scaled by 1/√width_mult. Embeddings keep
+        # the base std regardless (μP convention).
+        if getattr(self.config, "use_mup_init", False):
+            width_mult = float(self.config.hidden_size) / float(self.config.mup_base_width)
+            mup_scale = 1.0 / (width_mult ** 0.5) if width_mult > 1.0 else 1.0
+        else:
+            mup_scale = 1.0
+        hidden_std = std * mup_scale
+        res_std = hidden_std / (2 * n_layers) ** 0.5
 
-        # Embedding table.
+        # Embedding table — base std (no μP scaling).
         emb = getattr(self, "embed_tokens", None)
         if isinstance(emb, nn.Embedding):
             deterministic_gaussian_init_(emb.weight, key=7_000_001, std=std)
@@ -195,9 +232,10 @@ class ComplexityModel(nn.Module):
             attn = getattr(layer, "self_attn", None)
             if attn is not None:
                 # q_proj / k_proj / v_proj / o_proj have fixed offsets 1-4.
-                # o_proj gets the residual-scaled std; the rest get plain std.
-                known = {"q_proj": (1, std), "k_proj": (2, std),
-                         "v_proj": (3, std), "o_proj": (4, res_std)}
+                # o_proj gets the residual-scaled std; the rest get the
+                # μP-scaled hidden_std.
+                known = {"q_proj": (1, hidden_std), "k_proj": (2, hidden_std),
+                         "v_proj": (3, hidden_std), "o_proj": (4, res_std)}
                 for name, (off, s) in known.items():
                     lin = getattr(attn, name, None)
                     if isinstance(lin, nn.Linear):
@@ -210,7 +248,7 @@ class ComplexityModel(nn.Module):
                 for child_name, child in attn.named_children():
                     if child_name in known or not isinstance(child, nn.Linear):
                         continue
-                    deterministic_gaussian_init_(child.weight, key=base + extra_off, std=std)
+                    deterministic_gaussian_init_(child.weight, key=base + extra_off, std=hidden_std)
                     if child.bias is not None:
                         nn.init.zeros_(child.bias)
                     extra_off += 1
@@ -222,7 +260,7 @@ class ComplexityModel(nn.Module):
                     lin = getattr(mlp, name, None)
                     if not isinstance(lin, nn.Linear):
                         continue
-                    s = res_std if name == "down_proj" else std
+                    s = res_std if name == "down_proj" else hidden_std
                     deterministic_gaussian_init_(lin.weight, key=base + off, std=s)
                     if lin.bias is not None:
                         nn.init.zeros_(lin.bias)
@@ -338,6 +376,13 @@ class ComplexityModel(nn.Module):
             logits = self.lm_head(hidden_states)
         else:
             logits = F.linear(hidden_states, self.embed_tokens.weight)
+
+        # μP output multiplier: divide logits by width_mult so the output
+        # scale matches the proxy width regardless of model width.
+        if getattr(self.config, "use_mup_output_mult", False):
+            width_mult = float(self.config.hidden_size) / float(self.config.mup_base_width)
+            if width_mult > 1.0:
+                logits = logits / width_mult
 
         return {
             "logits": logits,

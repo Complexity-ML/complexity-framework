@@ -89,6 +89,15 @@ class GroupedQueryAttention(AttentionBase):
         self.sliding_window = config.sliding_window
         self.use_sdpa = config.use_sdpa and HAS_SDPA
 
+        # Attention logit scale. Default = 1/√d_head (standard).
+        # μP variant = 1/d_head (Yang et al. 2022) for hyper-parameter
+        # transfer across widths. Stored once for reuse in both SDPA
+        # (passed via the `scale=` kwarg) and the standard fallback.
+        if getattr(config, "use_mup_attn_scale", False):
+            self.attn_scale = 1.0 / float(self.head_dim)
+        else:
+            self.attn_scale = 1.0 / math.sqrt(self.head_dim)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -219,6 +228,7 @@ class GroupedQueryAttention(AttentionBase):
             attn_mask=attn_mask,
             dropout_p=dropout_p,
             is_causal=use_causal,
+            scale=self.attn_scale,
         )
 
         return attn_output
@@ -233,7 +243,7 @@ class GroupedQueryAttention(AttentionBase):
         kv_seq_len: int,
     ) -> torch.Tensor:
         """Standard attention fallback (for PyTorch < 2.0)."""
-        attn_weights = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        attn_weights = torch.matmul(q, k.transpose(-2, -1)) * self.attn_scale
 
         if self.sliding_window is not None:
             mask = self._make_sliding_window_mask(seq_len, kv_seq_len, q.device, q.dtype)
