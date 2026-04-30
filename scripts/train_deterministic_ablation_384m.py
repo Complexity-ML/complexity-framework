@@ -362,8 +362,34 @@ def main() -> None:
         mup_base_width=args.mup_base_width,
     )
 
+    # ComplexityModel returns a dict in training mode (logits=None,
+    # last_hidden_state present). The Trainer's default loss expects a
+    # bare tensor — provide a compute_loss that handles the dict shape.
+    def compute_loss(model, batch):
+        input_ids = batch["input_ids"].to(trainer.device)
+        labels = batch.get("labels", input_ids[:, 1:]).to(trainer.device)
+        out = model(input_ids)
+        h = out["last_hidden_state"] if isinstance(out, dict) else out
+        # Tied embeddings path: ComplexityModel skips logits in train()
+        # mode so we run the lm_head ourselves on the residual stream.
+        if h.dim() == 3:
+            if model.lm_head is not None:
+                logits = model.lm_head(h)
+            else:
+                logits = torch.nn.functional.linear(h, model.embed_tokens.weight)
+            shift_logits = logits[:, :-1, :].contiguous()
+            shift_labels = labels[:, :shift_logits.size(1)].contiguous()
+        else:
+            shift_logits = h
+            shift_labels = labels
+        return torch.nn.functional.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1), ignore_index=-100,
+        )
+
     trainer = Trainer(
         model=model, config=train_config, train_dataloader=dataloader,
+        compute_loss=compute_loss,
     )
     summary = trainer.train()
 
