@@ -370,24 +370,27 @@ def main() -> None:
 
     # ComplexityModel returns a dict in training mode (logits=None,
     # last_hidden_state present). The Trainer's default loss expects a
-    # bare tensor — provide a compute_loss that handles the dict shape.
+    # bare tensor — provide a compute_loss that handles the dict shape
+    # AND masks padding so the loss isn't artificially low.
+    pad_id = (tokenizer.pad_token_id
+              if tokenizer.pad_token_id is not None
+              else tokenizer.eos_token_id)
+
     def compute_loss(model, batch):
         input_ids = batch["input_ids"].to(trainer.device)
-        labels = batch.get("labels", input_ids[:, 1:]).to(trainer.device)
         out = model(input_ids)
         h = out["last_hidden_state"] if isinstance(out, dict) else out
-        # Tied embeddings path: ComplexityModel skips logits in train()
-        # mode so we run the lm_head ourselves on the residual stream.
-        if h.dim() == 3:
-            if model.lm_head is not None:
-                logits = model.lm_head(h)
-            else:
-                logits = torch.nn.functional.linear(h, model.embed_tokens.weight)
-            shift_logits = logits[:, :-1, :].contiguous()
-            shift_labels = labels[:, :shift_logits.size(1)].contiguous()
+        if model.lm_head is not None:
+            logits = model.lm_head(h)
         else:
-            shift_logits = h
-            shift_labels = labels
+            logits = torch.nn.functional.linear(h, model.embed_tokens.weight)
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = input_ids[:, 1:].contiguous()
+        # Mask pad tokens so they don't contribute to the loss.
+        if pad_id is not None:
+            shift_labels = shift_labels.masked_fill(
+                shift_labels == pad_id, -100
+            )
         return torch.nn.functional.cross_entropy(
             shift_logits.view(-1, shift_logits.size(-1)),
             shift_labels.view(-1), ignore_index=-100,
