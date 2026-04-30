@@ -248,6 +248,9 @@ def main() -> None:
                         choices=["cosine", "wsd", "constant"])
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--grad-clip", type=float, default=1.0)
+    parser.add_argument("--label-smoothing", type=float, default=0.1,
+                        help="Cross-entropy label smoothing (matches the "
+                             "abl-dense-adamw baseline default of 0.1).")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--checkpoint-dir", type=str, default=None,
                         help="Defaults to ./checkpoints/abl-dense-<init>"
@@ -396,6 +399,7 @@ def main() -> None:
         return torch.nn.functional.cross_entropy(
             shift_logits.view(-1, shift_logits.size(-1)),
             shift_labels.view(-1), ignore_index=-100,
+            label_smoothing=args.label_smoothing,
         )
 
     trainer = Trainer(
