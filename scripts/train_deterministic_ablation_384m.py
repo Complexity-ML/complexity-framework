@@ -94,6 +94,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ablation_384m")
 
+# Silence HF / httpx INFO floods that otherwise drown training logs.
+for _lib in ("httpx", "httpcore", "huggingface_hub", "datasets",
+             "transformers", "urllib3"):
+    logging.getLogger(_lib).setLevel(logging.WARNING)
+
 
 # --------------------------------------------------------------------------
 # Model config — 384M dense SwiGLU, matches abl-dense-adamw exactly
@@ -360,6 +365,7 @@ def main() -> None:
         checkpoint_dir=args.checkpoint_dir,
         resume_from=args.resume,
         mup_base_width=args.mup_base_width,
+        log_steps=1,  # one line per step — live feedback
     )
 
     # ComplexityModel returns a dict in training mode (logits=None,
