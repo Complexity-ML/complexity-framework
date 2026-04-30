@@ -38,6 +38,14 @@ def configure_cuda_backends(
     if cudnn_benchmark:
         torch.backends.cudnn.benchmark = True
 
+    # Disable cuDNN's SDPA backend on systems where it errors out — on
+    # B200 + cuDNN 9.x the cudnn-frontend planner sometimes raises
+    # "No valid execution plans built" for specific head_dim / seq_len
+    # combinations. Flash and mem-efficient backends serve the same call
+    # with no measurable speed loss.
+    if hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
+        torch.backends.cuda.enable_cudnn_sdp(False)
+
     torch.set_float32_matmul_precision(matmul_precision)
 
     gpu_name = torch.cuda.get_device_name(0)

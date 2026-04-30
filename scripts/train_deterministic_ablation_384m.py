@@ -60,6 +60,11 @@ Complexity-ML — 2026
 
 from __future__ import annotations
 
+# Configure CUDA backends (TF32, cuDNN benchmark, cuDNN SDPA disable) at
+# import time so it runs before any module touches torch.cuda.
+from complexity.gpu import setup_gpu
+setup_gpu()
+
 import argparse
 import logging
 import math
