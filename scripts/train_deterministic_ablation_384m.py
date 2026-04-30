@@ -402,8 +402,31 @@ def main() -> None:
     )
     # tqdm progress bar (collective reductions — ALL ranks must register).
     from complexity.training.callbacks import TqdmCallback
-    tqdm_cb = TqdmCallback(total_steps=max_steps, desc="abl-dense-deterministic")
+    tqdm_cb = TqdmCallback(total_steps=max_steps, desc=Path(args.checkpoint_dir).name)
     trainer.callbacks.append(tqdm_cb)
+
+    # CSV logger — writes one row per step to <ckpt>/metrics.csv so the
+    # run is comparable to the existing abl-dense-adamw.csv reference.
+    if is_main_process():
+        import csv as _csv, math as _math, time as _time
+        _csv_path = Path(args.checkpoint_dir) / "metrics.csv"
+        _csv_path.parent.mkdir(parents=True, exist_ok=True)
+        _csv_f = _csv_path.open("w", newline="")
+        _csv_w = _csv.writer(_csv_f)
+        _csv_w.writerow(["step", "loss", "ppl", "lr",
+                         "tokens_seen", "elapsed_s"])
+        _csv_f.flush()
+        _t0 = _time.perf_counter()
+        _tokens_per_step = (args.batch_size * args.gradient_accumulation
+                            * args.seq_len * world_size)
+        def _csv_cb(_trainer, step, loss):
+            lr = _trainer.scheduler.get_last_lr()[0] if _trainer.scheduler else args.lr
+            ppl = _math.exp(min(loss, 20))
+            _csv_w.writerow([step, f"{loss:.6f}", f"{ppl:.2f}",
+                             f"{lr:.6e}", step * _tokens_per_step,
+                             f"{_time.perf_counter() - _t0:.1f}"])
+            _csv_f.flush()
+        trainer.callbacks.append(_csv_cb)
     try:
         summary = trainer.train()
     finally:
