@@ -397,7 +397,14 @@ def main() -> None:
         model=model, config=train_config, train_dataloader=dataloader,
         compute_loss=compute_loss,
     )
-    summary = trainer.train()
+    # tqdm progress bar (collective reductions — ALL ranks must register).
+    from complexity.training.callbacks import TqdmCallback
+    tqdm_cb = TqdmCallback(total_steps=max_steps, desc="abl-dense-deterministic")
+    trainer.callbacks.append(tqdm_cb)
+    try:
+        summary = trainer.train()
+    finally:
+        tqdm_cb.close() if hasattr(tqdm_cb, "close") else None
 
     if is_main_process():
         logger.info(f"Training complete: {summary}")
