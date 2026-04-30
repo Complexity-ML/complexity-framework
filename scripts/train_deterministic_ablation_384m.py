@@ -129,14 +129,17 @@ def make_config(
     else:
         raise ValueError(f"Unknown init_type: {init_type}")
 
+    # Matches scripts/train_400m_dense.py (the script that produced
+    # checkpoints/abl-dense-adamw): hidden=1024, layers=20, GQA 16/4,
+    # intermediate_size=4358, max_pos=4096, vocab=32000.
     return ModelConfig(
         hidden_size=1024,
         num_hidden_layers=20,
         num_attention_heads=16,
         num_key_value_heads=4,
-        intermediate_size=3200,
+        intermediate_size=4358,
         vocab_size=32000,
-        max_position_embeddings=2048,
+        max_position_embeddings=4096,
         attention_type="gqa",
         mlp_type=mlp_type,
         num_experts=1,
@@ -144,7 +147,6 @@ def make_config(
         norm_type="rmsnorm",
         use_qk_norm=True,
         use_mu_guidance=False,
-        rope_fraction=0.5,             # Partial RoPE, matches the MoE recipe
         # μP triplet — no-ops when use_mup=False or hidden_size == mup_base_width.
         use_mup_init=use_mup,
         use_mup_attn_scale=use_mup,
