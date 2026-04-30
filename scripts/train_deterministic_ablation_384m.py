@@ -174,6 +174,7 @@ class FineWebStreamingDataset(IterableDataset):
             tok = self.tokenizer(
                 text,
                 truncation=True,
+                padding="max_length",
                 max_length=self.max_length,
                 return_tensors="pt",
             )
