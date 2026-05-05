@@ -326,16 +326,18 @@ def main():
 
     trainer.compute_loss = compute_loss
 
-    # Logging — rank 0 only
+    # TqdmCallback must run on ALL ranks — it issues all_reduce via
+    # global_expert_shares(). The display itself is rank-0 only (handled inside
+    # the callback). Registering it only on rank 0 caused a collective deadlock.
+    tqdm_cb = TqdmCallback(total_steps=max_steps, desc="TR-Code 400M")
+    trainer.callbacks.append(tqdm_cb)
+
+    # Logging — rank 0 only (no collectives)
     csv_file = None
-    tqdm_cb = None
     if is_main:
         if args.wandb:
             wandb_cb = WandBCallback(project=args.wandb, name="tr-code-400m")
             trainer.callbacks.append(wandb_cb)
-
-        tqdm_cb = TqdmCallback(total_steps=max_steps, desc="TR-Code 400M")
-        trainer.callbacks.append(tqdm_cb)
 
         os.makedirs(args.checkpoint_dir, exist_ok=True)
         csv_path = os.path.join(args.checkpoint_dir, "training_log.csv")
