@@ -215,7 +215,9 @@ def main():
     config = make_config()
     config.vocab_size = min(len(tokenizer), 32000)
 
-    # Zipf-balanced routing
+    # Zipf-balanced routing — 200 batches keeps us well under the 120s
+    # init_distributed timeout (StarCoderData multi-language interleave is much
+    # slower to stream than FineWeb, where 1000 batches still fit).
     if config.num_experts > 1 and is_main:
         from itertools import islice
         logger.info("Computing token frequencies for Zipf-balanced routing...")
@@ -224,7 +226,7 @@ def main():
         )
         freq_loader = DataLoader(freq_dataset, batch_size=32, num_workers=2)
         freqs = torch.zeros(config.vocab_size, dtype=torch.float32)
-        for batch in islice(freq_loader, 1000):
+        for batch in islice(freq_loader, 200):
             ids = batch["input_ids"].flatten()
             ids = ids[ids < config.vocab_size]
             freqs.scatter_add_(0, ids, torch.ones_like(ids, dtype=torch.float32))
