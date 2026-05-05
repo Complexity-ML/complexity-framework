@@ -326,11 +326,15 @@ def main():
 
     trainer.compute_loss = compute_loss
 
-    # TqdmCallback must run on ALL ranks — it issues all_reduce via
-    # global_expert_shares(). The display itself is rank-0 only (handled inside
-    # the callback). Registering it only on rank 0 caused a collective deadlock.
-    tqdm_cb = TqdmCallback(total_steps=max_steps, desc="TR-Code 400M")
-    trainer.callbacks.append(tqdm_cb)
+    # MoE telemetry collective (all ranks) — replaces TqdmCallback to avoid
+    # tqdm \r writes that journalctl renders as opaque "blob data". We only
+    # need the all_reduce on expert counters; the rank-0 display is replaced
+    # by live_log_callback below.
+    from complexity.training.moe_telemetry import global_expert_shares as _ges
+
+    def moe_collective_callback(trainer_obj, step, loss_val):
+        _ges(trainer_obj.model)
+    trainer.callbacks.append(moe_collective_callback)
 
     # Logging — rank 0 only (no collectives)
     csv_file = None
