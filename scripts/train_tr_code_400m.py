@@ -390,8 +390,6 @@ def main():
     except (KeyboardInterrupt, SystemExit):
         pass  # Trainer already saved checkpoint
     finally:
-        if tqdm_cb is not None:
-            tqdm_cb.close()
         if csv_file is not None:
             csv_file.flush()
             csv_file.close()
