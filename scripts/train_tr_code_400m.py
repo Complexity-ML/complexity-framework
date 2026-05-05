@@ -360,7 +360,7 @@ def main():
         tokens_per_step_global = args.batch_size * world_size * args.gradient_accumulation * 4096
 
         def live_log_callback(trainer_obj, step, loss_val):
-            if step % 5 != 0:
+            if step % args.log_steps != 0 and step != 1:
                 return
             ppl = math.exp(min(loss_val, 20))
             elapsed = max(time.time() - t_start, 1e-6)
