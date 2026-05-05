@@ -33,6 +33,9 @@ from tokenizers.trainers import BpeTrainer
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s",
                     datefmt="%H:%M:%S", level=logging.INFO)
 logger = logging.getLogger("train_code_tokenizer")
+for noisy in ("httpx", "httpcore", "huggingface_hub", "datasets",
+              "filelock", "fsspec", "urllib3"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 
 DEFAULT_LANGS = [
     "python", "javascript", "typescript", "java", "c", "cpp", "go",
