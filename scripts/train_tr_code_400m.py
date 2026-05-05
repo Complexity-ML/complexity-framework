@@ -165,7 +165,7 @@ def compute_steps_for_tokens(target_tokens: int, batch_size: int,
 
 def main():
     parser = argparse.ArgumentParser(description="Train 400M Code (Token-Routed + Mu + AdamTR)")
-    parser.add_argument("--tokenizer", type=str, default="./tokenizer")
+    parser.add_argument("--tokenizer", type=str, default="./tokenizer-code")
     parser.add_argument("--target-tokens", type=int, default=8_000_000_000,
                         help="Target token count (default: 8B)")
     parser.add_argument("--batch-size", type=int, default=256,
