@@ -353,9 +353,24 @@ def main():
             real_loss = loss_val
             ppl = math.exp(min(real_loss, 20))
             csv_writer.writerow([step, f"{real_loss:.6f}", f"{ppl:.2f}", f"{time.time() - t_start:.1f}"])
-            if step % 100 == 0:
-                csv_file.flush()
+            csv_file.flush()
         trainer.callbacks.append(csv_callback)
+
+        # Live progress in journalctl (tqdm uses \r and is invisible there).
+        tokens_per_step_global = args.batch_size * world_size * args.gradient_accumulation * 4096
+
+        def live_log_callback(trainer_obj, step, loss_val):
+            if step % 5 != 0:
+                return
+            ppl = math.exp(min(loss_val, 20))
+            elapsed = max(time.time() - t_start, 1e-6)
+            tok_s = step * tokens_per_step_global / elapsed
+            lr_now = trainer_obj.scheduler.get_last_lr()[0]
+            logger.info(
+                f"step {step:>6}/{max_steps} | loss={loss_val:.4f} | ppl={ppl:.1f} "
+                f"| lr={lr_now:.2e} | tok/s={tok_s:,.0f} | elapsed={elapsed:.0f}s"
+            )
+        trainer.callbacks.append(live_log_callback)
 
     logging.getLogger("complexity.training.trainer").setLevel(logging.WARNING)
 
