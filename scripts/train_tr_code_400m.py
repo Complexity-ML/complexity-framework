@@ -1,7 +1,7 @@
 """
 Pre-training 400M Code — Token-Routed MLP + Mu-Guidance + AdamTR.
 
-Code-focused pre-training on The Stack v2 (bigcode/the-stack-v2-dedup).
+Code-focused pre-training on StarCoderData (bigcode/starcoderdata).
 Uses FSDP full_shard for multi-GPU training.
 
 Model: hidden=1024, layers=20, heads=16, kv_heads=4, inter=3200, 4 experts
@@ -320,9 +320,7 @@ def main():
         while hasattr(m, 'model') or hasattr(m, 'module'):
             m = getattr(m, 'model', None) or getattr(m, 'module', None)
         weight = m.embed_tokens.weight
-        shift_hidden = hidden[:, :-1, :].contiguous()
-        shift_labels = labels[:, :shift_hidden.size(1)].contiguous()
-        return fused_cross_entropy(shift_hidden, weight, shift_labels)
+        return fused_cross_entropy(hidden, weight, labels)
 
     trainer.compute_loss = compute_loss
 
@@ -378,14 +376,14 @@ def main():
 
     if summary is not None and is_main:
         logger.info(f"Training complete: {summary}")
-        # Unwrap to base model for correct save (DDP/FSDP wrappers shard weights)
-        base = model
-        while not hasattr(base, 'save_pretrained'):
-            next_base = getattr(base, 'module', None) or getattr(base, 'model', None); base = next_base if (next_base is not None and next_base is not base) else base
-            if not hasattr(base, 'save_pretrained'): break
-        base.save_pretrained(os.path.join(args.checkpoint_dir, "final"))
-        config.save(os.path.join(args.checkpoint_dir, "final", "model_config.yaml"))
-        logger.info(f"Model saved to {args.checkpoint_dir}/final/")
+        # NOTE: do NOT call save_pretrained here — known FSDP bug: hangs on NCCL
+        # full_tensor gather after multi-GPU training. The Trainer already saved
+        # a tag='final' checkpoint via CheckpointManager (FSDP-safe). Convert to
+        # HuggingFace format with a separate post-training script if needed.
+        logger.info(
+            f"Final checkpoint saved by Trainer at {args.checkpoint_dir}/ "
+            f"(tag=final). Use a separate script to export to HF format."
+        )
 
     if distributed:
         cleanup()
