@@ -41,8 +41,8 @@ DEFAULT_LANGS = [
 ]
 
 
-def stream_code(languages, max_samples: int):
-    """Yield code strings from StarCoderData, interleaving languages."""
+def build_dataset(languages):
+    """Load and interleave StarCoderData language shards. Fails loud."""
     parts = []
     for lang in languages:
         try:
@@ -50,11 +50,21 @@ def stream_code(languages, max_samples: int):
                               split="train", streaming=True)
             ds = ds.select_columns(["content"])
             parts.append(ds)
-            logger.info(f"Loaded {lang}")
+            print(f"  Loaded {lang}", flush=True)
         except Exception as e:
-            logger.warning(f"Skipping {lang}: {e}")
+            print(f"  FAILED {lang}: {type(e).__name__}: {e}", flush=True)
+    if not parts:
+        raise RuntimeError(
+            "No StarCoderData languages could be loaded. "
+            "Check HF_TOKEN env var and that you've accepted "
+            "https://huggingface.co/datasets/bigcode/starcoderdata terms."
+        )
+    print(f"  → interleaving {len(parts)} languages", flush=True)
+    return interleave_datasets(parts, stopping_strategy="all_exhausted")
 
-    merged = interleave_datasets(parts, stopping_strategy="all_exhausted")
+
+def stream_code(merged, max_samples: int):
+    """Yield code strings from a pre-built interleaved dataset."""
     n = 0
     t0 = time.time()
     for ex in merged:
@@ -64,7 +74,8 @@ def stream_code(languages, max_samples: int):
         yield text
         n += 1
         if n % 50000 == 0:
-            logger.info(f"  streamed {n:,} / {max_samples:,} samples ({n/max(time.time()-t0,1):.0f} sample/s)")
+            print(f"  streamed {n:,} / {max_samples:,} "
+                  f"({n/max(time.time()-t0,1):.0f} sample/s)", flush=True)
         if n >= max_samples:
             break
 
@@ -103,9 +114,13 @@ def main():
         show_progress=True,
     )
 
-    logger.info(f"Training BPE: vocab_size={args.vocab_size}, samples={args.num_samples:,}")
     languages = args.languages or DEFAULT_LANGS
-    iterator = stream_code(languages, args.num_samples)
+    print(f"Loading languages (HF_TOKEN set: {bool(os.environ.get('HF_TOKEN'))})", flush=True)
+    merged = build_dataset(languages)
+
+    print(f"Training BPE: vocab_size={args.vocab_size}, samples={args.num_samples:,}",
+          flush=True)
+    iterator = stream_code(merged, args.num_samples)
 
     # Pre-feed indent seeds so they appear early in the training stream
     def feed():
