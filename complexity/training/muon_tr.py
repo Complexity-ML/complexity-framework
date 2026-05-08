@@ -461,7 +461,7 @@ def split_params_for_muon_tr(
 
     # Params that stay on AdamW: 1D (norms/bias/α/mu scalars), embeddings, LM head
     adam_keywords = ("embed", "lm_head", "head", "bias", "norm", "ln_",
-                     ".mu", "mu_", "dynamics", "alpha")
+                     ".mu", "mu_", "alpha")
     no_decay_keywords = ("bias", "norm", ".mu", "alpha")
 
     for name, param in model.named_parameters():

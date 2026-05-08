@@ -26,16 +26,39 @@ class AttentionConfig:
     use_sdpa: bool = True
     rope_type: str = "standard"  # standard, yarn, dynamic
     use_mup_attn_scale: bool = False  # μP: 1/d_head attention logit scale (vs 1/√d_head)
+    use_mu_guidance: bool = False  # Add mu-to-K/Q/V projections for guided attention.
+    scale: Optional[float] = None
 
     def __post_init__(self):
         if self.head_dim is None:
             self.head_dim = self.hidden_size // self.num_attention_heads
 
-        # Validation
-        assert self.hidden_size % self.num_attention_heads == 0, \
-            f"hidden_size ({self.hidden_size}) must be divisible by num_heads ({self.num_attention_heads})"
-        assert self.num_attention_heads % self.num_key_value_heads == 0, \
-            f"num_heads ({self.num_attention_heads}) must be divisible by num_kv_heads ({self.num_key_value_heads})"
+        if self.hidden_size <= 0:
+            raise ValueError("hidden_size must be positive")
+        if self.num_attention_heads <= 0:
+            raise ValueError("num_attention_heads must be positive")
+        if self.num_key_value_heads <= 0:
+            raise ValueError("num_key_value_heads must be positive")
+        if self.hidden_size % self.num_attention_heads != 0:
+            raise ValueError(
+                f"hidden_size ({self.hidden_size}) must be divisible by "
+                f"num_attention_heads ({self.num_attention_heads})"
+            )
+        if self.num_attention_heads % self.num_key_value_heads != 0:
+            raise ValueError(
+                f"num_attention_heads ({self.num_attention_heads}) must be "
+                f"divisible by num_key_value_heads ({self.num_key_value_heads})"
+            )
+        if self.head_dim <= 0:
+            raise ValueError("head_dim must be positive")
+        if self.hidden_size != self.num_attention_heads * self.head_dim:
+            raise ValueError("hidden_size must equal num_attention_heads * head_dim")
+        if self.scale is None:
+            self.scale = self.head_dim ** -0.5
+        if not 0.0 <= self.attention_dropout < 1.0:
+            raise ValueError("attention_dropout must be in [0, 1)")
+        if self.sliding_window is not None and self.sliding_window <= 0:
+            raise ValueError("sliding_window must be positive when set")
 
 
 class AttentionBase(nn.Module, ABC):

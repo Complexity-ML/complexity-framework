@@ -27,8 +27,40 @@ class MLPConfig:
     token_frequencies: Optional[torch.Tensor] = None  # [vocab_size] token counts for frequency-balanced routing
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
     shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
+    use_shared_routed_gates: bool = False  # Learn scalar gates for shared vs routed expert outputs.
+    shared_gate_init: float = 1.0  # Initial shared expert output multiplier.
+    routed_gate_init: float = 1.0  # Initial routed expert output multiplier.
     top_k: int = 1  # Token-Routed top-K deterministic: each token activates K experts via cyclic shift of the Zipf primary. Primary keeps weight 0.95, secondary experts share 0.05 (tuned for specialization preservation).
+    top_k_primary_weight: Optional[float] = None  # K>1 primary expert blend weight; None keeps the default 0.95.
     layer_idx: int = 0  # Layer index propagated from the block; used for the built-in per-layer routing permutation.
+
+    def __post_init__(self):
+        if self.hidden_size <= 0:
+            raise ValueError("hidden_size must be positive")
+        if self.intermediate_size <= 0:
+            raise ValueError("intermediate_size must be positive")
+        if self.num_experts <= 0:
+            raise ValueError("num_experts must be positive")
+        if self.vocab_size <= 0:
+            raise ValueError("vocab_size must be positive")
+        if self.top_k <= 0:
+            raise ValueError("top_k must be positive")
+        if self.top_k > self.num_experts:
+            raise ValueError("top_k cannot exceed num_experts")
+        if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
+            raise ValueError("top_k_primary_weight must be in [0, 1]")
+        if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
+            raise ValueError("shared_intermediate_size must be positive when set")
+        if self.token_frequencies is not None:
+            if not isinstance(self.token_frequencies, torch.Tensor):
+                raise ValueError("token_frequencies must be a torch.Tensor")
+            if self.token_frequencies.ndim != 1:
+                raise ValueError("token_frequencies must be a 1D tensor")
+            if self.token_frequencies.numel() != self.vocab_size:
+                raise ValueError(
+                    f"token_frequencies length ({self.token_frequencies.numel()}) "
+                    f"must match vocab_size ({self.vocab_size})"
+                )
 
 
 class MLPBase(nn.Module, ABC):

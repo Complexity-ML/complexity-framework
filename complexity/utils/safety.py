@@ -308,7 +308,7 @@ def install_safety(
     Install safety clamping on a model.
 
     Args:
-        model: Model with layers that have INL dynamics
+        model: Model with transformer layers
         harm_direction: [hidden_size] harm direction vector
         threshold: Clamping threshold
         layers: Which layers to install on (default: last 3)
@@ -332,12 +332,7 @@ def install_safety(
         safety.set_harm_direction(harm_direction)
         safety.enabled = True
 
-        # Install on dynamics or layer
-        if hasattr(layer, 'dynamics'):
-            layer.dynamics.safety_clamp = safety
-        else:
-            # Fallback: store on layer itself
-            layer.safety_clamp = safety
+        layer.safety_clamp = safety
 
     logger.info(f"Safety installed on layers {layers} with threshold={threshold}")
 
@@ -349,9 +344,7 @@ def remove_safety(model: nn.Module) -> None:
         return
 
     for layer in model_layers:
-        if hasattr(layer, 'dynamics') and hasattr(layer.dynamics, 'safety_clamp'):
-            del layer.dynamics.safety_clamp
-        elif hasattr(layer, 'safety_clamp'):
+        if hasattr(layer, 'safety_clamp'):
             del layer.safety_clamp
 
     logger.info("Safety removed from model")
@@ -366,9 +359,7 @@ def get_safety_stats(model: nn.Module) -> Dict[str, Any]:
     stats = {}
     for i, layer in enumerate(model_layers):
         clamp = None
-        if hasattr(layer, 'dynamics') and hasattr(layer.dynamics, 'safety_clamp'):
-            clamp = layer.dynamics.safety_clamp
-        elif hasattr(layer, 'safety_clamp'):
+        if hasattr(layer, 'safety_clamp'):
             clamp = layer.safety_clamp
 
         if clamp is not None:
@@ -440,9 +431,7 @@ class SafetyCallback:
         model_layers = _find_layers(self.model)
         for layer in model_layers:
             clamp = None
-            if hasattr(layer, 'dynamics') and hasattr(layer.dynamics, 'safety_clamp'):
-                clamp = layer.dynamics.safety_clamp
-            elif hasattr(layer, 'safety_clamp'):
+            if hasattr(layer, 'safety_clamp'):
                 clamp = layer.safety_clamp
 
             if clamp is not None and hasattr(clamp, 'reset_stats'):

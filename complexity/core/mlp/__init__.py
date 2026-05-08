@@ -6,7 +6,7 @@ Available MLP types:
 - swiglu / silu / llama: SwiGLU (Llama-style)
 - geglu: GeGLU variant
 - dense_deterministic: SwiGLU with deterministic (RNG-free) init
-- token_routed / deterministic_moe / complexity: Token-Routed MoE (Complexity innovation)
+- token_routed / deterministic_moe / complexity: Token-Routed MoE
 - token_routed_parallel / batched_moe: Optimized batched version
 
 Usage:
@@ -20,7 +20,7 @@ Usage:
     # Via registry
     mlp = MLP_REGISTRY.build("swiglu", config)
 
-    # Token-Routed MoE (deterministic, our innovation)
+    # Token-Routed MoE
     config = MLPConfig(hidden_size=768, intermediate_size=3072, num_experts=4)
     moe = MLP_REGISTRY.build("token_routed", config)
 

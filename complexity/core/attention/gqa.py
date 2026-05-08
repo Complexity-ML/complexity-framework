@@ -5,8 +5,8 @@ GQA uses fewer KV heads than Q heads, reducing memory and compute
 while maintaining quality. When num_kv_heads=1, it becomes MQA.
 When num_kv_heads=num_heads, it becomes standard MHA.
 
-v0.3.0: KQV order (industry standard like Qwen, Llama, GPT)
-v0.3.0: Mu-Guided KQV with fused concat+cuBLAS (INL 2025)
+Supports optional Mu-guided attention by adding learned projections from the
+previous layer's Mu state into K, Q, and V.
 """
 
 import math
@@ -17,15 +17,10 @@ from typing import Optional, Tuple
 
 from .base import AttentionBase, AttentionConfig
 from ..registry import register_attention
-from ..position.rotary import RotaryEmbedding, PartialRoPE, apply_rotary_pos_emb
+from ..position.rotary import RotaryEmbedding, PartialRoPE
 
 
 HAS_SDPA = hasattr(F, "scaled_dot_product_attention")
-
-# v0.3.0: Fused Mu-KQV via concat+cuBLAS (2x faster than 6 separate matmuls)
-# Disabled: .weight access creates views incompatible with FSDP + gradient checkpointing
-USE_FUSED_MU_KQV = False
-
 
 @register_attention("gqa")
 @register_attention("grouped_query")
@@ -48,21 +43,21 @@ class GroupedQueryAttention(AttentionBase):
     def __init__(self, config: AttentionConfig):
         super().__init__(config)
 
-        # v0.3.0: KQV order (industry standard for KV-cache optimization)
-        # K and V together = contiguous cache, same GQA heads
+        # KQV order keeps K and V adjacent for cache-oriented implementations.
         self.k_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
         self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
 
-        # v0.3.0: Mu-to-KQV projections (INL 2025 - mu guides attention)
-        # mu from previous layer biases K, Q, AND V - full top-down guidance
-        self.mu_to_k = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
-        self.mu_to_q = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
-        self.mu_to_v = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
+        # Mu-to-KQV projections are allocated only when Mu is enabled; dense
+        # baselines should not count dead parameters that never run.
+        self.use_mu_guidance = bool(getattr(config, "use_mu_guidance", False))
+        if self.use_mu_guidance:
+            self.mu_to_k = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
+            self.mu_to_q = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
+            self.mu_to_v = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
 
-        # QK Normalization (2024 innovation - stabilizes training).
-        # Uses framework RMSNorm so the Liger Triton fast-path applies on CUDA.
+        # QK normalization stabilizes attention logits on small and large runs.
         self.use_qk_norm = config.use_qk_norm
         if self.use_qk_norm:
             from ..normalization.norms import RMSNorm as _RMSNorm
@@ -104,7 +99,7 @@ class GroupedQueryAttention(AttentionBase):
         attention_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
-        mu_prev: Optional[torch.Tensor] = None,  # v0.3.0: INL mu guidance
+        mu_prev: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         """
@@ -123,32 +118,21 @@ class GroupedQueryAttention(AttentionBase):
         """
         batch_size, seq_len, _ = hidden_states.shape
 
-        # Fused Mu-KQV: ONE matmul instead of 3 (K, Q, V concatenated on output).
-        # Input concat: [x, mu] — Output concat: [K; Q; V] along feature dim.
-        # 3× fewer kernel launches than the previous 3-matmul fused path,
-        # and cuBLAS/Triton utilizes the wider GEMM shape better.
         k_dim = self.num_kv_heads * self.head_dim
         q_dim = self.num_heads * self.head_dim
         v_dim = self.num_kv_heads * self.head_dim
-        if USE_FUSED_MU_KQV and mu_prev is not None:
-            x_mu = torch.cat([hidden_states, mu_prev], dim=-1)
-            # Stack weights: [K_total, Q_total, V_total] rows × [H + H_mu] cols
-            w_kqv = torch.cat([
-                torch.cat([self.k_proj.weight, self.mu_to_k.weight], dim=1),
-                torch.cat([self.q_proj.weight, self.mu_to_q.weight], dim=1),
-                torch.cat([self.v_proj.weight, self.mu_to_v.weight], dim=1),
-            ], dim=0)
-            kqv = F.linear(x_mu, w_kqv)
-            k, q, v = kqv.split([k_dim, q_dim, v_dim], dim=-1)
-        else:
-            # Also fuse the vanilla path (no mu): single [K, Q, V] matmul on x.
-            w_kqv = torch.cat([self.k_proj.weight, self.q_proj.weight, self.v_proj.weight], dim=0)
-            kqv = F.linear(hidden_states, w_kqv)
-            k, q, v = kqv.split([k_dim, q_dim, v_dim], dim=-1)
-            if mu_prev is not None:
-                k = k + self.mu_to_k(mu_prev)
-                q = q + self.mu_to_q(mu_prev)
-                v = v + self.mu_to_v(mu_prev)
+        w_kqv = torch.cat([self.k_proj.weight, self.q_proj.weight, self.v_proj.weight], dim=0)
+        kqv = F.linear(hidden_states, w_kqv)
+        k, q, v = kqv.split([k_dim, q_dim, v_dim], dim=-1)
+        if self.use_mu_guidance and mu_prev is not None:
+            if mu_prev.shape != hidden_states.shape:
+                raise ValueError(
+                    "mu_prev must match hidden_states shape "
+                    f"{tuple(hidden_states.shape)}, got {tuple(mu_prev.shape)}"
+                )
+            k = k + self.mu_to_k(mu_prev)
+            q = q + self.mu_to_q(mu_prev)
+            v = v + self.mu_to_v(mu_prev)
 
         # Reshape to [batch, heads, seq, head_dim]
         q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)

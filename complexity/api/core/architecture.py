@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import torch.nn as nn
 
-from complexity.core.architectures import (
+from complexity.experimental.architectures import (
     # Mamba (State Space Models)
     MambaBlock,
     MambaConfig,
@@ -76,6 +76,15 @@ class Architecture:
             "retnet": RetNetConfig,
         }[arch_type]
 
+        kwargs = dict(kwargs)
+        if "num_hidden_layers" in kwargs and "num_layers" not in kwargs:
+            kwargs["num_layers"] = kwargs.pop("num_hidden_layers")
+        if arch_type == "retnet" and "num_heads" not in kwargs:
+            hidden_size = kwargs.get("hidden_size", RetNetConfig.hidden_size)
+            for candidate in (12, 8, 4, 2, 1):
+                if hidden_size % candidate == 0:
+                    kwargs["num_heads"] = candidate
+                    break
         config = config_cls(**kwargs)
         return arch_cls(config)
 

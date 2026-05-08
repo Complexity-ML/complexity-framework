@@ -33,8 +33,8 @@ class RequestStatus(Enum):
 @dataclass
 class Request:
     """A generation request."""
-    request_id: str
     input_ids: torch.Tensor
+    request_id: str = ""
     max_tokens: int = 100
     temperature: float = 1.0
     top_k: Optional[int] = None
@@ -54,12 +54,17 @@ class Request:
     position: int = 0  # Position in batch
     tokens_generated: int = 0
 
+    def __post_init__(self):
+        if not self.request_id:
+            self.request_id = f"req-{int(time.time() * 1_000_000)}"
+
 
 @dataclass
 class BatchConfig:
     """Configuration for continuous batching."""
     max_batch_size: int = 32
     max_sequence_length: int = 2048
+    max_tokens_per_batch: Optional[int] = None
     prefill_chunk_size: int = 512  # Tokens to process in prefill
     dynamic_batching: bool = True  # Allow mid-generation additions
     timeout_seconds: float = 60.0  # Request timeout

@@ -26,6 +26,7 @@ import time
 class SpeculativeConfig:
     """Configuration for speculative decoding."""
     num_speculative_tokens: int = 5  # Tokens to draft before verification
+    acceptance_threshold: float = 0.0
     temperature: float = 1.0
     top_k: Optional[int] = None
     top_p: Optional[float] = None

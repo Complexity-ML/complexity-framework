@@ -303,7 +303,7 @@ def split_params_for_muon(model: torch.nn.Module):
     Split model parameters into Muon-eligible and AdamW-fallback groups.
 
     Muon handles: hidden-layer 2D+ weight matrices
-    AdamW handles: embeddings, biases, norms, LM head, mu/dynamics params
+    AdamW handles: embeddings, biases, norms, LM head, mu params
 
     Args:
         model: The model to split parameters for
@@ -326,7 +326,7 @@ def split_params_for_muon(model: torch.nn.Module):
         'embed', 'lm_head', 'head',  # Embedding / output layers
         'bias',                        # Biases
         'norm', 'ln_',                 # Normalization
-        '.mu', 'mu_', 'dynamics',      # INL dynamics / mu params
+        '.mu', 'mu_',                  # Mu guidance params
     }
 
     for name, param in model.named_parameters():

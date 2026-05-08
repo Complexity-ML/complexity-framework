@@ -59,48 +59,16 @@ def run_training(
         console.print(info("Dry run - skipping training"))
         return
 
-    # Setup training
-    try:
-        from complexity.training import Trainer, TrainingConfig
-        from complexity.core import TransformerConfig, Transformer
-        from complexity.parallel import ParallelConfig
-
-        # Build model config
-        model_cfg = cfg.get('model', {})
-        train_cfg = cfg.get('training', {})
-
-        # Create trainer
-        with spinner("Initializing trainer..."):
-            trainer_config = TrainingConfig(
-                max_steps=train_cfg.get('max_steps', 10000),
-                batch_size=train_cfg.get('batch_size', 32),
-                learning_rate=train_cfg.get('learning_rate', 1e-4),
-                weight_decay=train_cfg.get('weight_decay', 0.01),
-                warmup_steps=train_cfg.get('warmup_steps', 1000),
-                gradient_accumulation_steps=train_cfg.get('gradient_accumulation_steps', 1),
-                mixed_precision=mixed_precision,
-                checkpoint_dir=str(output_dir / "checkpoints"),
-                log_dir=str(output_dir / "logs"),
-            )
-
-            if distributed:
-                parallel_config = ParallelConfig(
-                    tensor_parallel_size=num_gpus,
-                    pipeline_parallel_size=1,
-                )
-            else:
-                parallel_config = None
-
-        console.print(success("Trainer initialized"))
-
-        # Start training
-        console.print(info(f"Starting training with {num_gpus} GPU(s)..."))
-        console.print(warning("Training loop not fully implemented - framework demonstration"))
-
-    except ImportError as e:
-        console.print(error(f"Missing dependency: {e}"))
-        console.print(info("Install with: pip install complexity[training]"))
+    if mixed_precision not in {"fp32", "fp16", "bf16"}:
+        console.print(error("Invalid precision. Choose one of: fp32, fp16, bf16"))
         raise typer.Exit(1)
+
+    console.print(error(
+        "The generic CLI cannot infer a dataset/dataloader from this config. "
+        "Use a concrete training script or instantiate complexity.training.Trainer "
+        "with explicit dataloaders."
+    ))
+    raise typer.Exit(2)
 
 
 @train.command("resume")
@@ -118,8 +86,12 @@ def resume_training(
         console.print(error(f"Checkpoint not found: {checkpoint_dir}"))
         raise typer.Exit(1)
 
-    console.print(info(f"Resuming from: {checkpoint_dir}"))
-    console.print(warning("Resume not fully implemented - framework demonstration"))
+    console.print(error(
+        "Generic CLI resume requires the original dataloader construction code. "
+        "Use the training script that created this checkpoint, or instantiate "
+        "complexity.training.Trainer with resume_from set in TrainingConfig."
+    ))
+    raise typer.Exit(2)
 
 
 @train.command("validate")

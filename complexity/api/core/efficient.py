@@ -581,7 +581,6 @@ class SmallModels:
         # Use efficient defaults
         config.setdefault("mlp_type", "swiglu")
         config.setdefault("norm_type", "rmsnorm")
-        config.setdefault("position_type", "rope")
         config.setdefault("tie_word_embeddings", True)
 
         # Import here to avoid circular deps

@@ -42,6 +42,15 @@ class MetricsTracker:
         }
         self.metrics_history.append(record)
 
+    def log(self, metrics: Dict[str, float], step: int):
+        """Compatibility alias for update()."""
+        self.update(metrics, step)
+
+    @property
+    def history(self) -> List[Dict[str, Any]]:
+        """Compatibility view of recorded metrics."""
+        return self.metrics_history
+
     def log_step_time(self, step_time: float):
         """Log time for a step."""
         self.step_times.append(step_time)

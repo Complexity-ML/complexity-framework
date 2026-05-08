@@ -76,9 +76,14 @@ class ComplexityModel(nn.Module):
             self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         # Learnable mu_init: gives layer 0 a mu_prev instead of None
-        self._has_mu = getattr(config, 'use_mu_guidance', False) or getattr(config, 'use_mu_projection', False)
-        if self._has_mu and not getattr(config, 'disable_mu_guidance', False):
-            self.mu_init = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
+        self._has_mu = config.effective_mu_guidance
+        if self._has_mu:
+            self.mu_init = nn.Parameter(
+                torch.full(
+                    (1, 1, config.hidden_size),
+                    float(getattr(config, 'mu_init_value', 0.0)),
+                )
+            )
 
         # Gradient checkpointing (disabled by default)
         self._gradient_checkpointing = False
@@ -289,6 +294,7 @@ class ComplexityModel(nn.Module):
         past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
         use_cache: bool = False,
         return_hidden_states: bool = False,
+        return_logits: bool = True,
     ) -> Dict[str, Any]:
         """
         Forward pass through the model.
@@ -299,6 +305,9 @@ class ComplexityModel(nn.Module):
             past_key_values: Optional list of KV caches per layer
             use_cache: Whether to return updated KV caches
             return_hidden_states: Whether to return all hidden states
+            return_logits: Whether to compute LM logits. Training loops using
+                fused cross-entropy can set this False and consume
+                last_hidden_state directly.
 
         Returns:
             Dictionary with:
@@ -320,7 +329,7 @@ class ComplexityModel(nn.Module):
         # Process through layers (mu flows from layer to layer)
         # mu_init: learnable starting mu so layer 0 gets guidance too
         mu_prev = None
-        if self._has_mu and not getattr(self.config, 'disable_mu_guidance', False):
+        if self._has_mu:
             mu_prev = self.mu_init.expand(batch_size, seq_len, -1)
         for i, layer in enumerate(self.layers):
             past_kv = past_key_values[i] if past_key_values is not None else None
@@ -349,7 +358,7 @@ class ComplexityModel(nn.Module):
                 )
 
             # mu from this layer guides next layer's attention — free (no clamp).
-            if mu_contextual is not None and not getattr(self.config, 'disable_mu_guidance', False):
+            if mu_contextual is not None and self._has_mu:
                 mu_prev = mu_contextual
 
             if use_cache:
@@ -361,9 +370,9 @@ class ComplexityModel(nn.Module):
         # Final normalization
         hidden_states = self.norm(hidden_states)
 
-        # Skip logits computation when training with fused cross-entropy
-        # (logits are computed inside fused_cross_entropy from last_hidden_state)
-        if self.training:
+        # Fused-cross-entropy training paths consume last_hidden_state directly
+        # and can skip the large vocab projection for memory/speed.
+        if not return_logits:
             return {
                 "logits": None,
                 "past_key_values": new_past_key_values,
@@ -371,7 +380,6 @@ class ComplexityModel(nn.Module):
                 "last_hidden_state": hidden_states,
             }
 
-        # Compute logits only during inference/generation
         if self.lm_head is not None:
             logits = self.lm_head(hidden_states)
         else:

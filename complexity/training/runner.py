@@ -157,7 +157,7 @@ class TrainRunner:
         def compute_loss(m, batch):
             input_ids = batch["input_ids"].to(trainer.device)
             labels = batch["labels"].to(trainer.device)
-            outputs = m(input_ids)
+            outputs = m(input_ids, return_logits=False)
             hidden = outputs["last_hidden_state"] if isinstance(outputs, dict) else outputs
             base = m
             while hasattr(base, "model") or hasattr(base, "module"):

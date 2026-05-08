@@ -200,7 +200,7 @@ def convert_to_huggingface(
     model_cfg = cfg.get("model", cfg)
 
     try:
-        from transformers import LlamaConfig, LlamaForCausalLM
+        from transformers import LlamaConfig
 
         with spinner("Creating HuggingFace model..."):
             hf_config = LlamaConfig(
@@ -213,26 +213,12 @@ def convert_to_huggingface(
                 rope_theta=model_cfg.get("rope_theta", 10000),
             )
 
-            # Load weights
-            model_path = input_dir / "model.pt"
-            if model_path.exists():
-                state_dict = torch.load(model_path, map_location="cpu")
-            else:
-                safetensor_path = input_dir / "model.safetensors"
-                if safetensor_path.exists():
-                    from safetensors.torch import load_file
-                    state_dict = load_file(safetensor_path)
-                else:
-                    console.print(error("No model weights found"))
-                    raise typer.Exit(1)
-
-            # Map weights (simplified - real mapping depends on architecture)
-            hf_model = LlamaForCausalLM(hf_config)
-            # Would need proper weight mapping here
-            console.print(warning("Weight mapping not fully implemented"))
-
-            hf_config.save_pretrained(output_dir)
-            # hf_model.save_pretrained(output_dir)
+            console.print(error(
+                "HuggingFace weight export requires an explicit architecture-specific "
+                "weight mapping. Use save_pretrained() for native checkpoints until "
+                "a mapping for this model type is registered."
+            ))
+            raise typer.Exit(2)
 
         console.print(success(f"Converted to: {output_dir}"))
 

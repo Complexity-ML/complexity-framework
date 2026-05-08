@@ -6,7 +6,7 @@ Users can define any architecture by setting these parameters.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, Literal
+from typing import Optional, Dict, Any
 import json
 import yaml
 import torch
@@ -74,13 +74,22 @@ class ModelConfig:
     token_frequencies: Optional[torch.Tensor] = None  # Zipf-balanced routing
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
     shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
+    use_shared_routed_gates: bool = False  # Learn scalar gates for shared vs routed expert outputs
+    shared_gate_init: float = 1.0  # Initial multiplier for shared expert output
+    routed_gate_init: float = 1.0  # Initial multiplier for routed expert output
     top_k: int = 1  # Token-Routed top-K deterministic (1 = classic Zipf top-1; K>1 activates K experts per token via cyclic shift, primary weighted 0.95)
+    top_k_primary_weight: Optional[float] = None  # K>1 blend weight for primary expert (default: 0.95)
 
-    # === Mu-Guidance (Complexity innovation) ===
+    # === Mu-Guidance ===
     use_mu_guidance: bool = False  # Enable contextual mu flowing between layers
-
-    # === Mu Projection (lightweight mu without PID) ===
-    use_mu_projection: bool = False  # Enable mu guidance without PID dynamics
+    clamp_mu_contextual: bool = False  # Clamp contextual mu before passing to next layer
+    mu_min: float = 0.0  # Learnable mu parameter clamp lower bound
+    mu_max: float = 2.0  # Learnable mu parameter clamp upper bound
+    mu_init_value: float = 0.0  # Initial value for layer-0 learnable mu_init
+    use_mu_norm: bool = False  # RMSNorm contextual mu before passing to next layer
+    mu_alpha_init: float = 1.0  # Learnable contextual mu residual scale
+    mu_context_min: float = -2.0  # Contextual mu clamp lower bound
+    mu_context_max: float = 2.0  # Contextual mu clamp upper bound
 
     # === Ablation flags (disable components without monkey-patching) ===
     disable_mu_guidance: bool = False   # Skip mu propagation between layers
@@ -142,13 +151,60 @@ class ModelConfig:
 
     def _validate(self):
         """Validate configuration."""
-        assert self.hidden_size > 0, "hidden_size must be positive"
-        assert self.num_hidden_layers > 0, "num_hidden_layers must be positive"
-        assert self.num_attention_heads > 0, "num_attention_heads must be positive"
-        assert self.hidden_size % self.num_attention_heads == 0, \
-            f"hidden_size ({self.hidden_size}) must be divisible by num_attention_heads ({self.num_attention_heads})"
-        assert self.num_attention_heads % self.num_key_value_heads == 0, \
-            f"num_attention_heads ({self.num_attention_heads}) must be divisible by num_key_value_heads ({self.num_key_value_heads})"
+        if self.hidden_size <= 0:
+            raise ValueError("hidden_size must be positive")
+        if self.num_hidden_layers <= 0:
+            raise ValueError("num_hidden_layers must be positive")
+        if self.intermediate_size is None or self.intermediate_size <= 0:
+            raise ValueError("intermediate_size must be positive")
+        if self.vocab_size <= 0:
+            raise ValueError("vocab_size must be positive")
+        if self.num_attention_heads <= 0:
+            raise ValueError("num_attention_heads must be positive")
+        if self.num_key_value_heads is None or self.num_key_value_heads <= 0:
+            raise ValueError("num_key_value_heads must be positive")
+        if self.hidden_size % self.num_attention_heads != 0:
+            raise ValueError(
+                f"hidden_size ({self.hidden_size}) must be divisible by "
+                f"num_attention_heads ({self.num_attention_heads})"
+            )
+        if self.num_attention_heads % self.num_key_value_heads != 0:
+            raise ValueError(
+                f"num_attention_heads ({self.num_attention_heads}) must be "
+                f"divisible by num_key_value_heads ({self.num_key_value_heads})"
+            )
+        if not 0.0 <= self.attention_dropout < 1.0:
+            raise ValueError("attention_dropout must be in [0, 1)")
+        if not 0.0 < self.rope_fraction <= 1.0:
+            raise ValueError("rope_fraction must be in (0, 1]")
+        if self.sliding_window is not None and self.sliding_window <= 0:
+            raise ValueError("sliding_window must be positive when set")
+        if self.num_experts <= 0:
+            raise ValueError("num_experts must be positive")
+        if self.top_k <= 0:
+            raise ValueError("top_k must be positive")
+        if self.top_k > self.num_experts:
+            raise ValueError("top_k cannot exceed num_experts")
+        if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
+            raise ValueError("top_k_primary_weight must be in [0, 1]")
+        if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
+            raise ValueError("shared_intermediate_size must be positive when set")
+        if self.mu_min > self.mu_max:
+            raise ValueError("mu_min must be <= mu_max")
+        if self.mu_context_min > self.mu_context_max:
+            raise ValueError("mu_context_min must be <= mu_context_max")
+        if self.mup_base_width <= 0:
+            raise ValueError("mup_base_width must be positive")
+        if self.token_frequencies is not None:
+            if not isinstance(self.token_frequencies, torch.Tensor):
+                raise ValueError("token_frequencies must be a torch.Tensor")
+            if self.token_frequencies.ndim != 1:
+                raise ValueError("token_frequencies must be a 1D tensor")
+            if self.token_frequencies.numel() != self.vocab_size:
+                raise ValueError(
+                    f"token_frequencies length ({self.token_frequencies.numel()}) "
+                    f"must match vocab_size ({self.vocab_size})"
+                )
 
     @property
     def head_dim(self) -> int:
@@ -159,6 +215,11 @@ class ModelConfig:
     def num_kv_groups(self) -> int:
         """Number of query heads per KV head (for GQA)."""
         return self.num_attention_heads // self.num_key_value_heads
+
+    @property
+    def effective_mu_guidance(self) -> bool:
+        """Whether Mu guidance is active after compatibility flags are applied."""
+        return bool(self.use_mu_guidance) and not bool(self.disable_mu_guidance)
 
     @property
     def mup_width_mult(self) -> float:
@@ -278,7 +339,7 @@ def complexity_7b_config() -> ModelConfig:
         vocab_size=100000,
         max_position_embeddings=8192,
         attention_type="gqa",
-        mlp_type="token_routed",  # Complexity innovation!
+        mlp_type="token_routed",
         num_experts=4,
         norm_type="rmsnorm",
         use_qk_norm=True,
@@ -391,7 +452,7 @@ def complexity_xl_config() -> ModelConfig:
 
 # === Dense Baselines (for paper comparisons) ===
 def llama_1_5b_config() -> ModelConfig:
-    """Dense Llama 1.5B — same dimensions as complexity-deep, no MoE/dynamics.
+    """Dense Llama 1.5B — same dimensions as complexity-deep, no MoE.
 
     Purpose: fair baseline comparison for the paper.
     Same: hidden_size, num_layers, num_heads, intermediate_size, vocab_size, max_pos

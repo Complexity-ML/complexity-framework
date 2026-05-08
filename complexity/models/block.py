@@ -25,15 +25,33 @@ class MuGuidance(nn.Module):
     Produces mu_contextual = clamp(mu) + mu_proj(h) which guides
     the next layer's K, Q, V projections in attention.
 
-    Extracted from INLDynamics to keep Mu without the PiD controller.
+    This is the lightweight Mu path used by the standard Transformer block.
     """
 
-    def __init__(self, hidden_size: int, mu_min: float = 0.0, mu_max: float = 2.0):
+    def __init__(
+        self,
+        hidden_size: int,
+        mu_min: float = 0.0,
+        mu_max: float = 2.0,
+        clamp_contextual: bool = False,
+        context_min: float = -2.0,
+        context_max: float = 2.0,
+        use_mu_norm: bool = False,
+        alpha_init: float = 1.0,
+    ):
         super().__init__()
         self.mu_min = mu_min
         self.mu_max = mu_max
+        self.clamp_contextual = clamp_contextual
+        self.context_min = context_min
+        self.context_max = context_max
+        self.mu_alpha = nn.Parameter(torch.tensor(float(alpha_init)))
         self.mu = nn.Parameter(torch.full((hidden_size,), (mu_min + mu_max) / 2))
         self.mu_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.mu_norm = None
+        if use_mu_norm:
+            from ..core.normalization.norms import RMSNorm
+            self.mu_norm = RMSNorm(hidden_size)
         nn.init.zeros_(self.mu_proj.weight)  # Start neutral
 
     @property
@@ -42,7 +60,13 @@ class MuGuidance(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Returns mu_contextual: [batch, seq_len, hidden_size]."""
-        return self.mu_clamped + self.mu_proj(hidden_states)
+        mu_delta = self.mu_proj(hidden_states)
+        if self.mu_norm is not None:
+            mu_delta = self.mu_norm(mu_delta)
+        mu_contextual = self.mu_clamped + self.mu_alpha * mu_delta
+        if self.clamp_contextual:
+            mu_contextual = torch.clamp(mu_contextual, self.context_min, self.context_max)
+        return mu_contextual
 
 
 class TransformerBlock(nn.Module):
@@ -80,6 +104,7 @@ class TransformerBlock(nn.Module):
             use_sdpa=config.use_sdpa,
             rope_type=config.rope_type,
             use_mup_attn_scale=getattr(config, "use_mup_attn_scale", False),
+            use_mu_guidance=config.effective_mu_guidance,
         )
         self.self_attn = ATTENTION_REGISTRY.build(config.attention_type, attn_config)
 
@@ -100,18 +125,28 @@ class TransformerBlock(nn.Module):
             token_frequencies=config.token_frequencies,
             shared_expert=getattr(config, 'shared_expert', False),
             shared_intermediate_size=getattr(config, 'shared_intermediate_size', None),
+            use_shared_routed_gates=getattr(config, 'use_shared_routed_gates', False),
+            shared_gate_init=getattr(config, 'shared_gate_init', 1.0),
+            routed_gate_init=getattr(config, 'routed_gate_init', 1.0),
             top_k=getattr(config, 'top_k', 1),
+            top_k_primary_weight=getattr(config, 'top_k_primary_weight', None),
             layer_idx=layer_idx,
         )
         self.mlp = MLP_REGISTRY.build(config.mlp_type, mlp_config)
 
         # Mu-Guidance (optional — contextual mu flowing between layers)
-        # Activated by use_mu_guidance OR use_mu_projection (unified under MuGuidance)
-        self.use_mu_guidance = (
-            getattr(config, 'use_mu_guidance', False) or getattr(config, 'use_mu_projection', False)
-        ) and not getattr(config, 'disable_mu_guidance', False)
+        self.use_mu_guidance = config.effective_mu_guidance
         if self.use_mu_guidance:
-            self.mu_guidance = MuGuidance(hidden_size=config.hidden_size)
+            self.mu_guidance = MuGuidance(
+                hidden_size=config.hidden_size,
+                mu_min=getattr(config, 'mu_min', 0.0),
+                mu_max=getattr(config, 'mu_max', 2.0),
+                clamp_contextual=getattr(config, 'clamp_mu_contextual', False),
+                context_min=getattr(config, 'mu_context_min', -2.0),
+                context_max=getattr(config, 'mu_context_max', 2.0),
+                use_mu_norm=getattr(config, 'use_mu_norm', False),
+                alpha_init=getattr(config, 'mu_alpha_init', 1.0),
+            )
         else:
             self.mu_guidance = None
 

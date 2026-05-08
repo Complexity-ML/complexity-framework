@@ -195,7 +195,7 @@ def simple_ddp(
         model: The model to wrap
         device_id: GPU device ID (auto-detected if None)
         find_unused_parameters: Set True for models with conditional paths
-            (e.g. INL dynamics where mu/PiD params may not always participate)
+            where optional parameters may not always participate
 
     Returns:
         DDP-wrapped model

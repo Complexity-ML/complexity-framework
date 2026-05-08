@@ -301,6 +301,14 @@ class Trainer:
         labels = batch.get("labels", input_ids[:, 1:]).to(self.device)
 
         outputs = model(input_ids)
+        if isinstance(outputs, dict):
+            outputs = outputs["logits"]
+            if outputs is None:
+                raise ValueError(
+                    "Default LM loss requires logits. Call the model with "
+                    "return_logits=True or provide a custom compute_loss that "
+                    "uses last_hidden_state."
+                )
 
         if outputs.dim() == 3:
             shift_logits = outputs[:, :-1, :].contiguous()

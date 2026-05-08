@@ -15,8 +15,28 @@ from complexity.core import (
     StandardMLP,
     SwiGLUMLP,
     GeGLUMLP,
-    TokenRoutedMLP,
+    TokenRoutedMLP as CoreTokenRoutedMLP,
 )
+
+
+class TokenRoutedMLP(nn.Module):
+    """API wrapper around the core TokenRoutedMLP.
+
+    The public API returns ``(output, aux_loss)`` for compatibility with other
+    MoE layers. Core model code should use ``complexity.core.mlp.TokenRoutedMLP``.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__()
+        if "intermediate_size" not in kwargs:
+            kwargs["intermediate_size"] = int(kwargs["hidden_size"] * 8 / 3)
+        self.config = MLPConfig(**kwargs)
+        self.mlp = CoreTokenRoutedMLP(self.config)
+
+    def forward(self, hidden_states, token_ids=None, **kwargs):
+        out = self.mlp(hidden_states, token_ids=token_ids, **kwargs)
+        aux_loss = out.new_zeros(())
+        return out, aux_loss
 
 
 class MLP:
@@ -36,7 +56,7 @@ class MLP:
         "swiglu": SwiGLUMLP,
         "geglu": GeGLUMLP,
         "gated": SwiGLUMLP,  # alias
-        "moe": TokenRoutedMLP,  # Deterministic (our innovation)
+        "moe": TokenRoutedMLP,
     }
 
     @classmethod
@@ -48,6 +68,14 @@ class MLP:
             mlp_type: "standard", "swiglu", "geglu", "gated", "moe"
             **kwargs: hidden_size, intermediate_size, dropout, ...
         """
+        kwargs = dict(kwargs)
+        if "intermediate_size" not in kwargs:
+            hidden_size = kwargs.get("hidden_size")
+            if hidden_size is None:
+                raise ValueError("hidden_size is required when intermediate_size is omitted")
+            kwargs["intermediate_size"] = int(hidden_size * 8 / 3)
+        if mlp_type == "moe":
+            return TokenRoutedMLP(**kwargs)
         if mlp_type in MLP_REGISTRY._registry:
             mlp_cls = MLP_REGISTRY.get(mlp_type)
             config = MLPConfig(**kwargs)
@@ -80,7 +108,7 @@ class MLP:
 
     @classmethod
     def moe(cls, hidden_size: int, num_experts: int = 8, **kwargs) -> nn.Module:
-        """Token-Routed MoE (deterministic, our innovation)."""
+        """Token-Routed MoE."""
         return cls.create("moe", hidden_size=hidden_size, num_experts=num_experts, **kwargs)
 
     @classmethod

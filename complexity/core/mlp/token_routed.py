@@ -86,12 +86,17 @@ class TokenRoutedMLP(MLPBase):
         # of the Zipf primary. K=1 is the classic single-expert Zipf routing.
         # K>1 increases active FLOPs linearly while keeping zero learned routing
         # and zero load-balance loss (Zipf guarantees uniform load at every k).
-        # The primary expert always keeps weight 0.95 in the combination; the
+        # The primary expert keeps a configurable weight in the combination; the
         # remaining 0.05 is split equally across the (K-1) cyclic-shifted
         # secondaries. Preserves specialization (near-top-1 behavior) while
         # recovering ~K× active compute at scale.
         self.top_k = max(1, int(getattr(config, "top_k", 1)))
-        self._primary_weight = 0.95 if self.top_k > 1 else 1.0
+        primary_weight = getattr(config, "top_k_primary_weight", None)
+        if primary_weight is None:
+            primary_weight = 0.95
+        self._primary_weight = (
+            min(1.0, max(0.0, float(primary_weight))) if self.top_k > 1 else 1.0
+        )
 
         # Routed expert weights: gate, up, down.
         # down_proj_w will be re-initialized with GPT-2 residual scaling by
@@ -113,11 +118,19 @@ class TokenRoutedMLP(MLPBase):
         # Default size = intermediate_size (full dense width). shared_down is
         # also rescaled by _init_residual_scaling() (residual output projection).
         self.use_shared_expert = getattr(config, 'shared_expert', False)
+        self.use_shared_routed_gates = bool(getattr(config, "use_shared_routed_gates", False))
         if self.use_shared_expert:
             shared_size = getattr(config, 'shared_intermediate_size', None) or self.intermediate_size
             self.shared_gate = nn.Linear(self.hidden_size, shared_size, bias=False)
             self.shared_up = nn.Linear(self.hidden_size, shared_size, bias=False)
             self.shared_down = nn.Linear(shared_size, self.hidden_size, bias=False)
+            if self.use_shared_routed_gates:
+                self.shared_output_gate = nn.Parameter(
+                    torch.tensor(float(getattr(config, "shared_gate_init", 1.0)))
+                )
+                self.routed_output_gate = nn.Parameter(
+                    torch.tensor(float(getattr(config, "routed_gate_init", 1.0)))
+                )
 
         # Token -> expert mapping (Zipf-balanced or modulo)
         self.register_buffer(
@@ -231,16 +244,16 @@ class TokenRoutedMLP(MLPBase):
         up_w = _to_local(self.up_proj_w)
         down_w = _to_local(self.down_proj_w)
 
-        # FSDP diagnostic: verify expert weights are fully gathered (not sharded)
+        # Verify expert weights are fully gathered before grouped matmuls.
         if not hasattr(self, "_fsdp_checked"):
             expected = (self.num_experts, self.hidden_size, self.expert_intermediate_size)
             if gate_w.shape != expected:
-                logger.error(
-                    f"FSDP BUG: gate_proj_w shape {tuple(gate_w.shape)} != expected {expected}. "
-                    f"Expert weights are SHARDED — matmuls are corrupted!"
+                raise RuntimeError(
+                    f"Invalid gate_proj_w shape {tuple(gate_w.shape)}; expected {expected}. "
+                    "Expert weights must be fully gathered before TokenRoutedMLP forward."
                 )
             else:
-                logger.info(f"FSDP OK: expert weights shape {tuple(gate_w.shape)}")
+                logger.debug(f"TokenRoutedMLP expert weights shape {tuple(gate_w.shape)}")
             self._fsdp_checked = True
 
         # Routing path selection:
@@ -272,7 +285,10 @@ class TokenRoutedMLP(MLPBase):
                 )
                 routed_out = routed_out + w * part
 
-        out = shared_out + routed_out
+        if self.use_shared_expert and self.use_shared_routed_gates:
+            out = self.shared_output_gate * shared_out + self.routed_output_gate * routed_out
+        else:
+            out = shared_out + routed_out
         return out.view(B, S, H)
 
     def _dispatch_once(
@@ -349,5 +365,8 @@ class TokenRoutedMLP(MLPBase):
             shared = self.shared_down(
                 fused_silu_mul(self.shared_gate(flat), self.shared_up(flat))
             )
-            out = out + shared
+            if self.use_shared_routed_gates:
+                out = self.shared_output_gate * shared + self.routed_output_gate * out
+            else:
+                out = out + shared
         return out.view_as(hidden_states)

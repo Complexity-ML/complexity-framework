@@ -5,10 +5,8 @@ For full trainer functionality, use:
     from complexity.training import Trainer, TrainingConfig
 """
 
-from complexity.training.trainer import (
-    Trainer as IntegratedTrainer,
-    TrainingConfig,
-)
+from complexity.training.trainer import Trainer as IntegratedTrainer
+from complexity.training.config import TrainingConfig
 from complexity.training.optimizers import get_optimizer
 
 # Simple Trainer wrapper for API convenience
@@ -39,15 +37,17 @@ class TrainerConfig:
         """Convert to internal TrainingConfig."""
         return TrainingConfig(
             max_steps=self.max_steps,
-            eval_every_n_steps=self.eval_steps,
-            save_every_n_steps=self.save_steps,
-            log_every_n_steps=self.log_steps,
+            eval_steps=self.eval_steps,
+            save_steps=self.save_steps,
+            log_steps=self.log_steps,
             gradient_accumulation_steps=self.gradient_accumulation,
             learning_rate=self.lr,
             weight_decay=self.weight_decay,
             warmup_steps=self.warmup_steps,
-            max_grad_norm=self.gradient_clip,
-            output_dir=self.output_dir,
+            lr_scheduler=self.scheduler,
+            grad_clip=self.gradient_clip,
+            precision=self.precision,
+            checkpoint_dir=self.output_dir,
         )
 
 

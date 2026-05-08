@@ -23,7 +23,7 @@ class CacheConfig:
     head_dim: int
     max_seq_len: int
     dtype: torch.dtype = torch.float16
-    device: str = "cuda"
+    device: str = "cpu"
 
 
 class KVCache:
@@ -46,10 +46,11 @@ class KVCache:
         num_layers: int,
         num_heads: int,
         head_dim: int,
-        max_seq_len: int,
+        max_seq_len: int = None,
+        max_length: int = None,
         batch_size: int = 1,
-        dtype: torch.dtype = torch.float16,
-        device: str = "cuda",
+        dtype: torch.dtype = torch.float32,
+        device: str = "cpu",
     ):
         """
         Args:
@@ -64,18 +65,20 @@ class KVCache:
         self.num_layers = num_layers
         self.num_heads = num_heads
         self.head_dim = head_dim
-        self.max_seq_len = max_seq_len
+        self.max_seq_len = max_seq_len if max_seq_len is not None else max_length
+        if self.max_seq_len is None:
+            raise ValueError("max_seq_len or max_length is required")
         self.batch_size = batch_size
         self.dtype = dtype
         self.device = device
 
         # Pre-allocate cache: [batch, num_heads, max_seq, head_dim]
         self.k_cache = torch.zeros(
-            num_layers, batch_size, num_heads, max_seq_len, head_dim,
+            num_layers, batch_size, num_heads, self.max_seq_len, head_dim,
             dtype=dtype, device=device
         )
         self.v_cache = torch.zeros(
-            num_layers, batch_size, num_heads, max_seq_len, head_dim,
+            num_layers, batch_size, num_heads, self.max_seq_len, head_dim,
             dtype=dtype, device=device
         )
 
@@ -107,10 +110,26 @@ class KVCache:
 
         if end_pos > self.max_seq_len:
             raise ValueError(f"Sequence length {end_pos} exceeds max {self.max_seq_len}")
+        if batch_size > self.batch_size:
+            grow = batch_size - self.batch_size
+            k_extra = self.k_cache.new_zeros(
+                self.num_layers, grow, self.num_heads, self.max_seq_len, self.head_dim
+            )
+            v_extra = self.v_cache.new_zeros(
+                self.num_layers, grow, self.num_heads, self.max_seq_len, self.head_dim
+            )
+            self.k_cache = torch.cat([self.k_cache, k_extra], dim=1)
+            self.v_cache = torch.cat([self.v_cache, v_extra], dim=1)
+            self.seq_lens = torch.cat([
+                self.seq_lens,
+                self.seq_lens.new_zeros(grow),
+            ])
+            self.batch_size = batch_size
 
         # Update cache
         self.k_cache[layer_idx, :batch_size, :, start_pos:end_pos, :] = key
         self.v_cache[layer_idx, :batch_size, :, start_pos:end_pos, :] = value
+        self.seq_lens[:batch_size] = end_pos
 
         # Return full cache up to current position
         return (
@@ -170,8 +189,9 @@ class PagedKVCache:
         head_dim: int,
         page_size: int = 16,  # Tokens per page
         num_pages: int = 1024,  # Total pages in pool
-        dtype: torch.dtype = torch.float16,
-        device: str = "cuda",
+        max_pages: int = None,
+        dtype: torch.dtype = torch.float32,
+        device: str = "cpu",
     ):
         """
         Args:
@@ -187,19 +207,19 @@ class PagedKVCache:
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.page_size = page_size
-        self.num_pages = num_pages
+        self.num_pages = num_pages if max_pages is None else max_pages
         self.dtype = dtype
         self.device = device
 
         # Page pool: [num_pages, num_layers, 2, num_heads, page_size, head_dim]
         # 2 for key and value
         self.page_pool = torch.zeros(
-            num_pages, num_layers, 2, num_heads, page_size, head_dim,
+            self.num_pages, num_layers, 2, num_heads, page_size, head_dim,
             dtype=dtype, device=device
         )
 
         # Free pages (indices into page_pool)
-        self.free_pages = list(range(num_pages))
+        self.free_pages = list(range(self.num_pages))
 
         # Page tables: maps sequence_id -> list of page indices per layer
         self.page_tables: Dict[int, List[List[int]]] = {}
@@ -328,8 +348,8 @@ class SlidingWindowCache(KVCache):
         head_dim: int,
         window_size: int = 4096,
         batch_size: int = 1,
-        dtype: torch.dtype = torch.float16,
-        device: str = "cuda",
+        dtype: torch.dtype = torch.float32,
+        device: str = "cpu",
     ):
         """
         Args:
@@ -386,6 +406,7 @@ class SlidingWindowCache(KVCache):
 
         self.k_cache[layer_idx, :batch_size, :, start_pos:end_pos, :] = key
         self.v_cache[layer_idx, :batch_size, :, start_pos:end_pos, :] = value
+        self.seq_lens[:batch_size] = end_pos
 
         self.total_tokens += new_len
 

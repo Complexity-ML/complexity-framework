@@ -16,6 +16,16 @@ from complexity.core.attention.flash_attention import (
 from complexity.core.attention import AttentionConfig
 
 
+class _AttentionOutputOnly(nn.Module):
+    def __init__(self, attention: nn.Module):
+        super().__init__()
+        self.attention = attention
+
+    def forward(self, *args, **kwargs):
+        out = self.attention(*args, **kwargs)
+        return out[0] if isinstance(out, tuple) else out
+
+
 class CUDA:
     """
     Factory pour créer des attention layers optimisées CUDA/Triton.
@@ -88,7 +98,7 @@ class CUDA:
             head_dim=head_dim or hidden_size // num_heads,
         )
 
-        return attn_cls(config, **kwargs)
+        return _AttentionOutputOnly(attn_cls(config, **kwargs))
 
     # ==================== Flash Attention ====================
 
@@ -152,6 +162,11 @@ class CUDA:
     ) -> nn.Module:
         """Alias pour sliding_window avec fenêtre plus petite."""
         return cls.sliding_window(hidden_size, num_heads, window_size, **kwargs)
+
+    @classmethod
+    def sliding(cls, *args, **kwargs) -> nn.Module:
+        """Alias for sliding_window."""
+        return cls.sliding_window(*args, **kwargs)
 
     # ==================== Sparse Attention ====================
 

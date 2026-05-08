@@ -90,6 +90,25 @@ class TestComplexityModel:
         # Mu-Guidance doesn't add velocity_states to output
         assert "logits" in out
         assert out["logits"].shape == (2, 16, 1000)
+        assert any("mu_to_" in name for name, _ in model.named_parameters())
+
+    def test_without_mu_guidance_has_no_dead_mu_attention_params(self):
+        """Dense baselines should not count unused Mu attention projections."""
+        from complexity.models import ComplexityModel
+        from complexity.config import ModelConfig
+
+        config = ModelConfig(
+            hidden_size=128,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            intermediate_size=256,
+            vocab_size=1000,
+            use_mu_guidance=False,
+        )
+        model = ComplexityModel(config)
+
+        assert not any("mu_to_" in name for name, _ in model.named_parameters())
 
     def test_with_token_routed_mlp(self):
         """Test model with TokenRouted MLP (MoE)."""

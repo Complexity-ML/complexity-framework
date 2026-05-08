@@ -648,7 +648,7 @@ def get_optimizer(
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        # No weight decay for bias, norm, embedding, and mu (INL dynamics equilibrium)
+        # No weight decay for bias, norm, embedding, and mu guidance params
         if 'bias' in name or 'norm' in name or 'embedding' in name or '.mu' in name:
             no_decay_params.append(param)
         else:

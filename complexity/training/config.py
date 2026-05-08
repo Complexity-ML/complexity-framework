@@ -56,6 +56,83 @@ class TrainingConfig:
     num_workers: int = 4
     pin_memory: bool = True
 
+    def __post_init__(self):
+        if self.max_steps <= 0:
+            raise ValueError("max_steps must be positive")
+        if self.max_epochs is not None and self.max_epochs <= 0:
+            raise ValueError("max_epochs must be positive when set")
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if self.gradient_accumulation_steps <= 0:
+            raise ValueError("gradient_accumulation_steps must be positive")
+        if self.learning_rate <= 0:
+            raise ValueError("learning_rate must be positive")
+        if self.weight_decay < 0:
+            raise ValueError("weight_decay must be non-negative")
+        if self.warmup_steps < 0:
+            raise ValueError("warmup_steps must be non-negative")
+        if not 0.0 <= self.min_lr_ratio <= 1.0:
+            raise ValueError("min_lr_ratio must be in [0, 1]")
+        if not 0.0 <= self.wsd_decay_ratio <= 1.0:
+            raise ValueError("wsd_decay_ratio must be in [0, 1]")
+        if self.precision not in {"fp32", "fp16", "bf16"}:
+            raise ValueError("precision must be one of: fp32, fp16, bf16")
+        if self.grad_clip < 0:
+            raise ValueError("grad_clip must be non-negative")
+        if self.save_steps <= 0:
+            raise ValueError("save_steps must be positive")
+        if self.log_steps <= 0:
+            raise ValueError("log_steps must be positive")
+        if self.eval_steps < 0:
+            raise ValueError("eval_steps must be non-negative")
+        if self.num_workers < 0:
+            raise ValueError("num_workers must be non-negative")
+
+    @property
+    def eval_every_n_steps(self) -> int:
+        """Backward-compatible alias for eval_steps."""
+        return self.eval_steps
+
+    @eval_every_n_steps.setter
+    def eval_every_n_steps(self, value: int) -> None:
+        self.eval_steps = value
+
+    @property
+    def save_every_n_steps(self) -> int:
+        """Backward-compatible alias for save_steps."""
+        return self.save_steps
+
+    @save_every_n_steps.setter
+    def save_every_n_steps(self, value: int) -> None:
+        self.save_steps = value
+
+    @property
+    def log_every_n_steps(self) -> int:
+        """Backward-compatible alias for log_steps."""
+        return self.log_steps
+
+    @log_every_n_steps.setter
+    def log_every_n_steps(self, value: int) -> None:
+        self.log_steps = value
+
+    @property
+    def max_grad_norm(self) -> float:
+        """Backward-compatible alias for grad_clip."""
+        return self.grad_clip
+
+    @max_grad_norm.setter
+    def max_grad_norm(self, value: float) -> None:
+        self.grad_clip = value
+
+    @property
+    def output_dir(self) -> str:
+        """Backward-compatible alias for checkpoint_dir."""
+        return self.checkpoint_dir
+
+    @output_dir.setter
+    def output_dir(self, value: str) -> None:
+        self.checkpoint_dir = value
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "max_steps": self.max_steps,

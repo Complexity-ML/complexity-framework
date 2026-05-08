@@ -1,28 +1,12 @@
-"""
-Alternative Architectures beyond standard Transformers.
+"""Compatibility shim for experimental alternative architectures."""
 
-Implements:
-- Mamba (State Space Models)
-- RWKV (Linear attention RNN)
-- RetNet (Retentive Networks)
-These architectures offer O(N) complexity vs O(N²) for standard attention.
-"""
+import warnings
 
-from .mamba import MambaBlock, MambaConfig, Mamba
-from .rwkv import RWKVBlock, RWKVConfig, RWKV
-from .retnet import RetNetBlock, RetNetConfig, RetNet
+warnings.warn(
+    "complexity.core.architectures is experimental; import from "
+    "complexity.experimental.architectures for new code.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
-__all__ = [
-    # Mamba
-    "MambaBlock",
-    "MambaConfig",
-    "Mamba",
-    # RWKV
-    "RWKVBlock",
-    "RWKVConfig",
-    "RWKV",
-    # RetNet
-    "RetNetBlock",
-    "RetNetConfig",
-    "RetNet",
-]
+from complexity.experimental.architectures import *  # noqa: F401,F403
