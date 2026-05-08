@@ -16,6 +16,7 @@ import csv
 import logging
 import math
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -248,6 +249,72 @@ def reduce_average(value: float, device: torch.device, distributed: bool) -> flo
     return tensor.item()
 
 
+def resolve_checkpoint_path(path: str) -> Path:
+    ckpt = Path(path)
+    if ckpt.name == "latest":
+        parent = ckpt.parent
+        candidates = sorted(parent.glob("step_*"))
+        if not candidates:
+            raise FileNotFoundError(f"No checkpoints found in {parent}")
+        return candidates[-1]
+    return ckpt
+
+
+def save_checkpoint(args, raw_model, optimizer, scheduler, config, step: int, is_main: bool, distributed: bool):
+    if distributed:
+        dist.barrier()
+    if not is_main or args.save_steps <= 0:
+        if distributed:
+            dist.barrier()
+        return
+
+    save_root = Path(args.save_dir)
+    save_root.mkdir(parents=True, exist_ok=True)
+    ckpt_dir = save_root / f"step_{step:06d}"
+    tmp_dir = save_root / f".step_{step:06d}.tmp"
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    tmp_dir.mkdir(parents=True)
+
+    torch.save(
+        {
+            "step": step,
+            "model": {k: v.detach().cpu() for k, v in raw_model.state_dict().items()},
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "config": config.to_dict(),
+            "args": vars(args),
+        },
+        tmp_dir / "checkpoint.pt",
+    )
+    if ckpt_dir.exists():
+        shutil.rmtree(ckpt_dir)
+    tmp_dir.rename(ckpt_dir)
+
+    checkpoints = sorted(save_root.glob("step_*"))
+    excess = len(checkpoints) - max(1, args.save_total_limit)
+    for old in checkpoints[:max(0, excess)]:
+        shutil.rmtree(old)
+    logger.info(f"Checkpoint saved: {ckpt_dir}")
+    if distributed:
+        dist.barrier()
+
+
+def load_checkpoint(path: str, raw_model, optimizer, scheduler, device, is_main: bool) -> int:
+    ckpt_dir = resolve_checkpoint_path(path)
+    ckpt_file = ckpt_dir / "checkpoint.pt"
+    if not ckpt_file.exists():
+        raise FileNotFoundError(f"Checkpoint file not found: {ckpt_file}")
+    state = torch.load(ckpt_file, map_location=device)
+    raw_model.load_state_dict(state["model"], strict=True)
+    optimizer.load_state_dict(state["optimizer"])
+    scheduler.load_state_dict(state["scheduler"])
+    step = int(state["step"])
+    if is_main:
+        logger.info(f"Resumed from {ckpt_dir} at step {step}")
+    return step
+
+
 def main():
     parser = argparse.ArgumentParser(description="Local ~300M Token-Routed run")
     parser.add_argument("--dataset", choices=["random", "text", "fineweb"], default="random")
@@ -282,6 +349,10 @@ def main():
     parser.add_argument("--run-name", type=str, default="300m-tr-local")
     parser.add_argument("--label-smoothing", type=float, default=0.0)
     parser.add_argument("--z-loss", type=float, default=0.0)
+    parser.add_argument("--save-steps", type=int, default=1000)
+    parser.add_argument("--save-dir", type=str, default="checkpoints/300m-tr-local")
+    parser.add_argument("--save-total-limit", type=int, default=3)
+    parser.add_argument("--resume", type=str, default=None)
     parser.add_argument(
         "--no-zipf-from-text",
         action="store_true",
@@ -348,6 +419,11 @@ def main():
         return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    start_step = 0
+    if args.resume:
+        start_step = load_checkpoint(args.resume, raw_model, optimizer, scheduler, device, is_main)
+    if distributed:
+        dist.barrier()
 
     run_dir = Path("runs") / args.run_name
     if is_main:
@@ -358,23 +434,30 @@ def main():
     csv_file = None
     writer = None
     if is_main:
-        csv_file = csv_path.open("w", newline="")
+        csv_mode = "a" if args.resume and csv_path.exists() else "w"
+        csv_file = csv_path.open(csv_mode, newline="")
         writer = csv.writer(csv_file)
-        writer.writerow([
-            "step", "train_loss", "train_ppl", "eval_loss", "eval_ppl", "lr", "tok_s",
-            "expert_0_share", "expert_1_share", "expert_2_share", "expert_3_share",
-            "expert_dead_count",
-        ])
+        if csv_mode == "w":
+            writer.writerow([
+                "step", "train_loss", "train_ppl", "eval_loss", "eval_ppl", "lr", "tok_s",
+                "expert_0_share", "expert_1_share", "expert_2_share", "expert_3_share",
+                "expert_dead_count",
+            ])
         csv_file.flush()
 
     model.train()
-    pbar = tqdm(total=args.steps, desc="300M TR", unit="step", dynamic_ncols=True) if is_main else None
+    pbar = (
+        tqdm(total=args.steps, initial=start_step, desc="300M TR", unit="step", dynamic_ncols=True)
+        if is_main else None
+    )
     t_log = time.perf_counter()
     tokens_since_log = 0
+    last_step = start_step
 
-    for step, batch in enumerate(train_loader, start=1):
+    for step, batch in enumerate(train_loader, start=start_step + 1):
         if step > args.steps:
             break
+        last_step = step
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
@@ -429,6 +512,12 @@ def main():
 
         if args.empty_cache_every > 0 and step % args.empty_cache_every == 0:
             empty_cache(device)
+
+        if args.save_steps > 0 and step % args.save_steps == 0:
+            save_checkpoint(args, raw_model, optimizer, scheduler, config, step, is_main, distributed)
+
+    if args.save_steps > 0 and last_step > start_step and last_step % args.save_steps != 0:
+        save_checkpoint(args, raw_model, optimizer, scheduler, config, last_step, is_main, distributed)
 
     if pbar is not None:
         pbar.close()
