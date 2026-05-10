@@ -38,6 +38,7 @@ class MuGuidance(nn.Module):
         context_max: float = 2.0,
         use_mu_norm: bool = False,
         alpha_init: float = 1.0,
+        mu_init_value: Optional[float] = None,
     ):
         super().__init__()
         self.mu_min = mu_min
@@ -46,7 +47,9 @@ class MuGuidance(nn.Module):
         self.context_min = context_min
         self.context_max = context_max
         self.mu_alpha = nn.Parameter(torch.tensor(float(alpha_init)))
-        self.mu = nn.Parameter(torch.full((hidden_size,), (mu_min + mu_max) / 2))
+        if mu_init_value is None:
+            mu_init_value = (mu_min + mu_max) / 2
+        self.mu = nn.Parameter(torch.full((hidden_size,), float(mu_init_value)))
         self.mu_proj = nn.Linear(hidden_size, hidden_size, bias=False)
         self.mu_norm = None
         if use_mu_norm:
@@ -146,6 +149,7 @@ class TransformerBlock(nn.Module):
                 context_max=getattr(config, 'mu_context_max', 2.0),
                 use_mu_norm=getattr(config, 'use_mu_norm', False),
                 alpha_init=getattr(config, 'mu_alpha_init', 1.0),
+                mu_init_value=getattr(config, 'mu_init_value', None),
             )
         else:
             self.mu_guidance = None
