@@ -62,7 +62,7 @@ def make_config(args) -> ModelConfig:
         shared_intermediate_size=args.shared_intermediate_size,
         norm_type="rmsnorm",
         use_qk_norm=True,
-        use_mu_guidance=True,
+        use_mu_guidance=args.use_mu_guidance,
         use_shared_routed_gates=args.learn_shared_routed_gates,
         shared_gate_init=args.shared_gate_init,
         routed_gate_init=args.routed_gate_init,
@@ -324,19 +324,19 @@ def main():
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument("--lr", type=float, default=3e-4)
-    # Strong 300M TR profile: keep total params close to dense, but move more
-    # capacity into the always-active shared expert. The previous 1632/1632
-    # split only activated ~2040 MLP dims per token (shared 1632 + one 408
-    # routed expert), which was too weak against dense 4096. This profile
-    # activates ~3072 dims/token with top-k=2 while staying ~311M params.
-    parser.add_argument("--intermediate-size", type=int, default=512)
-    parser.add_argument("--shared-intermediate-size", type=int, default=2816)
-    parser.add_argument("--shared-gate-init", type=float, default=2 ** -0.5)
-    parser.add_argument("--routed-gate-init", type=float, default=2 ** -0.5)
+    # Iso-param residual TR profile: no Mu in the strict dense comparison, so
+    # parameter budget goes to a dense-compatible shared SwiGLU trunk plus a
+    # small deterministic Token-Routed residual path. This keeps the model at
+    # ~306.5M params like dense while preserving TR specialization capacity.
+    parser.add_argument("--intermediate-size", type=int, default=256)
+    parser.add_argument("--shared-intermediate-size", type=int, default=3840)
+    parser.add_argument("--shared-gate-init", type=float, default=1.0)
+    parser.add_argument("--routed-gate-init", type=float, default=0.1)
     parser.add_argument("--learn-shared-routed-gates", dest="learn_shared_routed_gates", action="store_true", default=True)
     parser.add_argument("--no-learn-shared-routed-gates", dest="learn_shared_routed_gates", action="store_false")
     parser.add_argument("--top-k", type=int, default=2)
-    parser.add_argument("--top-k-primary-weight", type=float, default=0.75)
+    parser.add_argument("--top-k-primary-weight", type=float, default=0.5)
+    parser.add_argument("--use-mu-guidance", action="store_true")
     parser.add_argument("--mu-clamp", action="store_true")
     parser.add_argument("--mu-norm", action="store_true")
     parser.add_argument("--mu-alpha-init", type=float, default=1.0)
@@ -383,12 +383,12 @@ def main():
     if is_main:
         logger.info(f"Model: {params / 1e6:.1f}M params")
         logger.info(
-            "Config: Token-Routed + Mu, hidden=1024, layers=18, GQA=16/4, "
+            "Config: Token-Routed residual, hidden=1024, layers=18, GQA=16/4, "
             f"inter={args.intermediate_size}, shared_inter={args.shared_intermediate_size}, "
             f"experts=4, top_k={args.top_k}, primary_w={args.top_k_primary_weight}, "
             f"learn_gates={args.learn_shared_routed_gates}, "
             f"gates=({args.shared_gate_init},{args.routed_gate_init}), "
-            f"mu_clamp={args.mu_clamp}, mu_norm={args.mu_norm}, "
+            f"use_mu={args.use_mu_guidance}, mu_clamp={args.mu_clamp}, mu_norm={args.mu_norm}, "
             f"mu_alpha={args.mu_alpha_init}, mu_init={args.mu_init_value}"
         )
         if distributed:
