@@ -324,14 +324,19 @@ def main():
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--intermediate-size", type=int, default=1632)
-    parser.add_argument("--shared-intermediate-size", type=int, default=None)
+    # Strong 300M TR profile: keep total params close to dense, but move more
+    # capacity into the always-active shared expert. The previous 1632/1632
+    # split only activated ~2040 MLP dims per token (shared 1632 + one 408
+    # routed expert), which was too weak against dense 4096. This profile
+    # activates ~3072 dims/token with top-k=2 while staying ~311M params.
+    parser.add_argument("--intermediate-size", type=int, default=512)
+    parser.add_argument("--shared-intermediate-size", type=int, default=2816)
     parser.add_argument("--shared-gate-init", type=float, default=2 ** -0.5)
     parser.add_argument("--routed-gate-init", type=float, default=2 ** -0.5)
     parser.add_argument("--learn-shared-routed-gates", dest="learn_shared_routed_gates", action="store_true", default=True)
     parser.add_argument("--no-learn-shared-routed-gates", dest="learn_shared_routed_gates", action="store_false")
-    parser.add_argument("--top-k", type=int, default=1)
-    parser.add_argument("--top-k-primary-weight", type=float, default=0.95)
+    parser.add_argument("--top-k", type=int, default=2)
+    parser.add_argument("--top-k-primary-weight", type=float, default=0.75)
     parser.add_argument("--mu-clamp", action="store_true")
     parser.add_argument("--mu-norm", action="store_true")
     parser.add_argument("--mu-alpha-init", type=float, default=1.0)
