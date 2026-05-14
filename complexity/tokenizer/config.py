@@ -3,7 +3,7 @@ Tokenizer Configuration - Formats, special tokens, presets.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 
 @dataclass
@@ -15,6 +15,10 @@ class TokenizerConfig:
     min_frequency: int = 2
     max_length: int = 2048
     num_reserved_tokens: int = 256  # Reserved for future special tokens
+    bos_token: Optional[str] = None
+    eos_token: Optional[str] = None
+    pad_token: Optional[str] = None
+    unk_token: Optional[str] = None
     # Override n'importe quoi via **kwargs
     extra: Dict[str, Any] = field(default_factory=dict)
 

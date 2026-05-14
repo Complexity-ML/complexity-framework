@@ -130,7 +130,9 @@ class FineWebDataset(IterableDataset):
             text = example.get("text", "")
             if not text:
                 continue
-            buffer.extend(self.tokenizer.encode(text))
+            buffer.extend(self.tokenizer.encode(text, add_special_tokens=False))
+            if self.tokenizer.eos_token_id is not None:
+                buffer.append(self.tokenizer.eos_token_id)
             while len(buffer) >= self.seq_len + 1:
                 chunk = buffer[: self.seq_len + 1]
                 buffer = buffer[self.seq_len :]
@@ -400,7 +402,7 @@ def main():
             raw_model,
             device_ids=[local_rank],
             output_device=local_rank,
-            find_unused_parameters=True,
+            find_unused_parameters=False,
         )
 
     amp_dtype = autocast_dtype(device) if args.bf16 else None

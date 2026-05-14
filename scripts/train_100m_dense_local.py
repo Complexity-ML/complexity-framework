@@ -106,7 +106,9 @@ class FineWebDataset(IterableDataset):
             text = example.get("text", "")
             if not text:
                 continue
-            buffer.extend(self.tokenizer.encode(text))
+            buffer.extend(self.tokenizer.encode(text, add_special_tokens=False))
+            if self.tokenizer.eos_token_id is not None:
+                buffer.append(self.tokenizer.eos_token_id)
             while len(buffer) >= self.seq_len + 1:
                 chunk = buffer[: self.seq_len + 1]
                 buffer = buffer[self.seq_len :]

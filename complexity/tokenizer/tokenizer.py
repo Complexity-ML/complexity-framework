@@ -81,15 +81,6 @@ class Tokenizer:
         if not p.exists():
             raise ValueError(f"Not found: {path}")
 
-        config_file = p / "config.json" if p.is_dir() else None
-        if config_file and config_file.exists():
-            with open(config_file) as f:
-                cfg = json.load(f)
-            cfg.update(kwargs)
-            config = TokenizerConfig(**cfg)
-        else:
-            config = TokenizerConfig(**kwargs)
-
         # Load tokenizer
         tok_file = p / "tokenizer.json" if p.is_dir() else p
         if tok_file.exists() and tok_file.suffix == ".json":
@@ -97,6 +88,27 @@ class Tokenizer:
             tokenizer = HFTok.from_file(str(tok_file))
         else:
             raise ValueError(f"No tokenizer in {path}")
+
+        cfg = {}
+        if p.is_dir():
+            for name in ("config.json", "tokenizer_config.json", "special_tokens_map.json"):
+                config_file = p / name
+                if config_file.exists():
+                    with open(config_file) as f:
+                        cfg.update(json.load(f))
+
+        vocab_size = tokenizer.get_vocab_size() if hasattr(tokenizer, "get_vocab_size") else None
+        if vocab_size is not None:
+            cfg["vocab_size"] = vocab_size
+        if "model_max_length" in cfg and "max_length" not in cfg:
+            cfg["max_length"] = cfg["model_max_length"]
+        cfg.update(kwargs)
+        valid_fields = set(TokenizerConfig.__dataclass_fields__)
+        known_cfg = {k: v for k, v in cfg.items() if k in valid_fields and k != "extra"}
+        extra_cfg = {k: v for k, v in cfg.items() if k not in valid_fields}
+        if extra_cfg:
+            known_cfg["extra"] = extra_cfg
+        config = TokenizerConfig(**known_cfg)
 
         print(f"[Tokenizer] Loaded from {path}")
         return cls(tokenizer, config)
@@ -407,8 +419,9 @@ class Tokenizer:
         return tok
 
     def _get_special_id(self, typ: str) -> Optional[int]:
-        m = get_bos_eos(self._config.format)
-        name = m.get(typ)
+        name = getattr(self._config, f"{typ}_token", None)
+        if name is None:
+            name = get_bos_eos(self._config.format).get(typ)
         if name and hasattr(self._tokenizer, "token_to_id"):
             return self._tokenizer.token_to_id(name)
         return None
