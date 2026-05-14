@@ -5,6 +5,7 @@ Tokenizer - Fast BPE/Unigram/WordPiece using HuggingFace tokenizers (Rust).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import List, Optional, Union, Dict, Any, Iterator, Callable
 
@@ -91,26 +92,7 @@ class Tokenizer:
         """
         encoding_name = path.removeprefix("tiktoken:")
         if path.startswith("tiktoken:") or encoding_name in TIKTOKEN_ENCODINGS:
-            try:
-                import tiktoken
-            except ImportError as exc:
-                raise ImportError(
-                    "Tokenizer.load('o200k_base') requires tiktoken. "
-                    "Install with `pip install tiktoken` or reinstall the package."
-                ) from exc
-
-            encoding = tiktoken.get_encoding(encoding_name)
-            eos_token = "<|endoftext|>" if "<|endoftext|>" in encoding._special_tokens else None
-            config_kwargs = {
-                "vocab_size": encoding.n_vocab,
-                "format": "tiktoken",
-                "method": encoding_name,
-                "eos_token": eos_token,
-            }
-            config_kwargs.update(kwargs)
-            config = TokenizerConfig(**config_kwargs)
-            print(f"[Tokenizer] Loaded tiktoken encoding '{encoding_name}'")
-            return cls(_TikTokenAdapter(encoding), config)
+            return cls._load_tiktoken(encoding_name, **kwargs)
 
         if path in TOKENIZER_PRESETS:
             preset = TOKENIZER_PRESETS[path].copy()
@@ -125,6 +107,14 @@ class Tokenizer:
         p = Path(path)
         if not p.exists():
             raise ValueError(f"Not found: {path}")
+
+        if p.is_dir() and (p / "tiktoken_config.json").exists():
+            with open(p / "tiktoken_config.json") as f:
+                cfg = json.load(f)
+            encoding_name = cfg.pop("encoding_name")
+            cache_dir = p / cfg.pop("cache_dir", ".")
+            cfg.update(kwargs)
+            return cls._load_tiktoken(encoding_name, cache_dir=cache_dir, **cfg)
 
         # Load tokenizer
         tok_file = p / "tokenizer.json" if p.is_dir() else p
@@ -157,6 +147,37 @@ class Tokenizer:
 
         print(f"[Tokenizer] Loaded from {path}")
         return cls(tokenizer, config)
+
+    @classmethod
+    def _load_tiktoken(cls, encoding_name: str, cache_dir: Union[str, Path, None] = None, **kwargs) -> "Tokenizer":
+        try:
+            import tiktoken
+        except ImportError as exc:
+            raise ImportError(
+                f"Tokenizer.load('{encoding_name}') requires tiktoken. "
+                "Install with `pip install tiktoken` or reinstall the package."
+            ) from exc
+
+        if cache_dir is not None:
+            os.environ["TIKTOKEN_CACHE_DIR"] = str(Path(cache_dir).resolve())
+        encoding = tiktoken.get_encoding(encoding_name)
+        eos_token = "<|endoftext|>" if "<|endoftext|>" in encoding._special_tokens else None
+        config_kwargs = {
+            "vocab_size": encoding.n_vocab,
+            "format": "tiktoken",
+            "method": encoding_name,
+            "eos_token": eos_token,
+        }
+        config_kwargs.update(kwargs)
+        valid_fields = set(TokenizerConfig.__dataclass_fields__)
+        known_cfg = {k: v for k, v in config_kwargs.items() if k in valid_fields and k != "extra"}
+        extra_cfg = {k: v for k, v in config_kwargs.items() if k not in valid_fields}
+        if extra_cfg:
+            known_cfg["extra"] = extra_cfg
+        config = TokenizerConfig(**known_cfg)
+        source = f" from {Path(cache_dir).resolve()}" if cache_dir is not None else ""
+        print(f"[Tokenizer] Loaded tiktoken encoding '{encoding_name}'{source}")
+        return cls(_TikTokenAdapter(encoding), config)
 
     # ==================== Train ====================
 
