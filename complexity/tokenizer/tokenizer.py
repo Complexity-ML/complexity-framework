@@ -20,6 +20,28 @@ from .config import (
 )
 
 
+TIKTOKEN_ENCODINGS = {"o200k_base", "cl100k_base", "p50k_base", "r50k_base"}
+
+
+class _TikTokenAdapter:
+    """Small adapter exposing the subset of HuggingFace Tokenizer API we use."""
+
+    def __init__(self, encoding):
+        self.encoding = encoding
+
+    def encode(self, text: str) -> List[int]:
+        return self.encoding.encode(text, disallowed_special=())
+
+    def decode(self, tokens: List[int]) -> str:
+        return self.encoding.decode([int(token) for token in tokens])
+
+    def token_to_id(self, token: str) -> Optional[int]:
+        return self.encoding._special_tokens.get(token)
+
+    def get_vocab_size(self) -> int:
+        return self.encoding.n_vocab
+
+
 class Tokenizer:
     """
     Fast tokenizer using HuggingFace tokenizers (Rust backend).
@@ -67,6 +89,29 @@ class Tokenizer:
             path: Preset name or path to tokenizer
             **kwargs: Override config values
         """
+        encoding_name = path.removeprefix("tiktoken:")
+        if path.startswith("tiktoken:") or encoding_name in TIKTOKEN_ENCODINGS:
+            try:
+                import tiktoken
+            except ImportError as exc:
+                raise ImportError(
+                    "Tokenizer.load('o200k_base') requires tiktoken. "
+                    "Install with `pip install tiktoken` or reinstall the package."
+                ) from exc
+
+            encoding = tiktoken.get_encoding(encoding_name)
+            eos_token = "<|endoftext|>" if "<|endoftext|>" in encoding._special_tokens else None
+            config_kwargs = {
+                "vocab_size": encoding.n_vocab,
+                "format": "tiktoken",
+                "method": encoding_name,
+                "eos_token": eos_token,
+            }
+            config_kwargs.update(kwargs)
+            config = TokenizerConfig(**config_kwargs)
+            print(f"[Tokenizer] Loaded tiktoken encoding '{encoding_name}'")
+            return cls(_TikTokenAdapter(encoding), config)
+
         if path in TOKENIZER_PRESETS:
             preset = TOKENIZER_PRESETS[path].copy()
             preset.update(kwargs)

@@ -53,7 +53,7 @@ def make_config(args) -> ModelConfig:
         num_attention_heads=16,
         num_key_value_heads=4,
         intermediate_size=args.intermediate_size,
-        vocab_size=32000,
+        vocab_size=args.vocab_size,
         max_position_embeddings=2048,
         attention_type="gqa",
         mlp_type="token_routed",
@@ -148,6 +148,14 @@ def load_text_tokens(path: str, tokenizer_path: str) -> list[int]:
     tokens = tokenizer.encode(text)
     logger.info(f"Text dataset: {path} ({len(tokens):,} tokens)")
     return tokens
+
+
+def infer_vocab_size(args) -> int:
+    if args.vocab_size is not None:
+        return args.vocab_size
+    if args.dataset == "random":
+        return 32000
+    return Tokenizer.load(args.tokenizer).vocab_size
 
 
 def text_token_frequencies(path: str, tokenizer_path: str, vocab_size: int) -> torch.Tensor:
@@ -322,6 +330,7 @@ def main():
     parser.add_argument("--dataset", choices=["random", "text", "fineweb"], default="random")
     parser.add_argument("--text-file", type=str, default=None)
     parser.add_argument("--tokenizer", type=str, default="./tokenizer")
+    parser.add_argument("--vocab-size", type=int, default=None)
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--seq-len", type=int, default=256)
@@ -370,6 +379,7 @@ def main():
 
     device, distributed, rank, local_rank, world_size = init_distributed(args.seed)
     is_main = rank == 0
+    args.vocab_size = infer_vocab_size(args)
     config = make_config(args)
     if args.dataset == "text" and not args.no_zipf_from_text:
         config.token_frequencies = text_token_frequencies(

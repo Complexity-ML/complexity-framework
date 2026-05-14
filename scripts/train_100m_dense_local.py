@@ -40,14 +40,14 @@ for noisy_logger in ("httpx", "httpcore", "huggingface_hub", "datasets"):
     logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
 
-def make_config() -> ModelConfig:
+def make_config(args) -> ModelConfig:
     return ModelConfig(
         hidden_size=640,
         num_hidden_layers=10,
         num_attention_heads=10,
         num_key_value_heads=2,
         intermediate_size=3584,
-        vocab_size=32000,
+        vocab_size=args.vocab_size,
         max_position_embeddings=2048,
         attention_type="gqa",
         mlp_type="swiglu",
@@ -126,6 +126,14 @@ def load_text_tokens(path: str, tokenizer_path: str) -> list[int]:
     return tokens
 
 
+def infer_vocab_size(args) -> int:
+    if args.vocab_size is not None:
+        return args.vocab_size
+    if args.dataset == "random":
+        return 32000
+    return Tokenizer.load(args.tokenizer).vocab_size
+
+
 def split_tokens(tokens: list[int], eval_ratio: float) -> tuple[list[int], list[int]]:
     n_eval = max(2048, int(len(tokens) * eval_ratio))
     n_eval = min(n_eval, max(1, len(tokens) // 5))
@@ -186,6 +194,7 @@ def main():
     parser.add_argument("--dataset", choices=["random", "text", "fineweb"], default="random")
     parser.add_argument("--text-file", type=str, default=None)
     parser.add_argument("--tokenizer", type=str, default="./tokenizer")
+    parser.add_argument("--vocab-size", type=int, default=None)
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--seq-len", type=int, default=256)
@@ -205,7 +214,8 @@ def main():
     args = parser.parse_args()
 
     device = setup_mps(unlimited_watermark=True, cpu_fallback=True, seed=args.seed)
-    config = make_config()
+    args.vocab_size = infer_vocab_size(args)
+    config = make_config(args)
     model = ComplexityModel(config).to(device)
     if args.grad_ckpt:
         model.gradient_checkpointing_enable()
