@@ -24,6 +24,7 @@ from typing import Tuple
 
 import torch
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as activation_checkpoint
 
 
 @dataclass
@@ -95,5 +96,91 @@ def causal_lm_loss(
         ce=ce.detach().item(),
         z_loss=z_val,
         total=loss.detach().item(),
+    )
+    return loss, metrics
+
+
+def causal_lm_loss_from_hidden(
+    hidden_states: torch.Tensor,
+    output_weight: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    label_smoothing: float = 0.0,
+    z_loss_coef: float = 0.0,
+    ignore_index: int = -100,
+    shift: bool = False,
+    chunk_tokens: int = 0,
+    checkpoint_chunks: bool = True,
+) -> Tuple[torch.Tensor, CausalLMLossMetrics]:
+    """
+    Cross-entropy from hidden states and a tied LM head weight.
+
+    This is mathematically equivalent to materializing
+    ``logits = F.linear(hidden_states, output_weight)`` then calling
+    ``causal_lm_loss``. With large vocabularies (for example o200k) the full
+    [B, S, V] logits tensor can dominate memory, so ``chunk_tokens`` computes
+    the loss over flat token chunks and sums the exact CE.
+    """
+    if chunk_tokens is None or chunk_tokens <= 0:
+        logits = F.linear(hidden_states, output_weight)
+        return causal_lm_loss(
+            logits,
+            labels,
+            label_smoothing=label_smoothing,
+            z_loss_coef=z_loss_coef,
+            ignore_index=ignore_index,
+            shift=shift,
+        )
+
+    if shift:
+        hidden_states = hidden_states[..., :-1, :].contiguous()
+        labels = labels[..., 1:].contiguous()
+
+    flat_hidden = hidden_states.reshape(-1, hidden_states.size(-1))
+    flat_labels = labels.reshape(-1)
+    valid = flat_labels != ignore_index if ignore_index is not None else torch.ones_like(flat_labels, dtype=torch.bool)
+    denom = valid.sum().clamp_min(1).to(dtype=torch.float32)
+
+    def chunk_loss_sum(hidden_chunk: torch.Tensor, labels_chunk: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        logits = F.linear(hidden_chunk, weight)
+        ce_sum = F.cross_entropy(
+            logits,
+            labels_chunk,
+            label_smoothing=label_smoothing,
+            ignore_index=ignore_index,
+            reduction="sum",
+        )
+        if z_loss_coef <= 0.0:
+            return ce_sum
+        lse = logits.float().logsumexp(dim=-1)
+        if ignore_index is not None:
+            mask = labels_chunk != ignore_index
+            lse = lse[mask] if mask.any() else lse[:0]
+        z_sum = lse.pow(2).sum()
+        return ce_sum + z_loss_coef * z_sum
+
+    total = flat_hidden.new_zeros(())
+    use_checkpoint = checkpoint_chunks and torch.is_grad_enabled() and flat_hidden.requires_grad
+    for start in range(0, flat_hidden.size(0), chunk_tokens):
+        end = min(start + chunk_tokens, flat_hidden.size(0))
+        hidden_chunk = flat_hidden[start:end]
+        labels_chunk = flat_labels[start:end]
+        if use_checkpoint:
+            total = total + activation_checkpoint(
+                chunk_loss_sum,
+                hidden_chunk,
+                labels_chunk,
+                output_weight,
+                use_reentrant=False,
+            )
+        else:
+            total = total + chunk_loss_sum(hidden_chunk, labels_chunk, output_weight)
+
+    loss = total / denom
+    loss_val = loss.detach().item()
+    metrics = CausalLMLossMetrics(
+        ce=loss_val,
+        z_loss=0.0 if z_loss_coef <= 0.0 else float("nan"),
+        total=loss_val,
     )
     return loss, metrics

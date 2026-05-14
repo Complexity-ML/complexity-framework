@@ -29,7 +29,7 @@ from torch.utils.data import DataLoader, IterableDataset
 from tqdm import tqdm
 
 from complexity.config import ModelConfig
-from complexity.core.losses import causal_lm_loss
+from complexity.core.losses import causal_lm_loss_from_hidden
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
 from complexity.training import global_expert_shares
@@ -180,7 +180,7 @@ def split_tokens(tokens: list[int], eval_ratio: float) -> tuple[list[int], list[
 
 
 @torch.no_grad()
-def evaluate(model, raw_model, loader, device, amp_dtype, eval_batches, label_smoothing, z_loss, distributed):
+def evaluate(model, raw_model, loader, device, amp_dtype, eval_batches, label_smoothing, z_loss, loss_chunk_tokens, distributed):
     was_training = model.training
     model.eval()
     losses = []
@@ -191,12 +191,14 @@ def evaluate(model, raw_model, loader, device, amp_dtype, eval_batches, label_sm
         labels = batch["labels"].to(device, non_blocking=True)
         with autocast(device, dtype=amp_dtype, enabled=amp_dtype is not None):
             outputs = model(input_ids, return_logits=False)
-            logits = F.linear(outputs["last_hidden_state"], raw_model.embed_tokens.weight)
-            _, metrics = causal_lm_loss(
-                logits,
+            _, metrics = causal_lm_loss_from_hidden(
+                outputs["last_hidden_state"],
+                raw_model.embed_tokens.weight,
                 labels,
                 label_smoothing=label_smoothing,
                 z_loss_coef=z_loss,
+                chunk_tokens=loss_chunk_tokens,
+                checkpoint_chunks=False,
             )
         losses.append(metrics.ce)
     if was_training:
@@ -363,6 +365,7 @@ def main():
     parser.add_argument("--run-name", type=str, default="100m-o200k-tr-local")
     parser.add_argument("--label-smoothing", type=float, default=0.0)
     parser.add_argument("--z-loss", type=float, default=0.0)
+    parser.add_argument("--loss-chunk-tokens", type=int, default=1024)
     parser.add_argument("--save-steps", type=int, default=5000)
     parser.add_argument("--save-dir", type=str, default="checkpoints/100m-o200k-tr-local")
     parser.add_argument("--save-total-limit", type=int, default=3)
@@ -478,12 +481,13 @@ def main():
         optimizer.zero_grad(set_to_none=True)
         with autocast(device, dtype=amp_dtype, enabled=amp_dtype is not None):
             outputs = model(input_ids, return_logits=False)
-            logits = F.linear(outputs["last_hidden_state"], raw_model.embed_tokens.weight)
-            loss, metrics = causal_lm_loss(
-                logits,
+            loss, metrics = causal_lm_loss_from_hidden(
+                outputs["last_hidden_state"],
+                raw_model.embed_tokens.weight,
                 labels,
                 label_smoothing=args.label_smoothing,
                 z_loss_coef=args.z_loss,
+                chunk_tokens=args.loss_chunk_tokens,
             )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -504,7 +508,7 @@ def main():
             if should_eval and eval_loader is not None:
                 eval_loss = evaluate(
                     model, raw_model, eval_loader, device, amp_dtype, args.eval_batches,
-                    args.label_smoothing, args.z_loss, distributed,
+                    args.label_smoothing, args.z_loss, args.loss_chunk_tokens, distributed,
                 )
             train_loss = reduce_average(metrics.ce, device, distributed)
             train_ppl = math.exp(min(train_loss, 20))

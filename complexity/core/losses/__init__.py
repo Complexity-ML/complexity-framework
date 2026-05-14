@@ -1,10 +1,11 @@
 """Loss primitives for framework-complexity."""
 
-from .causal_lm import causal_lm_loss, CausalLMLossMetrics
+from .causal_lm import causal_lm_loss, causal_lm_loss_from_hidden, CausalLMLossMetrics
 from .fused_ce import fused_linear_causal_lm_loss
 
 __all__ = [
     "causal_lm_loss",
+    "causal_lm_loss_from_hidden",
     "CausalLMLossMetrics",
     "fused_linear_causal_lm_loss",
 ]
