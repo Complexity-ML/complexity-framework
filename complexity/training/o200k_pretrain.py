@@ -392,7 +392,11 @@ def build_optimizer(args, raw_model):
     if args.optimizer == "muon_tr":
         from complexity.training.muon_tr import MuonTRWithAdamW, split_params_for_muon_tr
 
-        muon_groups, adam_groups = split_params_for_muon_tr(raw_model, num_experts=4)
+        muon_groups, adam_groups = split_params_for_muon_tr(
+            raw_model,
+            num_experts=4,
+            muon_scope=args.muon_scope,
+        )
         optimizer = MuonTRWithAdamW(
             muon_params=muon_groups,
             adam_params=adam_groups,
@@ -408,6 +412,7 @@ def build_optimizer(args, raw_model):
             max_lr_ratio=args.muon_max_lr_ratio,
             lr_warmup_steps=args.muon_lr_warmup_steps,
             skip_ns_warmup_steps=args.muon_skip_ns_warmup_steps,
+            token_count_scaling=args.muon_token_count_scaling,
             max_update_rms=args.muon_max_update_rms,
             num_experts=4,
         )
@@ -481,10 +486,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--optimizer", choices=["adamw", "muon_tr"], default="adamw")
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--muon-lr", type=float, default=0.01)
+    parser.add_argument("--muon-scope", choices=["expert", "expert_shared", "all"], default="expert")
     parser.add_argument("--muon-ns-steps", type=int, default=5)
     parser.add_argument("--muon-adaptive-ns", action="store_true")
     parser.add_argument("--muon-lr-warmup-steps", type=int, default=50)
     parser.add_argument("--muon-skip-ns-warmup-steps", type=int, default=0)
+    parser.add_argument("--muon-token-count-scaling", action="store_true")
     parser.add_argument("--muon-max-lr-ratio", type=float, default=2.0)
     parser.add_argument("--muon-max-update-rms", type=float, default=1.0)
     parser.add_argument("--expert-lr-scale", type=float, default=1.5)
@@ -608,7 +615,8 @@ def main():
         logger.info(
             "Optimizer: "
             f"{args.optimizer}, adam_lr={args.lr:.2e}, weight_decay={args.weight_decay}, "
-            f"muon_lr={args.muon_lr:.2e}, expert_lr_scale={args.expert_lr_scale}"
+            f"muon_lr={args.muon_lr:.2e}, muon_scope={args.muon_scope}, "
+            f"expert_lr_scale={args.expert_lr_scale}"
         )
         if distributed:
             logger.info(f"DDP: world_size={world_size}, per_gpu_batch={args.batch_size}")

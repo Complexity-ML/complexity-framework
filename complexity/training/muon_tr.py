@@ -100,6 +100,8 @@ class MuonTR(Optimizer):
         lr_warmup_steps: int = 50,        # linear 0→lr ramp — required, orthogonalized updates
                                           # are full-norm and blow up without warmup
         skip_ns_warmup_steps: int = 0,    # N steps without ortho (plain momentum update)
+        token_count_scaling: bool = False,  # Off by default: per-layer routing permutations
+                                           # make one global counts vector noisy/misaligned.
         max_update_rms: Optional[float] = 1.0,  # trust-region clamp: max RMS of the update
                                                 # tensor per param. None disables.
         sanitize_nan: bool = True,        # replace NaN/Inf in update by 0 before applying
@@ -125,6 +127,7 @@ class MuonTR(Optimizer):
         self.max_lr_ratio = max_lr_ratio
         self.lr_warmup_steps = max(0, int(lr_warmup_steps))
         self.skip_ns_warmup_steps = max(0, int(skip_ns_warmup_steps))
+        self.token_count_scaling = bool(token_count_scaling)
         self.max_update_rms = max_update_rms
         self.sanitize_nan = sanitize_nan
         # Per-expert diagnostics kept as device tensors to avoid MPS/CUDA syncs;
@@ -169,7 +172,7 @@ class MuonTR(Optimizer):
         EMA-smoothed over ~500 steps to avoid oscillation.
         Clamped to [1.0, max_lr_ratio].
         """
-        if self.token_counts is None:
+        if not self.token_count_scaling or self.token_counts is None:
             return torch.ones(self.num_experts, device=device)
 
         counts = self.token_counts.float().to(device)
@@ -246,7 +249,7 @@ class MuonTR(Optimizer):
                 )
 
                 # --- Feature 3: Token-count grad scaling (vectorized) ---
-                if is_expert_3d and self.token_counts is not None:
+                if is_expert_3d and self.token_count_scaling and self.token_counts is not None:
                     tc = self.token_counts.to(grad.device, dtype=torch.float32).clamp(min=1.0)
                     mean_count = tc.mean().clamp(min=1.0)
                     scale = (mean_count / tc).clamp(0.5, 2.0).to(grad.dtype)
@@ -377,6 +380,7 @@ class MuonTRWithAdamW(Optimizer):
         max_lr_ratio: float = 2.0,
         lr_warmup_steps: int = 50,
         skip_ns_warmup_steps: int = 0,
+        token_count_scaling: bool = False,
         adaptive_ns: bool = False,
         max_update_rms: Optional[float] = 1.0,
         sanitize_nan: bool = True,
@@ -398,6 +402,7 @@ class MuonTRWithAdamW(Optimizer):
             max_lr_ratio=max_lr_ratio,
             lr_warmup_steps=lr_warmup_steps,
             skip_ns_warmup_steps=skip_ns_warmup_steps,
+            token_count_scaling=token_count_scaling,
             max_update_rms=max_update_rms,
             sanitize_nan=sanitize_nan,
         )
@@ -443,11 +448,15 @@ class MuonTRWithAdamW(Optimizer):
 def split_params_for_muon_tr(
     model: torch.nn.Module,
     num_experts: int = 4,
+    muon_scope: str = "all",
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Split model parameters into MuonTR and AdamW groups with param_type.
 
-    MuonTR handles: 2D+ weight matrices (expert, shared, dense)
+    MuonTR handles 2D+ matrices selected by ``muon_scope``:
+      - expert: routed expert tensors only
+      - expert_shared: routed expert tensors + shared lexical expert
+      - all: routed expert tensors + shared lexical expert + other dense matrices
     AdamW handles: embeddings, biases, norms, mu params
 
     Returns:
@@ -458,6 +467,9 @@ def split_params_for_muon_tr(
     dense_params: List[torch.Tensor] = []
     adam_decay: List[torch.Tensor] = []
     adam_no_decay: List[torch.Tensor] = []
+
+    if muon_scope not in {"expert", "expert_shared", "all"}:
+        raise ValueError("muon_scope must be one of: expert, expert_shared, all")
 
     # Params that stay on AdamW: 1D (norms/bias/α/mu scalars), embeddings, LM head
     adam_keywords = ("embed", "lm_head", "head", "bias", "norm", "ln_",
@@ -483,9 +495,15 @@ def split_params_for_muon_tr(
         if ptype == "expert":
             expert_params.append(param)
         elif ptype == "shared":
-            shared_params.append(param)
+            if muon_scope in {"expert_shared", "all"}:
+                shared_params.append(param)
+            else:
+                adam_decay.append(param)
         else:
-            dense_params.append(param)
+            if muon_scope == "all":
+                dense_params.append(param)
+            else:
+                adam_decay.append(param)
 
     muon_groups: List[Dict[str, Any]] = []
     if expert_params:

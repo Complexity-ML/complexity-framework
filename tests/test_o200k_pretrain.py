@@ -178,6 +178,7 @@ def test_muon_tr_optimizer_builds_for_o200k_runner():
         lr=3e-4,
         weight_decay=0.1,
         muon_lr=0.01,
+        muon_scope="expert",
         expert_lr_scale=1.5,
         shared_lr_scale=1.0,
         expert_weight_decay=0.005,
@@ -187,6 +188,7 @@ def test_muon_tr_optimizer_builds_for_o200k_runner():
         muon_max_lr_ratio=2.0,
         muon_lr_warmup_steps=50,
         muon_skip_ns_warmup_steps=0,
+        muon_token_count_scaling=False,
         muon_max_update_rms=1.0,
     )
     model = ComplexityModel(make_config(args))
@@ -195,7 +197,7 @@ def test_muon_tr_optimizer_builds_for_o200k_runner():
 
     assert hasattr(optimizer, "update_token_counts")
     assert stats["muon_expert_params"] > 0
-    assert stats["muon_shared_params"] > 0
+    assert stats["muon_shared_params"] == 0
     assert stats["adamw_params"] > 0
 
 
