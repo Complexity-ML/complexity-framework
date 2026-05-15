@@ -24,7 +24,9 @@ class MLPConfig:
     num_experts: int = 1  # 1 = standard MLP, >1 = MoE
     vocab_size: int = 100000  # For token-routed MoE
     hash_routing: str = ""  # "" = modulo (token_id % E), "learned" = learned projection router
+    routing_strategy: str = "zipf"  # "zipf" or "zipf_token_class"
     token_frequencies: Optional[torch.Tensor] = None  # [vocab_size] token counts for frequency-balanced routing
+    token_classes: Optional[torch.Tensor] = None  # [vocab_size] coarse token classes for class-balanced routing
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
     shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
     use_shared_routed_gates: bool = False  # Learn scalar gates for shared vs routed expert outputs.
@@ -49,6 +51,8 @@ class MLPConfig:
             raise ValueError("top_k cannot exceed num_experts")
         if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
             raise ValueError("top_k_primary_weight must be in [0, 1]")
+        if self.routing_strategy not in {"zipf", "zipf_token_class"}:
+            raise ValueError("routing_strategy must be 'zipf' or 'zipf_token_class'")
         if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
             raise ValueError("shared_intermediate_size must be positive when set")
         if self.token_frequencies is not None:
@@ -59,6 +63,16 @@ class MLPConfig:
             if self.token_frequencies.numel() != self.vocab_size:
                 raise ValueError(
                     f"token_frequencies length ({self.token_frequencies.numel()}) "
+                    f"must match vocab_size ({self.vocab_size})"
+                )
+        if self.token_classes is not None:
+            if not isinstance(self.token_classes, torch.Tensor):
+                raise ValueError("token_classes must be a torch.Tensor")
+            if self.token_classes.ndim != 1:
+                raise ValueError("token_classes must be a 1D tensor")
+            if self.token_classes.numel() != self.vocab_size:
+                raise ValueError(
+                    f"token_classes length ({self.token_classes.numel()}) "
                     f"must match vocab_size ({self.vocab_size})"
                 )
 

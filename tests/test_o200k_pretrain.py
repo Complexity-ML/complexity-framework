@@ -123,6 +123,28 @@ def test_tr_diagnostics_reports_gates_rms_and_grads():
     assert all(diagnostics[f"expert_{idx}_grad_norm"] > 0 for idx in range(4))
 
 
+def test_zipf_token_class_routing_balances_each_class():
+    from complexity.core.mlp import MLPConfig, TokenRoutedMLP
+
+    token_classes = torch.tensor([0, 0, 0, 0, 1, 1, 1, 1])
+    config = MLPConfig(
+        hidden_size=8,
+        intermediate_size=16,
+        num_experts=2,
+        vocab_size=8,
+        routing_strategy="zipf_token_class",
+        token_classes=token_classes,
+        shared_expert=False,
+    )
+
+    mlp = TokenRoutedMLP(config)
+    mapping = mlp.token_to_expert.cpu()
+    for class_id in [0, 1]:
+        assigned = mapping[token_classes == class_id]
+        counts = torch.bincount(assigned, minlength=2)
+        assert counts.tolist() == [2, 2]
+
+
 def test_plan_run_math():
     from complexity.training.plan_run import parse_tokens
 

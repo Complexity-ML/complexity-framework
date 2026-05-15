@@ -13,5 +13,6 @@ run:
   save_steps: 200
   save_total_limit: 3
   loss_chunk_tokens: 1024
+  routing_strategy: zipf
   run_name: 30b-100m-o200k-tr-8b300-b256
   save_dir: checkpoints/30b-100m-o200k-tr-8b300-b256

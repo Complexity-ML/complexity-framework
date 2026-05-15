@@ -17,6 +17,7 @@ import csv
 import logging
 import math
 import os
+import string
 import time
 from pathlib import Path
 
@@ -100,6 +101,7 @@ def make_config(args) -> ModelConfig:
         routed_gate_init=args.routed_gate_init,
         top_k=args.top_k,
         top_k_primary_weight=args.top_k_primary_weight,
+        routing_strategy=getattr(args, "routing_strategy", "zipf"),
         clamp_mu_contextual=args.mu_clamp,
         use_mu_norm=args.mu_norm,
         mu_alpha_init=args.mu_alpha_init,
@@ -202,6 +204,53 @@ def text_token_frequencies(path: str, tokenizer_path: str, vocab_size: int) -> t
         f"{int((freqs > 0).sum().item()):,} vocab entries"
     )
     return freqs
+
+
+def tokenizer_token_classes(tokenizer_path: str, vocab_size: int) -> torch.Tensor:
+    """Classify each token into coarse lexical buckets for static routing."""
+
+    tokenizer = Tokenizer.load(tokenizer_path)
+    classes = torch.zeros(vocab_size, dtype=torch.long)
+    encoding = getattr(getattr(tokenizer, "_tokenizer", None), "encoding", None)
+    for token_id in range(vocab_size):
+        text = _decode_token_for_class(tokenizer, encoding, token_id)
+        classes[token_id] = _classify_token_text(text)
+    counts = torch.bincount(classes, minlength=8)
+    logger.info(
+        "Token classes: "
+        + ", ".join(f"{idx}={int(count)}" for idx, count in enumerate(counts.tolist()) if count)
+    )
+    return classes
+
+
+def _decode_token_for_class(tokenizer: Tokenizer, encoding, token_id: int) -> str:
+    try:
+        if encoding is not None and hasattr(encoding, "decode_single_token_bytes"):
+            return encoding.decode_single_token_bytes(token_id).decode("utf-8", errors="replace")
+        return tokenizer.decode([token_id], skip_special_tokens=False)
+    except Exception:
+        return ""
+
+
+def _classify_token_text(text: str) -> int:
+    if not text:
+        return 0
+    if text.isspace():
+        return 1
+    stripped = text.strip()
+    if not stripped:
+        return 1
+    if stripped.isdigit():
+        return 2
+    if stripped.isalpha() and stripped.isascii():
+        return 3
+    if stripped.isalnum() and stripped.isascii():
+        return 4
+    if any(ord(ch) > 127 for ch in stripped):
+        return 6
+    if all(ch in string.punctuation for ch in stripped):
+        return 5
+    return 7
 
 
 def split_tokens(tokens: list[int], eval_ratio: float) -> tuple[list[int], list[int]]:
@@ -353,6 +402,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-learn-shared-routed-gates", dest="learn_shared_routed_gates", action="store_false")
     parser.add_argument("--top-k", type=int, default=2)
     parser.add_argument("--top-k-primary-weight", type=float, default=0.5)
+    parser.add_argument("--routing-strategy", choices=["zipf", "zipf_token_class"], default="zipf")
     parser.add_argument("--use-mu-guidance", action="store_true")
     parser.add_argument("--mu-clamp", action="store_true")
     parser.add_argument("--mu-norm", action="store_true")
@@ -413,6 +463,8 @@ def main():
             args.tokenizer,
             config.vocab_size,
         )
+    if args.routing_strategy == "zipf_token_class":
+        config.token_classes = tokenizer_token_classes(args.tokenizer, config.vocab_size)
     raw_model = ComplexityModel(config).to(device)
     if args.grad_ckpt:
         raw_model.gradient_checkpointing_enable()

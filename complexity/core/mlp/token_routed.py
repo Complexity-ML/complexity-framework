@@ -171,16 +171,23 @@ class TokenRoutedMLP(MLPBase):
         preserves load distribution) while giving each layer a different
         token→expert assignment, enriching specialization.
         """
-        if getattr(self.config, 'token_frequencies', None) is not None:
-            freqs = self.config.token_frequencies
-            sorted_indices = freqs.argsort(descending=True)
-            mapping = torch.empty(vocab_size, dtype=torch.long)
-            expert_loads = [0.0] * num_experts
-            for rank_pos in range(vocab_size):
-                token_id = sorted_indices[rank_pos].item()
-                e = min(range(num_experts), key=lambda i: expert_loads[i])
-                mapping[token_id] = e
-                expert_loads[e] += freqs[token_id].item()
+        freqs = getattr(self.config, 'token_frequencies', None)
+        classes = getattr(self.config, 'token_classes', None)
+        strategy = getattr(self.config, 'routing_strategy', 'zipf')
+        if freqs is not None or strategy == "zipf_token_class":
+            if freqs is None:
+                freqs = torch.ones(vocab_size, dtype=torch.float32)
+            if strategy == "zipf_token_class" and classes is not None:
+                mapping = self._create_token_class_mapping(freqs, classes, vocab_size, num_experts)
+            else:
+                sorted_indices = freqs.argsort(descending=True)
+                mapping = torch.empty(vocab_size, dtype=torch.long)
+                expert_loads = [0.0] * num_experts
+                for rank_pos in range(vocab_size):
+                    token_id = sorted_indices[rank_pos].item()
+                    e = min(range(num_experts), key=lambda i: expert_loads[i])
+                    mapping[token_id] = e
+                    expert_loads[e] += freqs[token_id].item()
         else:
             mapping = torch.arange(vocab_size, dtype=torch.long) % num_experts
 
@@ -192,6 +199,39 @@ class TokenRoutedMLP(MLPBase):
         g = torch.Generator().manual_seed(0xC0DE + layer_idx)
         permutation = torch.randperm(num_experts, generator=g)
         mapping = permutation[mapping]
+        return mapping
+
+    def _create_token_class_mapping(
+        self,
+        freqs: torch.Tensor,
+        classes: torch.Tensor,
+        vocab_size: int,
+        num_experts: int,
+    ) -> torch.Tensor:
+        """Greedy routing that balances total Zipf load and coarse token classes."""
+
+        freqs = freqs.detach().cpu().float()
+        classes = classes.detach().cpu().long()
+        sorted_indices = freqs.argsort(descending=True)
+        mapping = torch.empty(vocab_size, dtype=torch.long)
+        expert_loads = [0.0] * num_experts
+        class_ids = sorted(set(int(x) for x in classes.tolist()))
+        class_loads = {
+            class_id: [0.0] * num_experts
+            for class_id in class_ids
+        }
+
+        for rank_pos in range(vocab_size):
+            token_id = int(sorted_indices[rank_pos].item())
+            cls = int(classes[token_id].item())
+            weight = float(freqs[token_id].item())
+            e = min(
+                range(num_experts),
+                key=lambda idx: (class_loads[cls][idx], expert_loads[idx]),
+            )
+            mapping[token_id] = e
+            expert_loads[e] += weight
+            class_loads[cls][e] += weight
         return mapping
 
     def forward(
