@@ -415,7 +415,11 @@ def build_optimizer(args, raw_model):
             lr_decay_end_step=getattr(args, "muon_lr_decay_end_step", 0),
             lr_decay_min_mult=getattr(args, "muon_lr_decay_min_mult", 1.0),
             skip_ns_warmup_steps=args.muon_skip_ns_warmup_steps,
+            nesterov=not getattr(args, "muon_no_nesterov", False),
             orthogonal_blend=getattr(args, "muon_orthogonal_blend", 0.5),
+            orthogonal_blend_start=getattr(args, "muon_orthogonal_blend_start", None),
+            orthogonal_blend_decay_steps=getattr(args, "muon_orthogonal_blend_decay_steps", 0),
+            max_param_rms_ratio=getattr(args, "muon_max_param_rms_ratio", None),
             token_count_scaling=args.muon_token_count_scaling,
             max_update_rms=args.muon_max_update_rms,
             num_experts=4,
@@ -498,7 +502,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--muon-lr-decay-end-step", type=int, default=0)
     parser.add_argument("--muon-lr-decay-min-mult", type=float, default=1.0)
     parser.add_argument("--muon-skip-ns-warmup-steps", type=int, default=0)
+    parser.add_argument("--muon-no-nesterov", action="store_true")
     parser.add_argument("--muon-orthogonal-blend", type=float, default=0.5)
+    parser.add_argument("--muon-orthogonal-blend-start", type=float, default=None)
+    parser.add_argument("--muon-orthogonal-blend-decay-steps", type=int, default=0)
+    parser.add_argument("--muon-max-param-rms-ratio", type=float, default=None)
     parser.add_argument("--muon-token-count-scaling", action="store_true")
     parser.add_argument("--muon-max-lr-ratio", type=float, default=2.0)
     parser.add_argument("--muon-max-update-rms", type=float, default=1.0)

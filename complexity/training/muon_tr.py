@@ -105,6 +105,9 @@ class MuonTR(Optimizer):
         lr_decay_min_mult: float = 1.0,
         skip_ns_warmup_steps: int = 0,    # N steps without ortho (plain momentum update)
         orthogonal_blend: float = 0.5,    # 1.0 = pure NS, <1 keeps Muon active but less brittle
+        orthogonal_blend_start: Optional[float] = None,
+        orthogonal_blend_decay_steps: int = 0,
+        max_param_rms_ratio: Optional[float] = None,  # cap update RMS relative to parameter RMS
         token_count_scaling: bool = False,  # Off by default: per-layer routing permutations
                                            # make one global counts vector noisy/misaligned.
         max_update_rms: Optional[float] = 1.0,  # trust-region clamp: max RMS of the update
@@ -136,6 +139,13 @@ class MuonTR(Optimizer):
         self.lr_decay_min_mult = float(lr_decay_min_mult)
         self.skip_ns_warmup_steps = max(0, int(skip_ns_warmup_steps))
         self.orthogonal_blend = float(max(0.0, min(1.0, orthogonal_blend)))
+        self.orthogonal_blend_start = (
+            None
+            if orthogonal_blend_start is None
+            else float(max(0.0, min(1.0, orthogonal_blend_start)))
+        )
+        self.orthogonal_blend_decay_steps = max(0, int(orthogonal_blend_decay_steps))
+        self.max_param_rms_ratio = max_param_rms_ratio
         self.token_count_scaling = bool(token_count_scaling)
         self.max_update_rms = max_update_rms
         self.sanitize_nan = sanitize_nan
@@ -205,6 +215,15 @@ class MuonTR(Optimizer):
 
         return self._lr_ratio_ema
 
+    def _current_orthogonal_blend(self) -> float:
+        """Cosine decay from an aggressive initial blend to the stable target."""
+        if self.orthogonal_blend_start is None or self.orthogonal_blend_decay_steps <= 0:
+            return self.orthogonal_blend
+
+        progress = min(1.0, self._step_count / max(1, self.orthogonal_blend_decay_steps))
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return self.orthogonal_blend + (self.orthogonal_blend_start - self.orthogonal_blend) * cosine
+
     def _blend_with_raw_update(self, orthogonal_update: torch.Tensor, raw_update: torch.Tensor) -> torch.Tensor:
         """Mix Muon's orthogonalized direction with the raw momentum direction.
 
@@ -213,7 +232,7 @@ class MuonTR(Optimizer):
         update, then the mixture is RMS-restored, so ``lr`` keeps the same
         meaning while the direction becomes less brittle.
         """
-        blend = self.orthogonal_blend
+        blend = self._current_orthogonal_blend()
         if blend >= 1.0:
             return orthogonal_update
         if blend <= 0.0:
@@ -225,6 +244,31 @@ class MuonTR(Optimizer):
         mixed = orthogonal_update.mul(blend).add(raw_matched, alpha=1.0 - blend)
         mixed_rms = mixed.pow(2).mean().sqrt().clamp(min=1e-12)
         return mixed * (target_rms / mixed_rms)
+
+    def _apply_param_rms_trust(
+        self,
+        update: torch.Tensor,
+        param: torch.Tensor,
+        *,
+        per_expert: bool,
+    ) -> torch.Tensor:
+        """Limit Muon's full-norm update relative to the tensor it updates."""
+        if self.max_param_rms_ratio is None:
+            return update
+
+        ratio = float(self.max_param_rms_ratio)
+        if ratio <= 0.0:
+            return update
+
+        if per_expert and update.dim() == 3 and param.dim() == 3:
+            update_rms = update.float().pow(2).mean(dim=(1, 2), keepdim=True).sqrt().clamp(min=1e-12)
+            param_rms = param.float().pow(2).mean(dim=(1, 2), keepdim=True).sqrt().clamp(min=1e-12)
+            scale = ((param_rms * ratio) / update_rms).clamp(max=1.0).to(update.dtype)
+        else:
+            update_rms = update.float().pow(2).mean().sqrt().clamp(min=1e-12)
+            param_rms = param.float().pow(2).mean().sqrt().clamp(min=1e-12)
+            scale = ((param_rms * ratio) / update_rms).clamp(max=1.0).to(update.dtype)
+        return update * scale
 
     @torch.no_grad()
     def step(self, closure: Optional[Callable] = None):
@@ -348,6 +392,7 @@ class MuonTR(Optimizer):
                     # Per-expert adaptive LR ratio (EMA on token counts)
                     per_expert_lr = self._compute_lr_ratio(update.device)
                     update *= per_expert_lr.to(update.dtype).view(-1, 1, 1)
+                    update = self._apply_param_rms_trust(update, p_local, per_expert=True)
                 elif not skip_ns:
                     # Standard Muon: reshape to 2D, orthogonalize
                     original_shape = update.shape
@@ -367,6 +412,7 @@ class MuonTR(Optimizer):
                     update *= max(1.0, rows / cols) ** 0.5
                     update = update.reshape(original_shape)
                     update = self._blend_with_raw_update(update, raw_update)
+                    update = self._apply_param_rms_trust(update, p_local, per_expert=False)
                 # else: skip_ns path for non-expert — use raw momentum update as-is
 
                 # --- Safety: NaN/Inf sanitization ---
@@ -440,6 +486,9 @@ class MuonTRWithAdamW(Optimizer):
         lr_decay_min_mult: float = 1.0,
         skip_ns_warmup_steps: int = 0,
         orthogonal_blend: float = 0.5,
+        orthogonal_blend_start: Optional[float] = None,
+        orthogonal_blend_decay_steps: int = 0,
+        max_param_rms_ratio: Optional[float] = None,
         token_count_scaling: bool = False,
         adaptive_ns: bool = False,
         max_update_rms: Optional[float] = 1.0,
@@ -466,6 +515,9 @@ class MuonTRWithAdamW(Optimizer):
             lr_decay_min_mult=lr_decay_min_mult,
             skip_ns_warmup_steps=skip_ns_warmup_steps,
             orthogonal_blend=orthogonal_blend,
+            orthogonal_blend_start=orthogonal_blend_start,
+            orthogonal_blend_decay_steps=orthogonal_blend_decay_steps,
+            max_param_rms_ratio=max_param_rms_ratio,
             token_count_scaling=token_count_scaling,
             max_update_rms=max_update_rms,
             sanitize_nan=sanitize_nan,
