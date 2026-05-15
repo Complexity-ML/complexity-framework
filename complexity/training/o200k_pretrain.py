@@ -354,6 +354,82 @@ def reduce_average(value: float, device: torch.device, distributed: bool) -> flo
     return tensor.item()
 
 
+def batch_expert_counts(raw_model, input_ids: torch.Tensor, num_experts: int, distributed: bool) -> torch.Tensor:
+    """Return per-expert token counts for the current batch."""
+    for module in raw_model.modules():
+        if hasattr(module, "token_to_expert"):
+            token_to_expert = module.token_to_expert
+            token_ids = input_ids.clamp(0, token_to_expert.numel() - 1)
+            expert_ids = token_to_expert[token_ids].reshape(-1)
+            counts = torch.bincount(expert_ids, minlength=num_experts).to(
+                device=input_ids.device,
+                dtype=torch.float32,
+            )
+            if distributed:
+                dist.all_reduce(counts, op=dist.ReduceOp.SUM)
+            return counts
+    counts = torch.ones(num_experts, device=input_ids.device, dtype=torch.float32)
+    if distributed:
+        dist.all_reduce(counts, op=dist.ReduceOp.SUM)
+    return counts
+
+
+def build_optimizer(args, raw_model):
+    """Build AdamW or MuonTR for the o200k TR runner."""
+    if args.optimizer == "adamw":
+        decay, no_decay = [], []
+        for name, p in raw_model.named_parameters():
+            if not p.requires_grad:
+                continue
+            (no_decay if p.ndim < 2 or "bias" in name or "norm" in name else decay).append(p)
+        optimizer = torch.optim.AdamW(
+            [{"params": decay, "weight_decay": args.weight_decay}, {"params": no_decay, "weight_decay": 0.0}],
+            lr=args.lr,
+            betas=(0.9, 0.95),
+        )
+        return optimizer, {"adamw_params": sum(p.numel() for p in decay + no_decay)}
+
+    if args.optimizer == "muon_tr":
+        from complexity.training.muon_tr import MuonTRWithAdamW, split_params_for_muon_tr
+
+        muon_groups, adam_groups = split_params_for_muon_tr(raw_model, num_experts=4)
+        optimizer = MuonTRWithAdamW(
+            muon_params=muon_groups,
+            adam_params=adam_groups,
+            lr=args.muon_lr,
+            adam_lr=args.lr,
+            weight_decay=args.weight_decay,
+            expert_lr_scale=args.expert_lr_scale,
+            shared_lr_scale=args.shared_lr_scale,
+            expert_weight_decay=args.expert_weight_decay,
+            shared_weight_decay=args.shared_weight_decay,
+            ns_steps=args.muon_ns_steps,
+            adaptive_ns=args.muon_adaptive_ns,
+            max_lr_ratio=args.muon_max_lr_ratio,
+            lr_warmup_steps=args.muon_lr_warmup_steps,
+            skip_ns_warmup_steps=args.muon_skip_ns_warmup_steps,
+            max_update_rms=args.muon_max_update_rms,
+            num_experts=4,
+        )
+        return optimizer, {
+            "muon_expert_params": sum(
+                p.numel() for group in muon_groups for p in group["params"]
+                if group.get("param_type") == "expert"
+            ),
+            "muon_shared_params": sum(
+                p.numel() for group in muon_groups for p in group["params"]
+                if group.get("param_type") == "shared"
+            ),
+            "muon_dense_params": sum(
+                p.numel() for group in muon_groups for p in group["params"]
+                if group.get("param_type") == "dense"
+            ),
+            "adamw_params": sum(p.numel() for group in adam_groups for p in group["params"]),
+        }
+
+    raise ValueError(f"Unknown optimizer: {args.optimizer}")
+
+
 def save_checkpoint(args, raw_model, optimizer, scheduler, config, step: int, is_main: bool, distributed: bool):
     if distributed:
         dist.barrier()
@@ -402,6 +478,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--optimizer", choices=["adamw", "muon_tr"], default="adamw")
+    parser.add_argument("--weight-decay", type=float, default=0.1)
+    parser.add_argument("--muon-lr", type=float, default=0.01)
+    parser.add_argument("--muon-ns-steps", type=int, default=5)
+    parser.add_argument("--muon-adaptive-ns", action="store_true")
+    parser.add_argument("--muon-lr-warmup-steps", type=int, default=50)
+    parser.add_argument("--muon-skip-ns-warmup-steps", type=int, default=0)
+    parser.add_argument("--muon-max-lr-ratio", type=float, default=2.0)
+    parser.add_argument("--muon-max-update-rms", type=float, default=1.0)
+    parser.add_argument("--expert-lr-scale", type=float, default=1.5)
+    parser.add_argument("--expert-weight-decay", type=float, default=0.005)
+    parser.add_argument("--shared-lr-scale", type=float, default=1.0)
+    parser.add_argument("--shared-weight-decay", type=float, default=0.01)
     parser.add_argument("--hidden-size", type=int, default=None)
     parser.add_argument("--num-hidden-layers", type=int, default=None)
     parser.add_argument("--num-attention-heads", type=int, default=None)
@@ -516,6 +605,11 @@ def main():
             f"use_mu={args.use_mu_guidance}, mu_clamp={args.mu_clamp}, mu_norm={args.mu_norm}, "
             f"mu_alpha={args.mu_alpha_init}, mu_init={args.mu_init_value}"
         )
+        logger.info(
+            "Optimizer: "
+            f"{args.optimizer}, adam_lr={args.lr:.2e}, weight_decay={args.weight_decay}, "
+            f"muon_lr={args.muon_lr:.2e}, expert_lr_scale={args.expert_lr_scale}"
+        )
         if distributed:
             logger.info(f"DDP: world_size={world_size}, per_gpu_batch={args.batch_size}")
 
@@ -531,16 +625,18 @@ def main():
     amp_dtype = autocast_dtype(device) if args.bf16 else None
     train_loader, eval_loader = build_loaders(args, config, rank, world_size)
 
-    decay, no_decay = [], []
-    for name, p in raw_model.named_parameters():
-        if not p.requires_grad:
-            continue
-        (no_decay if p.ndim < 2 or "bias" in name or "norm" in name else decay).append(p)
-    optimizer = torch.optim.AdamW(
-        [{"params": decay, "weight_decay": 0.1}, {"params": no_decay, "weight_decay": 0.0}],
-        lr=args.lr,
-        betas=(0.9, 0.95),
-    )
+    optimizer, optimizer_stats = build_optimizer(args, raw_model)
+    if is_main:
+        if args.optimizer == "muon_tr":
+            logger.info(
+                "MuonTR params: "
+                f"expert={optimizer_stats['muon_expert_params'] / 1e6:.1f}M, "
+                f"shared={optimizer_stats['muon_shared_params'] / 1e6:.1f}M, "
+                f"dense={optimizer_stats['muon_dense_params'] / 1e6:.1f}M, "
+                f"adamw={optimizer_stats['adamw_params'] / 1e6:.1f}M"
+            )
+        else:
+            logger.info(f"AdamW params: {optimizer_stats['adamw_params'] / 1e6:.1f}M")
     warmup = max(1, int(args.steps * 0.05))
 
     def lr_lambda(step):
@@ -603,6 +699,10 @@ def main():
             )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if hasattr(optimizer, "update_token_counts"):
+            optimizer.update_token_counts(
+                batch_expert_counts(raw_model, input_ids, config.num_experts, distributed)
+            )
         optimizer.step()
         scheduler.step()
 

@@ -146,6 +146,84 @@ def test_zipf_token_class_routing_balances_each_class():
         assert counts.tolist() == [2, 2]
 
 
+def test_muon_tr_optimizer_builds_for_o200k_runner():
+    from types import SimpleNamespace
+
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k_pretrain import build_optimizer, make_config
+
+    args = SimpleNamespace(
+        hidden_size=32,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=32,
+        shared_intermediate_size=64,
+        vocab_size=128,
+        use_mu_guidance=False,
+        learn_shared_routed_gates=True,
+        shared_gate_init=1.0,
+        routed_gate_init=0.1,
+        top_k=2,
+        top_k_primary_weight=0.5,
+        static_expert_capacity=False,
+        routing_strategy="zipf",
+        mu_clamp=False,
+        mu_norm=False,
+        mu_alpha_init=1.0,
+        mu_init_value=0.0,
+        mu_context_min=-2.0,
+        mu_context_max=2.0,
+        optimizer="muon_tr",
+        lr=3e-4,
+        weight_decay=0.1,
+        muon_lr=0.01,
+        expert_lr_scale=1.5,
+        shared_lr_scale=1.0,
+        expert_weight_decay=0.005,
+        shared_weight_decay=0.01,
+        muon_ns_steps=5,
+        muon_adaptive_ns=False,
+        muon_max_lr_ratio=2.0,
+        muon_lr_warmup_steps=50,
+        muon_skip_ns_warmup_steps=0,
+        muon_max_update_rms=1.0,
+    )
+    model = ComplexityModel(make_config(args))
+
+    optimizer, stats = build_optimizer(args, model)
+
+    assert hasattr(optimizer, "update_token_counts")
+    assert stats["muon_expert_params"] > 0
+    assert stats["muon_shared_params"] > 0
+    assert stats["adamw_params"] > 0
+
+
+def test_batch_expert_counts_counts_current_batch():
+    from complexity.config import ModelConfig
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k_pretrain import batch_expert_counts
+
+    config = ModelConfig(
+        hidden_size=16,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=1,
+        intermediate_size=16,
+        vocab_size=16,
+        mlp_type="token_routed",
+        num_experts=4,
+        shared_expert=False,
+    )
+    model = ComplexityModel(config)
+    input_ids = torch.tensor([[0, 1, 2, 3], [4, 5, 6, 7]])
+
+    counts = batch_expert_counts(model, input_ids, num_experts=4, distributed=False)
+
+    assert counts.sum().item() == input_ids.numel()
+    assert counts.shape == (4,)
+
+
 def test_plan_run_math():
     from complexity.training.plan_run import parse_tokens
 
