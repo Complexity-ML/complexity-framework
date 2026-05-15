@@ -23,6 +23,7 @@ INL / Complexity-ML — 2026
 """
 
 import logging
+import math
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
@@ -62,7 +63,7 @@ class MuonTR(Optimizer):
 
     Args:
         params: Parameter groups (with param_type metadata).
-        lr: Base learning rate (default: 0.02).
+        lr: Base learning rate (default: 0.003).
         momentum: Momentum coefficient (default: 0.95).
         nesterov: Use Nesterov momentum (default: True).
         ns_steps: Min Newton-Schulz iterations (default: 5).
@@ -70,7 +71,7 @@ class MuonTR(Optimizer):
         ns_tol: Convergence tolerance for adaptive NS (default: 1e-2).
         adaptive_ns: Use adaptive NS iterations per expert (default: True).
         weight_decay: Base weight decay (default: 0.01).
-        expert_lr_scale: LR multiplier for routed expert params (default: 1.5).
+        expert_lr_scale: LR multiplier for routed expert params (default: 1.0).
         shared_lr_scale: LR multiplier for shared expert params (default: 1.0).
         expert_weight_decay: Weight decay for expert params (default: 0.005).
         shared_weight_decay: Weight decay for shared params (default: 0.01).
@@ -81,7 +82,7 @@ class MuonTR(Optimizer):
     def __init__(
         self,
         params,
-        lr: float = 0.01,                 # 0.02 diverges on ~100M bf16; 0.01 is safe
+        lr: float = 0.003,                # tuned for routed experts; pure Muon needs small LR
         momentum: float = 0.95,
         nesterov: bool = True,
         ns_steps: int = 5,
@@ -89,7 +90,7 @@ class MuonTR(Optimizer):
         ns_tol: float = 1e-4,
         adaptive_ns: bool = False,        # fixed NS is ~20% faster and as accurate in practice
         weight_decay: float = 0.01,
-        expert_lr_scale: float = 1.5,
+        expert_lr_scale: float = 1.0,
         shared_lr_scale: float = 1.0,
         expert_weight_decay: float = 0.005,
         shared_weight_decay: float = 0.01,
@@ -99,7 +100,11 @@ class MuonTR(Optimizer):
         max_lr_ratio: float = 2.0,        # cap tail-expert LR boost (was 4.0 → diverged at lr=0.02)
         lr_warmup_steps: int = 50,        # linear 0→lr ramp — required, orthogonalized updates
                                           # are full-norm and blow up without warmup
+        lr_decay_start_step: int = 0,     # optional Muon-only cosine decay after early exploration
+        lr_decay_end_step: int = 0,
+        lr_decay_min_mult: float = 1.0,
         skip_ns_warmup_steps: int = 0,    # N steps without ortho (plain momentum update)
+        orthogonal_blend: float = 0.5,    # 1.0 = pure NS, <1 keeps Muon active but less brittle
         token_count_scaling: bool = False,  # Off by default: per-layer routing permutations
                                            # make one global counts vector noisy/misaligned.
         max_update_rms: Optional[float] = 1.0,  # trust-region clamp: max RMS of the update
@@ -126,7 +131,11 @@ class MuonTR(Optimizer):
         self.ema_decay = ema_decay
         self.max_lr_ratio = max_lr_ratio
         self.lr_warmup_steps = max(0, int(lr_warmup_steps))
+        self.lr_decay_start_step = max(0, int(lr_decay_start_step))
+        self.lr_decay_end_step = max(0, int(lr_decay_end_step))
+        self.lr_decay_min_mult = float(lr_decay_min_mult)
         self.skip_ns_warmup_steps = max(0, int(skip_ns_warmup_steps))
+        self.orthogonal_blend = float(max(0.0, min(1.0, orthogonal_blend)))
         self.token_count_scaling = bool(token_count_scaling)
         self.max_update_rms = max_update_rms
         self.sanitize_nan = sanitize_nan
@@ -140,6 +149,15 @@ class MuonTR(Optimizer):
 
         # Auto-disable MoE-specific features if there's nothing to route
         self._moe_enabled = num_experts > 1
+
+    def state_dict(self):
+        state = super().state_dict()
+        state["_muon_tr_step_count"] = self._step_count
+        return state
+
+    def load_state_dict(self, state_dict):
+        self._step_count = int(state_dict.pop("_muon_tr_step_count", 0))
+        return super().load_state_dict(state_dict)
 
     def update_token_counts(self, token_counts: torch.Tensor):
         """Update per-expert token counts for gradient scaling."""
@@ -187,6 +205,27 @@ class MuonTR(Optimizer):
 
         return self._lr_ratio_ema
 
+    def _blend_with_raw_update(self, orthogonal_update: torch.Tensor, raw_update: torch.Tensor) -> torch.Tensor:
+        """Mix Muon's orthogonalized direction with the raw momentum direction.
+
+        Pure Muon discards gradient magnitude and can over-rotate tiny routed
+        expert matrices. The raw momentum branch is RMS-matched to Muon's
+        update, then the mixture is RMS-restored, so ``lr`` keeps the same
+        meaning while the direction becomes less brittle.
+        """
+        blend = self.orthogonal_blend
+        if blend >= 1.0:
+            return orthogonal_update
+        if blend <= 0.0:
+            return raw_update
+
+        target_rms = orthogonal_update.pow(2).mean().sqrt().clamp(min=1e-12)
+        raw_rms = raw_update.pow(2).mean().sqrt().clamp(min=1e-12)
+        raw_matched = raw_update * (target_rms / raw_rms)
+        mixed = orthogonal_update.mul(blend).add(raw_matched, alpha=1.0 - blend)
+        mixed_rms = mixed.pow(2).mean().sqrt().clamp(min=1e-12)
+        return mixed * (target_rms / mixed_rms)
+
     @torch.no_grad()
     def step(self, closure: Optional[Callable] = None):
         loss = None
@@ -204,13 +243,27 @@ class MuonTR(Optimizer):
         else:
             warmup_mult = 1.0
 
+        decay_mult = 1.0
+        if (
+            self.lr_decay_start_step > 0
+            and self.lr_decay_end_step > self.lr_decay_start_step
+            and self._step_count >= self.lr_decay_start_step
+        ):
+            progress = min(
+                1.0,
+                (self._step_count - self.lr_decay_start_step)
+                / max(1, self.lr_decay_end_step - self.lr_decay_start_step),
+            )
+            cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+            decay_mult = self.lr_decay_min_mult + (1.0 - self.lr_decay_min_mult) * cosine
+
         # Skip Newton-Schulz during the very first steps to let momentum build
         # on a non-orthogonalized signal — avoids blowing up the residual
         # stream with full-norm updates before the model has settled.
         skip_ns = self._step_count <= self.skip_ns_warmup_steps
 
         for group in self.param_groups:
-            lr = group["lr"] * warmup_mult
+            lr = group["lr"] * warmup_mult * decay_mult
             beta = group["momentum"]
             nesterov = group["nesterov"]
             ns_steps = group["ns_steps"]
@@ -258,6 +311,7 @@ class MuonTR(Optimizer):
                 # Momentum update + Nesterov lookahead (dtype-preserving)
                 buf.lerp_(grad, 1 - beta)
                 update = grad.lerp(buf, beta) if nesterov else buf.clone()
+                raw_update = update.clone()
 
                 # --- Expert path: batched Newton-Schulz over [E, H, I] ---
                 if is_expert_3d:
@@ -288,6 +342,7 @@ class MuonTR(Optimizer):
 
                         # Shape scaling (same for all experts since H, I uniform)
                         update *= max(1.0, rows / cols) ** 0.5
+                        update = self._blend_with_raw_update(update, raw_update)
                     # else: keep raw momentum update (no ortho) for the first N steps
 
                     # Per-expert adaptive LR ratio (EMA on token counts)
@@ -311,6 +366,7 @@ class MuonTR(Optimizer):
 
                     update *= max(1.0, rows / cols) ** 0.5
                     update = update.reshape(original_shape)
+                    update = self._blend_with_raw_update(update, raw_update)
                 # else: skip_ns path for non-expert — use raw momentum update as-is
 
                 # --- Safety: NaN/Inf sanitization ---
@@ -346,7 +402,7 @@ class MuonTRWithAdamW(Optimizer):
     Args:
         muon_params: Parameter groups for MuonTR (with param_type metadata).
         adam_params: Parameter groups for AdamW.
-        lr: MuonTR learning rate (default: 0.02).
+        lr: MuonTR learning rate (default: 0.003).
         adam_lr: AdamW learning rate (default: 3e-4).
         momentum: MuonTR momentum (default: 0.95).
         nesterov: MuonTR Nesterov (default: True).
@@ -354,7 +410,7 @@ class MuonTRWithAdamW(Optimizer):
         adam_betas: AdamW betas (default: (0.9, 0.95)).
         adam_eps: AdamW epsilon (default: 1e-8).
         weight_decay: Base weight decay (default: 0.01).
-        expert_lr_scale: LR multiplier for experts (default: 1.5).
+        expert_lr_scale: LR multiplier for experts (default: 1.0).
         expert_weight_decay: Weight decay for experts (default: 0.005).
         num_experts: Number of experts (default: 4).
     """
@@ -363,7 +419,7 @@ class MuonTRWithAdamW(Optimizer):
         self,
         muon_params,
         adam_params,
-        lr: float = 0.01,
+        lr: float = 0.003,
         adam_lr: float = 3e-4,
         momentum: float = 0.95,
         nesterov: bool = True,
@@ -371,7 +427,7 @@ class MuonTRWithAdamW(Optimizer):
         adam_betas: Tuple[float, float] = (0.9, 0.95),
         adam_eps: float = 1e-8,
         weight_decay: float = 0.01,
-        expert_lr_scale: float = 1.5,
+        expert_lr_scale: float = 1.0,
         shared_lr_scale: float = 1.0,
         expert_weight_decay: float = 0.005,
         shared_weight_decay: float = 0.01,
@@ -379,7 +435,11 @@ class MuonTRWithAdamW(Optimizer):
         ema_decay: float = 0.998,
         max_lr_ratio: float = 2.0,
         lr_warmup_steps: int = 50,
+        lr_decay_start_step: int = 0,
+        lr_decay_end_step: int = 0,
+        lr_decay_min_mult: float = 1.0,
         skip_ns_warmup_steps: int = 0,
+        orthogonal_blend: float = 0.5,
         token_count_scaling: bool = False,
         adaptive_ns: bool = False,
         max_update_rms: Optional[float] = 1.0,
@@ -401,7 +461,11 @@ class MuonTRWithAdamW(Optimizer):
             ema_decay=ema_decay,
             max_lr_ratio=max_lr_ratio,
             lr_warmup_steps=lr_warmup_steps,
+            lr_decay_start_step=lr_decay_start_step,
+            lr_decay_end_step=lr_decay_end_step,
+            lr_decay_min_mult=lr_decay_min_mult,
             skip_ns_warmup_steps=skip_ns_warmup_steps,
+            orthogonal_blend=orthogonal_blend,
             token_count_scaling=token_count_scaling,
             max_update_rms=max_update_rms,
             sanitize_nan=sanitize_nan,

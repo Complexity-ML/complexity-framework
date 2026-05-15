@@ -411,7 +411,11 @@ def build_optimizer(args, raw_model):
             adaptive_ns=args.muon_adaptive_ns,
             max_lr_ratio=args.muon_max_lr_ratio,
             lr_warmup_steps=args.muon_lr_warmup_steps,
+            lr_decay_start_step=getattr(args, "muon_lr_decay_start_step", 0),
+            lr_decay_end_step=getattr(args, "muon_lr_decay_end_step", 0),
+            lr_decay_min_mult=getattr(args, "muon_lr_decay_min_mult", 1.0),
             skip_ns_warmup_steps=args.muon_skip_ns_warmup_steps,
+            orthogonal_blend=getattr(args, "muon_orthogonal_blend", 0.5),
             token_count_scaling=args.muon_token_count_scaling,
             max_update_rms=args.muon_max_update_rms,
             num_experts=4,
@@ -485,16 +489,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--optimizer", choices=["adamw", "muon_tr"], default="adamw")
     parser.add_argument("--weight-decay", type=float, default=0.1)
-    parser.add_argument("--muon-lr", type=float, default=0.01)
+    parser.add_argument("--muon-lr", type=float, default=0.003)
     parser.add_argument("--muon-scope", choices=["expert", "expert_shared", "all"], default="expert")
     parser.add_argument("--muon-ns-steps", type=int, default=5)
     parser.add_argument("--muon-adaptive-ns", action="store_true")
     parser.add_argument("--muon-lr-warmup-steps", type=int, default=50)
+    parser.add_argument("--muon-lr-decay-start-step", type=int, default=0)
+    parser.add_argument("--muon-lr-decay-end-step", type=int, default=0)
+    parser.add_argument("--muon-lr-decay-min-mult", type=float, default=1.0)
     parser.add_argument("--muon-skip-ns-warmup-steps", type=int, default=0)
+    parser.add_argument("--muon-orthogonal-blend", type=float, default=0.5)
     parser.add_argument("--muon-token-count-scaling", action="store_true")
     parser.add_argument("--muon-max-lr-ratio", type=float, default=2.0)
     parser.add_argument("--muon-max-update-rms", type=float, default=1.0)
-    parser.add_argument("--expert-lr-scale", type=float, default=1.5)
+    parser.add_argument("--expert-lr-scale", type=float, default=1.0)
     parser.add_argument("--expert-weight-decay", type=float, default=0.005)
     parser.add_argument("--shared-lr-scale", type=float, default=1.0)
     parser.add_argument("--shared-weight-decay", type=float, default=0.01)
