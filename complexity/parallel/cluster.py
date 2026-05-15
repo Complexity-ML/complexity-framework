@@ -46,6 +46,7 @@ INL / Complexity-ML — 2026
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 
@@ -114,6 +115,16 @@ class ClusterConfig:
                 f"(TP={self.tp_size} × PP={self.pp_size} × DP={self.dp_size}) "
                 f"but world_size={actual}"
             )
+        if self.pp_size > 1 and os.environ.get("COMPLEXITY_ALLOW_EXPERIMENTAL_PP") != "1":
+            raise NotImplementedError(
+                "Pipeline parallelism is not production-ready in this framework yet. "
+                "The current PP implementation is experimental and must not be used for "
+                "large cluster runs without an explicit COMPLEXITY_ALLOW_EXPERIMENTAL_PP=1 override."
+            )
+        if self.tp_size <= 0 or self.pp_size <= 0 or self.dp_size <= 0:
+            raise ValueError("tp_size, pp_size, and dp_size must be positive")
+        if self.micro_batch_size <= 0 or self.num_micro_batches <= 0:
+            raise ValueError("micro_batch_size and num_micro_batches must be positive")
 
     def estimate_memory_per_gpu(self, num_params: int, seq_len: int = 2048) -> Dict[str, float]:
         """Estimate memory usage per GPU in GB."""

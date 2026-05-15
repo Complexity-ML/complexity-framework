@@ -1,0 +1,51 @@
+# 8B Token-Routed o200k plan for 4608 GB300 GPUs.
+#
+# This is a cluster plan, not a direct local-DDP o200k_pretrain config.
+# Validate with:
+#   cf-plan-cluster --config configs/run_configs/8b_o200k_tr_32t_gb300_4608.yaml
+#
+# Topology:
+#   TP8 * PP8 = 64 GPUs per model replica
+#   DP72 replicas
+#   total = 64 * 72 = 4608 GPUs
+#
+# Token budget:
+#   profile params = 8,201,527,360
+#   Chinchilla = 20 * params = 164.03B tokens
+#   200x Chinchilla = 32.806T tokens
+world_size: 4608
+
+model:
+  profile: 8b
+  params: 8201527360
+  tokenizer: ./tokenizer-o200k
+  vocab_size: 200019
+
+parallel:
+  tp_size: 8
+  pp_size: 8
+  dp_size: 72
+  micro_batch_size: 2
+  gradient_accumulation: 64
+
+run:
+  run_name: 32t-8b-o200k-tr-gb300-tp8-pp8-dp72
+  dataset: fineweb
+  target_tokens: 32806109440000
+  seq_len: 2048
+  lr: 0.0003
+  bf16: true
+  grad_ckpt: true
+  eval_steps: 1000
+  eval_batches: 16
+  log_steps: 10
+  save_steps: 250
+  save_total_limit: 3
+  loss_chunk_tokens: 1024
+  routing_strategy: zipf
+  learn_shared_routed_gates: true
+  shared_gate_init: 1.0
+  routed_gate_init: 0.1
+  top_k: 2
+  top_k_primary_weight: 0.5
+  save_dir: checkpoints/32t-8b-o200k-tr-gb300-tp8-pp8-dp72

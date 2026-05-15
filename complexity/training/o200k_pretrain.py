@@ -76,6 +76,17 @@ PROFILES = {
         "save_dir": "checkpoints/100m-o200k-tr-local",
         "description": "100M o200k TR",
     },
+    "8b": {
+        "hidden_size": 4096,
+        "num_hidden_layers": 32,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 8,
+        "intermediate_size": 3072,
+        "shared_intermediate_size": 12288,
+        "run_name": "8b-o200k-tr-local",
+        "save_dir": "checkpoints/8b-o200k-tr-local",
+        "description": "8B o200k TR",
+    },
 }
 
 

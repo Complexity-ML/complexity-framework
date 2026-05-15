@@ -72,6 +72,7 @@ dev = [
 complexity = "complexity.cli.app:main"
 cf-o200k-pretrain = "complexity.training.o200k_pretrain:main"
 cf-plan-run = "complexity.training.plan_run:main"
+cf-plan-cluster = "complexity.training.cluster_plan:main"
 
 [project.urls]
 Homepage = "https://github.com/Complexity-ML/complexity-framework"

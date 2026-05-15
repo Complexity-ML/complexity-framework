@@ -48,10 +48,11 @@ def test_profile_param_counts_are_stable():
         "mu_context_max": 2.0,
     }
 
-    expected = {"50m": 51.9, "100m": 99.7}
+    expected = {"50m": 51.9, "100m": 99.7, "8b": 8201.5}
     for name, profile in PROFILES.items():
         args = SimpleNamespace(**common, **profile)
-        model = ComplexityModel(make_config(args))
+        with torch.device("meta"):
+            model = ComplexityModel(make_config(args))
         assert model.num_parameters() / 1e6 == pytest.approx(expected[name], abs=0.1)
 
 
