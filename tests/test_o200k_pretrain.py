@@ -70,6 +70,24 @@ def test_latest_checkpoint_resolution(tmp_path):
     assert resolve_checkpoint_path(str(root / "latest")) == step_1
 
 
+def test_local_checkpoint_save_latest_and_rotation(tmp_path):
+    from complexity.utils.local_checkpoint import load_local_checkpoint, save_local_checkpoint
+
+    root = tmp_path / "ckpts"
+    save_local_checkpoint(root, step=1, state={"step": 1, "value": torch.tensor([1])}, total_limit=2)
+    save_local_checkpoint(root, step=2, state={"step": 2, "value": torch.tensor([2])}, total_limit=2)
+    latest_dir = save_local_checkpoint(root, step=3, state={"step": 3, "value": torch.tensor([3])}, total_limit=2)
+
+    assert latest_dir == root / "step_000003"
+    assert sorted(path.name for path in root.glob("step_*")) == ["step_000002", "step_000003"]
+    assert (root / "latest").read_text(encoding="utf-8").strip() == "step_000003"
+
+    resolved, state = load_local_checkpoint(root / "latest")
+    assert resolved == latest_dir
+    assert state["step"] == 3
+    assert state["value"].item() == 3
+
+
 def test_plan_run_math():
     from complexity.training.plan_run import parse_tokens
 

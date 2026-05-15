@@ -16,7 +16,6 @@ import csv
 import logging
 import math
 import os
-import shutil
 import time
 from pathlib import Path
 
@@ -33,6 +32,7 @@ from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
 from complexity.training import global_expert_shares
 from complexity.utils import autocast, autocast_dtype, empty_cache, setup_mps, synchronize
+from complexity.utils.local_checkpoint import load_local_checkpoint, resolve_checkpoint_path, save_local_checkpoint
 
 
 logging.basicConfig(
@@ -259,17 +259,6 @@ def reduce_average(value: float, device: torch.device, distributed: bool) -> flo
     return tensor.item()
 
 
-def resolve_checkpoint_path(path: str) -> Path:
-    ckpt = Path(path)
-    if ckpt.name == "latest":
-        parent = ckpt.parent
-        candidates = sorted(parent.glob("step_*"))
-        if not candidates:
-            raise FileNotFoundError(f"No checkpoints found in {parent}")
-        return candidates[-1]
-    return ckpt
-
-
 def save_checkpoint(args, raw_model, optimizer, scheduler, config, step: int, is_main: bool, distributed: bool):
     if distributed:
         dist.barrier()
@@ -278,16 +267,11 @@ def save_checkpoint(args, raw_model, optimizer, scheduler, config, step: int, is
             dist.barrier()
         return
 
-    save_root = Path(args.save_dir)
-    save_root.mkdir(parents=True, exist_ok=True)
-    ckpt_dir = save_root / f"step_{step:06d}"
-    tmp_dir = save_root / f".step_{step:06d}.tmp"
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir)
-    tmp_dir.mkdir(parents=True)
-
-    torch.save(
-        {
+    ckpt_dir = save_local_checkpoint(
+        args.save_dir,
+        step=step,
+        total_limit=args.save_total_limit,
+        state={
             "step": step,
             "model": {k: v.detach().cpu() for k, v in raw_model.state_dict().items()},
             "optimizer": optimizer.state_dict(),
@@ -295,27 +279,14 @@ def save_checkpoint(args, raw_model, optimizer, scheduler, config, step: int, is
             "config": config.to_dict(),
             "args": vars(args),
         },
-        tmp_dir / "checkpoint.pt",
     )
-    if ckpt_dir.exists():
-        shutil.rmtree(ckpt_dir)
-    tmp_dir.rename(ckpt_dir)
-
-    checkpoints = sorted(save_root.glob("step_*"))
-    excess = len(checkpoints) - max(1, args.save_total_limit)
-    for old in checkpoints[:max(0, excess)]:
-        shutil.rmtree(old)
     logger.info(f"Checkpoint saved: {ckpt_dir}")
     if distributed:
         dist.barrier()
 
 
 def load_checkpoint(path: str, raw_model, optimizer, scheduler, device, is_main: bool) -> int:
-    ckpt_dir = resolve_checkpoint_path(path)
-    ckpt_file = ckpt_dir / "checkpoint.pt"
-    if not ckpt_file.exists():
-        raise FileNotFoundError(f"Checkpoint file not found: {ckpt_file}")
-    state = torch.load(ckpt_file, map_location=device)
+    ckpt_dir, state = load_local_checkpoint(path, map_location=device)
     raw_model.load_state_dict(state["model"], strict=True)
     optimizer.load_state_dict(state["optimizer"])
     scheduler.load_state_dict(state["scheduler"])
