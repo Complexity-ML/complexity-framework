@@ -101,18 +101,19 @@ class TokenRoutedMLP(MLPBase):
         # Routed expert weights: gate, up, down.
         # down_proj_w will be re-initialized with GPT-2 residual scaling by
         # ComplexityModel._init_residual_scaling() after the module tree is built.
-        self.gate_proj_w = nn.Parameter(
-            torch.randn(self.num_experts, self.hidden_size,
-                        self.expert_intermediate_size) * 0.02
-        )
-        self.up_proj_w = nn.Parameter(
-            torch.randn(self.num_experts, self.hidden_size,
-                        self.expert_intermediate_size) * 0.02
-        )
-        self.down_proj_w = nn.Parameter(
-            torch.randn(self.num_experts, self.expert_intermediate_size,
-                        self.hidden_size) * 0.02
-        )
+        self.gate_proj_w = nn.Parameter(torch.empty(
+            self.num_experts, self.hidden_size, self.expert_intermediate_size
+        ))
+        self.up_proj_w = nn.Parameter(torch.empty(
+            self.num_experts, self.hidden_size, self.expert_intermediate_size
+        ))
+        self.down_proj_w = nn.Parameter(torch.empty(
+            self.num_experts, self.expert_intermediate_size, self.hidden_size
+        ))
+        for expert_idx in range(self.num_experts):
+            nn.init.kaiming_uniform_(self.gate_proj_w[expert_idx], a=5**0.5)
+            nn.init.kaiming_uniform_(self.up_proj_w[expert_idx], a=5**0.5)
+            nn.init.kaiming_uniform_(self.down_proj_w[expert_idx], a=5**0.5)
 
         # Shared lexical expert: dense SwiGLU all tokens pass through.
         # Default size = intermediate_size (full dense width). shared_down is
