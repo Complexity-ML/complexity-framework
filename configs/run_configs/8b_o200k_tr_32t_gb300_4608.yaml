@@ -42,6 +42,7 @@ run:
   save_steps: 250
   save_total_limit: 3
   loss_chunk_tokens: 1024
+  static_expert_capacity: true  # Required for torch.distributed.pipelining export with TR layers.
   routing_strategy: zipf
   learn_shared_routed_gates: true
   shared_gate_init: 1.0

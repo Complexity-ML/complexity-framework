@@ -136,6 +136,7 @@ class TransformerBlock(nn.Module):
             top_k=getattr(config, 'top_k', 1),
             top_k_primary_weight=getattr(config, 'top_k_primary_weight', None),
             layer_idx=layer_idx,
+            static_expert_capacity=getattr(config, 'static_expert_capacity', False),
         )
         self.mlp = MLP_REGISTRY.build(config.mlp_type, mlp_config)
 

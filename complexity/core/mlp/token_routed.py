@@ -51,6 +51,7 @@ except ImportError:
         sorted_expert_ids, sorted_indices = torch.sort(expert_ids, stable=True)
         sorted_tokens = tokens[sorted_indices]
         expert_counts = torch.bincount(expert_ids, minlength=num_experts)
+        torch._check(expert_counts.shape[0] == num_experts)
         expert_offsets = torch.zeros(num_experts + 1, dtype=torch.long, device=tokens.device)
         expert_offsets[1:] = torch.cumsum(expert_counts, dim=0)
         return sorted_tokens, sorted_indices, expert_offsets, expert_counts
@@ -263,11 +264,13 @@ class TokenRoutedMLP(MLPBase):
 
         flat_x = hidden_states.view(-1, H)
         flat_expert_ids = expert_ids.view(-1)
+        static_dispatch = bool(getattr(self.config, "static_expert_capacity", False))
 
         # Track expert utilization (in-place, non-differentiable)
-        with torch.no_grad():
-            batch_counts = torch.bincount(flat_expert_ids, minlength=self.num_experts)
-            self.expert_counts += batch_counts.to(self.expert_counts.dtype)
+        if not static_dispatch:
+            with torch.no_grad():
+                batch_counts = torch.bincount(flat_expert_ids, minlength=self.num_experts)
+                self.expert_counts += batch_counts.to(self.expert_counts.dtype)
 
         # Shared expert (dense, all tokens) — fused SwiGLU via Liger on CUDA
         if self.use_shared_expert:
@@ -328,12 +331,13 @@ class TokenRoutedMLP(MLPBase):
                 )
                 routed_out = routed_out + w * part
 
-        with torch.no_grad():
-            if isinstance(shared_out, torch.Tensor):
-                self.last_shared_rms.copy_(shared_out.detach().float().pow(2).mean().sqrt())
-            else:
-                self.last_shared_rms.fill_(float("nan"))
-            self.last_routed_rms.copy_(routed_out.detach().float().pow(2).mean().sqrt())
+        if not static_dispatch:
+            with torch.no_grad():
+                if isinstance(shared_out, torch.Tensor):
+                    self.last_shared_rms.copy_(shared_out.detach().float().pow(2).mean().sqrt())
+                else:
+                    self.last_shared_rms.fill_(float("nan"))
+                self.last_routed_rms.copy_(routed_out.detach().float().pow(2).mean().sqrt())
 
         if self.use_shared_expert and self.use_shared_routed_gates:
             out = self.shared_output_gate * shared_out + self.routed_output_gate * routed_out
@@ -355,6 +359,9 @@ class TokenRoutedMLP(MLPBase):
 
         Returns an [N, H] tensor in the same token order as flat_x.
         """
+        if bool(getattr(self.config, "static_expert_capacity", False)):
+            return self._dispatch_static_all_experts(flat_x, expert_ids, gate_w, up_w, down_w)
+
         sorted_x, sorted_idx, expert_offsets, expert_counts = sort_tokens_by_expert(
             flat_x, expert_ids, self.num_experts
         )
@@ -398,6 +405,33 @@ class TokenRoutedMLP(MLPBase):
             s = offsets_cpu[e]
             out[sorted_idx[s:s + n]] = out_padded[e, :n].to(out.dtype)
         return out
+
+    def _dispatch_static_all_experts(
+        self,
+        flat_x: torch.Tensor,
+        expert_ids: torch.Tensor,
+        gate_w: torch.Tensor,
+        up_w: torch.Tensor,
+        down_w: torch.Tensor,
+    ) -> torch.Tensor:
+        """Export-friendly Token-Routed dispatch.
+
+        This path keeps deterministic token routing but computes every expert
+        over the local token block and masks the selected expert output. It is
+        intended for torch.export / pipeline tracing, where the sparse path's
+        data-dependent bucket sizes cannot be represented robustly.
+        """
+        expert_ids = expert_ids.clamp(0, self.num_experts - 1)
+        expanded_x = flat_x.unsqueeze(0).expand(self.num_experts, -1, -1)
+
+        gate = torch.bmm(expanded_x, gate_w)
+        up = torch.bmm(expanded_x, up_w)
+        inter = fused_silu_mul(gate, up)
+        expert_out = torch.bmm(inter, down_w)
+
+        expert_mask = F.one_hot(expert_ids, num_classes=self.num_experts)
+        expert_mask = expert_mask.transpose(0, 1).unsqueeze(-1).to(expert_out.dtype)
+        return (expert_out * expert_mask).sum(dim=0).to(flat_x.dtype)
 
     def _forward_all_experts(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Fallback: average all experts (inference without token_ids)."""

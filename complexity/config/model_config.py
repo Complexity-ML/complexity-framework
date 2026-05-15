@@ -81,6 +81,7 @@ class ModelConfig:
     routed_gate_init: float = 1.0  # Initial multiplier for routed expert output
     top_k: int = 1  # Token-Routed top-K deterministic (1 = classic Zipf top-1; K>1 activates K experts per token via cyclic shift, primary weighted 0.95)
     top_k_primary_weight: Optional[float] = None  # K>1 blend weight for primary expert (default: 0.95)
+    static_expert_capacity: bool = False  # Use fixed per-expert dispatch capacity for torch.export / pipeline tracing
 
     # === Mu-Guidance ===
     use_mu_guidance: bool = False  # Enable contextual mu flowing between layers

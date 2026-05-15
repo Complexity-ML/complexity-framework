@@ -62,6 +62,13 @@ from .pipeline_parallel import (
     get_pipeline_parallel_world_size,
 )
 
+from .pipeline_export import (
+    LastHiddenStateWrapper,
+    enable_pipeline_export_mode,
+    pipeline_split_spec,
+    trace_pipeline,
+)
+
 __all__ = [
     # Data Parallel
     "wrap_model_fsdp",
@@ -96,4 +103,8 @@ __all__ = [
     "split_model_for_pipeline",
     "get_pipeline_parallel_rank",
     "get_pipeline_parallel_world_size",
+    "LastHiddenStateWrapper",
+    "enable_pipeline_export_mode",
+    "pipeline_split_spec",
+    "trace_pipeline",
 ]
