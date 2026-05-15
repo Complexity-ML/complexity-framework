@@ -146,6 +146,8 @@ class TokenRoutedMLP(MLPBase):
             torch.zeros(self.num_experts, dtype=torch.long),
             persistent=False,
         )
+        self.register_buffer("last_shared_rms", torch.tensor(float("nan")), persistent=False)
+        self.register_buffer("last_routed_rms", torch.tensor(float("nan")), persistent=False)
 
     def reset_expert_counts(self) -> None:
         """Zero the expert utilization counter. Call once per log interval."""
@@ -284,6 +286,13 @@ class TokenRoutedMLP(MLPBase):
                     flat_x, expert_ids_k, gate_w, up_w, down_w, use_cggr, H,
                 )
                 routed_out = routed_out + w * part
+
+        with torch.no_grad():
+            if isinstance(shared_out, torch.Tensor):
+                self.last_shared_rms.copy_(shared_out.detach().float().pow(2).mean().sqrt())
+            else:
+                self.last_shared_rms.fill_(float("nan"))
+            self.last_routed_rms.copy_(routed_out.detach().float().pow(2).mean().sqrt())
 
         if self.use_shared_expert and self.use_shared_routed_gates:
             out = self.shared_output_gate * shared_out + self.routed_output_gate * routed_out

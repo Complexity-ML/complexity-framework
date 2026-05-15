@@ -88,6 +88,41 @@ def test_local_checkpoint_save_latest_and_rotation(tmp_path):
     assert state["value"].item() == 3
 
 
+def test_tr_diagnostics_reports_gates_rms_and_grads():
+    from complexity.core.mlp import MLPConfig, TokenRoutedMLP
+    from complexity.training.moe_telemetry import global_tr_diagnostics
+
+    torch.manual_seed(0)
+    config = MLPConfig(
+        hidden_size=16,
+        intermediate_size=32,
+        num_experts=4,
+        vocab_size=64,
+        shared_expert=True,
+        shared_intermediate_size=32,
+        use_shared_routed_gates=True,
+        shared_gate_init=1.0,
+        routed_gate_init=0.1,
+        top_k=2,
+        top_k_primary_weight=0.5,
+    )
+    mlp = TokenRoutedMLP(config)
+    hidden = torch.randn(2, 5, 16)
+    token_ids = torch.randint(0, 64, (2, 5))
+
+    loss = mlp(hidden, token_ids=token_ids).pow(2).mean()
+    loss.backward()
+    diagnostics = global_tr_diagnostics(mlp, num_experts=4)
+
+    assert diagnostics["shared_gate"] == pytest.approx(1.0)
+    assert diagnostics["routed_gate"] == pytest.approx(0.1)
+    assert diagnostics["shared_rms"] > 0
+    assert diagnostics["routed_rms"] > 0
+    assert diagnostics["shared_grad_norm"] > 0
+    assert diagnostics["routed_grad_norm"] > 0
+    assert all(diagnostics[f"expert_{idx}_grad_norm"] > 0 for idx in range(4))
+
+
 def test_plan_run_math():
     from complexity.training.plan_run import parse_tokens
 

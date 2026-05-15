@@ -30,7 +30,7 @@ from complexity.config import ModelConfig
 from complexity.core.losses import causal_lm_loss_from_hidden
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
-from complexity.training.moe_telemetry import global_expert_shares
+from complexity.training.moe_telemetry import global_expert_shares, global_tr_diagnostics
 from complexity.training.run_config import (
     args_to_run_config,
     format_run_summary,
@@ -500,7 +500,9 @@ def main():
             writer.writerow([
                 "step", "train_loss", "train_ppl", "eval_loss", "eval_ppl", "lr", "tok_s",
                 "expert_0_share", "expert_1_share", "expert_2_share", "expert_3_share",
-                "expert_dead_count",
+                "expert_dead_count", "shared_gate", "routed_gate", "shared_rms", "routed_rms",
+                "shared_grad_norm", "routed_grad_norm", "expert_0_grad_norm",
+                "expert_1_grad_norm", "expert_2_grad_norm", "expert_3_grad_norm",
             ])
         csv_file.flush()
 
@@ -558,12 +560,23 @@ def main():
             shares, dead = global_expert_shares(raw_model, config.num_experts)
             if not shares:
                 shares = [float("nan")] * config.num_experts
+            tr_diag = global_tr_diagnostics(raw_model, config.num_experts)
             if is_main:
                 writer.writerow([
                     step, f"{train_loss:.6f}", f"{train_ppl:.2f}",
                     f"{eval_loss:.6f}", f"{eval_ppl:.2f}",
                     f"{lr_now:.6e}", f"{tok_s:.0f}",
                     *[f"{s:.4f}" for s in shares], dead,
+                    f"{tr_diag.get('shared_gate', float('nan')):.6f}",
+                    f"{tr_diag.get('routed_gate', float('nan')):.6f}",
+                    f"{tr_diag.get('shared_rms', float('nan')):.6f}",
+                    f"{tr_diag.get('routed_rms', float('nan')):.6f}",
+                    f"{tr_diag.get('shared_grad_norm', float('nan')):.6f}",
+                    f"{tr_diag.get('routed_grad_norm', float('nan')):.6f}",
+                    *[
+                        f"{tr_diag.get(f'expert_{idx}_grad_norm', float('nan')):.6f}"
+                        for idx in range(config.num_experts)
+                    ],
                 ])
                 csv_file.flush()
                 pbar.set_postfix(loss=f"{train_loss:.4f}", eval=f"{eval_loss:.4f}", tok_s=f"{tok_s:.0f}")
