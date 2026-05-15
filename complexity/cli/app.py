@@ -1,5 +1,5 @@
 """
-INL Complexity Framework CLI - Main Application Entry Point.
+Complexity Framework CLI - Main Application Entry Point.
 
 Usage:
     complexity train run config.yaml
@@ -28,7 +28,7 @@ if HAS_TYPER:
     # Create main app
     app = typer.Typer(
         name="complexity",
-        help="INL Complexity Framework - Deep Learning Training & Inference",
+        help="Complexity Framework - language-model training and inference",
         add_completion=False,
         no_args_is_help=True,
     )
@@ -47,7 +47,7 @@ if HAS_TYPER:
         version: bool = typer.Option(False, "--version", "-v", help="Show version"),
     ):
         """
-        INL Complexity Framework CLI.
+        Complexity Framework CLI.
 
         A comprehensive deep learning framework for training and deploying
         large language models with advanced attention mechanisms.
@@ -68,7 +68,7 @@ if HAS_TYPER:
         from .utils import console, print_markdown
 
         guide = """
-# INL Complexity Framework - Quickstart
+# Complexity Framework - Quickstart
 
 ## Installation
 ```bash
@@ -171,8 +171,8 @@ complexity info tokens       # Show special tokens
                 has_complexity = False
 
             banner = """
-INL Complexity Interactive Shell
-================================
+Complexity Interactive Shell
+============================
 Available:
   - torch, np (numpy)
   - complexity module
@@ -211,7 +211,7 @@ def main():
     """Entry point for the CLI."""
     if app is None:
         print("=" * 50)
-        print("INL Complexity CLI")
+        print("Complexity CLI")
         print("=" * 50)
         print()
         print("Error: typer not installed.")

@@ -245,32 +245,6 @@ class ComplexityCLI:
                 return f"[Error: {e}]"
             return f"[Generation error - model: {self.state.name}]"
 
-    def predict_action(
-        self,
-        state: Dict[str, Any],
-        goal: Optional[str] = None,
-        instruction: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        Predict robotics action.
-
-        Args:
-            state: Robot state
-            goal: Goal description
-            instruction: Natural language instruction
-
-        Returns:
-            Action dict
-        """
-        from complexity.data import ComplexityTemplate, ComplexityTokens
-
-        template = ComplexityTemplate(tokens=ComplexityTokens())
-        prompt = template.format_for_robotics(state, goal, instruction)
-
-        output = self._generate(prompt, max_tokens=64, temperature=0.0)
-
-        return template.parse_robotics_action(output)
-
     def format_tokens(
         self,
         text: str,
@@ -311,7 +285,6 @@ class ComplexityCLI:
             "complexity-7b",
             "complexity-13b",
             "complexity-70b",
-            "complexity-robotics-7b",
         ]
 
     @staticmethod
@@ -341,12 +314,6 @@ class ComplexityCLI:
                 "context": "128K",
                 "features": ["chat", "reasoning", "tools", "code", "multimodal", "agents"],
                 "vram": "~140GB",
-            },
-            "complexity-robotics-7b": {
-                "parameters": "7B",
-                "context": "16K",
-                "features": ["robotics", "action", "trajectory", "vision"],
-                "vram": "~14GB",
             },
         }
         return info.get(name, {"error": f"Unknown model: {name}"})

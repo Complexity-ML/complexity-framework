@@ -1,5 +1,5 @@
 """
-CLI Commands for INL Complexity Framework.
+CLI Commands for Complexity Framework.
 """
 
 from .train import train

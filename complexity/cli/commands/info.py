@@ -16,7 +16,7 @@ def show_version():
     """
     Show framework version and dependencies.
     """
-    console.print("[bold]INL Complexity Framework[/bold]")
+    console.print("[bold]Complexity Framework[/bold]")
     console.print()
 
     # Framework version
@@ -228,7 +228,7 @@ def show_config(
 @info_app.command("tokens")
 def show_special_tokens():
     """
-    Show INL Complexity special tokens.
+    Show Complexity special tokens.
     """
     from complexity.data import ComplexityTokens
 
@@ -242,10 +242,9 @@ def show_special_tokens():
         ("Code (192-255)", ["code_start", "output_start", "exec_start"]),
         ("Vision (256-287)", ["image_start", "vision_start", "bbox_start"]),
         ("Audio (288-319)", ["audio_start", "speech_start", "transcribe_start"]),
-        ("Robotics (384-511)", ["state_start", "action_start", "trajectory_start"]),
     ]
 
-    console.print("[bold]INL Complexity Special Tokens[/bold]")
+    console.print("[bold]Complexity Special Tokens[/bold]")
     console.print("[dim]2048 reserved token slots (0-2047)[/dim]\n")
 
     for cat_name, attrs in categories:

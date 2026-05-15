@@ -4,16 +4,15 @@ Data module for framework-complexity.
 Provides:
 - Distributed DataLoaders
 - Streaming datasets for large corpora
-- INL Complexity tokenization format
+- Complexity tokenization format
 - Chat templates with structured reasoning
-- Tool calling & robotics integration
+- Tool calling helpers
 - Data preprocessing pipelines
 
-INL Complexity Format:
+Complexity Format:
     Native tokenization format with 2048 reserved special tokens:
     - Structured reasoning: <|reason|>, <|step|>, <|conclude|>
     - Tool calling: <|call|>, <|args|>, <|result|>
-    - Robotics: <|state|>, <|action|>, <|trajectory|>
     - Multi-modal: <|vision|>, <|audio|>, <|video|>
 
 Usage:
@@ -32,7 +31,7 @@ Usage:
         seq_length=2048,
     )
 
-    # INL Complexity tokenizer
+    # Complexity tokenizer
     tokenizer = ComplexityTokenizer(
         base_tokenizer=base_tok,
         template=ComplexityTemplate(format="complexity"),
@@ -45,12 +44,6 @@ Usage:
         enable_steps=True,
     )
 
-    # Encode robotics input
-    tokens = tokenizer.encode_robotics(
-        state={"proprio": [0.1, 0.2, ...]},
-        goal="Pick up the cup",
-        instruction="Move to the red cup",
-    )
 """
 
 from .dataloader import (
@@ -73,7 +66,7 @@ from .tokenization import (
     TiktokenWrapper,
     HuggingFaceTokenizer,
     get_tokenizer,
-    # INL Complexity format (primary)
+    # Complexity format (primary)
     ComplexityTokens,
     ComplexityTemplate,
     ComplexityTokenizer,
@@ -113,7 +106,7 @@ __all__ = [
     "TiktokenWrapper",
     "HuggingFaceTokenizer",
     "get_tokenizer",
-    # INL Complexity format (primary)
+    # Complexity format (primary)
     "ComplexityTokens",
     "ComplexityTemplate",
     "ComplexityTokenizer",

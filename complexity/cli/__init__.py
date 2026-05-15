@@ -1,5 +1,5 @@
 """
-INL Complexity Framework CLI.
+Complexity Framework CLI.
 
 Provides command-line interface for:
 - Training models

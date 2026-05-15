@@ -86,7 +86,7 @@ def _get_format_special_tokens(format_name: str) -> List[str]:
         "<|video_pad|>",
     ]
 
-    # INL Complexity format (full set)
+    # Complexity format (full set)
     COMPLEXITY_TOKENS = []
     try:
         from complexity.data import ComplexityTokens
@@ -113,10 +113,6 @@ def _get_format_special_tokens(format_name: str) -> List[str]:
             ct.patch, ct.bbox, ct.segment,
             # Audio
             ct.audio_start, ct.audio_end, ct.speech, ct.transcribe,
-            # Robotics
-            ct.state_start, ct.state_end, ct.action_start, ct.action_end,
-            ct.goal_start, ct.goal_end, ct.trajectory_start, ct.trajectory_end,
-            ct.proprio, ct.gripper, ct.joint,
             # Memory
             ct.memory_start, ct.memory_end, ct.retrieve, ct.retrieve_end,
             ct.store, ct.store_end, ct.cite, ct.cite_end,
@@ -161,7 +157,7 @@ def train_tokenizer(
     Train a new tokenizer from scratch.
 
     Supports multiple token formats:
-    - complexity: INL native format (recommended for new models)
+    - complexity: native framework format
     - llama3: Meta Llama 3 format
     - mistral: Mistral/Mixtral format
     - chatml: OpenAI ChatML format (GPT-4 style)
@@ -888,7 +884,6 @@ def show_special_tokens(
             "Reasoning (128-191)": ["reason_start", "reason_end", "step_start", "step_end", "conclude", "think_start", "think_end"],
             "Code (192-255)": ["code_start", "code_end", "output_start", "exec_start", "func_start", "class_start"],
             "Vision (256-287)": ["image_start", "image_end", "vision_start", "bbox_start", "caption_start"],
-            "Robotics (384-511)": ["state_start", "action_start", "trajectory_start", "proprio_start", "gripper_start"],
         }
 
         for cat_name, attrs in categories.items():
