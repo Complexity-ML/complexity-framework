@@ -31,6 +31,12 @@ from complexity.core.losses import causal_lm_loss_from_hidden
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
 from complexity.training.moe_telemetry import global_expert_shares
+from complexity.training.run_config import (
+    args_to_run_config,
+    format_run_summary,
+    parse_args_with_yaml_config,
+    write_or_validate_run_config,
+)
 from complexity.utils import autocast, autocast_dtype, empty_cache, setup_mps, synchronize
 from complexity.utils.local_checkpoint import load_local_checkpoint, resolve_checkpoint_path, save_local_checkpoint
 
@@ -324,7 +330,7 @@ def load_checkpoint(path: str, raw_model, optimizer, scheduler, device, is_main:
     return step
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local o200k residual Token-Routed pretraining runner")
     parser.add_argument("--profile", choices=sorted(PROFILES), default="100m")
     parser.add_argument("--dataset", choices=["random", "text", "fineweb"], default="random")
@@ -371,12 +377,18 @@ def main():
     parser.add_argument("--save-dir", type=str, default=None)
     parser.add_argument("--save-total-limit", type=int, default=3)
     parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument("--force-resume", action="store_true")
     parser.add_argument(
         "--no-zipf-from-text",
         action="store_true",
         help="Disable token-frequency balanced routing when --dataset text.",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    parser = build_parser()
+    args = parse_args_with_yaml_config(parser)
     profile = PROFILES[args.profile]
     for key in (
         "hidden_size",
@@ -406,8 +418,24 @@ def main():
         raw_model.gradient_checkpointing_enable()
 
     params = raw_model.num_parameters()
+    run_dir = Path("runs") / args.run_name
     if is_main:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_config = args_to_run_config(
+            args,
+            model_config=config.to_dict(),
+            params=params,
+            world_size=world_size,
+        )
+        write_or_validate_run_config(
+            run_dir,
+            run_config,
+            resume=bool(args.resume),
+            force_resume=args.force_resume,
+        )
         logger.info(f"Model: {params / 1e6:.1f}M params")
+        for line in format_run_summary(run_config):
+            logger.info(line)
         logger.info(
             "Config: Token-Routed residual, "
             f"hidden={args.hidden_size}, layers={args.num_hidden_layers}, "
@@ -454,16 +482,13 @@ def main():
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     start_step = 0
+    if distributed:
+        dist.barrier()
     if args.resume:
         start_step = load_checkpoint(args.resume, raw_model, optimizer, scheduler, device, is_main)
     if distributed:
         dist.barrier()
 
-    run_dir = Path("runs") / args.run_name
-    if is_main:
-        run_dir.mkdir(parents=True, exist_ok=True)
-    if distributed:
-        dist.barrier()
     csv_path = run_dir / "metrics.csv"
     csv_file = None
     writer = None
