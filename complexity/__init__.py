@@ -2,18 +2,16 @@
 Framework-Complexity
 ====================
 
-A comprehensive, modular framework for building, training, and deploying
-transformer and state-space models. Developed by INL to provide a production-ready
-ML infrastructure comparable to Nanotron and NeMo.
+A modular research framework for building, training, and evaluating Transformer
+language models, with first-class support for Token-Routed MLP experiments.
 
 Supports:
-- **Architectures**: Llama, Mistral, GPT, Mamba, RWKV, RetNet, Mixture of Depths
-- **Attention**: Multi-Head, GQA, MQA, Flash, Sliding Window, Sparse, Linear
-- **Training**: FSDP, Tensor Parallel, Pipeline Parallel, Mixed Precision
+- **Architectures**: Llama/GPT-style decoders, Token-Routed MLPs, dense SwiGLU baselines
+- **Attention**: Multi-Head, GQA, MQA, SDPA/Flash-compatible attention
+- **Training**: DDP/FSDP utilities, mixed precision, checkpointed long runs
 - **Inference**: KV Cache, Speculative Decoding, Continuous Batching
 - **Quantization**: INT8, INT4, GPTQ, AWQ, GGUF export
-- **Multi-modal**: Vision (ViT, CLIP), Audio (Whisper), Fusion
-- **Robotics**: RT-1, RT-2, Octo, DreamerV3, Behavior Cloning
+- **Tokenization**: local BPE tokenizers and tiktoken/o200k-compatible tokenizers
 
 === EASY API (Recommended for beginners) ===
 
@@ -34,10 +32,6 @@ Supports:
 
     # Generate text
     text = generate(model, "The future of AI is", max_tokens=100)
-
-    # Robotics
-    from complexity.easy import predict_action
-    action = predict_action(model, state={"proprio": [...]}, goal="Pick cup")
 
 === CLI Usage ===
 
@@ -92,7 +86,7 @@ Inference:
     engine = InferenceEngine(model)
     output = engine.generate(input_ids, GenerationConfig(max_new_tokens=100))
 
-Tokenization (INL Complexity Format):
+Tokenization:
     from complexity.data import ComplexityTokenizer, ComplexityTokens
 
     tokenizer = ComplexityTokenizer(base_tokenizer)
@@ -101,12 +95,6 @@ Tokenization (INL Complexity Format):
     tokens = tokenizer.encode_chat(
         messages=[{"role": "user", "content": "Hello"}],
         enable_reasoning=True,
-    )
-
-    # Robotics encoding
-    tokens = tokenizer.encode_robotics(
-        state={"proprio": [...]},
-        goal="Pick up the cup",
     )
 
 Registry System:
@@ -120,7 +108,7 @@ Registry System:
 """
 
 __version__ = "1.0.0"
-__author__ = "INL (Idaho National Laboratory)"
+__author__ = "Complexity-ML"
 
 # Config
 from complexity.config import ModelConfig, get_preset, PRESET_CONFIGS

@@ -31,7 +31,7 @@ from complexity.config import ModelConfig
 from complexity.core.losses import causal_lm_loss_from_hidden
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
-from complexity.training import global_expert_shares
+from complexity.training.moe_telemetry import global_expert_shares
 from complexity.utils import autocast, autocast_dtype, empty_cache, setup_mps, synchronize
 
 
@@ -291,6 +291,13 @@ def resolve_checkpoint_path(path: str) -> Path:
     ckpt = Path(path)
     if ckpt.name == "latest":
         parent = ckpt.parent
+        latest_file = parent / "latest"
+        if latest_file.is_file():
+            target = latest_file.read_text().strip()
+            if target:
+                resolved = parent / target
+                if (resolved / "checkpoint.pt").exists():
+                    return resolved
         candidates = sorted(parent.glob("step_*"))
         if not candidates:
             raise FileNotFoundError(f"No checkpoints found in {parent}")
@@ -328,6 +335,7 @@ def save_checkpoint(args, raw_model, optimizer, scheduler, config, step: int, is
     if ckpt_dir.exists():
         shutil.rmtree(ckpt_dir)
     tmp_dir.rename(ckpt_dir)
+    (save_root / "latest").write_text(f"{ckpt_dir.name}\n")
 
     checkpoints = sorted(save_root.glob("step_*"))
     excess = len(checkpoints) - max(1, args.save_total_limit)

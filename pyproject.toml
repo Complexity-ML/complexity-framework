@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "complexity-framework"
 version = "0.3.0"
-description = "Modular Python framework for building LLMs with INL Dynamics stability"
+description = "Modular Python framework for Transformer and Token-Routed language-model research"
 readme = "README_PYPI.md"
 license = {text = "CC-BY-NC-4.0"}
 authors = [
@@ -19,7 +19,6 @@ keywords = [
     "attention",
     "moe",
     "mixture-of-experts",
-    "inl-dynamics",
     "flash-attention",
     "mamba",
     "rwkv",
@@ -71,6 +70,8 @@ dev = [
 
 [project.scripts]
 complexity = "complexity.cli.app:main"
+cf-o200k-pretrain = "complexity.training.o200k_pretrain:main"
+cf-plan-run = "complexity.training.plan_run:main"
 
 [project.urls]
 Homepage = "https://github.com/Complexity-ML/complexity-framework"
