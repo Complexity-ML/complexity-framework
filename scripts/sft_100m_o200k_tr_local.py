@@ -266,8 +266,10 @@ def sft_loss_from_hidden(
     chunk = max(1, int(chunk_tokens or flat_hidden.size(0)))
     for start in range(0, flat_hidden.size(0), chunk):
         end = min(start + chunk, flat_hidden.size(0))
-        hidden_chunk = flat_hidden[start:end].float()
         labels_chunk = flat_labels[start:end]
+        if not (labels_chunk != -100).any():
+            continue
+        hidden_chunk = flat_hidden[start:end].float()
         logits = F.linear(hidden_chunk, output_weight.float())
         total = total + F.cross_entropy(
             logits,
