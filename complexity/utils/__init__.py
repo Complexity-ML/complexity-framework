@@ -72,6 +72,8 @@ from .security import (
 
 from .mps import (
     is_mps_available,
+    is_rocm_available,
+    is_cuda_available,
     select_device,
     set_memory_watermark,
     enable_cpu_fallback,
@@ -138,6 +140,8 @@ __all__ = [
     "save_harm_direction",
     # MPS / device
     "is_mps_available",
+    "is_rocm_available",
+    "is_cuda_available",
     "select_device",
     "set_memory_watermark",
     "enable_cpu_fallback",

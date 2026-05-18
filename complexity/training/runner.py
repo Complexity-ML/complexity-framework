@@ -261,10 +261,12 @@ class TrainRunner:
         world_size = get_world_size()
         is_main = is_main_process()
 
-        if torch.cuda.is_available():
+        if torch.cuda.is_available() and torch.version.hip is None:
             torch.backends.cudnn.benchmark = True
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
+        elif torch.cuda.is_available():
+            torch.set_float32_matmul_precision("high")
 
         tokenizer = self._load_tokenizer(args.tokenizer)
 

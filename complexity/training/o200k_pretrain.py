@@ -336,7 +336,7 @@ def init_distributed(seed: int):
 
     if distributed:
         if not torch.cuda.is_available():
-            raise RuntimeError("DDP training requires CUDA. Run single-process for CPU/MPS.")
+            raise RuntimeError("DDP training requires a CUDA-compatible GPU backend (NVIDIA CUDA or AMD ROCm).")
         torch.cuda.set_device(local_rank)
         dist.init_process_group(backend="nccl")
         torch.manual_seed(seed + rank)

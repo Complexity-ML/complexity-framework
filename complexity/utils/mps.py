@@ -1,5 +1,6 @@
 """
-Apple Silicon (MPS) helpers — device selection, memory, autocast, seeding.
+Apple Silicon (MPS), CUDA, and ROCm helpers — device selection, memory,
+autocast, seeding.
 
 Centralizes MPS-specific concerns used across training / inference scripts.
 Safe on non-Mac hosts: helpers degrade to no-ops if MPS is unavailable.
@@ -27,14 +28,32 @@ def is_mps_available() -> bool:
     return hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
 
 
+def is_rocm_available() -> bool:
+    """Return True when this PyTorch build is using AMD ROCm/HIP."""
+    return torch.cuda.is_available() and torch.version.hip is not None
+
+
+def is_cuda_available() -> bool:
+    """Return True for NVIDIA CUDA, excluding ROCm's CUDA-compatible facade."""
+    return torch.cuda.is_available() and torch.version.hip is None
+
+
 def select_device(preferred: str = "auto") -> torch.device:
-    """Return best device. preferred in {auto, mps, cuda, cpu}."""
+    """Return best device. preferred in {auto, mps, cuda, rocm, cpu}.
+
+    PyTorch exposes ROCm/HIP devices through the CUDA API, so ``rocm`` maps to
+    ``torch.device("cuda")`` after checking that the active build is ROCm.
+    """
     if preferred == "auto":
         if torch.cuda.is_available():
             return torch.device("cuda")
         if is_mps_available():
             return torch.device("mps")
         return torch.device("cpu")
+    if preferred == "rocm":
+        if not is_rocm_available():
+            raise RuntimeError("ROCm requested, but this PyTorch build/device is not ROCm-enabled.")
+        return torch.device("cuda")
     return torch.device(preferred)
 
 
@@ -160,7 +179,10 @@ def setup_mps(
     device = select_device("auto")
     if seed is not None:
         seed_all(seed)
-    logger.info(f"Device: {device}")
+    if device.type == "cuda" and is_rocm_available():
+        logger.info(f"Device: {device} (ROCm/HIP {torch.version.hip})")
+    else:
+        logger.info(f"Device: {device}")
     if device.type == "mps":
         stats = mps_memory_stats()
         if stats is not None:

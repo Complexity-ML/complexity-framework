@@ -22,6 +22,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 import logging
+import os
 
 from .base import MLPBase, MLPConfig
 from .fused_activations import fused_silu_mul
@@ -29,8 +30,13 @@ from ..registry import register_mlp
 
 logger = logging.getLogger(__name__)
 
+IS_ROCM = torch.version.hip is not None
+ALLOW_ROCM_TRITON = bool(int(os.environ.get("COMPLEXITY_ALLOW_ROCM_TRITON", "0")))
+
 # Try to import CGGR acceleration
 try:
+    if IS_ROCM and not ALLOW_ROCM_TRITON:
+        raise ImportError("CGGR Triton kernels are disabled by default on ROCm.")
     from complexity_cuda.triton_token_routed import (
         sort_tokens_by_expert,
         cggr_grouped_gemm_triton,

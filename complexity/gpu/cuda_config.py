@@ -31,6 +31,15 @@ def configure_cuda_backends(
     if not torch.cuda.is_available():
         return
 
+    if torch.version.hip is not None:
+        torch.set_float32_matmul_precision(matmul_precision)
+        gpu_name = torch.cuda.get_device_name(0)
+        logger.info(
+            f"[gpu] ROCm configured: hip={torch.version.hip}, "
+            f"matmul_precision={matmul_precision}, device={gpu_name}"
+        )
+        return
+
     if tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
