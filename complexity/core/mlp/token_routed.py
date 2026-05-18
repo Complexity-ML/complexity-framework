@@ -316,6 +316,33 @@ class TokenRoutedMLP(MLPBase):
             and cggr_grouped_gemm_autograd is not None
         )
 
+        # Log path selection once per process. Helps diagnose why a run is
+        # slower than expected (bmm path has 4x .cpu().tolist() syncs per
+        # step under top_k=2).
+        if not getattr(self.__class__, "_path_logged", False):
+            self.__class__._path_logged = True
+            cfg = self.config
+            why_not_cggr = []
+            if not getattr(cfg, "use_cggr", False):
+                why_not_cggr.append("config.use_cggr=False")
+            if not supports_custom_triton(kernel_policy):
+                why_not_cggr.append(
+                    f"supports_custom_triton(policy={kernel_policy!r})=False"
+                )
+            if not HAS_CGGR:
+                why_not_cggr.append("HAS_CGGR=False (complexity_cuda triton import failed)")
+            if not flat_x.is_cuda:
+                why_not_cggr.append(f"flat_x.is_cuda=False (device={flat_x.device})")
+            if cggr_grouped_gemm_autograd is None:
+                why_not_cggr.append("cggr_grouped_gemm_autograd=None")
+            if use_cggr:
+                logger.info("[TokenRoutedMLP] dispatch path = CGGR (Triton grouped-GEMM, no sync)")
+            else:
+                logger.info(
+                    "[TokenRoutedMLP] dispatch path = bmm fallback "
+                    f"(reasons: {', '.join(why_not_cggr) if why_not_cggr else 'unknown'})"
+                )
+
         # Top-K deterministic Zipf: dispatch K times with cyclic-shifted expert
         # IDs `(primary + k) % E`. Primary expert keeps weight 0.95, the
         # remaining 0.05 is split equally across the (K-1) secondaries. This

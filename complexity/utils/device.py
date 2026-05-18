@@ -120,9 +120,24 @@ def custom_kernels_enabled(policy: KernelPolicy = "auto") -> bool:
     """Return whether custom Triton/CUDA kernels should be used.
 
     ``auto`` enables custom kernels only on NVIDIA CUDA. ROCm uses PyTorch
-    fallback by default; set ``COMPLEXITY_ALLOW_ROCM_TRITON=1`` or pass True to
-    opt into experimental ROCm Triton paths.
+    fallback by default; set ``COMPLEXITY_ALLOW_ROCM_TRITON=1`` or pass True
+    (or ``--use-custom-kernels true`` on the CLI) to opt into experimental
+    ROCm Triton paths.
+
+    Accepts bool, the literal "auto", or string "true"/"false" — the CLI
+    sends strings, so `policy is True` alone silently dropped the flag on
+    ROCm before this normalisation.
     """
+    # Normalise string CLI values to bool / "auto".
+    if isinstance(policy, str):
+        lower = policy.strip().lower()
+        if lower == "true":
+            policy = True
+        elif lower == "false":
+            policy = False
+        elif lower == "auto":
+            policy = "auto"
+
     if policy is True:
         return torch.cuda.is_available()
     if policy is False:
