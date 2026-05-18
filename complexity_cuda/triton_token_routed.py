@@ -34,6 +34,16 @@ except ImportError:
     _logger.warning("Triton not available — Token-Routed MLP will use PyTorch fallback")
 
 
+def _is_rocm() -> bool:
+    """Return True when PyTorch is running on AMD ROCm. Used to pick autotune
+    configs without num_stages > 2 (deep pipelining hurts on CDNA — too few
+    waves available, register pressure spills)."""
+    try:
+        return torch.cuda.is_available() and torch.version.hip is not None
+    except Exception:
+        return False
+
+
 def _to_local(t: torch.Tensor) -> torch.Tensor:
     """Convert DTensor to local tensor (FSDP v2 compat)."""
     if hasattr(t, 'to_local'):
@@ -106,7 +116,9 @@ if HAS_TRITON:
     #   hidden ∈ {640, 1024}, expert_inter ∈ {448, 502, 2008}, shared_inter ∈ {..., 2008}
     # Tuning keys are the matmul dims (in_dim, out_dim); num_experts is
     # dispatch-only and doesn't affect per-block perf.
-    _CGGR_CONFIGS = [
+    # NVIDIA configs — Hopper/Ada/Blackwell. num_stages=3-4 hides global memory
+    # latency through software pipelining. Tile sizes target sm_80+ Tensor Cores.
+    _CGGR_CONFIGS_CUDA = [
         triton.Config({"BLOCK_M": 64,  "BLOCK_N": 64,  "BLOCK_K": 32},  num_warps=4, num_stages=3),
         triton.Config({"BLOCK_M": 64,  "BLOCK_N": 128, "BLOCK_K": 32},  num_warps=4, num_stages=3),
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 64,  "BLOCK_K": 32},  num_warps=4, num_stages=3),
@@ -116,16 +128,41 @@ if HAS_TRITON:
         triton.Config({"BLOCK_M": 64,  "BLOCK_N": 256, "BLOCK_K": 32},  num_warps=8, num_stages=3),
     ]
 
+    # AMD/CDNA configs — gfx9xx (MI200/MI300/MI350). num_stages capped at 2
+    # because CDNA has fewer SMs and deep pipelining over-allocates registers.
+    # Larger BLOCK_K helps fill the 16x16x16 MFMA pipes.
+    _CGGR_CONFIGS_ROCM = [
+        triton.Config({"BLOCK_M": 64,  "BLOCK_N": 64,  "BLOCK_K": 64},  num_warps=4, num_stages=1),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 64,  "BLOCK_K": 64},  num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 64},  num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 128}, num_warps=8, num_stages=1),
+        triton.Config({"BLOCK_M": 256, "BLOCK_N": 128, "BLOCK_K": 64},  num_warps=8, num_stages=1),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 256, "BLOCK_K": 64},  num_warps=8, num_stages=1),
+        triton.Config({"BLOCK_M": 64,  "BLOCK_N": 128, "BLOCK_K": 128}, num_warps=4, num_stages=1),
+    ]
+
+    _CGGR_CONFIGS = _CGGR_CONFIGS_ROCM if _is_rocm() else _CGGR_CONFIGS_CUDA
+
     # Separate autotune config list for grad_W — different reduction pattern
     # (reduce over tokens, tiles are (in_dim, out_dim)) benefits from narrower
     # BLOCK_M (tokens per block in K dim) and wider (BLOCK_N, BLOCK_O) tiles.
-    _CGGR_GRAD_W_CONFIGS = [
+    _CGGR_GRAD_W_CONFIGS_CUDA = [
         triton.Config({"BLOCK_M": 32,  "BLOCK_N": 64,  "BLOCK_O": 64},  num_warps=4, num_stages=3),
         triton.Config({"BLOCK_M": 32,  "BLOCK_N": 128, "BLOCK_O": 64},  num_warps=4, num_stages=3),
         triton.Config({"BLOCK_M": 32,  "BLOCK_N": 64,  "BLOCK_O": 128}, num_warps=4, num_stages=3),
         triton.Config({"BLOCK_M": 64,  "BLOCK_N": 128, "BLOCK_O": 128}, num_warps=8, num_stages=3),
         triton.Config({"BLOCK_M": 64,  "BLOCK_N": 64,  "BLOCK_O": 64},  num_warps=4, num_stages=4),
     ]
+
+    _CGGR_GRAD_W_CONFIGS_ROCM = [
+        triton.Config({"BLOCK_M": 32,  "BLOCK_N": 64,  "BLOCK_O": 64},  num_warps=4, num_stages=1),
+        triton.Config({"BLOCK_M": 64,  "BLOCK_N": 64,  "BLOCK_O": 64},  num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_M": 64,  "BLOCK_N": 128, "BLOCK_O": 64},  num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_M": 64,  "BLOCK_N": 128, "BLOCK_O": 128}, num_warps=8, num_stages=1),
+        triton.Config({"BLOCK_M": 32,  "BLOCK_N": 128, "BLOCK_O": 128}, num_warps=8, num_stages=1),
+    ]
+
+    _CGGR_GRAD_W_CONFIGS = _CGGR_GRAD_W_CONFIGS_ROCM if _is_rocm() else _CGGR_GRAD_W_CONFIGS_CUDA
 
     @triton.autotune(configs=_CGGR_GRAD_W_CONFIGS, key=["in_dim", "out_dim"])
     @triton.jit

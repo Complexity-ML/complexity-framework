@@ -136,6 +136,7 @@ def make_config(args) -> ModelConfig:
         top_k=args.top_k,
         top_k_primary_weight=args.top_k_primary_weight,
         use_custom_kernels=getattr(args, "use_custom_kernels", "auto"),
+        use_cggr=bool(getattr(args, "use_cggr", False)),
         static_expert_capacity=bool(getattr(args, "static_expert_capacity", False)),
         routing_strategy=getattr(args, "routing_strategy", "zipf"),
         clamp_mu_contextual=args.mu_clamp,
@@ -561,6 +562,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--static-expert-capacity",
         action="store_true",
         help="Use export-friendly TR dispatch for torch.distributed.pipelining.",
+    )
+    parser.add_argument(
+        "--use-cggr",
+        action="store_true",
+        help="Enable the CGGR grouped-GEMM Triton path for TokenRoutedMLP. "
+             "Skips the .cpu().tolist() syncs that the default bmm path needs "
+             "to pad expert buckets. Requires Triton + CUDA (or ROCm with "
+             "COMPLEXITY_ALLOW_ROCM_TRITON=1).",
     )
     parser.add_argument("--routing-strategy", choices=["zipf", "zipf_token_class"], default="zipf")
     parser.add_argument("--use-mu-guidance", action="store_true")
