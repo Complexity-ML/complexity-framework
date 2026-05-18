@@ -13,6 +13,8 @@ INL / Complexity-ML — 2026
 
 import torch
 
+from complexity.utils.device import supports_custom_triton
+
 try:
     import triton
     import triton.language as tl
@@ -150,7 +152,7 @@ def routed_proj(x, weight, sort_idx, num_experts):
 
     Uses fused Triton kernel on CUDA, falls back to PyTorch bmm on CPU.
     """
-    if HAS_TRITON and x.is_cuda:
+    if HAS_TRITON and supports_custom_triton("auto") and x.is_cuda:
         return fused_routed_proj(x, weight, sort_idx, num_experts)
 
     # Fallback: PyTorch bmm

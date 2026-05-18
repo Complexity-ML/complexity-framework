@@ -7,7 +7,7 @@ Complexity-ML — 2026
 import torch
 import logging
 
-from complexity.utils.device import is_rocm_available, log_backend
+from complexity.utils.device import configure_torch_acceleration, is_rocm_available
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def configure_cuda_backends(
 
     if is_rocm_available():
         torch.set_float32_matmul_precision(matmul_precision)
-        log_backend()
+        configure_torch_acceleration(log=True)
         return
 
     if tf32:
