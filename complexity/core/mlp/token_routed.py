@@ -338,9 +338,18 @@ class TokenRoutedMLP(MLPBase):
             if use_cggr:
                 logger.info("[TokenRoutedMLP] dispatch path = CGGR (Triton grouped-GEMM, no sync)")
             else:
+                # The actual bmm sub-path is decided per call (fast vs slow)
+                # based on N % num_experts and routing_strategy. Report the
+                # expected path for this config.
+                routing = getattr(cfg, "routing_strategy", "zipf")
+                # We don't know N here yet — assume the typical case (N divisible).
+                if routing == "zipf":
+                    sub_path = "fast bmm (no sync, view reshape — needs N%E==0)"
+                else:
+                    sub_path = f"slow bmm (padded, .cpu() sync — routing_strategy={routing!r})"
                 logger.info(
-                    "[TokenRoutedMLP] dispatch path = bmm fallback "
-                    f"(reasons: {', '.join(why_not_cggr) if why_not_cggr else 'unknown'})"
+                    f"[TokenRoutedMLP] dispatch path = {sub_path} "
+                    f"(CGGR rejected: {', '.join(why_not_cggr) if why_not_cggr else 'unknown'})"
                 )
 
         # Top-K deterministic Zipf: dispatch K times with cyclic-shifted expert
@@ -408,7 +417,50 @@ class TokenRoutedMLP(MLPBase):
             out[sorted_idx] = sorted_routed.to(out.dtype)
             return out
 
-        # bmm path — pad each bucket to max(counts), three torch.bmm.
+        # ── Fast bmm path (no sync, no padding) ────────────────────────────────
+        # When routing is balanced — N divisible by num_experts AND each expert
+        # actually receives exactly chunk=N/E tokens — sorted_x already has the
+        # layout we need. `sorted_x.view(E, chunk, H)` is a free reshape (no
+        # allocation, no copy), and avoids the `.cpu().tolist()` syncs plus the
+        # padded buffer that the legacy path materialises.
+        #
+        # Trigger conditions:
+        #   - N % num_experts == 0
+        #   - routing_strategy == "zipf"  (deterministic Zipf bin-packing
+        #     guarantees balanced buckets; other strategies may not)
+        # Use torch._assert_async to crash loudly if balance is violated at
+        # runtime — async means no GPU->CPU sync on the happy path.
+        N = flat_x.size(0)
+        routing_strategy = getattr(self.config, "routing_strategy", "zipf")
+        if (
+            N % self.num_experts == 0
+            and routing_strategy == "zipf"
+        ):
+            chunk = N // self.num_experts
+            torch._assert_async(
+                (expert_counts == chunk).all(),
+                "TokenRoutedMLP fast bmm path requires balanced buckets "
+                "(routing_strategy=zipf with N % num_experts == 0).",
+            )
+            packed = sorted_x.view(self.num_experts, chunk, H)  # free reshape
+            gate = torch.bmm(packed, gate_w)
+            up = torch.bmm(packed, up_w)
+            inter = fused_silu_mul(gate, up)
+            out_packed = torch.bmm(inter, down_w).reshape(N, -1)
+            out = torch.empty_like(flat_x)
+            # scatter_ avoids the Python loop + sync of `out[sorted_idx[s:s+n]] = ...`
+            out.scatter_(
+                0,
+                sorted_idx.unsqueeze(-1).expand(-1, out.size(-1)),
+                out_packed.to(out.dtype),
+            )
+            return out
+
+        # ── Slow bmm fallback (imbalanced routing) ─────────────────────────────
+        # Pad each bucket to max(counts) and use bmm. Needed when routing
+        # produces uneven buckets (rare; only when routing_strategy ≠ zipf or
+        # N % num_experts ≠ 0). Has 2 .cpu().tolist() syncs and an extra
+        # padded allocation — slower and more memory.
         counts_cpu = expert_counts.cpu().tolist()
         offsets_cpu = expert_offsets.cpu().tolist()
         capacity = max(counts_cpu) if counts_cpu else 0
