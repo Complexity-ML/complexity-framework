@@ -15,6 +15,8 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+from ...utils.device import supports_custom_triton
+
 
 def _liger_silu_mul_available() -> bool:
     """Cached availability check."""
@@ -39,7 +41,7 @@ def fused_silu_mul(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     Falls back to the naive path on MPS/CPU or when Liger is missing.
     Gradient semantics are identical.
     """
-    if gate.is_cuda and _liger_silu_mul_available():
+    if gate.is_cuda and supports_custom_triton("auto") and _liger_silu_mul_available():
         from liger_kernel.ops.swiglu import LigerSiLUMulFunction  # type: ignore[import-not-found]
         return LigerSiLUMulFunction.apply(gate, up)
     return F.silu(gate) * up

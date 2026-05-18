@@ -11,7 +11,7 @@ import torch
 from complexity.config import ModelConfig
 from complexity.core.losses import causal_lm_loss
 from complexity.models import ComplexityModel
-from complexity.utils.mps import is_rocm_available, select_device
+from complexity.utils.device import is_rocm_available, select_device
 
 
 def main() -> int:

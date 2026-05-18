@@ -7,6 +7,8 @@ Complexity-ML — 2026
 import torch
 import logging
 
+from complexity.utils.device import is_rocm_available, log_backend
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,13 +33,9 @@ def configure_cuda_backends(
     if not torch.cuda.is_available():
         return
 
-    if torch.version.hip is not None:
+    if is_rocm_available():
         torch.set_float32_matmul_precision(matmul_precision)
-        gpu_name = torch.cuda.get_device_name(0)
-        logger.info(
-            f"[gpu] ROCm configured: hip={torch.version.hip}, "
-            f"matmul_precision={matmul_precision}, device={gpu_name}"
-        )
+        log_backend()
         return
 
     if tf32:

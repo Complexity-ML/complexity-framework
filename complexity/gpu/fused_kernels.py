@@ -15,6 +15,8 @@ import torch
 import torch.nn as nn
 import warnings
 
+from complexity.utils.device import supports_custom_triton
+
 try:
     import triton
     import triton.language as tl
@@ -171,7 +173,7 @@ class FusedRMSNorm(nn.Module):
         return self.weight * x
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if (HAS_TRITON and x.is_cuda and not torch.is_grad_enabled()
+        if (HAS_TRITON and supports_custom_triton("auto") and x.is_cuda and not torch.is_grad_enabled()
                 and _fused_kernel_compatible(x, "FusedRMSNorm")):
             return self._triton_forward(x)
         return self._pytorch_forward(x)
@@ -184,7 +186,12 @@ def fused_swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     Replaces: F.silu(gate) * up (2 kernels + 1 intermediate tensor)
     With: 1 kernel, no intermediate.
     """
-    if not HAS_TRITON or not gate.is_cuda or not _fused_kernel_compatible(gate, "fused_swiglu"):
+    if (
+        not HAS_TRITON
+        or not supports_custom_triton("auto")
+        or not gate.is_cuda
+        or not _fused_kernel_compatible(gate, "fused_swiglu")
+    ):
         return torch.nn.functional.silu(gate) * up
 
     shape = gate.shape
@@ -220,7 +227,12 @@ def fused_residual_rmsnorm(
 
     Returns: (normed_output, updated_residual)
     """
-    if not HAS_TRITON or not x.is_cuda or not _fused_kernel_compatible(x, "fused_residual_rmsnorm"):
+    if (
+        not HAS_TRITON
+        or not supports_custom_triton("auto")
+        or not x.is_cuda
+        or not _fused_kernel_compatible(x, "fused_residual_rmsnorm")
+    ):
         residual = x + residual
         variance = residual.to(torch.float32).pow(2).mean(-1, keepdim=True)
         normed = residual * torch.rsqrt(variance + eps)

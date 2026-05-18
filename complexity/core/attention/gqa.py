@@ -13,26 +13,15 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from contextlib import nullcontext
 from typing import Optional, Tuple
 
 from .base import AttentionBase, AttentionConfig
 from ..registry import register_attention
 from ..position.rotary import RotaryEmbedding, PartialRoPE
+from ...utils.device import sdpa_kernel_context
 
 
 HAS_SDPA = hasattr(F, "scaled_dot_product_attention")
-try:
-    from torch.nn.attention import SDPBackend, sdpa_kernel
-    SDPA_KERNEL_BACKENDS = [
-        SDPBackend.FLASH_ATTENTION,
-        SDPBackend.EFFICIENT_ATTENTION,
-        SDPBackend.MATH,
-    ]
-except Exception:
-    SDPBackend = None
-    sdpa_kernel = None
-    SDPA_KERNEL_BACKENDS = None
 
 @register_attention("gqa")
 @register_attention("grouped_query")
@@ -219,12 +208,7 @@ class GroupedQueryAttention(AttentionBase):
         # With KV cache, q_len=1 and kv_len>1 → the single query token
         # must attend to all cached keys, not be masked by a causal mask.
         use_causal = (attn_mask is None) and (q.shape[2] == k.shape[2])
-        sdpa_context = (
-            sdpa_kernel(SDPA_KERNEL_BACKENDS)
-            if sdpa_kernel is not None and SDPA_KERNEL_BACKENDS is not None
-            else nullcontext()
-        )
-        with sdpa_context:
+        with sdpa_kernel_context():
             attn_output = F.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=attn_mask,

@@ -39,6 +39,7 @@ from complexity.training.run_config import (
     write_or_validate_run_config,
 )
 from complexity.utils import autocast, autocast_dtype, empty_cache, setup_mps, synchronize
+from complexity.utils.device import configure_torch_acceleration
 from complexity.utils.local_checkpoint import load_local_checkpoint, resolve_checkpoint_path, save_local_checkpoint
 
 
@@ -112,6 +113,7 @@ def make_config(args) -> ModelConfig:
         routed_gate_init=args.routed_gate_init,
         top_k=args.top_k,
         top_k_primary_weight=args.top_k_primary_weight,
+        use_custom_kernels=getattr(args, "use_custom_kernels", "auto"),
         static_expert_capacity=bool(getattr(args, "static_expert_capacity", False)),
         routing_strategy=getattr(args, "routing_strategy", "zipf"),
         clamp_mu_contextual=args.mu_clamp,
@@ -527,6 +529,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-k", type=int, default=2)
     parser.add_argument("--top-k-primary-weight", type=float, default=0.5)
     parser.add_argument(
+        "--use-custom-kernels",
+        choices=["auto", "true", "false"],
+        default="auto",
+        help="Custom Triton/CUDA kernels. auto enables NVIDIA CUDA, disables ROCm by default.",
+    )
+    parser.add_argument(
         "--static-expert-capacity",
         action="store_true",
         help="Use export-friendly TR dispatch for torch.distributed.pipelining.",
@@ -584,6 +592,13 @@ def main():
 
     device, distributed, rank, local_rank, world_size = init_distributed(args.seed)
     is_main = rank == 0
+    kernel_policy = (
+        True if args.use_custom_kernels == "true"
+        else False if args.use_custom_kernels == "false"
+        else "auto"
+    )
+    args.use_custom_kernels = kernel_policy
+    configure_torch_acceleration(kernel_policy=kernel_policy, log=is_main)
     args.vocab_size = infer_vocab_size(args)
     config = make_config(args)
     if args.dataset == "text" and not args.no_zipf_from_text:

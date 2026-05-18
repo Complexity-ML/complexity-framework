@@ -27,6 +27,7 @@ from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
 from complexity.training.o200k_pretrain import init_distributed
 from complexity.utils import autocast, autocast_dtype, empty_cache, setup_mps, synchronize
+from complexity.utils.device import configure_torch_acceleration
 from complexity.utils.local_checkpoint import save_local_checkpoint
 
 
@@ -322,6 +323,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
     parser.add_argument("--min-completion-tokens", type=int, default=32)
     parser.add_argument("--bf16", action="store_true")
+    parser.add_argument(
+        "--use-custom-kernels",
+        choices=["auto", "true", "false"],
+        default="auto",
+        help="Custom Triton/CUDA kernels. auto enables NVIDIA CUDA, disables ROCm by default.",
+    )
     parser.add_argument("--grad-ckpt", action="store_true")
     parser.add_argument("--loss-chunk-tokens", type=int, default=1024)
     parser.add_argument(
@@ -359,9 +366,17 @@ def main():
     else:
         device, distributed, rank, local_rank, world_size = init_distributed(args.seed)
     is_main = rank == 0
+    kernel_policy = (
+        True if args.use_custom_kernels == "true"
+        else False if args.use_custom_kernels == "false"
+        else "auto"
+    )
+    args.use_custom_kernels = kernel_policy
+    configure_torch_acceleration(kernel_policy=kernel_policy, log=is_main)
 
     ckpt_dir, state = load_checkpoint_state(args.checkpoint, map_location="cpu")
     config = checkpoint_config(state)
+    config.use_custom_kernels = kernel_policy
     raw_model = ComplexityModel(config).to(device)
     missing, unexpected = raw_model.load_state_dict(state["model"], strict=True)
     if missing or unexpected:

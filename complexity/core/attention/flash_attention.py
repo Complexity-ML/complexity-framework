@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 from .base import AttentionBase, AttentionConfig
 from ..registry import register_attention
+from ...utils.device import sdpa_kernel_context
 
 
 # =============================================================================
@@ -117,13 +118,14 @@ class FlashAttention(AttentionBase):
         # Flash attention
         if self.flash_available:
             # Use PyTorch's native flash attention
-            attn_output = F.scaled_dot_product_attention(
-                q, k, v,
-                attn_mask=attention_mask,
-                dropout_p=0.0,
-                is_causal=attention_mask is None,  # Causal if no mask provided
-                scale=self.scale,
-            )
+            with sdpa_kernel_context():
+                attn_output = F.scaled_dot_product_attention(
+                    q, k, v,
+                    attn_mask=attention_mask,
+                    dropout_p=0.0,
+                    is_causal=attention_mask is None,  # Causal if no mask provided
+                    scale=self.scale,
+                )
         else:
             # Fallback to standard attention
             attn_output = self._standard_attention(q, k, v, attention_mask)

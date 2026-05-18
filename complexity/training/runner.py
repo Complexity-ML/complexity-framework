@@ -68,6 +68,7 @@ from ..parallel import (
 from .callbacks import TqdmCallback, WandBCallback
 from .config import TrainingConfig
 from .trainer import Trainer
+from ..utils.device import configure_torch_acceleration
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +214,9 @@ class TrainRunner:
                        help="Overrides the script's default optimizer (e.g. adam_tr for MoE ablations)")
         p.add_argument("--top-k", type=int, default=None,
                        help="Token-Routed top-K deterministic (overrides config.top_k). K=1 classic Zipf, K>1 activates K experts/token with primary weighted 0.95.")
+        p.add_argument("--use-custom-kernels", type=str, default="auto",
+                       choices=["auto", "true", "false"],
+                       help="Custom Triton/CUDA kernels. auto enables NVIDIA CUDA, disables ROCm by default.")
         self.add_args(p)
         return p
 
@@ -261,12 +265,12 @@ class TrainRunner:
         world_size = get_world_size()
         is_main = is_main_process()
 
-        if torch.cuda.is_available() and torch.version.hip is None:
-            torch.backends.cudnn.benchmark = True
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-        elif torch.cuda.is_available():
-            torch.set_float32_matmul_precision("high")
+        custom_kernel_policy = (
+            True if args.use_custom_kernels == "true"
+            else False if args.use_custom_kernels == "false"
+            else "auto"
+        )
+        configure_torch_acceleration(kernel_policy=custom_kernel_policy)
 
         tokenizer = self._load_tokenizer(args.tokenizer)
 
@@ -275,6 +279,7 @@ class TrainRunner:
         config.vocab_size = min(len(tokenizer), config.vocab_size)
         if args.top_k is not None:
             config.top_k = args.top_k
+        config.use_custom_kernels = custom_kernel_policy
 
         if config.num_experts > 1 and is_main:
             config.token_frequencies = self._compute_zipf_frequencies(

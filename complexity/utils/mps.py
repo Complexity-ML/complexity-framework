@@ -10,12 +10,22 @@ from __future__ import annotations
 
 import logging
 import os
-import random
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Optional
 
 import torch
+
+from .device import (
+    autocast,
+    autocast_dtype,
+    empty_cache,
+    is_mps_available,
+    is_nvidia_cuda_available as is_cuda_available,
+    is_rocm_available,
+    seed_all,
+    select_device,
+    synchronize,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,39 +33,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Device
 # ---------------------------------------------------------------------------
-
-def is_mps_available() -> bool:
-    return hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-
-
-def is_rocm_available() -> bool:
-    """Return True when this PyTorch build is using AMD ROCm/HIP."""
-    return torch.cuda.is_available() and torch.version.hip is not None
-
-
-def is_cuda_available() -> bool:
-    """Return True for NVIDIA CUDA, excluding ROCm's CUDA-compatible facade."""
-    return torch.cuda.is_available() and torch.version.hip is None
-
-
-def select_device(preferred: str = "auto") -> torch.device:
-    """Return best device. preferred in {auto, mps, cuda, rocm, cpu}.
-
-    PyTorch exposes ROCm/HIP devices through the CUDA API, so ``rocm`` maps to
-    ``torch.device("cuda")`` after checking that the active build is ROCm.
-    """
-    if preferred == "auto":
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        if is_mps_available():
-            return torch.device("mps")
-        return torch.device("cpu")
-    if preferred == "rocm":
-        if not is_rocm_available():
-            raise RuntimeError("ROCm requested, but this PyTorch build/device is not ROCm-enabled.")
-        return torch.device("cuda")
-    return torch.device(preferred)
-
 
 # ---------------------------------------------------------------------------
 # Memory
@@ -104,62 +81,6 @@ def mps_memory_stats() -> Optional[MPSMemoryStats]:
         driver_allocated_mb=torch.mps.driver_allocated_memory() / mb,
         recommended_max_mb=torch.mps.recommended_max_memory() / mb,
     )
-
-
-def empty_cache(device: torch.device) -> None:
-    if device.type == "mps":
-        torch.mps.empty_cache()
-    elif device.type == "cuda":
-        torch.cuda.empty_cache()
-
-
-def synchronize(device: torch.device) -> None:
-    if device.type == "mps":
-        torch.mps.synchronize()
-    elif device.type == "cuda":
-        torch.cuda.synchronize()
-
-
-# ---------------------------------------------------------------------------
-# Seeding
-# ---------------------------------------------------------------------------
-
-def seed_all(seed: int) -> None:
-    random.seed(seed)
-    torch.manual_seed(seed)
-    if is_mps_available():
-        torch.mps.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-# ---------------------------------------------------------------------------
-# Autocast
-# ---------------------------------------------------------------------------
-
-def autocast_dtype(device: torch.device, prefer_bf16: bool = True) -> Optional[torch.dtype]:
-    """
-    Best mixed-precision dtype for `device`.
-
-    MPS supports bf16 from PyTorch 2.3+. On older builds, falls back to float16.
-    Returns None on CPU (autocast there is rarely worth it).
-    """
-    if device.type == "cpu":
-        return None
-    if device.type == "mps":
-        return torch.bfloat16 if prefer_bf16 else torch.float16
-    return torch.bfloat16 if prefer_bf16 else torch.float16
-
-
-@contextmanager
-def autocast(device: torch.device, dtype: Optional[torch.dtype] = None, enabled: bool = True):
-    """Unified autocast ctx mgr for mps/cuda/cpu."""
-    if not enabled or device.type == "cpu":
-        yield
-        return
-    dt = dtype or autocast_dtype(device) or torch.float32
-    with torch.autocast(device_type=device.type, dtype=dt):
-        yield
 
 
 # ---------------------------------------------------------------------------

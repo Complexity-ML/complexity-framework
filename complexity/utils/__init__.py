@@ -86,6 +86,18 @@ from .mps import (
     setup_mps,
     MPSMemoryStats,
 )
+from .device import (
+    BackendInfo,
+    custom_kernels_enabled,
+    configure_torch_acceleration,
+    get_backend,
+    get_backend_info,
+    is_nvidia_cuda_available,
+    log_backend,
+    sdpa_kernel_backends,
+    sdpa_kernel_context,
+    supports_custom_triton,
+)
 
 from .safety import (
     SafetyConfig,
@@ -142,6 +154,16 @@ __all__ = [
     "is_mps_available",
     "is_rocm_available",
     "is_cuda_available",
+    "is_nvidia_cuda_available",
+    "get_backend",
+    "get_backend_info",
+    "log_backend",
+    "custom_kernels_enabled",
+    "configure_torch_acceleration",
+    "supports_custom_triton",
+    "sdpa_kernel_backends",
+    "sdpa_kernel_context",
+    "BackendInfo",
     "select_device",
     "set_memory_watermark",
     "enable_cpu_fallback",

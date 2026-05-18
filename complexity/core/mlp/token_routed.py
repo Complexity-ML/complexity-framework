@@ -22,21 +22,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 import logging
-import os
 
 from .base import MLPBase, MLPConfig
 from .fused_activations import fused_silu_mul
 from ..registry import register_mlp
+from ...utils.device import supports_custom_triton
 
 logger = logging.getLogger(__name__)
 
-IS_ROCM = torch.version.hip is not None
-ALLOW_ROCM_TRITON = bool(int(os.environ.get("COMPLEXITY_ALLOW_ROCM_TRITON", "0")))
-
 # Try to import CGGR acceleration
 try:
-    if IS_ROCM and not ALLOW_ROCM_TRITON:
-        raise ImportError("CGGR Triton kernels are disabled by default on ROCm.")
     from complexity_cuda.triton_token_routed import (
         sort_tokens_by_expert,
         cggr_grouped_gemm_triton,
@@ -46,7 +41,7 @@ try:
         HAS_TRITON,
     )
     HAS_CGGR = HAS_TRITON
-except ImportError:
+except Exception:
     HAS_CGGR = False
     cggr_grouped_gemm_autograd = None
 
@@ -313,9 +308,13 @@ class TokenRoutedMLP(MLPBase):
         #     cuBLAS on CUDA, MPS-native on Apple, perfectly autograd-friendly.
         #   - CGGR Triton (cuda + opt-in) : custom grouped-GEMM kernel,
         #     kept as fallback via config flag `use_cggr=True`.
-        use_cggr = (getattr(self.config, "use_cggr", False)
-                    and HAS_CGGR and flat_x.is_cuda
-                    and cggr_grouped_gemm_autograd is not None)
+        kernel_policy = getattr(self.config, "use_custom_kernels", "auto")
+        use_cggr = (
+            getattr(self.config, "use_cggr", False)
+            and supports_custom_triton(kernel_policy)
+            and HAS_CGGR and flat_x.is_cuda
+            and cggr_grouped_gemm_autograd is not None
+        )
 
         # Top-K deterministic Zipf: dispatch K times with cyclic-shifted expert
         # IDs `(primary + k) % E`. Primary expert keeps weight 0.95, the
