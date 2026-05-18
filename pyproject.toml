@@ -58,6 +58,12 @@ cuda = [
     "liger-kernel>=0.5.0",  # fused linear+CE, RMSNorm, RoPE (Triton)
     # flash-attn removed: builds from source (~30min), SDPA covers the same path
 ]
+rocm = [
+    # Install torch/torchvision/torchaudio from the official ROCm wheel index
+    # or use an AMD/PyTorch ROCm image first; PyPI's default torch wheel is not
+    # a reliable way to select a ROCm build.
+    "triton>=3.0.0; platform_system == 'Linux'",
+]
 fp8 = [
     "torchao>=0.7.0",
 ]
