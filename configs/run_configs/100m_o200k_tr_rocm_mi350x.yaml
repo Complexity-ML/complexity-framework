@@ -1,0 +1,37 @@
+# 100M Token-Routed o200k for a single MI350X (288 GB HBM).
+#
+# Short ~2B tokens run to validate the full training loop end-to-end.
+# Bump target_tokens / steps if you want a longer pass.
+#
+# Math:
+#   tokens_per_step = 256 * 1 * 1 * 2048 = 524,288
+#   3800 steps = ~2B tokens
+#
+# Memory footprint at 100M:
+#   weights+grads+adam (bf16/fp32 mixed) ≈ 1.8 GB
+#   activations (batch=256, seq=2048, hidden=384) ≈ 4 GB
+#   Total ~6 GB on a 288 GB GPU — comfortable.
+run:
+  profile: 100m
+  dataset: fineweb
+  tokenizer: ./tokenizer-o200k
+  steps: 3800
+  batch_size: 256
+  seq_len: 2048
+  lr: 3.0e-4
+  optimizer: adamw
+  bf16: true
+  grad_ckpt: false
+  eval_steps: 500
+  eval_batches: 16
+  log_steps: 20
+  save_steps: 1000
+  save_total_limit: 3
+  loss_chunk_tokens: 1024
+  routing_strategy: zipf
+  top_k: 2
+  top_k_primary_weight: 0.5
+  use_custom_kernels: auto
+  empty_cache_every: 0
+  run_name: rocm-100m-o200k-tr-mi350x
+  save_dir: checkpoints/rocm-100m-o200k-tr-mi350x
