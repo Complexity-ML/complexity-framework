@@ -1,0 +1,24 @@
+run:
+  profile: 50m
+  dataset: fineweb
+  tokenizer: ./tokenizer-o200k
+  steps: 20000
+  batch_size: 8
+  seq_len: 512
+  lr: 3.0e-4
+  optimizer: adamw
+  bf16: true
+  grad_ckpt: false
+  eval_steps: 1000
+  eval_batches: 8
+  log_steps: 50
+  save_steps: 5000
+  save_total_limit: 3
+  loss_chunk_tokens: 1024
+  routing_strategy: zipf
+  top_k: 2
+  top_k_primary_weight: 0.5
+  use_custom_kernels: auto
+  empty_cache_every: 0
+  run_name: rocm-50m-o200k-tr
+  save_dir: checkpoints/rocm-50m-o200k-tr

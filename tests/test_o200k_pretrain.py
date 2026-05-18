@@ -46,9 +46,10 @@ def test_profile_param_counts_are_stable():
         "mu_init_value": 0.0,
         "mu_context_min": -2.0,
         "mu_context_max": 2.0,
+        "use_custom_kernels": "auto",
     }
 
-    expected = {"50m": 51.9, "100m": 99.7, "8b": 8201.5}
+    expected = {"50m": 51.9, "100m": 99.7, "300m": 263.3, "8b": 8201.5}
     for name, profile in PROFILES.items():
         args = SimpleNamespace(**common, **profile)
         with torch.device("meta"):
