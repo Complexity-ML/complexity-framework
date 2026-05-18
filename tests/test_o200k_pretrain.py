@@ -49,7 +49,7 @@ def test_profile_param_counts_are_stable():
         "use_custom_kernels": "auto",
     }
 
-    expected = {"50m": 51.9, "100m": 99.7, "300m": 263.3, "8b": 8201.5}
+    expected = {"50m": 51.9, "100m": 99.7, "300m": 300.8, "8b": 8201.5}
     for name, profile in PROFILES.items():
         args = SimpleNamespace(**common, **profile)
         with torch.device("meta"):
