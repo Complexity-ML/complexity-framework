@@ -78,7 +78,14 @@ def parser_destinations(parser: argparse.ArgumentParser) -> set[str]:
     return {action.dest for action in parser._actions if action.dest != argparse.SUPPRESS}
 
 
-def args_to_run_config(args: argparse.Namespace, *, model_config: dict[str, Any], params: int, world_size: int) -> dict[str, Any]:
+def args_to_run_config(
+    args: argparse.Namespace,
+    *,
+    model_config: dict[str, Any],
+    params: int,
+    world_size: int,
+    backend: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     args_dict = vars(args).copy()
     tokens_per_step = int(args_dict["batch_size"]) * int(args_dict["seq_len"]) * int(world_size)
     total_tokens = tokens_per_step * int(args_dict["steps"])
@@ -91,6 +98,7 @@ def args_to_run_config(args: argparse.Namespace, *, model_config: dict[str, Any]
         "total_tokens": total_tokens,
         "args": args_dict,
         "model_config": model_config,
+        "backend": backend or {},
     }
 
 
@@ -151,7 +159,7 @@ def compare_run_configs(previous: dict[str, Any], current: dict[str, Any]) -> li
 
 def format_run_summary(run_config: dict[str, Any]) -> list[str]:
     args = run_config["args"]
-    return [
+    lines = [
         f"Run: {args['run_name']}",
         f"Model: {run_config['params'] / 1e6:.1f}M params, profile={args.get('profile')}",
         f"Data: dataset={args['dataset']}, tokenizer={args['tokenizer']}, vocab={args['vocab_size']}",
@@ -171,6 +179,19 @@ def format_run_summary(run_config: dict[str, Any]) -> list[str]:
             f"dir={args['save_dir']}"
         ),
     ]
+    backend = run_config.get("backend") or {}
+    if backend:
+        lines.append(
+            "Backend: "
+            f"{backend.get('backend')} "
+            f"device={backend.get('device_name')} "
+            f"matmul={backend.get('matmul')} "
+            f"distributed={backend.get('distributed')} "
+            f"sdpa={backend.get('sdpa')} "
+            f"flash={backend.get('flash_attention')} "
+            f"custom_triton={backend.get('custom_triton')}"
+        )
+    return lines
 
 
 def current_git_commit() -> str | None:

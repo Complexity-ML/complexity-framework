@@ -88,6 +88,7 @@ from .mps import (
 )
 from .device import (
     BackendInfo,
+    backend_metadata,
     custom_kernels_enabled,
     configure_torch_acceleration,
     get_backend,
@@ -164,6 +165,7 @@ __all__ = [
     "sdpa_kernel_backends",
     "sdpa_kernel_context",
     "BackendInfo",
+    "backend_metadata",
     "select_device",
     "set_memory_watermark",
     "enable_cpu_fallback",

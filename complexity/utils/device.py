@@ -151,6 +151,24 @@ def log_backend(preferred: str = "auto", kernel_policy: KernelPolicy = "auto") -
     return info
 
 
+def backend_metadata(preferred: str = "auto", kernel_policy: KernelPolicy = "auto") -> dict[str, object]:
+    """Serializable backend metadata for checkpoints and run configs."""
+    info = get_backend_info(preferred, kernel_policy)
+    backends = sdpa_kernel_backends()
+    return {
+        "backend": info.name,
+        "device": str(info.device),
+        "device_name": info.device_name,
+        "hip_version": info.hip_version,
+        "custom_triton": info.custom_triton,
+        "sdpa": info.sdpa,
+        "flash_attention": info.flash_attention,
+        "sdpa_backends": [str(backend).split(".")[-1] for backend in backends] if backends else [],
+        "matmul": info.matmul,
+        "distributed": info.distributed,
+    }
+
+
 def configure_torch_acceleration(kernel_policy: KernelPolicy = "auto", log: bool = True) -> BackendInfo:
     """Apply safe backend-level acceleration toggles and return backend info."""
     info = log_backend(kernel_policy=kernel_policy) if log else get_backend_info(kernel_policy=kernel_policy)

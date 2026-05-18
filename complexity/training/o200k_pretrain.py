@@ -39,7 +39,7 @@ from complexity.training.run_config import (
     write_or_validate_run_config,
 )
 from complexity.utils import autocast, autocast_dtype, empty_cache, setup_mps, synchronize
-from complexity.utils.device import configure_torch_acceleration
+from complexity.utils.device import backend_metadata, configure_torch_acceleration
 from complexity.utils.local_checkpoint import load_local_checkpoint, resolve_checkpoint_path, save_local_checkpoint
 
 
@@ -464,6 +464,7 @@ def save_checkpoint(args, raw_model, optimizer, scheduler, config, step: int, is
             "scheduler": scheduler.state_dict(),
             "config": config.to_dict(),
             "args": vars(args),
+            "backend": backend_metadata(kernel_policy=getattr(args, "use_custom_kernels", "auto")),
         },
     )
     logger.info(f"Checkpoint saved: {ckpt_dir}")
@@ -622,6 +623,7 @@ def main():
             model_config=config.to_dict(),
             params=params,
             world_size=world_size,
+            backend=backend_metadata(kernel_policy=kernel_policy),
         )
         write_or_validate_run_config(
             run_dir,

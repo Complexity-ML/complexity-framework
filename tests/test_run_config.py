@@ -79,3 +79,40 @@ def test_resume_guard_rejects_training_mismatch(tmp_path):
     write_or_validate_run_config(run_dir, first, resume=False)
     with pytest.raises(ValueError, match="Resume config mismatch"):
         write_or_validate_run_config(run_dir, second, resume=True)
+
+
+def test_run_config_summary_includes_backend():
+    from complexity.training.run_config import format_run_summary
+
+    summary = format_run_summary({
+        "params": 100_000_000,
+        "world_size": 1,
+        "tokens_per_step": 512,
+        "total_tokens": 512_000,
+        "args": {
+            "run_name": "rocm-smoke",
+            "profile": "100m",
+            "dataset": "random",
+            "tokenizer": "./tokenizer-o200k",
+            "vocab_size": 200000,
+            "steps": 1000,
+            "lr": 1e-4,
+            "batch_size": 1,
+            "seq_len": 512,
+            "save_steps": 100,
+            "save_total_limit": 2,
+            "save_dir": "checkpoints/test",
+        },
+        "backend": {
+            "backend": "rocm",
+            "device_name": "AMD Instinct MI300X",
+            "matmul": "rocBLAS/hipBLASLt",
+            "distributed": "RCCL via torch.distributed nccl",
+            "sdpa": True,
+            "flash_attention": True,
+            "custom_triton": False,
+        },
+    })
+
+    assert any("Backend: rocm" in line for line in summary)
+    assert any("rocBLAS/hipBLASLt" in line for line in summary)

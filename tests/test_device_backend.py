@@ -74,3 +74,21 @@ def test_sdpa_backend_env_override(monkeypatch):
     assert backends is not None
     assert len(backends) == 1
     assert "MATH" in str(backends[0])
+
+
+def test_backend_metadata_is_serializable(monkeypatch):
+    from complexity.utils.device import backend_metadata
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda device=None: "AMD Instinct MI300X")
+    monkeypatch.setattr(torch.version, "hip", "6.4.0", raising=False)
+    monkeypatch.setenv("COMPLEXITY_SDPA_BACKENDS", "math")
+
+    metadata = backend_metadata()
+
+    assert metadata["backend"] == "rocm"
+    assert metadata["device"] == "cuda"
+    assert metadata["device_name"] == "AMD Instinct MI300X"
+    assert metadata["hip_version"] == "6.4.0"
+    assert metadata["matmul"] == "rocBLAS/hipBLASLt"
+    assert metadata["sdpa_backends"] == ["MATH"]

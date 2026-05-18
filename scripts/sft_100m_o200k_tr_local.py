@@ -27,7 +27,7 @@ from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
 from complexity.training.o200k_pretrain import init_distributed
 from complexity.utils import autocast, autocast_dtype, empty_cache, setup_mps, synchronize
-from complexity.utils.device import configure_torch_acceleration
+from complexity.utils.device import backend_metadata, configure_torch_acceleration
 from complexity.utils.local_checkpoint import save_local_checkpoint
 
 
@@ -301,6 +301,7 @@ def save_checkpoint(args, raw_model, optimizer, scheduler, config, source_checkp
             "config": config.to_dict(),
             "args": vars(args),
             "sft_source_checkpoint": source_checkpoint,
+            "backend": backend_metadata(kernel_policy=getattr(args, "use_custom_kernels", "auto")),
         },
     )
     logger.info(f"Checkpoint saved: {ckpt_dir}")
@@ -426,6 +427,14 @@ def main():
         run_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"SFT source: {ckpt_dir} (pretrain step={state.get('step', 'unknown')})")
         logger.info(f"Model: {raw_model.num_parameters() / 1e6:.1f}M params")
+        backend = backend_metadata(kernel_policy=kernel_policy)
+        logger.info(
+            "Backend: "
+            f"{backend['backend']} device={backend['device_name']} "
+            f"matmul={backend['matmul']} distributed={backend['distributed']} "
+            f"sdpa={backend['sdpa']} flash={backend['flash_attention']} "
+            f"custom_triton={backend['custom_triton']}"
+        )
         logger.info(
             f"Config: vocab={config.vocab_size}, hidden={config.hidden_size}, layers={config.num_hidden_layers}, "
             f"GQA={config.num_attention_heads}/{config.num_key_value_heads}, "
