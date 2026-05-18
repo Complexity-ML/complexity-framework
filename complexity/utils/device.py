@@ -11,8 +11,10 @@ from __future__ import annotations
 import logging
 import os
 import random
+import shutil
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Optional, Union
 
 import torch
@@ -45,6 +47,34 @@ def is_rocm_available() -> bool:
     return torch.cuda.is_available() and torch.version.hip is not None
 
 
+def is_rocm_runtime_present() -> bool:
+    """Best-effort host ROCm runtime detection independent of PyTorch."""
+    if torch.version.hip is not None:
+        return True
+    if os.environ.get("ROCM_PATH") or os.environ.get("HIP_PATH"):
+        return True
+    if Path("/opt/rocm").exists():
+        return True
+    return any(shutil.which(cmd) for cmd in ("rocminfo", "rocm-smi", "hipcc"))
+
+
+def rocm_unavailable_message() -> str:
+    if is_rocm_available():
+        return ""
+    if is_rocm_runtime_present():
+        return (
+            "ROCm runtime appears to be installed on this host, but this PyTorch "
+            "build is not ROCm-enabled. Install a ROCm PyTorch wheel, e.g. "
+            "`pip install torch torchvision torchaudio --index-url "
+            "https://download.pytorch.org/whl/rocm6.4`, or use an AMD PyTorch "
+            "ROCm image."
+        )
+    return (
+        "ROCm requested, but no ROCm-enabled PyTorch/device was detected. "
+        "Use an AMD ROCm image or install ROCm plus a ROCm PyTorch wheel."
+    )
+
+
 def is_nvidia_cuda_available() -> bool:
     return torch.cuda.is_available() and torch.version.hip is None
 
@@ -60,7 +90,7 @@ def get_backend(preferred: str = "auto") -> BackendName:
         return "cpu"
     if preferred == "rocm":
         if not is_rocm_available():
-            raise RuntimeError("ROCm requested, but this PyTorch build/device is not ROCm-enabled.")
+            raise RuntimeError(rocm_unavailable_message())
         return "rocm"
     if preferred == "cuda":
         if is_rocm_available():
@@ -160,6 +190,7 @@ def backend_metadata(preferred: str = "auto", kernel_policy: KernelPolicy = "aut
         "device": str(info.device),
         "device_name": info.device_name,
         "hip_version": info.hip_version,
+        "rocm_runtime_present": is_rocm_runtime_present(),
         "custom_triton": info.custom_triton,
         "sdpa": info.sdpa,
         "flash_attention": info.flash_attention,

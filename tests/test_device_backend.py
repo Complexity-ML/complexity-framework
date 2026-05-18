@@ -34,6 +34,7 @@ def test_rocm_backend_maps_to_cuda_device(monkeypatch):
     assert info.matmul == "rocBLAS/hipBLASLt"
     assert info.distributed == "RCCL via torch.distributed nccl"
     assert info.custom_triton is False
+    assert info.hip_version == "6.4.0"
 
 
 def test_rocm_custom_triton_is_opt_in(monkeypatch):
@@ -90,5 +91,25 @@ def test_backend_metadata_is_serializable(monkeypatch):
     assert metadata["device"] == "cuda"
     assert metadata["device_name"] == "AMD Instinct MI300X"
     assert metadata["hip_version"] == "6.4.0"
+    assert metadata["rocm_runtime_present"] is True
     assert metadata["matmul"] == "rocBLAS/hipBLASLt"
     assert metadata["sdpa_backends"] == ["MATH"]
+
+
+def test_rocm_runtime_present_without_rocm_torch_gets_actionable_error(monkeypatch):
+    from complexity.utils.device import get_backend, rocm_unavailable_message
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.version, "hip", None, raising=False)
+    monkeypatch.setenv("ROCM_PATH", "/opt/rocm")
+
+    message = rocm_unavailable_message()
+
+    assert "runtime appears to be installed" in message
+    assert "ROCm PyTorch wheel" in message
+    try:
+        get_backend("rocm")
+    except RuntimeError as exc:
+        assert "ROCm PyTorch wheel" in str(exc)
+    else:
+        raise AssertionError("get_backend('rocm') should fail without ROCm PyTorch")

@@ -11,7 +11,12 @@ import torch
 from complexity.config import ModelConfig
 from complexity.core.losses import causal_lm_loss
 from complexity.models import ComplexityModel
-from complexity.utils.device import is_rocm_available, select_device
+from complexity.utils.device import (
+    is_rocm_available,
+    is_rocm_runtime_present,
+    rocm_unavailable_message,
+    select_device,
+)
 
 
 def main() -> int:
@@ -24,9 +29,10 @@ def main() -> int:
     print(f"torch={torch.__version__}")
     print(f"torch.version.hip={torch.version.hip}")
     print(f"torch.cuda.is_available={torch.cuda.is_available()}")
+    print(f"rocm_runtime_present={is_rocm_runtime_present()}")
 
     if args.device == "rocm" and not is_rocm_available():
-        print("ERROR: ROCm requested, but this PyTorch install is not ROCm-enabled.", file=sys.stderr)
+        print(f"ERROR: {rocm_unavailable_message()}", file=sys.stderr)
         return 1
 
     device = select_device(args.device)

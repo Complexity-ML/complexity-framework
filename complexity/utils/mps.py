@@ -22,6 +22,8 @@ from .device import (
     is_mps_available,
     is_nvidia_cuda_available as is_cuda_available,
     is_rocm_available,
+    is_rocm_runtime_present,
+    rocm_unavailable_message,
     seed_all,
     select_device,
     synchronize,
