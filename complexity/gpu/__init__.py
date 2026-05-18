@@ -22,6 +22,7 @@ Complexity-ML — 2026
 from .patches import apply_gpu_patches, patch_triton_heuristics
 from .cuda_config import configure_cuda_backends
 from .nccl_config import configure_nccl
+from .rccl_config import configure_rccl
 from .memory import clear_gpu_cache, log_memory_usage, estimate_max_batch_size
 from .compile import compile_model, set_compile_env
 from .profiler import StepTimer, profile_model_flops
@@ -43,6 +44,7 @@ __all__ = [
     "patch_triton_heuristics",
     "configure_cuda_backends",
     "configure_nccl",
+    "configure_rccl",
     "clear_gpu_cache",
     "log_memory_usage",
     "estimate_max_batch_size",

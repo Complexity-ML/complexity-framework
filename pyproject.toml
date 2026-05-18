@@ -38,7 +38,11 @@ classifiers = [
 ]
 requires-python = ">=3.8"
 dependencies = [
-    "torch>=2.0.0",
+    # NOTE: torch is intentionally NOT in required deps. PyPI's default `torch`
+    # wheel is the NVIDIA CUDA build — installing it via `pip install -e .` on a
+    # ROCm host silently replaces the AMD-built torch and yanks in 1.5 GB of
+    # nvidia-* packages. Pick a backend extra ([cuda] / [rocm] / [cpu]) so
+    # torch resolves against the right wheel index.
     "numpy>=1.21.0",
     "einops>=0.6.0",
     "transformers>=4.30.0",
@@ -53,16 +57,32 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# NVIDIA CUDA: default PyPI wheel is the CUDA build, no index flag needed.
+#   pip install -e .[cuda]
 cuda = [
+    "torch>=2.0.0",
     "triton>=2.0.0",
     "liger-kernel>=0.5.0",  # fused linear+CE, RMSNorm, RoPE (Triton)
     # flash-attn removed: builds from source (~30min), SDPA covers the same path
 ]
+# AMD ROCm: torch wheels live on download.pytorch.org/whl/rocm*/, not PyPI.
+# The +rocm6.4 local version tag is impossible to satisfy from PyPI, so pip
+# will fail fast (rather than silently grabbing the CUDA wheel) unless the
+# ROCm index is in scope.
+#
+# Install with:
+#   pip install -e ".[rocm]" --index-url https://download.pytorch.org/whl/rocm6.4
+#
+# Bump the index URL to match newer ROCm runtimes (rocm7.0 etc.) — ABI is
+# backward-compatible so rocm6.4 wheels work on rocm7.x hosts.
 rocm = [
-    # Install torch/torchvision/torchaudio from the official ROCm wheel index
-    # or use an AMD/PyTorch ROCm image first; PyPI's default torch wheel is not
-    # a reliable way to select a ROCm build.
-    "triton>=3.0.0; platform_system == 'Linux'",
+    "torch>=2.8.0,<3.0",
+    "pytorch-triton-rocm; platform_system == 'Linux'",
+]
+# CPU-only: install with
+#   pip install -e .[cpu] --extra-index-url https://download.pytorch.org/whl/cpu
+cpu = [
+    "torch>=2.0.0",
 ]
 fp8 = [
     "torchao>=0.7.0",

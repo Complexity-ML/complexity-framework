@@ -282,9 +282,17 @@ def init_distributed(
     """
     Initialize distributed training.
 
+    Works for single-node (torchrun --nproc_per_node=N) and multi-node
+    (torchrun --nnodes=M --node_rank=R --master_addr=... --master_port=...).
+
+    On AMD ROCm hosts, applies RCCL-specific env defaults (IB HCA pinning,
+    fine-grain PCIe, longer multi-node timeout) before init_process_group.
+
     Args:
-        backend: Distributed backend ("nccl" for GPU, "gloo" for CPU)
-        init_method: Initialization method
+        backend: Distributed backend ("nccl" for GPU — RCCL on ROCm —
+            or "gloo" for CPU).
+        init_method: Initialization method. "env://" reads MASTER_ADDR,
+            MASTER_PORT, RANK, WORLD_SIZE, LOCAL_RANK from environment.
 
     Returns:
         True if distributed is initialized
@@ -299,22 +307,48 @@ def init_distributed(
     if rank is None:
         return False  # single-GPU, skip distributed silently
 
-    # Enable NCCL async error handling so that any rank that crashes
-    # causes the others to receive a clean error instead of hanging
-    # forever on a collective op (which is what produces the broken
-    # pipe spam when one rank exits early).
+    nnodes = int(os.environ.get("NNODES", "1"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    is_multi_node = nnodes > 1 or world_size > torch.cuda.device_count()
+
+    # Async error handling so a crashed rank crashes the rest instead of
+    # leaving everyone hanging on a collective.
     os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
     os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")  # legacy name
+
+    # AMD ROCm: apply RCCL tuning (no-op on NVIDIA).
+    if torch.cuda.is_available() and torch.version.hip is not None:
+        from ..gpu.rccl_config import configure_rccl
+        configure_rccl(
+            multi_node=is_multi_node,
+            socket_ifname=os.environ.get("NCCL_SOCKET_IFNAME"),
+            ib_hca=os.environ.get("NCCL_IB_HCA"),
+            timeout_s=1800 if is_multi_node else 600,
+            debug=os.environ.get("COMPLEXITY_RCCL_DEBUG") == "1",
+        )
+
+    # Multi-node init can stall for minutes on first all_reduce (cold dataset
+    # shards, IB queue pair setup). 120s is fine for single-node but kills
+    # legitimate multi-node startup.
+    timeout_s = 1800 if is_multi_node else 120
 
     try:
         from datetime import timedelta
         dist.init_process_group(
             backend=backend,
             init_method=init_method,
-            timeout=timedelta(seconds=120),  # short timeout = fast crash
+            timeout=timedelta(seconds=timeout_s),
         )
         if torch.cuda.is_available():
-            local_rank = dist.get_rank() % torch.cuda.device_count()
+            # Prefer LOCAL_RANK from the launcher (torchrun sets it).
+            # rank % device_count() only works when every node has the same
+            # GPU count AND the launcher numbers ranks contiguously per node
+            # — true for torchrun but not guaranteed for hand-rolled launchers.
+            local_rank_env = os.environ.get("LOCAL_RANK")
+            if local_rank_env is not None:
+                local_rank = int(local_rank_env)
+            else:
+                local_rank = dist.get_rank() % torch.cuda.device_count()
             torch.cuda.set_device(local_rank)
         return True
     except Exception as e:
