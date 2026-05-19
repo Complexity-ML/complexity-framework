@@ -50,6 +50,14 @@ def test_chunked_hidden_loss_can_skip_metric_sync():
     assert math.isnan(metrics.ce)
 
 
+def test_liger_fused_ce_availability_is_exposed(monkeypatch):
+    from complexity.core.losses import fused_ce
+
+    monkeypatch.setattr(fused_ce, "_liger_available", lambda: True)
+
+    assert fused_ce.has_liger_fused_linear_ce() is True
+
+
 def test_profile_param_counts_are_stable():
     from complexity.models import ComplexityModel
     from complexity.training.o200k_pretrain import PROFILES, make_config
@@ -126,6 +134,14 @@ def test_o200k_parser_disables_grad_clipping_by_default():
     args = build_parser().parse_args([])
 
     assert args.max_grad_norm == 0.0
+
+
+def test_o200k_parser_uses_auto_loss_backend_by_default():
+    from complexity.training.o200k_pretrain import build_parser
+
+    args = build_parser().parse_args([])
+
+    assert args.loss_backend == "auto"
 
 
 def test_token_routed_topk_reuses_sort_without_changing_output():

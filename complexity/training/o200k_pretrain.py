@@ -28,7 +28,11 @@ from torch.utils.data import DataLoader, IterableDataset
 from tqdm import tqdm
 
 from complexity.config import ModelConfig
-from complexity.core.losses import causal_lm_loss_from_hidden
+from complexity.core.losses import (
+    causal_lm_loss_from_hidden,
+    fused_linear_causal_lm_loss,
+    has_liger_fused_linear_ce,
+)
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
 from complexity.training.moe_telemetry import global_expert_shares, global_tr_diagnostics
@@ -658,6 +662,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--z-loss", type=float, default=0.0)
     parser.add_argument("--loss-chunk-tokens", type=int, default=1024)
     parser.add_argument(
+        "--loss-backend",
+        choices=["auto", "chunked", "liger"],
+        default="auto",
+        help="Exact LM loss backend. auto uses Liger fused linear CE when installed, otherwise chunked CE.",
+    )
+    parser.add_argument(
         "--loss-checkpoint-chunks",
         action="store_true",
         help="Checkpoint chunked vocab loss to save memory. Slower; off by default for tok/s.",
@@ -702,6 +712,15 @@ def main():
     args.use_custom_kernels = kernel_policy
     configure_torch_acceleration(kernel_policy=kernel_policy, log=is_main)
     args.vocab_size = infer_vocab_size(args)
+    liger_loss_available = has_liger_fused_linear_ce()
+    if args.loss_backend == "liger" and not liger_loss_available:
+        raise RuntimeError(
+            "Requested --loss-backend liger but liger-kernel is not importable. "
+            "Install liger-kernel or use --loss-backend chunked."
+        )
+    args.loss_backend_active = (
+        "liger" if args.loss_backend in {"auto", "liger"} and liger_loss_available else "chunked"
+    )
     config = make_config(args)
     if args.dataset == "text" and not args.no_zipf_from_text:
         config.token_frequencies = text_token_frequencies(
@@ -750,8 +769,8 @@ def main():
         )
         logger.info(
             "Loss: "
-            f"chunk_tokens={args.loss_chunk_tokens}, checkpoint_chunks={args.loss_checkpoint_chunks}, "
-            "vocab=exact"
+            f"backend={args.loss_backend_active}, chunk_tokens={args.loss_chunk_tokens}, "
+            f"checkpoint_chunks={args.loss_checkpoint_chunks}, vocab=exact"
         )
         logger.info(
             "Optimizer: "
@@ -860,16 +879,26 @@ def main():
         optimizer.zero_grad(set_to_none=True)
         with autocast(device, dtype=amp_dtype, enabled=amp_dtype is not None):
             outputs = model(input_ids, return_logits=False)
-            loss, metrics = causal_lm_loss_from_hidden(
-                outputs["last_hidden_state"],
-                raw_model.embed_tokens.weight,
-                labels,
-                label_smoothing=args.label_smoothing,
-                z_loss_coef=args.z_loss,
-                chunk_tokens=args.loss_chunk_tokens,
-                checkpoint_chunks=args.loss_checkpoint_chunks,
-                sync_metrics=should_log,
-            )
+            if args.loss_backend_active == "liger":
+                loss, metrics = fused_linear_causal_lm_loss(
+                    outputs["last_hidden_state"],
+                    raw_model.embed_tokens.weight,
+                    labels,
+                    label_smoothing=args.label_smoothing,
+                    z_loss_coef=args.z_loss,
+                    sync_metrics=should_log,
+                )
+            else:
+                loss, metrics = causal_lm_loss_from_hidden(
+                    outputs["last_hidden_state"],
+                    raw_model.embed_tokens.weight,
+                    labels,
+                    label_smoothing=args.label_smoothing,
+                    z_loss_coef=args.z_loss,
+                    chunk_tokens=args.loss_chunk_tokens,
+                    checkpoint_chunks=args.loss_checkpoint_chunks,
+                    sync_metrics=should_log,
+                )
         loss.backward()
         if args.max_grad_norm and args.max_grad_norm > 0.0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)

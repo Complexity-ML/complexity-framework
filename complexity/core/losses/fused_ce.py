@@ -35,6 +35,12 @@ def _liger_available() -> bool:
     return _liger_available._cache
 
 
+def has_liger_fused_linear_ce() -> bool:
+    """Return True when Liger fused linear CE can be imported."""
+
+    return _liger_available()
+
+
 def fused_linear_causal_lm_loss(
     hidden_states: torch.Tensor,
     weight: torch.Tensor,
@@ -46,6 +52,7 @@ def fused_linear_causal_lm_loss(
     bias: Optional[torch.Tensor] = None,
     shift: bool = False,
     use_liger: bool = True,
+    sync_metrics: bool = True,
 ) -> Tuple[torch.Tensor, CausalLMLossMetrics]:
     """
     Compute CE loss directly from hidden states + output projection, without
@@ -106,16 +113,22 @@ def fused_linear_causal_lm_loss(
             loss = out
             z_loss_tensor = None
 
-        if z_loss_tensor is not None and z_loss_coef > 0.0:
-            z_val = float(z_loss_tensor.detach().item())
-            ce_val = float((loss - z_loss_coef * z_loss_tensor).detach().item())
+        if sync_metrics:
+            if z_loss_tensor is not None and z_loss_coef > 0.0:
+                z_val = float(z_loss_tensor.detach().item())
+                ce_val = float((loss - z_loss_coef * z_loss_tensor).detach().item())
+            else:
+                ce_val = float(loss.detach().item())
+                z_val = 0.0
+            total_val = float(loss.detach().item())
         else:
-            ce_val = float(loss.detach().item())
-            z_val = 0.0
+            ce_val = float("nan")
+            z_val = 0.0 if z_loss_coef <= 0.0 else float("nan")
+            total_val = float("nan")
         metrics = CausalLMLossMetrics(
             ce=ce_val,
             z_loss=z_val,
-            total=float(loss.detach().item()),
+            total=total_val,
         )
         return loss, metrics
 
