@@ -571,6 +571,22 @@ def build_parser() -> argparse.ArgumentParser:
              "to pad expert buckets. Requires Triton + CUDA (or ROCm with "
              "COMPLEXITY_ALLOW_ROCM_TRITON=1).",
     )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="Wrap the model with torch.compile (Inductor). Fuses pointwise + "
+             "matmul ops and eliminates launch overhead, often 1.5-2x on a "
+             "compute-bound workload. First step is slow (graph compile, 1-2 "
+             "min on ROCm), subsequent steps run the fused graph.",
+    )
+    parser.add_argument(
+        "--compile-mode",
+        choices=["default", "reduce-overhead", "max-autotune"],
+        default="default",
+        help="torch.compile mode. `reduce-overhead` enables CUDA graphs (best "
+             "for small steady-state batches). `max-autotune` benchmarks more "
+             "kernel configs (longer compile, faster runtime).",
+    )
     parser.add_argument("--routing-strategy", choices=["zipf", "zipf_token_class"], default="zipf")
     parser.add_argument("--use-mu-guidance", action="store_true")
     parser.add_argument("--mu-clamp", action="store_true")
@@ -693,6 +709,23 @@ def main():
             output_device=local_rank,
             find_unused_parameters=False,
         )
+
+    # Optional torch.compile wrap — applied AFTER DDP so the compiled graph
+    # subsumes the gradient all-reduce. `raw_model` keeps the un-compiled
+    # module for save_pretrained / state_dict / param iteration. `model` is
+    # what the training loop calls.
+    if getattr(args, "compile", False):
+        if is_main:
+            logger.info(
+                f"[compile] wrapping model with torch.compile(mode={args.compile_mode!r}). "
+                "First step will hit a 1-2 min graph-compile penalty; "
+                "subsequent steps run the fused graph."
+            )
+        # dynamic=False lets Inductor specialise on the (batch, seq) shape for
+        # max throughput on steady-state training. If shapes actually vary
+        # (e.g. variable-length packing), pass --compile-mode default and we
+        # could expose --compile-dynamic later.
+        model = torch.compile(model, mode=args.compile_mode, dynamic=False)
 
     amp_dtype = autocast_dtype(device) if args.bf16 else None
     train_loader, eval_loader = build_loaders(args, config, rank, world_size)
