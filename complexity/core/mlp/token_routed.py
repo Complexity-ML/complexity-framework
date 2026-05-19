@@ -363,7 +363,12 @@ class TokenRoutedMLP(MLPBase):
                 )
                 routed_out = routed_out + w * part
 
-        if not static_dispatch:
+        if not static_dispatch and getattr(self.config, "collect_moe_telemetry", False):
+            # Per-layer RMS diagnostics. Each .pow(2).mean().sqrt() is a small
+            # GPU op + writes to a buffer that later needs to be read on CPU
+            # for logging, so this adds non-trivial overhead in the
+            # routing-heavy training loop. Off by default; enable explicitly
+            # for ablation studies.
             with torch.no_grad():
                 if isinstance(shared_out, torch.Tensor):
                     self.last_shared_rms.copy_(shared_out.detach().float().pow(2).mean().sqrt())
