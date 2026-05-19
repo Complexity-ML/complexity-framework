@@ -225,9 +225,9 @@ def load_text_tokens(path: str, tokenizer_path: str) -> list[int]:
 def infer_vocab_size(args) -> int:
     if args.vocab_size is not None:
         return args.vocab_size
-    if args.dataset == "random":
-        return 32000
-    return Tokenizer.load(args.tokenizer).vocab_size
+    vocab_size = Tokenizer.load(args.tokenizer).vocab_size
+    logger.info(f"Tokenizer vocab size: {vocab_size:,} ({args.tokenizer})")
+    return vocab_size
 
 
 def text_token_frequencies(path: str, tokenizer_path: str, vocab_size: int) -> torch.Tensor:

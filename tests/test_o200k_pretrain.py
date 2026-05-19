@@ -58,6 +58,30 @@ def test_profile_param_counts_are_stable():
         assert model.num_parameters() / 1e6 == pytest.approx(expected[name], abs=0.1)
 
 
+def test_random_dataset_infers_vocab_from_tokenizer(monkeypatch):
+    from complexity.training import o200k_pretrain
+
+    class FakeTokenizer:
+        vocab_size = 200019
+
+    monkeypatch.setattr(o200k_pretrain.Tokenizer, "load", lambda path: FakeTokenizer())
+    args = SimpleNamespace(vocab_size=None, dataset="random", tokenizer="./tokenizer-o200k")
+
+    assert o200k_pretrain.infer_vocab_size(args) == 200019
+
+
+def test_vocab_size_override_wins(monkeypatch):
+    from complexity.training import o200k_pretrain
+
+    def fail_if_called(path):
+        raise AssertionError("Tokenizer.load should not be called when --vocab-size is set")
+
+    monkeypatch.setattr(o200k_pretrain.Tokenizer, "load", fail_if_called)
+    args = SimpleNamespace(vocab_size=32000, dataset="random", tokenizer="./tokenizer-o200k")
+
+    assert o200k_pretrain.infer_vocab_size(args) == 32000
+
+
 def test_token_routed_topk_reuses_sort_without_changing_output():
     from complexity.core.mlp.base import MLPConfig
     from complexity.core.mlp.token_routed import TokenRoutedMLP
