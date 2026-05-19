@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -26,6 +27,27 @@ def test_chunked_hidden_loss_matches_full_loss():
     )
 
     assert torch.allclose(full_loss, chunked_loss, atol=1e-6)
+
+
+def test_chunked_hidden_loss_can_skip_metric_sync():
+    from complexity.core.losses import causal_lm_loss_from_hidden
+
+    torch.manual_seed(0)
+    hidden = torch.randn(2, 5, 7, requires_grad=True)
+    weight = torch.randn(13, 7, requires_grad=True)
+    labels = torch.randint(0, 13, (2, 5))
+
+    loss, metrics = causal_lm_loss_from_hidden(
+        hidden,
+        weight,
+        labels,
+        chunk_tokens=3,
+        checkpoint_chunks=False,
+        sync_metrics=False,
+    )
+
+    assert torch.isfinite(loss)
+    assert math.isnan(metrics.ce)
 
 
 def test_profile_param_counts_are_stable():
@@ -96,6 +118,14 @@ def test_o200k_parser_can_disable_grad_checkpointing():
     args = build_parser().parse_args(["--no-grad-ckpt"])
 
     assert args.grad_ckpt is False
+
+
+def test_o200k_parser_disables_grad_clipping_by_default():
+    from complexity.training.o200k_pretrain import build_parser
+
+    args = build_parser().parse_args([])
+
+    assert args.max_grad_norm == 0.0
 
 
 def test_token_routed_topk_reuses_sort_without_changing_output():

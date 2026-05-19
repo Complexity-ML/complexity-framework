@@ -629,6 +629,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--empty-cache-every", type=int, default=50)
     parser.add_argument(
+        "--max-grad-norm",
+        type=float,
+        default=0.0,
+        help="Gradient clipping threshold. 0 disables clipping for the throughput path.",
+    )
+    parser.add_argument(
         "--moe-telemetry",
         action="store_true",
         help="Collect per-layer expert/RMS diagnostics. Costs extra reductions; off by default for tok/s.",
@@ -825,6 +831,8 @@ def main():
         if step > args.steps:
             break
         last_step = step
+        should_eval = args.eval_steps > 0 and step % args.eval_steps == 0
+        should_log = step == 1 or step % args.log_steps == 0 or should_eval
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
@@ -838,9 +846,11 @@ def main():
                 z_loss_coef=args.z_loss,
                 chunk_tokens=args.loss_chunk_tokens,
                 checkpoint_chunks=args.loss_checkpoint_chunks,
+                sync_metrics=should_log,
             )
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if args.max_grad_norm and args.max_grad_norm > 0.0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
         if hasattr(optimizer, "update_token_counts"):
             optimizer.update_token_counts(
                 batch_expert_counts(raw_model, input_ids, config.num_experts, distributed)
@@ -852,8 +862,6 @@ def main():
         if pbar is not None:
             pbar.update(1)
 
-        should_eval = args.eval_steps > 0 and step % args.eval_steps == 0
-        should_log = step == 1 or step % args.log_steps == 0 or should_eval
         if should_log:
             synchronize(device)
             now = time.perf_counter()

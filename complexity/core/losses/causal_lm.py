@@ -111,6 +111,7 @@ def causal_lm_loss_from_hidden(
     shift: bool = False,
     chunk_tokens: int = 0,
     checkpoint_chunks: bool = True,
+    sync_metrics: bool = True,
 ) -> Tuple[torch.Tensor, CausalLMLossMetrics]:
     """
     Cross-entropy from hidden states and a tied LM head weight.
@@ -177,7 +178,7 @@ def causal_lm_loss_from_hidden(
             total = total + chunk_loss_sum(hidden_chunk, labels_chunk, output_weight)
 
     loss = total / denom
-    loss_val = loss.detach().item()
+    loss_val = loss.detach().item() if sync_metrics else float("nan")
     metrics = CausalLMLossMetrics(
         ce=loss_val,
         z_loss=0.0 if z_loss_coef <= 0.0 else float("nan"),
