@@ -127,6 +127,7 @@ def make_config(args) -> ModelConfig:
         num_experts=4,
         shared_expert=True,
         shared_intermediate_size=args.shared_intermediate_size,
+        shared_expert_chunk_tokens=getattr(args, "shared_expert_chunk_tokens", 0),
         norm_type="rmsnorm",
         use_qk_norm=True,
         use_mu_guidance=args.use_mu_guidance,
@@ -547,6 +548,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-key-value-heads", type=int, default=None)
     parser.add_argument("--intermediate-size", type=int, default=None)
     parser.add_argument("--shared-intermediate-size", type=int, default=None)
+    parser.add_argument(
+        "--shared-expert-chunk-tokens",
+        type=int,
+        default=32768,
+        help=(
+            "Chunk the dense shared expert over this many tokens to reduce "
+            "activation peak memory without model-wide gradient checkpointing. "
+            "Set 0 to compute it in one pass."
+        ),
+    )
     parser.add_argument("--shared-gate-init", type=float, default=1.0)
     parser.add_argument("--routed-gate-init", type=float, default=0.1)
     parser.add_argument("--learn-shared-routed-gates", dest="learn_shared_routed_gates", action="store_true", default=True)
@@ -697,6 +708,7 @@ def main():
             f"hidden={args.hidden_size}, layers={args.num_hidden_layers}, "
             f"GQA={args.num_attention_heads}/{args.num_key_value_heads}, "
             f"inter={args.intermediate_size}, shared_inter={args.shared_intermediate_size}, "
+            f"shared_chunk={args.shared_expert_chunk_tokens}, "
             f"experts=4, top_k={args.top_k}, primary_w={args.top_k_primary_weight}, "
             f"learn_gates={args.learn_shared_routed_gates}, "
             f"gates=({args.shared_gate_init},{args.routed_gate_init}), "

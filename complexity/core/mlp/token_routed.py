@@ -276,9 +276,7 @@ class TokenRoutedMLP(MLPBase):
 
         # Shared expert (dense, all tokens) — fused SwiGLU via Liger on CUDA
         if self.use_shared_expert:
-            shared_out = self.shared_down(
-                fused_silu_mul(self.shared_gate(flat_x), self.shared_up(flat_x))
-            ).to(flat_x.dtype)
+            shared_out = self._shared_expert_forward(flat_x)
         else:
             shared_out = 0
 
@@ -409,6 +407,31 @@ class TokenRoutedMLP(MLPBase):
             out = shared_out + routed_out
         return out.view(B, S, H)
 
+    def _shared_expert_forward(self, flat_x: torch.Tensor) -> torch.Tensor:
+        """Run the dense shared expert, optionally chunked over tokens.
+
+        The shared expert is dense over every token, so large train batches can
+        create very large gate/up activations. Chunking keeps the exact same
+        math while lowering the peak live activation size without model-wide
+        gradient checkpointing.
+        """
+
+        chunk_tokens = int(getattr(self.config, "shared_expert_chunk_tokens", 0) or 0)
+        if chunk_tokens <= 0 or flat_x.size(0) <= chunk_tokens:
+            return self.shared_down(
+                fused_silu_mul(self.shared_gate(flat_x), self.shared_up(flat_x))
+            ).to(flat_x.dtype)
+
+        parts = []
+        for start in range(0, flat_x.size(0), chunk_tokens):
+            x_chunk = flat_x[start:start + chunk_tokens]
+            parts.append(
+                self.shared_down(
+                    fused_silu_mul(self.shared_gate(x_chunk), self.shared_up(x_chunk))
+                ).to(flat_x.dtype)
+            )
+        return torch.cat(parts, dim=0)
+
     def _dispatch_once(
         self,
         flat_x: torch.Tensor,
@@ -534,9 +557,7 @@ class TokenRoutedMLP(MLPBase):
             out = out + fused_silu_mul(gate_e, up_e) @ down_w[e]
         out = out / self.num_experts
         if self.use_shared_expert:
-            shared = self.shared_down(
-                fused_silu_mul(self.shared_gate(flat), self.shared_up(flat))
-            )
+            shared = self._shared_expert_forward(flat)
             if self.use_shared_routed_gates:
                 out = self.shared_output_gate * shared + self.routed_output_gate * out
             else:

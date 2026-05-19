@@ -29,6 +29,7 @@ class MLPConfig:
     token_classes: Optional[torch.Tensor] = None  # [vocab_size] coarse token classes for class-balanced routing
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
     shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
+    shared_expert_chunk_tokens: int = 0  # 0 = dense shared expert in one pass; >0 chunks token dimension to reduce activation peak.
     use_shared_routed_gates: bool = False  # Learn scalar gates for shared vs routed expert outputs.
     shared_gate_init: float = 1.0  # Initial shared expert output multiplier.
     routed_gate_init: float = 1.0  # Initial routed expert output multiplier.
@@ -37,6 +38,8 @@ class MLPConfig:
     layer_idx: int = 0  # Layer index propagated from the block; used for the built-in per-layer routing permutation.
     static_expert_capacity: bool = False  # Fixed capacity for torch.export / pipeline tracing.
     collect_moe_telemetry: bool = False  # Per-layer expert/RMS diagnostics. Off by default for throughput.
+    use_custom_kernels: object = "auto"  # "auto", True, or False. Controls optional Triton paths.
+    use_cggr: bool = False  # Use CGGR grouped-GEMM when the backend policy allows custom Triton.
 
     def __post_init__(self):
         if self.hidden_size <= 0:
@@ -57,6 +60,8 @@ class MLPConfig:
             raise ValueError("routing_strategy must be 'zipf' or 'zipf_token_class'")
         if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
             raise ValueError("shared_intermediate_size must be positive when set")
+        if self.shared_expert_chunk_tokens < 0:
+            raise ValueError("shared_expert_chunk_tokens must be non-negative")
         if self.token_frequencies is not None:
             if not isinstance(self.token_frequencies, torch.Tensor):
                 raise ValueError("token_frequencies must be a torch.Tensor")

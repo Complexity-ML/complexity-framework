@@ -130,6 +130,7 @@ class TransformerBlock(nn.Module):
             token_classes=getattr(config, 'token_classes', None),
             shared_expert=getattr(config, 'shared_expert', False),
             shared_intermediate_size=getattr(config, 'shared_intermediate_size', None),
+            shared_expert_chunk_tokens=getattr(config, 'shared_expert_chunk_tokens', 0),
             use_shared_routed_gates=getattr(config, 'use_shared_routed_gates', False),
             shared_gate_init=getattr(config, 'shared_gate_init', 1.0),
             routed_gate_init=getattr(config, 'routed_gate_init', 1.0),
@@ -138,6 +139,8 @@ class TransformerBlock(nn.Module):
             layer_idx=layer_idx,
             static_expert_capacity=getattr(config, 'static_expert_capacity', False),
             collect_moe_telemetry=getattr(config, 'collect_moe_telemetry', False),
+            use_custom_kernels=getattr(config, 'use_custom_kernels', 'auto'),
+            use_cggr=getattr(config, 'use_cggr', False),
         )
         self.mlp = MLP_REGISTRY.build(config.mlp_type, mlp_config)
 

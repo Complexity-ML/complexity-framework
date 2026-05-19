@@ -76,6 +76,7 @@ class ModelConfig:
     routing_strategy: str = "zipf"  # zipf, zipf_token_class
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
     shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
+    shared_expert_chunk_tokens: int = 0  # 0 = one dense pass; >0 chunks token dimension to reduce shared SwiGLU activation peak.
     use_shared_routed_gates: bool = False  # Learn scalar gates for shared vs routed expert outputs
     shared_gate_init: float = 1.0  # Initial multiplier for shared expert output
     routed_gate_init: float = 1.0  # Initial multiplier for routed expert output
@@ -197,6 +198,8 @@ class ModelConfig:
             raise ValueError("routing_strategy must be 'zipf' or 'zipf_token_class'")
         if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
             raise ValueError("shared_intermediate_size must be positive when set")
+        if self.shared_expert_chunk_tokens < 0:
+            raise ValueError("shared_expert_chunk_tokens must be non-negative")
         if self.mu_min > self.mu_max:
             raise ValueError("mu_min must be <= mu_max")
         if self.mu_context_min > self.mu_context_max:

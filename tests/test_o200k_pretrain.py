@@ -121,6 +121,43 @@ def test_token_routed_topk_reuses_sort_without_changing_output():
     assert torch.allclose(out_fast.reshape_as(out_ref), out_ref, atol=1e-6)
 
 
+def test_shared_expert_chunking_matches_dense_path():
+    from complexity.core.mlp.base import MLPConfig
+    from complexity.core.mlp.token_routed import TokenRoutedMLP
+
+    torch.manual_seed(0)
+    cfg = MLPConfig(
+        hidden_size=8,
+        intermediate_size=16,
+        num_experts=2,
+        vocab_size=32,
+        shared_expert=True,
+        shared_intermediate_size=24,
+        shared_expert_chunk_tokens=0,
+    )
+    dense = TokenRoutedMLP(cfg)
+
+    chunked_cfg = MLPConfig(
+        hidden_size=8,
+        intermediate_size=16,
+        num_experts=2,
+        vocab_size=32,
+        shared_expert=True,
+        shared_intermediate_size=24,
+        shared_expert_chunk_tokens=5,
+    )
+    chunked = TokenRoutedMLP(chunked_cfg)
+    chunked.load_state_dict(dense.state_dict(), strict=False)
+
+    hidden = torch.randn(3, 4, 8, requires_grad=True)
+    token_ids = torch.randint(0, 32, (3, 4))
+
+    out_dense = dense(hidden, token_ids=token_ids)
+    out_chunked = chunked(hidden, token_ids=token_ids)
+
+    assert torch.allclose(out_chunked, out_dense, atol=1e-6)
+
+
 def test_latest_checkpoint_resolution(tmp_path):
     from complexity.training.o200k_pretrain import resolve_checkpoint_path
 
