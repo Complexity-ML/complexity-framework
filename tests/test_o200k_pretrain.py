@@ -50,6 +50,32 @@ def test_chunked_hidden_loss_can_skip_metric_sync():
     assert math.isnan(metrics.ce)
 
 
+def test_sampled_vocab_loss_backpropagates():
+    from complexity.core.losses import causal_lm_loss_from_hidden
+
+    torch.manual_seed(0)
+    hidden = torch.randn(4, 6, 8, requires_grad=True)
+    weight = torch.randn(128, 8, requires_grad=True)
+    labels = torch.randint(0, 128, (4, 6))
+
+    loss, metrics = causal_lm_loss_from_hidden(
+        hidden,
+        weight,
+        labels,
+        chunk_tokens=5,
+        checkpoint_chunks=False,
+        sampled_vocab_size=16,
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert math.isfinite(metrics.ce)
+    assert hidden.grad is not None
+    assert weight.grad is not None
+    assert torch.isfinite(hidden.grad).all()
+    assert torch.isfinite(weight.grad).all()
+
+
 def test_profile_param_counts_are_stable():
     from complexity.models import ComplexityModel
     from complexity.training.o200k_pretrain import PROFILES, make_config
@@ -126,6 +152,37 @@ def test_o200k_parser_disables_grad_clipping_by_default():
     args = build_parser().parse_args([])
 
     assert args.max_grad_norm == 0.0
+
+
+def test_random_dataset_auto_uses_sampled_vocab_loss(monkeypatch):
+    from complexity.training import o200k_pretrain
+
+    class FakeTokenizer:
+        vocab_size = 200019
+
+    monkeypatch.setattr(o200k_pretrain.Tokenizer, "load", lambda path: FakeTokenizer())
+    args = o200k_pretrain.build_parser().parse_args(["--dataset", "random"])
+    args.use_custom_kernels = "auto"
+    args.vocab_size = o200k_pretrain.infer_vocab_size(args)
+    if args.loss_vocab_sample_size is None:
+        args.loss_vocab_sample_size = 8192 if args.dataset == "random" else 0
+
+    assert args.loss_vocab_sample_size == 8192
+
+
+def test_text_dataset_keeps_exact_vocab_loss_by_default(monkeypatch):
+    from complexity.training import o200k_pretrain
+
+    class FakeTokenizer:
+        vocab_size = 200019
+
+    monkeypatch.setattr(o200k_pretrain.Tokenizer, "load", lambda path: FakeTokenizer())
+    args = o200k_pretrain.build_parser().parse_args(["--dataset", "text", "--text-file", "x.txt"])
+    args.vocab_size = o200k_pretrain.infer_vocab_size(args)
+    if args.loss_vocab_sample_size is None:
+        args.loss_vocab_sample_size = 8192 if args.dataset == "random" else 0
+
+    assert args.loss_vocab_sample_size == 0
 
 
 def test_token_routed_topk_reuses_sort_without_changing_output():

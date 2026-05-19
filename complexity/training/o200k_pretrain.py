@@ -644,6 +644,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--z-loss", type=float, default=0.0)
     parser.add_argument("--loss-chunk-tokens", type=int, default=1024)
     parser.add_argument(
+        "--loss-vocab-sample-size",
+        type=int,
+        default=None,
+        help=(
+            "Approximate LM loss over targets plus sampled negatives. "
+            "Default: 8192 for random throughput benches, exact full vocab otherwise."
+        ),
+    )
+    parser.add_argument(
         "--loss-checkpoint-chunks",
         action="store_true",
         help="Checkpoint chunked vocab loss to save memory. Slower; off by default for tok/s.",
@@ -688,6 +697,8 @@ def main():
     args.use_custom_kernels = kernel_policy
     configure_torch_acceleration(kernel_policy=kernel_policy, log=is_main)
     args.vocab_size = infer_vocab_size(args)
+    if args.loss_vocab_sample_size is None:
+        args.loss_vocab_sample_size = 8192 if args.dataset == "random" else 0
     config = make_config(args)
     if args.dataset == "text" and not args.no_zipf_from_text:
         config.token_frequencies = text_token_frequencies(
@@ -733,6 +744,11 @@ def main():
             f"gates=({args.shared_gate_init},{args.routed_gate_init}), "
             f"use_mu={args.use_mu_guidance}, mu_clamp={args.mu_clamp}, mu_norm={args.mu_norm}, "
             f"mu_alpha={args.mu_alpha_init}, mu_init={args.mu_init_value}"
+        )
+        logger.info(
+            "Loss: "
+            f"chunk_tokens={args.loss_chunk_tokens}, checkpoint_chunks={args.loss_checkpoint_chunks}, "
+            f"vocab_sample={args.loss_vocab_sample_size if args.loss_vocab_sample_size else 'exact'}"
         )
         logger.info(
             "Optimizer: "
@@ -847,6 +863,7 @@ def main():
                 chunk_tokens=args.loss_chunk_tokens,
                 checkpoint_chunks=args.loss_checkpoint_chunks,
                 sync_metrics=should_log,
+                sampled_vocab_size=args.loss_vocab_sample_size,
             )
         loss.backward()
         if args.max_grad_norm and args.max_grad_norm > 0.0:
