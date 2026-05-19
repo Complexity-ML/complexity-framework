@@ -613,7 +613,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-ratio", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--bf16", action="store_true")
-    parser.add_argument("--grad-ckpt", action="store_true")
+    parser.add_argument(
+        "--grad-ckpt",
+        dest="grad_ckpt",
+        action="store_true",
+        default=True,
+        help="Enable model gradient checkpointing. Default on for large o200k ROCm runs.",
+    )
+    parser.add_argument(
+        "--no-grad-ckpt",
+        dest="grad_ckpt",
+        action="store_false",
+        help="Disable model gradient checkpointing. Faster only if the full activation set fits in memory.",
+    )
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--empty-cache-every", type=int, default=50)
     parser.add_argument(
@@ -709,6 +721,7 @@ def main():
             f"GQA={args.num_attention_heads}/{args.num_key_value_heads}, "
             f"inter={args.intermediate_size}, shared_inter={args.shared_intermediate_size}, "
             f"shared_chunk={args.shared_expert_chunk_tokens}, "
+            f"grad_ckpt={args.grad_ckpt}, "
             f"experts=4, top_k={args.top_k}, primary_w={args.top_k_primary_weight}, "
             f"learn_gates={args.learn_shared_routed_gates}, "
             f"gates=({args.shared_gate_init},{args.routed_gate_init}), "

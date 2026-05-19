@@ -82,6 +82,22 @@ def test_vocab_size_override_wins(monkeypatch):
     assert o200k_pretrain.infer_vocab_size(args) == 32000
 
 
+def test_o200k_parser_enables_grad_checkpointing_by_default():
+    from complexity.training.o200k_pretrain import build_parser
+
+    args = build_parser().parse_args([])
+
+    assert args.grad_ckpt is True
+
+
+def test_o200k_parser_can_disable_grad_checkpointing():
+    from complexity.training.o200k_pretrain import build_parser
+
+    args = build_parser().parse_args(["--no-grad-ckpt"])
+
+    assert args.grad_ckpt is False
+
+
 def test_token_routed_topk_reuses_sort_without_changing_output():
     from complexity.core.mlp.base import MLPConfig
     from complexity.core.mlp.token_routed import TokenRoutedMLP
