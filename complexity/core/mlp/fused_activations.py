@@ -6,8 +6,8 @@ Used by:
   - any future SwiGLU/GEGLU MLP
 
 ``fused_silu_mul(gate, up)`` computes ``silu(gate) * up`` in a single Triton
-kernel (forward + backward) on CUDA via Liger, or falls back to the naive
-PyTorch ``F.silu(gate) * up`` on MPS / CPU.
+kernel (forward + backward) on CUDA via Liger, or falls back to a low-memory
+PyTorch path on MPS / CPU / ROCm.
 """
 
 from __future__ import annotations
@@ -38,10 +38,14 @@ def fused_silu_mul(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     Triton kernels (saves ~2× memory traffic vs the naive
     ``F.silu(gate) * up`` path).
 
-    Falls back to the naive path on MPS/CPU or when Liger is missing.
+    Falls back to a PyTorch path on MPS/CPU/ROCm or when Liger is missing.
+    The fallback multiplies in-place on the SiLU result to avoid materializing
+    both ``silu(gate)`` and ``silu(gate) * up`` at large batch/sequence sizes.
     Gradient semantics are identical.
     """
     if gate.is_cuda and supports_custom_triton("auto") and _liger_silu_mul_available():
         from liger_kernel.ops.swiglu import LigerSiLUMulFunction  # type: ignore[import-not-found]
         return LigerSiLUMulFunction.apply(gate, up)
-    return F.silu(gate) * up
+    out = F.silu(gate)
+    out.mul_(up)
+    return out
