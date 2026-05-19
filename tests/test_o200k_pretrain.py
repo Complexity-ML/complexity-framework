@@ -47,14 +47,54 @@ def test_profile_param_counts_are_stable():
         "mu_context_min": -2.0,
         "mu_context_max": 2.0,
         "use_custom_kernels": "auto",
+        "moe_telemetry": False,
     }
 
-    expected = {"50m": 51.9, "100m": 99.7, "300m": 300.8, "8b": 8201.5}
+    expected = {"50m": 51.9, "100m": 99.7, "300m": 300.8, "1b": 1030.8, "8b": 8201.5}
     for name, profile in PROFILES.items():
         args = SimpleNamespace(**common, **profile)
         with torch.device("meta"):
             model = ComplexityModel(make_config(args))
         assert model.num_parameters() / 1e6 == pytest.approx(expected[name], abs=0.1)
+
+
+def test_token_routed_topk_reuses_sort_without_changing_output():
+    from complexity.core.mlp.base import MLPConfig
+    from complexity.core.mlp.token_routed import TokenRoutedMLP
+
+    torch.manual_seed(0)
+    cfg = MLPConfig(
+        hidden_size=16,
+        intermediate_size=32,
+        num_experts=4,
+        vocab_size=64,
+        shared_expert=False,
+        top_k=2,
+        top_k_primary_weight=0.5,
+    )
+    mlp = TokenRoutedMLP(cfg)
+    hidden = torch.randn(2, 5, 16)
+    token_ids = torch.randint(0, 64, (2, 5))
+
+    out_fast = mlp(hidden, token_ids=token_ids)
+
+    flat_x = hidden.reshape(-1, hidden.size(-1))
+    expert_ids = mlp.token_to_expert[token_ids.clamp(0, mlp.vocab_size - 1)].reshape(-1)
+    gate_w = mlp.gate_proj_w
+    up_w = mlp.up_proj_w
+    down_w = mlp.down_proj_w
+    out_ref = 0.5 * mlp._dispatch_once(flat_x, expert_ids, gate_w, up_w, down_w, False, 16)
+    out_ref = out_ref + 0.5 * mlp._dispatch_once(
+        flat_x,
+        (expert_ids + 1) % mlp.num_experts,
+        gate_w,
+        up_w,
+        down_w,
+        False,
+        16,
+    )
+
+    assert torch.allclose(out_fast.reshape_as(out_ref), out_ref, atol=1e-6)
 
 
 def test_latest_checkpoint_resolution(tmp_path):
@@ -107,6 +147,7 @@ def test_tr_diagnostics_reports_gates_rms_and_grads():
         routed_gate_init=0.1,
         top_k=2,
         top_k_primary_weight=0.5,
+        collect_moe_telemetry=True,
     )
     mlp = TokenRoutedMLP(config)
     hidden = torch.randn(2, 5, 16)

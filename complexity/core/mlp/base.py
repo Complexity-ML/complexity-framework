@@ -36,6 +36,7 @@ class MLPConfig:
     top_k_primary_weight: Optional[float] = None  # K>1 primary expert blend weight; None keeps the default 0.95.
     layer_idx: int = 0  # Layer index propagated from the block; used for the built-in per-layer routing permutation.
     static_expert_capacity: bool = False  # Fixed capacity for torch.export / pipeline tracing.
+    collect_moe_telemetry: bool = False  # Per-layer expert/RMS diagnostics. Off by default for throughput.
 
     def __post_init__(self):
         if self.hidden_size <= 0:

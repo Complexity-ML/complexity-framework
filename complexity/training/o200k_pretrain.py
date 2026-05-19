@@ -138,6 +138,7 @@ def make_config(args) -> ModelConfig:
         use_custom_kernels=getattr(args, "use_custom_kernels", "auto"),
         use_cggr=bool(getattr(args, "use_cggr", False)),
         static_expert_capacity=bool(getattr(args, "static_expert_capacity", False)),
+        collect_moe_telemetry=bool(getattr(args, "moe_telemetry", False)),
         routing_strategy=getattr(args, "routing_strategy", "zipf"),
         clamp_mu_contextual=args.mu_clamp,
         use_mu_norm=args.mu_norm,
@@ -604,10 +605,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grad-ckpt", action="store_true")
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--empty-cache-every", type=int, default=50)
+    parser.add_argument(
+        "--moe-telemetry",
+        action="store_true",
+        help="Collect per-layer expert/RMS diagnostics. Costs extra reductions; off by default for tok/s.",
+    )
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--label-smoothing", type=float, default=0.0)
     parser.add_argument("--z-loss", type=float, default=0.0)
     parser.add_argument("--loss-chunk-tokens", type=int, default=1024)
+    parser.add_argument(
+        "--loss-checkpoint-chunks",
+        action="store_true",
+        help="Checkpoint chunked vocab loss to save memory. Slower; off by default for tok/s.",
+    )
     parser.add_argument("--save-steps", type=int, default=5000)
     parser.add_argument("--save-dir", type=str, default=None)
     parser.add_argument("--save-total-limit", type=int, default=3)
@@ -801,6 +812,7 @@ def main():
                 label_smoothing=args.label_smoothing,
                 z_loss_coef=args.z_loss,
                 chunk_tokens=args.loss_chunk_tokens,
+                checkpoint_chunks=args.loss_checkpoint_chunks,
             )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

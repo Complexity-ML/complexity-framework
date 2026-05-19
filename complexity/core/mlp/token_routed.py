@@ -266,9 +266,10 @@ class TokenRoutedMLP(MLPBase):
         flat_x = hidden_states.view(-1, H)
         flat_expert_ids = expert_ids.view(-1)
         static_dispatch = bool(getattr(self.config, "static_expert_capacity", False))
+        collect_telemetry = bool(getattr(self.config, "collect_moe_telemetry", False))
 
         # Track expert utilization (in-place, non-differentiable)
-        if not static_dispatch:
+        if collect_telemetry and not static_dispatch:
             with torch.no_grad():
                 batch_counts = torch.bincount(flat_expert_ids, minlength=self.num_experts)
                 self.expert_counts += batch_counts.to(self.expert_counts.dtype)
@@ -348,22 +349,48 @@ class TokenRoutedMLP(MLPBase):
         # remaining 0.05 is split equally across the (K-1) secondaries. This
         # asymmetric weighting preserves specialization (near-top-1 behavior)
         # while recovering ~K× active compute.
-        if self.top_k == 1:
-            routed_out = self._dispatch_once(
-                flat_x, flat_expert_ids, gate_w, up_w, down_w, use_cggr, H,
-            )
-        else:
-            secondary_w = (1.0 - self._primary_weight) / (self.top_k - 1)
-            routed_out = torch.zeros_like(flat_x)
-            for k in range(self.top_k):
-                w = self._primary_weight if k == 0 else secondary_w
-                expert_ids_k = flat_expert_ids if k == 0 else (flat_expert_ids + k) % self.num_experts
-                part = self._dispatch_once(
-                    flat_x, expert_ids_k, gate_w, up_w, down_w, use_cggr, H,
+        if static_dispatch:
+            if self.top_k == 1:
+                routed_out = self._dispatch_once(
+                    flat_x, flat_expert_ids, gate_w, up_w, down_w, use_cggr, H,
                 )
-                routed_out = routed_out + w * part
+            else:
+                secondary_w = (1.0 - self._primary_weight) / (self.top_k - 1)
+                routed_out = torch.zeros_like(flat_x)
+                for k in range(self.top_k):
+                    w = self._primary_weight if k == 0 else secondary_w
+                    expert_ids_k = flat_expert_ids if k == 0 else (flat_expert_ids + k) % self.num_experts
+                    part = self._dispatch_once(
+                        flat_x, expert_ids_k, gate_w, up_w, down_w, use_cggr, H,
+                    )
+                    routed_out = routed_out + w * part
+        else:
+            sorted_x, sorted_idx, expert_offsets, expert_counts = sort_tokens_by_expert(
+                flat_x, flat_expert_ids, self.num_experts
+            )
+            if self.top_k == 1:
+                routed_out = self._dispatch_sorted(
+                    flat_x, sorted_x, sorted_idx, expert_offsets, expert_counts,
+                    gate_w, up_w, down_w, use_cggr, H,
+                )
+            else:
+                secondary_w = (1.0 - self._primary_weight) / (self.top_k - 1)
+                routed_out = torch.zeros_like(flat_x)
+                for k in range(self.top_k):
+                    w = self._primary_weight if k == 0 else secondary_w
+                    if k == 0:
+                        gate_k, up_k, down_k = gate_w, up_w, down_w
+                    else:
+                        gate_k = torch.roll(gate_w, shifts=-k, dims=0)
+                        up_k = torch.roll(up_w, shifts=-k, dims=0)
+                        down_k = torch.roll(down_w, shifts=-k, dims=0)
+                    part = self._dispatch_sorted(
+                        flat_x, sorted_x, sorted_idx, expert_offsets, expert_counts,
+                        gate_k, up_k, down_k, use_cggr, H,
+                    )
+                    routed_out = routed_out + w * part
 
-        if not static_dispatch and getattr(self.config, "collect_moe_telemetry", False):
+        if collect_telemetry and not static_dispatch:
             # Per-layer RMS diagnostics. Each .pow(2).mean().sqrt() is a small
             # GPU op + writes to a buffer that later needs to be read on CPU
             # for logging, so this adds non-trivial overhead in the
@@ -403,6 +430,25 @@ class TokenRoutedMLP(MLPBase):
             flat_x, expert_ids, self.num_experts
         )
 
+        return self._dispatch_sorted(
+            flat_x, sorted_x, sorted_idx, expert_offsets, expert_counts,
+            gate_w, up_w, down_w, use_cggr, H,
+        )
+
+    def _dispatch_sorted(
+        self,
+        flat_x: torch.Tensor,
+        sorted_x: torch.Tensor,
+        sorted_idx: torch.Tensor,
+        expert_offsets: torch.Tensor,
+        expert_counts: torch.Tensor,
+        gate_w: torch.Tensor,
+        up_w: torch.Tensor,
+        down_w: torch.Tensor,
+        use_cggr: bool,
+        H: int,
+    ) -> torch.Tensor:
+        """Run dispatch from a pre-sorted token layout."""
         if use_cggr:
             gate_out = cggr_grouped_gemm_autograd(sorted_x, gate_w, expert_offsets)
             up_out = cggr_grouped_gemm_autograd(sorted_x, up_w, expert_offsets)
