@@ -409,12 +409,26 @@ def build_optimizer(args, raw_model):
             if not p.requires_grad:
                 continue
             (no_decay if p.ndim < 2 or "bias" in name or "norm" in name else decay).append(p)
-        optimizer = torch.optim.AdamW(
-            [{"params": decay, "weight_decay": args.weight_decay}, {"params": no_decay, "weight_decay": 0.0}],
-            lr=args.lr,
-            betas=(0.9, 0.95),
-        )
-        return optimizer, {"adamw_params": sum(p.numel() for p in decay + no_decay)}
+        param_groups = [
+            {"params": decay, "weight_decay": args.weight_decay},
+            {"params": no_decay, "weight_decay": 0.0},
+        ]
+        kwargs = {
+            "lr": args.lr,
+            "betas": (0.9, 0.95),
+            "foreach": True,
+        }
+        try:
+            optimizer = torch.optim.AdamW(param_groups, **kwargs)
+            adamw_impl = "foreach"
+        except TypeError:
+            kwargs.pop("foreach", None)
+            optimizer = torch.optim.AdamW(param_groups, **kwargs)
+            adamw_impl = "default"
+        return optimizer, {
+            "adamw_params": sum(p.numel() for p in decay + no_decay),
+            "adamw_impl": adamw_impl,
+        }
 
     if args.optimizer == "muon_tr":
         from complexity.training.muon_tr import MuonTRWithAdamW, split_params_for_muon_tr
@@ -644,15 +658,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--z-loss", type=float, default=0.0)
     parser.add_argument("--loss-chunk-tokens", type=int, default=1024)
     parser.add_argument(
-        "--loss-vocab-sample-size",
-        type=int,
-        default=None,
-        help=(
-            "Approximate LM loss over targets plus sampled negatives. "
-            "Default: 8192 for random throughput benches, exact full vocab otherwise."
-        ),
-    )
-    parser.add_argument(
         "--loss-checkpoint-chunks",
         action="store_true",
         help="Checkpoint chunked vocab loss to save memory. Slower; off by default for tok/s.",
@@ -697,8 +702,6 @@ def main():
     args.use_custom_kernels = kernel_policy
     configure_torch_acceleration(kernel_policy=kernel_policy, log=is_main)
     args.vocab_size = infer_vocab_size(args)
-    if args.loss_vocab_sample_size is None:
-        args.loss_vocab_sample_size = 8192 if args.dataset == "random" else 0
     config = make_config(args)
     if args.dataset == "text" and not args.no_zipf_from_text:
         config.token_frequencies = text_token_frequencies(
@@ -748,7 +751,7 @@ def main():
         logger.info(
             "Loss: "
             f"chunk_tokens={args.loss_chunk_tokens}, checkpoint_chunks={args.loss_checkpoint_chunks}, "
-            f"vocab_sample={args.loss_vocab_sample_size if args.loss_vocab_sample_size else 'exact'}"
+            "vocab=exact"
         )
         logger.info(
             "Optimizer: "
@@ -799,7 +802,10 @@ def main():
                 f"adamw={optimizer_stats['adamw_params'] / 1e6:.1f}M"
             )
         else:
-            logger.info(f"AdamW params: {optimizer_stats['adamw_params'] / 1e6:.1f}M")
+            logger.info(
+                f"AdamW params: {optimizer_stats['adamw_params'] / 1e6:.1f}M "
+                f"impl={optimizer_stats.get('adamw_impl', 'default')}"
+            )
     warmup = max(1, int(args.steps * 0.05))
 
     def lr_lambda(step):
@@ -863,7 +869,6 @@ def main():
                 chunk_tokens=args.loss_chunk_tokens,
                 checkpoint_chunks=args.loss_checkpoint_chunks,
                 sync_metrics=should_log,
-                sampled_vocab_size=args.loss_vocab_sample_size,
             )
         loss.backward()
         if args.max_grad_norm and args.max_grad_norm > 0.0:

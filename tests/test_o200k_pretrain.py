@@ -50,32 +50,6 @@ def test_chunked_hidden_loss_can_skip_metric_sync():
     assert math.isnan(metrics.ce)
 
 
-def test_sampled_vocab_loss_backpropagates():
-    from complexity.core.losses import causal_lm_loss_from_hidden
-
-    torch.manual_seed(0)
-    hidden = torch.randn(4, 6, 8, requires_grad=True)
-    weight = torch.randn(128, 8, requires_grad=True)
-    labels = torch.randint(0, 128, (4, 6))
-
-    loss, metrics = causal_lm_loss_from_hidden(
-        hidden,
-        weight,
-        labels,
-        chunk_tokens=5,
-        checkpoint_chunks=False,
-        sampled_vocab_size=16,
-    )
-    loss.backward()
-
-    assert torch.isfinite(loss)
-    assert math.isfinite(metrics.ce)
-    assert hidden.grad is not None
-    assert weight.grad is not None
-    assert torch.isfinite(hidden.grad).all()
-    assert torch.isfinite(weight.grad).all()
-
-
 def test_profile_param_counts_are_stable():
     from complexity.models import ComplexityModel
     from complexity.training.o200k_pretrain import PROFILES, make_config
@@ -152,37 +126,6 @@ def test_o200k_parser_disables_grad_clipping_by_default():
     args = build_parser().parse_args([])
 
     assert args.max_grad_norm == 0.0
-
-
-def test_random_dataset_auto_uses_sampled_vocab_loss(monkeypatch):
-    from complexity.training import o200k_pretrain
-
-    class FakeTokenizer:
-        vocab_size = 200019
-
-    monkeypatch.setattr(o200k_pretrain.Tokenizer, "load", lambda path: FakeTokenizer())
-    args = o200k_pretrain.build_parser().parse_args(["--dataset", "random"])
-    args.use_custom_kernels = "auto"
-    args.vocab_size = o200k_pretrain.infer_vocab_size(args)
-    if args.loss_vocab_sample_size is None:
-        args.loss_vocab_sample_size = 8192 if args.dataset == "random" else 0
-
-    assert args.loss_vocab_sample_size == 8192
-
-
-def test_text_dataset_keeps_exact_vocab_loss_by_default(monkeypatch):
-    from complexity.training import o200k_pretrain
-
-    class FakeTokenizer:
-        vocab_size = 200019
-
-    monkeypatch.setattr(o200k_pretrain.Tokenizer, "load", lambda path: FakeTokenizer())
-    args = o200k_pretrain.build_parser().parse_args(["--dataset", "text", "--text-file", "x.txt"])
-    args.vocab_size = o200k_pretrain.infer_vocab_size(args)
-    if args.loss_vocab_sample_size is None:
-        args.loss_vocab_sample_size = 8192 if args.dataset == "random" else 0
-
-    assert args.loss_vocab_sample_size == 0
 
 
 def test_token_routed_topk_reuses_sort_without_changing_output():
@@ -405,6 +348,50 @@ def test_muon_tr_optimizer_builds_for_o200k_runner():
     assert stats["muon_expert_params"] > 0
     assert stats["muon_shared_params"] == 0
     assert stats["adamw_params"] > 0
+
+
+def test_adamw_optimizer_uses_foreach_for_o200k_runner():
+    from types import SimpleNamespace
+
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k_pretrain import build_optimizer, make_config
+
+    args = SimpleNamespace(
+        hidden_size=32,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=32,
+        shared_intermediate_size=64,
+        vocab_size=128,
+        use_mu_guidance=False,
+        learn_shared_routed_gates=True,
+        shared_gate_init=1.0,
+        routed_gate_init=0.1,
+        top_k=2,
+        top_k_primary_weight=0.5,
+        static_expert_capacity=False,
+        routing_strategy="zipf",
+        mu_clamp=False,
+        mu_norm=False,
+        mu_alpha_init=1.0,
+        mu_init_value=0.0,
+        mu_context_min=-2.0,
+        mu_context_max=2.0,
+        optimizer="adamw",
+        lr=3e-4,
+        weight_decay=0.1,
+        shared_expert_chunk_tokens=0,
+        use_custom_kernels="auto",
+        moe_telemetry=False,
+    )
+    model = ComplexityModel(make_config(args))
+
+    optimizer, stats = build_optimizer(args, model)
+
+    assert isinstance(optimizer, torch.optim.AdamW)
+    assert stats["adamw_params"] > 0
+    assert stats["adamw_impl"] in {"foreach", "default"}
 
 
 def test_batch_expert_counts_counts_current_batch():

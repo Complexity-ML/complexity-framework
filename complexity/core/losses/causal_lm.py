@@ -112,7 +112,6 @@ def causal_lm_loss_from_hidden(
     chunk_tokens: int = 0,
     checkpoint_chunks: bool = True,
     sync_metrics: bool = True,
-    sampled_vocab_size: int = 0,
 ) -> Tuple[torch.Tensor, CausalLMLossMetrics]:
     """
     Cross-entropy from hidden states and a tied LM head weight.
@@ -144,16 +143,6 @@ def causal_lm_loss_from_hidden(
     denom = valid.sum().clamp_min(1).to(dtype=torch.float32)
 
     def chunk_loss_sum(hidden_chunk: torch.Tensor, labels_chunk: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        if sampled_vocab_size and sampled_vocab_size > 0 and sampled_vocab_size < weight.size(0):
-            return _sampled_chunk_loss_sum(
-                hidden_chunk,
-                labels_chunk,
-                weight,
-                sampled_vocab_size,
-                label_smoothing,
-                z_loss_coef,
-                ignore_index,
-            )
         logits = F.linear(hidden_chunk, weight)
         ce_sum = F.cross_entropy(
             logits,
@@ -196,59 +185,3 @@ def causal_lm_loss_from_hidden(
         total=loss_val,
     )
     return loss, metrics
-
-
-def _sampled_chunk_loss_sum(
-    hidden_chunk: torch.Tensor,
-    labels_chunk: torch.Tensor,
-    weight: torch.Tensor,
-    sampled_vocab_size: int,
-    label_smoothing: float,
-    z_loss_coef: float,
-    ignore_index: int,
-) -> torch.Tensor:
-    """Approximate CE over targets plus sampled negatives for fast o200k benches."""
-
-    if ignore_index is None:
-        valid = torch.ones_like(labels_chunk, dtype=torch.bool)
-    else:
-        valid = labels_chunk != ignore_index
-    if not bool(valid.any()):
-        return hidden_chunk.new_zeros(())
-
-    target_ids = labels_chunk[valid].clamp(0, weight.size(0) - 1)
-    positive_ids = torch.unique(target_ids)
-    num_negatives = max(0, int(sampled_vocab_size) - int(positive_ids.numel()))
-    if num_negatives > 0:
-        negative_ids = torch.randint(
-            0,
-            weight.size(0),
-            (num_negatives,),
-            device=weight.device,
-            dtype=torch.long,
-        )
-        vocab_ids = torch.cat([positive_ids, negative_ids], dim=0)
-    else:
-        vocab_ids = positive_ids
-    vocab_ids = torch.unique(vocab_ids, sorted=True)
-
-    sampled_weight = weight.index_select(0, vocab_ids)
-    logits = F.linear(hidden_chunk, sampled_weight)
-
-    safe_labels = labels_chunk.clamp(0, weight.size(0) - 1)
-    remapped = torch.searchsorted(vocab_ids, safe_labels)
-    if ignore_index is not None:
-        remapped = remapped.masked_fill(~valid, ignore_index)
-
-    ce_sum = F.cross_entropy(
-        logits,
-        remapped,
-        label_smoothing=label_smoothing,
-        ignore_index=ignore_index,
-        reduction="sum",
-    )
-    if z_loss_coef <= 0.0:
-        return ce_sum
-    lse = logits.float().logsumexp(dim=-1)
-    lse = lse[valid] if valid.any() else lse[:0]
-    return ce_sum + z_loss_coef * lse.pow(2).sum()
