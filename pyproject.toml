@@ -57,33 +57,28 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# NVIDIA CUDA: default PyPI wheel is the CUDA build, no index flag needed.
-#   pip install -e .[cuda]
+# IMPORTANT: torch is intentionally NOT listed in any backend extra.
+#
+# Reason: pip cannot attach a `--index-url` to an extra. If we list torch here
+# pip will resolve it against whatever indexes are in scope at install time,
+# which on a stock setup means PyPI's CUDA wheel — even when the user wanted
+# ROCm. Pinning local-version tags (e.g. `torch>=2.9+rocm6.4`) is fragile
+# because tags change per ROCm release.
+#
+# Instead, install torch in a SEPARATE step before the framework, against the
+# backend-appropriate index. The `scripts/install_backend.sh` helper or the
+# Makefile targets (`make install-rocm` / `install-cuda` / `install-cpu`) do
+# this in one go. The extras below only carry backend-specific kernel libs
+# that DO live on PyPI.
 cuda = [
-    "torch>=2.0.0",
     "triton>=2.0.0",
     "liger-kernel>=0.5.0",  # fused linear+CE, RMSNorm, RoPE (Triton)
     # flash-attn removed: builds from source (~30min), SDPA covers the same path
 ]
-# AMD ROCm: torch wheels live on download.pytorch.org/whl/rocm*/, not PyPI.
-# The +rocm6.4 local version tag is impossible to satisfy from PyPI, so pip
-# will fail fast (rather than silently grabbing the CUDA wheel) unless the
-# ROCm index is in scope.
-#
-# Install with:
-#   pip install -e ".[rocm]" --index-url https://download.pytorch.org/whl/rocm6.4
-#
-# Bump the index URL to match newer ROCm runtimes (rocm7.0 etc.) — ABI is
-# backward-compatible so rocm6.4 wheels work on rocm7.x hosts.
 rocm = [
-    "torch>=2.8.0,<3.0",
     "pytorch-triton-rocm; platform_system == 'Linux'",
 ]
-# CPU-only: install with
-#   pip install -e .[cpu] --extra-index-url https://download.pytorch.org/whl/cpu
-cpu = [
-    "torch>=2.0.0",
-]
+cpu = []
 fp8 = [
     "torchao>=0.7.0",
 ]
