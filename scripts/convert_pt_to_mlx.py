@@ -39,6 +39,8 @@ _MLX_CONFIG_FIELDS = {
     "use_mu_guidance",
     "use_qk_norm",
     "tie_word_embeddings",
+    "top_k",
+    "top_k_primary_weight",
 }
 
 
