@@ -593,6 +593,150 @@ def dispatch_question(
     return run_chat(model, tokenizer, question, device, max_new_tokens, temperature, top_p)
 
 
+def run_bootstrap_loop(
+    model: ComplexityModel,
+    tokenizer: Tokenizer,
+    question: str,
+    device: torch.device,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+    model_final: bool = False,
+) -> dict[str, Any]:
+    """Drive the reflect-bootstrap pipeline for a raw NL question.
+
+    Pipeline: NL -> model emits reflect call (or chats) -> orchestrator
+    extracts args via regex -> model emits real tool call -> execute ->
+    optional model finalization.
+    """
+    prompt = f"User:\n{question}\n\nAssistant:\n"
+    first = generate(model, tokenizer, prompt, device, max_new_tokens, temperature, top_p)
+    try:
+        tc = parse_tool_call(first)
+    except ToolCallParseError as exc:
+        return {"question": question, "mode": "bootstrap", "first": first, "error": f"invalid_tool_json: {exc}"}
+
+    if tc is None:
+        return {
+            "question": question,
+            "mode": "chat",
+            "tool": "chat",
+            "first": first,
+            "final": first.strip(),
+        }
+    if tc.name != "reflect":
+        return {
+            "question": question,
+            "mode": "bootstrap",
+            "first": first,
+            "tool_call": tc.raw,
+            "error": f"expected_reflect_got_{tc.name}",
+        }
+
+    embedded = str(tc.arguments.get("question", question))
+    dt_hint = extract_datetime_hint(embedded)
+    if dt_hint is not None:
+        rresult = {"tool": "datetime", "arguments": {"op": dt_hint.op, **dt_hint.args}}
+    else:
+        expr_hint = extract_arithmetic_expression(embedded)
+        if expr_hint is None:
+            return {
+                "question": question,
+                "mode": "bootstrap",
+                "first": first,
+                "error": "reflect_extraction_failed",
+                "embedded_question": embedded,
+            }
+        rresult = {
+            "tool": "calculator",
+            "arguments": {"expression": normalize_expression(expr_hint)},
+        }
+
+    rresult_str = json.dumps(rresult, separators=(",", ":"))
+    second_prompt = (
+        prompt
+        + f"{first}\n\n"
+        + f"Tool result from reflect: {rresult_str}\n\n"
+        + "Assistant:\n"
+    )
+    second = generate(model, tokenizer, second_prompt, device, max_new_tokens, temperature, top_p)
+    try:
+        tc2 = parse_tool_call(second)
+    except ToolCallParseError as exc:
+        return {
+            "question": question,
+            "mode": "bootstrap",
+            "first": first,
+            "second": second,
+            "reflect_result": rresult,
+            "error": f"invalid_2nd_tool_json: {exc}",
+        }
+    if tc2 is None or tc2.name != rresult["tool"]:
+        return {
+            "question": question,
+            "mode": "bootstrap",
+            "first": first,
+            "second": second,
+            "reflect_result": rresult,
+            "error": f"wrong_2nd_tool:{None if tc2 is None else tc2.name}",
+        }
+
+    if tc2.name == "calculator":
+        expr = str(tc2.arguments.get("expression", "")).strip()
+        try:
+            tool_result = safe_calculator(expr)
+        except CalculatorError as exc:
+            return {
+                "question": question, "mode": "bootstrap", "tool": "calculator",
+                "tool_call": tc2.raw, "error": str(exc),
+            }
+    else:
+        op = str(tc2.arguments.get("op", ""))
+        call_args = {k: v for k, v in tc2.arguments.items() if k != "op"}
+        try:
+            tool_result = safe_datetime(op, **call_args)
+        except DatetimeError as exc:
+            return {
+                "question": question, "mode": "bootstrap", "tool": "datetime",
+                "tool_call": tc2.raw, "error": str(exc),
+            }
+
+    if model_final:
+        final_prompt = (
+            second_prompt
+            + f"<tool_call>{tc2.raw}</tool_call>\n\n"
+            + f"Tool result from {tc2.name}: {tool_result}\n\nAssistant:\n"
+        )
+        final = generate(model, tokenizer, final_prompt, device, max_new_tokens, temperature, top_p)
+    else:
+        final = f"The answer is {tool_result}."
+
+    return {
+        "question": question,
+        "mode": "bootstrap",
+        "tool": tc2.name,
+        "reflect_result": rresult,
+        "tool_call": tc2.raw,
+        "tool_result": tool_result,
+        "final": final,
+    }
+
+
+def bootstrap_eval_cases(max_cases: int) -> list[tuple[str, str, str]]:
+    # (raw NL question, expected_tool, expected_substring_in_final)
+    cases = [
+        ("What is 17 + 25?", "calculator", "42"),
+        ("How many days between 2026-01-01 and 2026-12-31?", "datetime", "364"),
+        ("What is 18 * 7?", "calculator", "126"),
+        ("What day of the week is 2027-01-01?", "datetime", "Friday"),
+        ("Hello", "chat", "Hello"),
+        ("What is 91 - 34?", "calculator", "57"),
+        ("I have 30 days of vacation this year.", "chat", ""),
+        ("What is 2026-05-20 plus 30 days?", "datetime", "2026-06-19"),
+    ]
+    return cases[:max_cases]
+
+
 def datetime_eval_cases(max_cases: int) -> list[str]:
     cases = [
         "How many days between 2026-01-01 and 2026-12-31?",
@@ -648,6 +792,7 @@ def main() -> None:
     parser.add_argument("--eval", action="store_true")
     parser.add_argument("--eval-datetime", action="store_true", help="Run the datetime tool eval suite")
     parser.add_argument("--eval-routing", action="store_true", help="Run a mixed calculator/datetime/chat routing eval")
+    parser.add_argument("--eval-bootstrap", action="store_true", help="Run the reflect-bootstrap eval (raw NL, no scaffold)")
     parser.add_argument("--max-cases", type=int, default=8)
     parser.add_argument("--no-reflect", action="store_true", help="Disable the reflect repair tool")
     parser.add_argument("--model-final", action="store_true", help="Ask the model to write the final answer")
@@ -675,6 +820,26 @@ def main() -> None:
             passed += int(ok)
             print(f"{status} | {question} | tool={row.get('tool_result')} expected={expected} | final={final}")
         print(f"\nscore={passed}/{len(questions)}")
+        return
+
+    if args.eval_bootstrap:
+        passed = 0
+        cases = bootstrap_eval_cases(args.max_cases)
+        for question, expected_tool, expected_sub in cases:
+            row = run_bootstrap_loop(
+                model, tokenizer, question, device,
+                args.max_new_tokens, args.temperature, args.top_p, args.model_final,
+            )
+            chosen = row.get("tool") or "?"
+            final = str(row.get("final", ""))
+            tool_ok = chosen == expected_tool
+            content_ok = (expected_sub == "") or (expected_sub in final)
+            ok = tool_ok and content_ok and row.get("error") is None
+            status = "PASS" if ok else "FAIL"
+            passed += int(ok)
+            err = row.get("error")
+            print(f"{status} | {question} | tool={chosen} (expected={expected_tool}) | final={final!r}" + (f" | err={err}" if err else ""))
+        print(f"\nscore={passed}/{len(cases)}")
         return
 
     if args.eval_routing:
