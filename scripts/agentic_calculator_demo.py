@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from datetime import date, timedelta
+
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,8 +39,33 @@ class CalculatorError(ValueError):
     pass
 
 
+class DatetimeError(ValueError):
+    pass
+
+
 class ToolCallParseError(ValueError):
     pass
+
+
+_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def safe_datetime(op: str, **args: Any) -> str:
+    try:
+        if op == "diff":
+            a = date.fromisoformat(str(args["a"]))
+            b = date.fromisoformat(str(args["b"]))
+            return str((b - a).days)
+        if op == "add_days":
+            d = date.fromisoformat(str(args["date"]))
+            days = int(args["days"])
+            return (d + timedelta(days=days)).isoformat()
+        if op == "weekday":
+            d = date.fromisoformat(str(args["date"]))
+            return _WEEKDAYS[d.weekday()]
+    except (KeyError, ValueError, TypeError) as exc:
+        raise DatetimeError(f"invalid datetime args op={op} args={args}: {exc}") from exc
+    raise DatetimeError(f"unknown datetime op: {op!r}")
 
 
 def safe_calculator(expression: str) -> str:
@@ -153,6 +180,43 @@ def resolve_direct_response(text: str) -> tuple[str | None, str | None]:
         if isinstance(value, str) and value.strip():
             return value.strip(), None
     return "", None
+
+
+@dataclass
+class DatetimeHint:
+    op: str
+    args: dict[str, Any]
+
+    def hint_line(self) -> str:
+        if self.op == "diff":
+            return f"Operation: diff. Date A: {self.args['a']}. Date B: {self.args['b']}."
+        if self.op == "add_days":
+            return f"Operation: add_days. Date: {self.args['date']}. Days: {self.args['days']}."
+        if self.op == "weekday":
+            return f"Operation: weekday. Date: {self.args['date']}."
+        raise DatetimeError(f"unknown op: {self.op!r}")
+
+
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_SIGNED_INT_RE = re.compile(r"-?\d+")
+
+
+def extract_datetime_hint(question: str) -> DatetimeHint | None:
+    """Detect whether a question is datetime-shaped and return its hint."""
+    dates = _DATE_RE.findall(question)
+    if not dates:
+        return None
+    qlow = question.lower()
+    if any(kw in qlow for kw in ("day of the week", "weekday", "weekend")):
+        return DatetimeHint(op="weekday", args={"date": dates[0]})
+    if len(dates) >= 2 and any(kw in qlow for kw in ("between", "difference", "from ")):
+        return DatetimeHint(op="diff", args={"a": dates[0], "b": dates[1]})
+    if "day" in qlow:
+        stripped = _DATE_RE.sub("", question)
+        ints = [int(m) for m in _SIGNED_INT_RE.findall(stripped)]
+        if ints:
+            return DatetimeHint(op="add_days", args={"date": dates[0], "days": ints[0]})
+    return None
 
 
 def extract_arithmetic_expression(question: str) -> str | None:
@@ -414,6 +478,150 @@ def run_calculator_loop(
     }
 
 
+def run_datetime_loop(
+    model: ComplexityModel,
+    tokenizer: Tokenizer,
+    question: str,
+    hint: DatetimeHint,
+    device: torch.device,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+    model_final: bool = False,
+) -> dict[str, Any]:
+    expected_result = safe_datetime(hint.op, **hint.args)
+
+    first_prompt = (
+        "User:\n"
+        f"Use the datetime tool to answer: {question}\n"
+        f"{hint.hint_line()}\n"
+        "Copy the dates and numbers exactly into the datetime arguments. "
+        "Do not compute mentally.\n\n"
+        "Assistant:\n"
+    )
+    first = generate(model, tokenizer, first_prompt, device, max_new_tokens, temperature, top_p)
+    try:
+        tool_call = parse_tool_call(first)
+    except ToolCallParseError as exc:
+        return {"question": question, "tool": "datetime", "first": first, "error": "invalid_tool_json", "detail": str(exc)}
+    if tool_call is None:
+        return {"question": question, "tool": "datetime", "first": first, "error": "missing_tool_call"}
+    if tool_call.name != "datetime":
+        return {
+            "question": question,
+            "tool": "datetime",
+            "first": first,
+            "tool_call": tool_call.raw,
+            "error": f"wrong_tool:{tool_call.name}",
+        }
+
+    op = str(tool_call.arguments.get("op", ""))
+    call_args = {k: v for k, v in tool_call.arguments.items() if k != "op"}
+    try:
+        result = safe_datetime(op, **call_args)
+    except DatetimeError as exc:
+        return {
+            "question": question,
+            "tool": "datetime",
+            "first": first,
+            "tool_call": tool_call.raw,
+            "error": str(exc),
+            "expected_result": expected_result,
+        }
+
+    if model_final:
+        final_prompt = (
+            first_prompt
+            + f"<tool_call>{tool_call.raw}</tool_call>\n\n"
+            + f"Tool result from datetime: {result}\n\nAssistant:\n"
+        )
+        final = generate(model, tokenizer, final_prompt, device, max_new_tokens, temperature, top_p)
+    else:
+        final = f"The answer is {result}."
+    return {
+        "question": question,
+        "tool": "datetime",
+        "first": first,
+        "tool_call": tool_call.raw,
+        "tool_result": result,
+        "expected_result": expected_result,
+        "final": final,
+    }
+
+
+def run_chat(
+    model: ComplexityModel,
+    tokenizer: Tokenizer,
+    question: str,
+    device: torch.device,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+) -> dict[str, Any]:
+    prompt = f"User:\n{question}\n\nAssistant:\n"
+    out = generate(model, tokenizer, prompt, device, max_new_tokens, temperature, top_p)
+    tool_marker = "<tool_call>" in out
+    return {
+        "question": question,
+        "tool": "chat",
+        "final": None if tool_marker else out.strip(),
+        "error": "unexpected_tool_call" if tool_marker else None,
+        "raw": out,
+    }
+
+
+def dispatch_question(
+    model: ComplexityModel,
+    tokenizer: Tokenizer,
+    question: str,
+    device: torch.device,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+    use_reflection: bool,
+    model_final: bool,
+) -> dict[str, Any]:
+    dt_hint = extract_datetime_hint(question)
+    if dt_hint is not None:
+        return run_datetime_loop(
+            model, tokenizer, question, dt_hint, device, max_new_tokens, temperature, top_p, model_final
+        )
+    if extract_arithmetic_expression(question) is not None:
+        return run_calculator_loop(
+            model, tokenizer, question, device, max_new_tokens, temperature, top_p, use_reflection, model_final
+        )
+    return run_chat(model, tokenizer, question, device, max_new_tokens, temperature, top_p)
+
+
+def datetime_eval_cases(max_cases: int) -> list[str]:
+    cases = [
+        "How many days between 2026-01-01 and 2026-12-31?",
+        "What is 2026-05-20 plus 30 days?",
+        "What day of the week is 2027-01-01?",
+        "From 2026-05-20 to 2026-05-21, how many days?",
+        "Add -7 days to 2026-05-20.",
+        "Which weekday falls on 2026-12-25?",
+        "How many days between 2026-05-20 and 2026-05-20?",
+        "What is 2026-06-15 plus 100 days?",
+    ]
+    return cases[:max_cases]
+
+
+def routing_eval_cases(max_cases: int) -> list[tuple[str, str, str]]:
+    # (question, expected_tool, expected_substring_in_final)
+    cases = [
+        ("What is 17 + 25?", "calculator", "42"),
+        ("How many days between 2026-01-01 and 2026-12-31?", "datetime", "364"),
+        ("Hello", "chat", "Hello"),
+        ("What day of the week is 2027-01-01?", "datetime", "Friday"),
+        ("What is 18 * 7?", "calculator", "126"),
+        ("Add 30 days to 2026-05-20.", "datetime", "2026-06-19"),
+        ("I have 30 days of vacation this year.", "chat", ""),
+        ("From 2026-05-20 to 2026-05-21, how many days?", "datetime", "1"),
+    ]
+    return cases[:max_cases]
+
+
 def eval_cases(max_cases: int) -> list[tuple[str, str]]:
     cases = [
         ("What is 17 + 25?", "42"),
@@ -438,6 +646,8 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--top-p", type=float, default=0.9)
     parser.add_argument("--eval", action="store_true")
+    parser.add_argument("--eval-datetime", action="store_true", help="Run the datetime tool eval suite")
+    parser.add_argument("--eval-routing", action="store_true", help="Run a mixed calculator/datetime/chat routing eval")
     parser.add_argument("--max-cases", type=int, default=8)
     parser.add_argument("--no-reflect", action="store_true", help="Disable the reflect repair tool")
     parser.add_argument("--model-final", action="store_true", help="Ask the model to write the final answer")
@@ -446,8 +656,49 @@ def main() -> None:
     device = pick_device(args.device)
     model, tokenizer = load_model(args.checkpoint, args.tokenizer, device)
 
+    if args.eval_datetime:
+        passed = 0
+        questions = datetime_eval_cases(args.max_cases)
+        for question in questions:
+            hint = extract_datetime_hint(question)
+            if hint is None:
+                print(f"FAIL routing | {question} | could not detect datetime intent")
+                continue
+            row = run_datetime_loop(
+                model, tokenizer, question, hint, device,
+                args.max_new_tokens, args.temperature, args.top_p, args.model_final,
+            )
+            final = str(row.get("final", ""))
+            expected = row.get("expected_result")
+            ok = row.get("tool_result") == expected and expected is not None and str(expected) in final
+            status = "PASS" if ok else "FAIL"
+            passed += int(ok)
+            print(f"{status} | {question} | tool={row.get('tool_result')} expected={expected} | final={final}")
+        print(f"\nscore={passed}/{len(questions)}")
+        return
+
+    if args.eval_routing:
+        passed = 0
+        cases = routing_eval_cases(args.max_cases)
+        for question, expected_tool, expected_sub in cases:
+            row = dispatch_question(
+                model, tokenizer, question, device,
+                args.max_new_tokens, args.temperature, args.top_p,
+                not args.no_reflect, args.model_final,
+            )
+            chosen = row.get("tool") or ("calculator" if row.get("tool_call") else "chat")
+            final = str(row.get("final", ""))
+            tool_ok = chosen == expected_tool
+            content_ok = (expected_sub == "") or (expected_sub in final)
+            ok = tool_ok and content_ok and row.get("error") is None
+            status = "PASS" if ok else "FAIL"
+            passed += int(ok)
+            print(f"{status} | {question} | tool={chosen} (expected={expected_tool}) | final={final!r}")
+        print(f"\nscore={passed}/{len(cases)}")
+        return
+
     if not args.eval:
-        result = run_calculator_loop(
+        result = dispatch_question(
             model,
             tokenizer,
             args.question,
