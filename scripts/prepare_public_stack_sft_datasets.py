@@ -179,7 +179,9 @@ def write_function_calling(
 
 def write_no_tool_copy(general_path: Path, out: Path, max_records: int, seed: int) -> int:
     rng = random.Random(seed)
-    lines = [line for line in general_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    # JSON strings may legally contain Unicode line separators. JSONL records
+    # are delimited by literal LF only, so do not use splitlines().
+    lines = [line for line in general_path.read_text(encoding="utf-8").split("\n") if line.strip()]
     rng.shuffle(lines)
     selected = lines[:max_records]
     out.write_text("\n".join(selected) + ("\n" if selected else ""), encoding="utf-8")
