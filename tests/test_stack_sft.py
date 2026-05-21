@@ -92,6 +92,24 @@ def test_stack_sft_dataset_builder_reads_messages_source(tmp_path: Path):
     assert '"completion": "4"' in joined
 
 
+def test_stack_sft_dataset_builder_preserves_unicode_line_separators(tmp_path: Path):
+    source = write_jsonl(
+        tmp_path / "unicode_breaks.jsonl",
+        [{"prompt": "User:\nA\u2028B\n\nAssistant:\n", "completion": "C"}],
+    )
+    mix = DatasetMix(
+        records=3,
+        seed=2,
+        sources=[SourceConfig(name="unicode", path=str(source), format="jsonl", weight=1.0)],
+    )
+
+    out = StackSFTDatasetBuilder().build(mix, tmp_path / "unicode_out.jsonl")
+
+    for line in out.read_text(encoding="utf-8").split("\n"):
+        if line:
+            json.loads(line)
+
+
 def test_stack_sft_rejects_hardcoded_source_mapping():
     with pytest.raises(ValueError, match="hardcoded synthetic"):
         DatasetMix.from_dict({"records": 8, "sources": {"final": 1.0}})

@@ -39,7 +39,10 @@ class StackSFTDatasetBuilder:
         with out.open("w", encoding="utf-8") as handle:
             for source, count in counts:
                 self._write_file_source(handle, source, count, rng)
-        lines = out.read_text(encoding="utf-8").splitlines()
+        # JSON strings from web corpora can contain Unicode line separators
+        # that str.splitlines() treats as record boundaries. JSONL records are
+        # delimited only by literal LF bytes, so split on "\n" exactly.
+        lines = [line for line in out.read_text(encoding="utf-8").split("\n") if line]
         rng.shuffle(lines)
         out.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return out
