@@ -1,0 +1,59 @@
+name: sft-50m-plus5b-agentic-stack
+base_checkpoint: checkpoints/sft-50m-plus5b-general/step_001000
+tokenizer: ./tokenizer-o200k
+output_dir: checkpoints
+data_dir: data/sft/stack_sft
+batch_size: 128
+seq_len: 1024
+save_steps: 250
+save_total_limit: 2
+grad_ckpt: true
+bf16: true
+use_custom_kernels: auto
+loss_chunk_tokens: 512
+
+stages:
+  - name: agentic_format
+    steps: 700
+    lr: 3e-5
+    mix:
+      records: 80000
+      sources:
+        chat: 0.45
+        calculator: 0.30
+        no_tool: 0.20
+        respond: 0.05
+
+  - name: finalization
+    steps: 500
+    lr: 1e-5
+    mix:
+      records: 40000
+      sources:
+        chat: 0.15
+        calculator: 0.10
+        final: 0.70
+        reflect: 0.05
+
+  - name: reflection
+    steps: 500
+    lr: 1e-5
+    mix:
+      records: 60000
+      sources:
+        chat: 0.25
+        calculator: 0.20
+        final: 0.30
+        reflect: 0.25
+
+  - name: repair_mix
+    steps: 300
+    lr: 5e-6
+    mix:
+      records: 60000
+      sources:
+        chat: 0.35
+        calculator: 0.20
+        final: 0.25
+        reflect: 0.15
+        respond: 0.05
