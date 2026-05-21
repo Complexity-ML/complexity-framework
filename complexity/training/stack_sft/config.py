@@ -10,22 +10,67 @@ import yaml
 
 
 @dataclass
+class SourceConfig:
+    """One weighted source in a stack SFT dataset mix."""
+
+    name: str
+    weight: float
+    kind: str | None = None
+    path: str | None = None
+    format: str | None = None
+    prompt_field: str = "prompt"
+    completion_field: str = "completion"
+    messages_field: str = "messages"
+    instruction_field: str = "instruction"
+    input_field: str = "input"
+    output_field: str = "output"
+    max_records: int | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SourceConfig":
+        name = str(data.get("name") or data.get("kind") or data.get("path") or "")
+        if not name:
+            raise ValueError("source is missing name/kind/path")
+        if "weight" not in data:
+            raise ValueError(f"source {name!r} is missing weight")
+        return cls(
+            name=name,
+            weight=float(data["weight"]),
+            kind=data.get("kind"),
+            path=data.get("path"),
+            format=data.get("format"),
+            prompt_field=str(data.get("prompt_field", "prompt")),
+            completion_field=str(data.get("completion_field", "completion")),
+            messages_field=str(data.get("messages_field", "messages")),
+            instruction_field=str(data.get("instruction_field", "instruction")),
+            input_field=str(data.get("input_field", "input")),
+            output_field=str(data.get("output_field", "output")),
+            max_records=data.get("max_records"),
+        )
+
+
+@dataclass
 class DatasetMix:
     """Weighted dataset mix for one SFT stage."""
 
-    sources: dict[str, float]
+    sources: list[SourceConfig]
     records: int = 80_000
     seed: int = 42
     out: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DatasetMix":
-        known = {"records", "seed", "out", "sources"}
-        sources = dict(data.get("sources") or {k: v for k, v in data.items() if k not in known})
+        raw_sources = data.get("sources")
+        if not isinstance(raw_sources, list):
+            raise ValueError(
+                "dataset mix sources must be a list of file-backed source configs; "
+                "hardcoded synthetic source mappings are not supported"
+            )
+        sources = [SourceConfig.from_dict(dict(item)) for item in raw_sources]
         if not sources:
             raise ValueError("dataset mix must contain at least one source")
         return cls(
-            sources={str(k): float(v) for k, v in sources.items()},
+            sources=sources,
             records=int(data.get("records", 80_000)),
             seed=int(data.get("seed", 42)),
             out=data.get("out"),
