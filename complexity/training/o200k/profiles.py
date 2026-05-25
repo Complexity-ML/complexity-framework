@@ -90,7 +90,7 @@ def make_config(args) -> ModelConfig:
         top_k=args.top_k,
         top_k_primary_weight=args.top_k_primary_weight,
         use_custom_kernels=getattr(args, "use_custom_kernels", "auto"),
-        use_cggr=bool(getattr(args, "use_cggr", False)),
+        use_cggr=getattr(args, "cggr", getattr(args, "use_cggr", "auto")),
         static_expert_capacity=bool(getattr(args, "static_expert_capacity", False)),
         collect_moe_telemetry=bool(getattr(args, "moe_telemetry", False)),
         routing_strategy=getattr(args, "routing_strategy", "zipf"),

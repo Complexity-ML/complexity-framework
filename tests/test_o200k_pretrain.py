@@ -261,6 +261,73 @@ def test_token_routed_masked_dispatch_matches_token_reference():
     assert torch.allclose(out, ref, atol=1e-6)
 
 
+def test_cggr_dispatch_auto_selects_triton_when_available(monkeypatch):
+    import complexity.core.mlp.token_routed as token_routed
+
+    monkeypatch.setattr(token_routed, "supports_custom_triton", lambda policy: True)
+
+    use_cggr, reasons = token_routed.cggr_dispatch_decision(
+        cggr_policy="auto",
+        kernel_policy="auto",
+        is_cuda=True,
+        has_cggr=True,
+        has_autograd=True,
+    )
+
+    assert use_cggr is True
+    assert reasons == []
+
+
+def test_cggr_dispatch_falls_back_when_auto_is_not_supported(monkeypatch):
+    import complexity.core.mlp.token_routed as token_routed
+
+    monkeypatch.setattr(token_routed, "supports_custom_triton", lambda policy: False)
+
+    use_cggr, reasons = token_routed.cggr_dispatch_decision(
+        cggr_policy="auto",
+        kernel_policy="auto",
+        is_cuda=True,
+        has_cggr=True,
+        has_autograd=True,
+    )
+
+    assert use_cggr is False
+    assert "supports_custom_triton(policy='auto')=False" in reasons
+
+
+def test_o200k_config_defaults_cggr_to_auto():
+    from complexity.training.o200k_pretrain import make_config
+
+    args = SimpleNamespace(
+        hidden_size=32,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=32,
+        shared_intermediate_size=64,
+        vocab_size=128,
+        use_mu_guidance=False,
+        learn_shared_routed_gates=True,
+        shared_gate_init=1.0,
+        routed_gate_init=0.1,
+        top_k=2,
+        top_k_primary_weight=0.5,
+        shared_expert_chunk_tokens=0,
+        static_expert_capacity=False,
+        routing_strategy="zipf",
+        mu_clamp=False,
+        mu_norm=False,
+        mu_alpha_init=1.0,
+        mu_init_value=0.0,
+        mu_context_min=-2.0,
+        mu_context_max=2.0,
+        use_custom_kernels="auto",
+        moe_telemetry=False,
+    )
+
+    assert make_config(args).use_cggr == "auto"
+
+
 def test_shared_expert_chunking_matches_dense_path():
     from complexity.core.mlp.base import MLPConfig
     from complexity.core.mlp.token_routed import TokenRoutedMLP

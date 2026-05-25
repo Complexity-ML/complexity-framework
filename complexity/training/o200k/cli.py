@@ -81,9 +81,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use export-friendly TR dispatch for torch.distributed.pipelining.",
     )
     parser.add_argument(
+        "--cggr",
+        choices=["auto", "true", "false"],
+        default="auto",
+        help="Token-Routed CGGR grouped-GEMM Triton dispatch. auto follows --use-custom-kernels.",
+    )
+    parser.add_argument(
         "--use-cggr",
-        action="store_true",
-        help="Enable the CGGR grouped-GEMM Triton path for TokenRoutedMLP.",
+        dest="cggr",
+        action="store_const",
+        const="true",
+        help="Deprecated alias for --cggr true.",
     )
     parser.add_argument(
         "--compile",

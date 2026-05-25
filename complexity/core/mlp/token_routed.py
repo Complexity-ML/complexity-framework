@@ -65,6 +65,48 @@ def _to_local(t: torch.Tensor) -> torch.Tensor:
     return t
 
 
+def _normalize_cggr_policy(policy: object) -> str:
+    """Normalize CGGR policy values accepted by configs and CLIs."""
+    if isinstance(policy, str):
+        value = policy.strip().lower()
+        if value in {"auto", "true", "false"}:
+            return value
+    if policy is True:
+        return "true"
+    if policy is False:
+        return "false"
+    return "auto"
+
+
+def cggr_dispatch_decision(
+    *,
+    cggr_policy: object,
+    kernel_policy: object,
+    is_cuda: bool,
+    has_cggr: bool,
+    has_autograd: bool,
+    static_dispatch: bool = False,
+) -> tuple[bool, list[str]]:
+    """Return whether Token-Routed should use CGGR and why it may not."""
+    mode = _normalize_cggr_policy(cggr_policy)
+    reasons: list[str] = []
+
+    if mode == "false":
+        reasons.append("config.use_cggr=False")
+    if static_dispatch:
+        reasons.append("static_expert_capacity=True")
+    if not supports_custom_triton(kernel_policy):
+        reasons.append(f"supports_custom_triton(policy={kernel_policy!r})=False")
+    if not has_cggr:
+        reasons.append("HAS_CGGR=False (complexity_cuda triton import failed)")
+    if not is_cuda:
+        reasons.append("flat_x.is_cuda=False")
+    if not has_autograd:
+        reasons.append("cggr_grouped_gemm_autograd=None")
+
+    return mode != "false" and not reasons, reasons
+
+
 @register_mlp("token_routed")
 @register_mlp("sort_split")
 @register_mlp("sort_split_moe")
@@ -306,34 +348,27 @@ class TokenRoutedMLP(MLPBase):
         #   - masked_dense (default, universal): fixed expert loop, no CPU
         #     synchronization, autograd-friendly. It spends extra routed FLOPs
         #     to avoid stalling the device on per-batch bucket sizes.
-        #   - CGGR Triton (cuda + opt-in) : custom grouped-GEMM kernel,
-        #     kept as fallback via config flag `use_cggr=True`.
+        #   - CGGR Triton (CUDA + auto/opt-in): custom grouped-GEMM kernel,
+        #     selected through config.use_cggr when custom kernels are allowed.
         kernel_policy = getattr(self.config, "use_custom_kernels", "auto")
-        use_cggr = (
-            getattr(self.config, "use_cggr", False)
-            and supports_custom_triton(kernel_policy)
-            and HAS_CGGR and flat_x.is_cuda
-            and cggr_grouped_gemm_autograd is not None
+        cggr_policy = getattr(self.config, "use_cggr", "auto")
+        use_cggr, why_not_cggr = cggr_dispatch_decision(
+            cggr_policy=cggr_policy,
+            kernel_policy=kernel_policy,
+            is_cuda=flat_x.is_cuda,
+            has_cggr=HAS_CGGR,
+            has_autograd=cggr_grouped_gemm_autograd is not None,
+            static_dispatch=static_dispatch,
         )
+        self.last_dispatch_path = "cggr" if use_cggr else "masked_dense"
 
-        # Log path selection once per process. Helps diagnose whether a run is
-        # on the custom grouped-GEMM path or the universal no-sync fallback.
-        if not getattr(self.__class__, "_path_logged", False):
-            self.__class__._path_logged = True
-            cfg = self.config
-            why_not_cggr = []
-            if not getattr(cfg, "use_cggr", False):
-                why_not_cggr.append("config.use_cggr=False")
-            if not supports_custom_triton(kernel_policy):
-                why_not_cggr.append(
-                    f"supports_custom_triton(policy={kernel_policy!r})=False"
-                )
-            if not HAS_CGGR:
-                why_not_cggr.append("HAS_CGGR=False (complexity_cuda triton import failed)")
-            if not flat_x.is_cuda:
-                why_not_cggr.append(f"flat_x.is_cuda=False (device={flat_x.device})")
-            if cggr_grouped_gemm_autograd is None:
-                why_not_cggr.append("cggr_grouped_gemm_autograd=None")
+        # Log path selection once per path/device/policy combo. Helps diagnose
+        # whether a run is on CGGR or the universal no-sync fallback.
+        log_key = (self.last_dispatch_path, str(cggr_policy), str(kernel_policy), flat_x.device.type)
+        logged_keys = getattr(self.__class__, "_path_logged_keys", set())
+        if log_key not in logged_keys:
+            logged_keys.add(log_key)
+            self.__class__._path_logged_keys = logged_keys
             if use_cggr:
                 logger.info("[TokenRoutedMLP] dispatch path = CGGR (Triton grouped-GEMM, no sync)")
             else:

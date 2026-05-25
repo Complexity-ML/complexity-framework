@@ -39,7 +39,7 @@ class MLPConfig:
     static_expert_capacity: bool = False  # Fixed capacity for torch.export / pipeline tracing.
     collect_moe_telemetry: bool = False  # Per-layer expert/RMS diagnostics. Off by default for throughput.
     use_custom_kernels: object = "auto"  # "auto", True, or False. Controls optional Triton paths.
-    use_cggr: bool = False  # Use CGGR grouped-GEMM when the backend policy allows custom Triton.
+    use_cggr: object = "auto"  # "auto", True, or False. Use CGGR grouped-GEMM when the backend policy allows custom Triton.
 
     def __post_init__(self):
         if self.hidden_size <= 0:
@@ -58,6 +58,8 @@ class MLPConfig:
             raise ValueError("top_k_primary_weight must be in [0, 1]")
         if self.routing_strategy not in {"zipf", "zipf_token_class"}:
             raise ValueError("routing_strategy must be 'zipf' or 'zipf_token_class'")
+        if isinstance(self.use_cggr, str) and self.use_cggr.strip().lower() not in {"auto", "true", "false"}:
+            raise ValueError("use_cggr must be one of 'auto', 'true', 'false', True, or False")
         if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
             raise ValueError("shared_intermediate_size must be positive when set")
         if self.shared_expert_chunk_tokens < 0:

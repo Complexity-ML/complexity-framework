@@ -85,7 +85,7 @@ class ModelConfig:
     static_expert_capacity: bool = False  # Use fixed per-expert dispatch capacity for torch.export / pipeline tracing
     use_custom_kernels: Any = "auto"  # "auto", True, or False. ROCm defaults to PyTorch fallback in auto mode.
     collect_moe_telemetry: bool = False  # Per-layer expert/RMS diagnostics. Disabled by default for throughput.
-    use_cggr: bool = False  # CGGR grouped-GEMM Triton path for TokenRoutedMLP. Default bmm path does .cpu().tolist() syncs per dispatch — set True on CUDA/ROCm to skip them and use the autotuned Triton grouped-GEMM. Requires supports_custom_triton().
+    use_cggr: Any = "auto"  # "auto", True, or False. CGGR grouped-GEMM Triton path for TokenRoutedMLP when custom Triton is available.
 
     # === Mu-Guidance ===
     use_mu_guidance: bool = False  # Enable contextual mu flowing between layers
