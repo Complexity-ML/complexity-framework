@@ -207,7 +207,7 @@ def test_token_shard_dataset_and_frequencies(tmp_path):
     assert batch["labels"].shape == (8,)
 
 
-def test_token_routed_topk_reuses_sort_without_changing_output():
+def test_token_routed_topk_uses_precomputed_zipf_routes():
     from complexity.core.mlp.base import MLPConfig
     from complexity.core.mlp.token_routed import TokenRoutedMLP
 
@@ -228,14 +228,16 @@ def test_token_routed_topk_reuses_sort_without_changing_output():
     out_fast = mlp(hidden, token_ids=token_ids)
 
     flat_x = hidden.reshape(-1, hidden.size(-1))
-    expert_ids = mlp.token_to_expert[token_ids.clamp(0, mlp.vocab_size - 1)].reshape(-1)
+    route_ids = mlp.topk_token_to_expert[:, token_ids.clamp(0, mlp.vocab_size - 1)]
     gate_w = mlp.gate_proj_w
     up_w = mlp.up_proj_w
     down_w = mlp.down_proj_w
-    out_ref = 0.5 * mlp._dispatch_once(flat_x, expert_ids, gate_w, up_w, down_w, False, 16)
+    out_ref = 0.5 * mlp._dispatch_once(
+        flat_x, route_ids[0].reshape(-1), gate_w, up_w, down_w, False, 16
+    )
     out_ref = out_ref + 0.5 * mlp._dispatch_once(
         flat_x,
-        (expert_ids + 1) % mlp.num_experts,
+        route_ids[1].reshape(-1),
         gate_w,
         up_w,
         down_w,
@@ -244,6 +246,28 @@ def test_token_routed_topk_reuses_sort_without_changing_output():
     )
 
     assert torch.allclose(out_fast.reshape_as(out_ref), out_ref, atol=1e-6)
+
+
+def test_token_routed_topk_aux_routes_are_balanced_and_distinct():
+    from complexity.core.mlp.base import MLPConfig
+    from complexity.core.mlp.token_routed import TokenRoutedMLP
+
+    cfg = MLPConfig(
+        hidden_size=8,
+        intermediate_size=16,
+        num_experts=4,
+        vocab_size=16,
+        shared_expert=False,
+        top_k=2,
+        token_frequencies=torch.ones(16),
+    )
+    mlp = TokenRoutedMLP(cfg)
+
+    routes = mlp.topk_token_to_expert.cpu()
+    assert torch.all(routes[0] != routes[1])
+    for route_idx in range(2):
+        counts = torch.bincount(routes[route_idx], minlength=4)
+        assert counts.tolist() == [4, 4, 4, 4]
 
 
 def test_token_routed_masked_dispatch_matches_token_reference():
@@ -605,6 +629,32 @@ def test_batch_expert_counts_counts_current_batch():
     counts = batch_expert_counts(model, input_ids, num_experts=4, distributed=False)
 
     assert counts.sum().item() == input_ids.numel()
+    assert counts.shape == (4,)
+
+
+def test_batch_expert_counts_counts_all_topk_routes():
+    from complexity.config import ModelConfig
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k_pretrain import batch_expert_counts
+
+    config = ModelConfig(
+        hidden_size=16,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=1,
+        intermediate_size=16,
+        vocab_size=16,
+        mlp_type="token_routed",
+        num_experts=4,
+        shared_expert=False,
+        top_k=2,
+    )
+    model = ComplexityModel(config)
+    input_ids = torch.tensor([[0, 1, 2, 3], [4, 5, 6, 7]])
+
+    counts = batch_expert_counts(model, input_ids, num_experts=4, distributed=False)
+
+    assert counts.sum().item() == input_ids.numel() * 2
     assert counts.shape == (4,)
 
 

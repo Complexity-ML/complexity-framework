@@ -126,14 +126,10 @@ class TokenRoutedMLP(MLPBase):
         self.num_experts = config.num_experts
         self.vocab_size = config.vocab_size
         self.expert_intermediate_size = self.intermediate_size // self.num_experts
-        # Top-K deterministic: each token activates K experts via cyclic shift
-        # of the Zipf primary. K=1 is the classic single-expert Zipf routing.
-        # K>1 increases active FLOPs linearly while keeping zero learned routing
-        # and zero load-balance loss (Zipf guarantees uniform load at every k).
-        # The primary expert keeps a configurable weight in the combination; the
-        # remaining 0.05 is split equally across the (K-1) cyclic-shifted
-        # secondaries. Preserves specialization (near-top-1 behavior) while
-        # recovering ~K× active compute at scale.
+        # Top-K deterministic: each token activates K precomputed Zipf-balanced
+        # expert maps. K=1 is the classic single-expert Zipf routing. K>1 gives
+        # more gradient coverage while keeping zero learned routing and zero
+        # runtime router overhead.
         self.top_k = max(1, int(getattr(config, "top_k", 1)))
         primary_weight = getattr(config, "top_k_primary_weight", None)
         if primary_weight is None:
@@ -177,10 +173,29 @@ class TokenRoutedMLP(MLPBase):
                     torch.tensor(float(getattr(config, "routed_gate_init", 1.0)))
                 )
 
-        # Token -> expert mapping (Zipf-balanced or modulo)
+        # Token -> expert mapping (Zipf-balanced or modulo). In meta-init
+        # contexts these buffers do not affect parameter counts, so avoid
+        # materializing o200k routing tables on CPU.
+        if self.gate_proj_w.is_meta:
+            token_to_expert = torch.empty(self.vocab_size, dtype=torch.long, device="meta")
+            topk_token_to_expert = torch.empty(
+                self.top_k, self.vocab_size, dtype=torch.long, device="meta"
+            )
+        else:
+            token_to_expert = self._create_token_mapping(self.vocab_size, self.num_experts)
+            topk_token_to_expert = self._create_topk_token_mapping(
+                token_to_expert,
+                self.vocab_size,
+                self.num_experts,
+                self.top_k,
+            )
         self.register_buffer(
             "token_to_expert",
-            self._create_token_mapping(self.vocab_size, self.num_experts),
+            token_to_expert,
+        )
+        self.register_buffer(
+            "topk_token_to_expert",
+            topk_token_to_expert,
         )
 
         # Expert utilization counters — accumulated across forward calls.
@@ -221,12 +236,13 @@ class TokenRoutedMLP(MLPBase):
         strategy = getattr(self.config, 'routing_strategy', 'zipf')
         if freqs is not None or strategy == "zipf_token_class":
             if freqs is None:
-                freqs = torch.ones(vocab_size, dtype=torch.float32)
+                freqs = torch.ones(vocab_size, dtype=torch.float32, device="cpu")
             if strategy == "zipf_token_class" and classes is not None:
                 mapping = self._create_token_class_mapping(freqs, classes, vocab_size, num_experts)
             else:
+                freqs = freqs.detach().cpu().float()
                 sorted_indices = freqs.argsort(descending=True)
-                mapping = torch.empty(vocab_size, dtype=torch.long)
+                mapping = torch.empty(vocab_size, dtype=torch.long, device="cpu")
                 expert_loads = [0.0] * num_experts
                 for rank_pos in range(vocab_size):
                     token_id = sorted_indices[rank_pos].item()
@@ -234,7 +250,7 @@ class TokenRoutedMLP(MLPBase):
                     mapping[token_id] = e
                     expert_loads[e] += freqs[token_id].item()
         else:
-            mapping = torch.arange(vocab_size, dtype=torch.long) % num_experts
+            mapping = torch.arange(vocab_size, dtype=torch.long, device="cpu") % num_experts
 
         # Per-layer routing is always on: a deterministic layer-dependent
         # permutation of expert indices. Preserves Zipf load balance (a
@@ -242,9 +258,58 @@ class TokenRoutedMLP(MLPBase):
         # route differently → richer specialization, zero runtime cost.
         layer_idx = int(getattr(self.config, 'layer_idx', 0))
         g = torch.Generator().manual_seed(0xC0DE + layer_idx)
-        permutation = torch.randperm(num_experts, generator=g)
+        permutation = torch.randperm(num_experts, generator=g, device="cpu")
         mapping = permutation[mapping]
         return mapping
+
+    def _routing_frequencies(self, vocab_size: int) -> torch.Tensor:
+        freqs = getattr(self.config, "token_frequencies", None)
+        if freqs is None:
+            return torch.ones(vocab_size, dtype=torch.float32, device="cpu")
+        if freqs.numel() != vocab_size:
+            raise ValueError(
+                f"token_frequencies length ({freqs.numel()}) must match vocab_size ({vocab_size})"
+            )
+        return freqs.detach().cpu().float().clamp_min(0.0)
+
+    def _create_topk_token_mapping(
+        self,
+        primary_mapping: torch.Tensor,
+        vocab_size: int,
+        num_experts: int,
+        top_k: int,
+    ) -> torch.Tensor:
+        """Build deterministic Zipf-balanced auxiliary expert maps.
+
+        For k>0 each token is assigned to an expert different from all earlier
+        routes for that token. The assignment greedily balances corpus frequency
+        load per auxiliary route, so secondary experts are not just a fixed
+        cyclic neighbor of the primary expert.
+        """
+
+        routes = torch.empty(top_k, vocab_size, dtype=torch.long, device="cpu")
+        routes[0] = primary_mapping.detach().to(device="cpu", dtype=torch.long)
+        if top_k == 1:
+            return routes
+
+        freqs = self._routing_frequencies(vocab_size)
+        sorted_indices = freqs.argsort(descending=True)
+
+        for route_idx in range(1, top_k):
+            expert_loads = [0.0] * num_experts
+            mapping = torch.empty(vocab_size, dtype=torch.long, device="cpu")
+            for rank_pos in range(vocab_size):
+                token_id = int(sorted_indices[rank_pos].item())
+                blocked = {
+                    int(routes[prev_idx, token_id].item())
+                    for prev_idx in range(route_idx)
+                }
+                candidates = [idx for idx in range(num_experts) if idx not in blocked]
+                expert = min(candidates, key=lambda idx: expert_loads[idx])
+                mapping[token_id] = expert
+                expert_loads[expert] += float(freqs[token_id].item())
+            routes[route_idx] = mapping
+        return routes
 
     def _create_token_class_mapping(
         self,
@@ -258,7 +323,7 @@ class TokenRoutedMLP(MLPBase):
         freqs = freqs.detach().cpu().float()
         classes = classes.detach().cpu().long()
         sorted_indices = freqs.argsort(descending=True)
-        mapping = torch.empty(vocab_size, dtype=torch.long)
+        mapping = torch.empty(vocab_size, dtype=torch.long, device="cpu")
         expert_loads = [0.0] * num_experts
         class_ids = sorted(set(int(x) for x in classes.tolist()))
         class_loads = {
@@ -304,6 +369,7 @@ class TokenRoutedMLP(MLPBase):
         # Look up expert assignment per token
         token_ids_clamped = token_ids.clamp(0, self.vocab_size - 1)
         expert_ids = self.token_to_expert[token_ids_clamped]  # [B, S]
+        route_expert_ids = self.topk_token_to_expert[:, token_ids_clamped]  # [K, B, S]
 
         flat_x = hidden_states.view(-1, H)
         flat_expert_ids = expert_ids.view(-1)
@@ -313,7 +379,7 @@ class TokenRoutedMLP(MLPBase):
         # Track expert utilization (in-place, non-differentiable)
         if collect_telemetry and not static_dispatch:
             with torch.no_grad():
-                batch_counts = torch.bincount(flat_expert_ids, minlength=self.num_experts)
+                batch_counts = torch.bincount(route_expert_ids.reshape(-1), minlength=self.num_experts)
                 self.expert_counts += batch_counts.to(self.expert_counts.dtype)
 
         # Shared expert (dense, all tokens) — fused SwiGLU via Liger on CUDA
@@ -377,11 +443,8 @@ class TokenRoutedMLP(MLPBase):
                     f"(CGGR rejected: {', '.join(why_not_cggr) if why_not_cggr else 'unknown'})"
                 )
 
-        # Top-K deterministic Zipf: dispatch K times with cyclic-shifted expert
-        # IDs `(primary + k) % E`. Primary expert keeps weight 0.95, the
-        # remaining 0.05 is split equally across the (K-1) secondaries. This
-        # asymmetric weighting preserves specialization (near-top-1 behavior)
-        # while recovering ~K× active compute.
+        # Top-K deterministic Zipf: dispatch K precomputed expert maps.
+        # Primary keeps the configured weight; auxiliaries share the remainder.
         if static_dispatch:
             if self.top_k == 1:
                 routed_out = self._dispatch_once(
@@ -392,7 +455,7 @@ class TokenRoutedMLP(MLPBase):
                 routed_out = torch.zeros_like(flat_x)
                 for k in range(self.top_k):
                     w = self._primary_weight if k == 0 else secondary_w
-                    expert_ids_k = flat_expert_ids if k == 0 else (flat_expert_ids + k) % self.num_experts
+                    expert_ids_k = route_expert_ids[k].view(-1)
                     part = self._dispatch_once(
                         flat_x, expert_ids_k, gate_w, up_w, down_w, use_cggr, H,
                     )
@@ -412,14 +475,17 @@ class TokenRoutedMLP(MLPBase):
                 for k in range(self.top_k):
                     w = self._primary_weight if k == 0 else secondary_w
                     if k == 0:
-                        gate_k, up_k, down_k = gate_w, up_w, down_w
+                        sorted_k = (sorted_x, sorted_idx, expert_offsets, expert_counts)
                     else:
-                        gate_k = torch.roll(gate_w, shifts=-k, dims=0)
-                        up_k = torch.roll(up_w, shifts=-k, dims=0)
-                        down_k = torch.roll(down_w, shifts=-k, dims=0)
+                        sorted_k = sort_tokens_by_expert(
+                            flat_x,
+                            route_expert_ids[k].view(-1),
+                            self.num_experts,
+                        )
+                    sorted_x_k, sorted_idx_k, expert_offsets_k, expert_counts_k = sorted_k
                     part = self._dispatch_sorted(
-                        flat_x, sorted_x, sorted_idx, expert_offsets, expert_counts,
-                        gate_k, up_k, down_k, use_cggr, H,
+                        flat_x, sorted_x_k, sorted_idx_k, expert_offsets_k, expert_counts_k,
+                        gate_w, up_w, down_w, use_cggr, H,
                     )
                     routed_out = routed_out + w * part
 

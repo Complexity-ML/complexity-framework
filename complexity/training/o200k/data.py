@@ -221,9 +221,13 @@ def batch_expert_counts(raw_model, input_ids: torch.Tensor, num_experts: int, di
 
     for module in raw_model.modules():
         if hasattr(module, "token_to_expert"):
-            token_to_expert = module.token_to_expert
-            token_ids = input_ids.clamp(0, token_to_expert.numel() - 1)
-            expert_ids = token_to_expert[token_ids].reshape(-1)
+            token_to_expert = getattr(module, "topk_token_to_expert", module.token_to_expert)
+            if token_to_expert.ndim == 2:
+                token_ids = input_ids.clamp(0, token_to_expert.shape[1] - 1)
+                expert_ids = token_to_expert[:, token_ids].reshape(-1)
+            else:
+                token_ids = input_ids.clamp(0, token_to_expert.numel() - 1)
+                expert_ids = token_to_expert[token_ids].reshape(-1)
             counts = torch.bincount(expert_ids, minlength=num_experts).to(
                 device=input_ids.device,
                 dtype=torch.float32,
