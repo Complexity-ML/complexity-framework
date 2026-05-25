@@ -45,6 +45,7 @@ def causal_lm_loss(
     z_loss_coef: float = 0.0,
     ignore_index: int = -100,
     shift: bool = False,
+    sync_metrics: bool = True,
 ) -> Tuple[torch.Tensor, CausalLMLossMetrics]:
     """
     Cross-entropy + optional label smoothing + optional z-loss.
@@ -87,15 +88,17 @@ def causal_lm_loss(
             lse = lse[mask] if mask.any() else lse
         z = lse.pow(2).mean()
         loss = ce + z_loss_coef * z
-        z_val = z.detach().item()
+        z_val = z.detach().item() if sync_metrics else float("nan")
     else:
         loss = ce
         z_val = 0.0
 
+    loss_val = loss.detach().item() if sync_metrics else float("nan")
+    ce_val = ce.detach().item() if sync_metrics else float("nan")
     metrics = CausalLMLossMetrics(
-        ce=ce.detach().item(),
+        ce=ce_val,
         z_loss=z_val,
-        total=loss.detach().item(),
+        total=loss_val,
     )
     return loss, metrics
 
@@ -131,6 +134,7 @@ def causal_lm_loss_from_hidden(
             z_loss_coef=z_loss_coef,
             ignore_index=ignore_index,
             shift=shift,
+            sync_metrics=sync_metrics,
         )
 
     if shift:

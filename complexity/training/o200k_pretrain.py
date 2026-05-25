@@ -39,7 +39,7 @@ from complexity.training.o200k import (
     init_distributed,
     load_checkpoint,
     make_config,
-    reduce_average,
+    reduce_average_tensor,
     save_checkpoint,
     text_token_frequencies,
     token_shard_frequencies,
@@ -280,16 +280,16 @@ def main():
         with autocast(device, dtype=amp_dtype, enabled=amp_dtype is not None):
             outputs = model(input_ids, return_logits=False)
             if args.loss_backend_active == "liger":
-                loss, metrics = fused_linear_causal_lm_loss(
+                loss, _ = fused_linear_causal_lm_loss(
                     outputs["last_hidden_state"],
                     raw_model.embed_tokens.weight,
                     labels,
                     label_smoothing=args.label_smoothing,
                     z_loss_coef=args.z_loss,
-                    sync_metrics=should_log,
+                    sync_metrics=False,
                 )
             else:
-                loss, metrics = causal_lm_loss_from_hidden(
+                loss, _ = causal_lm_loss_from_hidden(
                     outputs["last_hidden_state"],
                     raw_model.embed_tokens.weight,
                     labels,
@@ -297,7 +297,7 @@ def main():
                     z_loss_coef=args.z_loss,
                     chunk_tokens=args.loss_chunk_tokens,
                     checkpoint_chunks=args.loss_checkpoint_chunks,
-                    sync_metrics=should_log,
+                    sync_metrics=False,
                 )
         loss.backward()
         if args.max_grad_norm and args.max_grad_norm > 0.0:
@@ -323,7 +323,7 @@ def main():
                     model, raw_model, eval_loader, device, amp_dtype, args.eval_batches,
                     args.label_smoothing, args.z_loss, args.loss_chunk_tokens, distributed,
                 )
-            train_loss = reduce_average(metrics.ce, device, distributed)
+            train_loss = reduce_average_tensor(loss, distributed)
             train_ppl = math.exp(min(train_loss, 20))
             eval_ppl = math.exp(min(eval_loss, 20)) if math.isfinite(eval_loss) else float("nan")
             lr_now = scheduler.get_last_lr()[0]

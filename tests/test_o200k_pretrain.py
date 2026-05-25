@@ -50,6 +50,34 @@ def test_chunked_hidden_loss_can_skip_metric_sync():
     assert math.isnan(metrics.ce)
 
 
+def test_full_hidden_loss_can_skip_metric_sync():
+    from complexity.core.losses import causal_lm_loss_from_hidden
+
+    torch.manual_seed(0)
+    hidden = torch.randn(2, 5, 7, requires_grad=True)
+    weight = torch.randn(13, 7, requires_grad=True)
+    labels = torch.randint(0, 13, (2, 5))
+
+    loss, metrics = causal_lm_loss_from_hidden(
+        hidden,
+        weight,
+        labels,
+        chunk_tokens=0,
+        sync_metrics=False,
+    )
+
+    assert torch.isfinite(loss)
+    assert math.isnan(metrics.ce)
+
+
+def test_reduce_average_tensor_defers_to_single_item_sync():
+    from complexity.training.o200k.runtime import reduce_average_tensor
+
+    value = torch.tensor(3.5)
+
+    assert reduce_average_tensor(value, distributed=False) == pytest.approx(3.5)
+
+
 def test_liger_fused_ce_availability_is_exposed(monkeypatch):
     from complexity.core.losses import fused_ce
 

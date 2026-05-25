@@ -141,4 +141,5 @@ def fused_linear_causal_lm_loss(
         z_loss_coef=z_loss_coef,
         ignore_index=ignore_index,
         shift=False,  # already shifted above if requested
+        sync_metrics=sync_metrics,
     )

@@ -26,7 +26,8 @@ def evaluate(
 ):
     was_training = model.training
     model.eval()
-    losses = []
+    loss_sum = None
+    loss_count = 0
     for idx, batch in enumerate(loader):
         if idx >= eval_batches:
             break
@@ -34,7 +35,7 @@ def evaluate(
         labels = batch["labels"].to(device, non_blocking=True)
         with autocast(device, dtype=amp_dtype, enabled=amp_dtype is not None):
             outputs = model(input_ids, return_logits=False)
-            _, metrics = causal_lm_loss_from_hidden(
+            loss, _ = causal_lm_loss_from_hidden(
                 outputs["last_hidden_state"],
                 raw_model.embed_tokens.weight,
                 labels,
@@ -42,16 +43,20 @@ def evaluate(
                 z_loss_coef=z_loss,
                 chunk_tokens=loss_chunk_tokens,
                 checkpoint_chunks=False,
+                sync_metrics=False,
             )
-        losses.append(metrics.ce)
+        detached = loss.detach()
+        loss_sum = detached if loss_sum is None else loss_sum + detached
+        loss_count += 1
     if was_training:
         model.train()
-    eval_loss = sum(losses) / max(1, len(losses))
+    if loss_sum is None:
+        loss_tensor = torch.tensor(float("nan"), device=device)
+    else:
+        loss_tensor = loss_sum / max(1, loss_count)
     if distributed:
-        loss_tensor = torch.tensor(eval_loss, device=device)
         dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
-        eval_loss = loss_tensor.item()
-    return eval_loss
+    return loss_tensor.item()
 
 
 def init_distributed(seed: int):
@@ -77,4 +82,11 @@ def reduce_average(value: float, device: torch.device, distributed: bool) -> flo
         return value
     tensor = torch.tensor(float(value), device=device)
     dist.all_reduce(tensor, op=dist.ReduceOp.AVG)
+    return tensor.item()
+
+
+def reduce_average_tensor(value: torch.Tensor, distributed: bool) -> float:
+    tensor = value.detach().float()
+    if distributed:
+        dist.all_reduce(tensor, op=dist.ReduceOp.AVG)
     return tensor.item()

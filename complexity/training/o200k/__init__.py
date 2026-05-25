@@ -15,7 +15,7 @@ from .cli import build_parser
 from .checkpointing import load_checkpoint, save_checkpoint
 from .optimizer import build_optimizer
 from .profiles import PROFILES, make_config
-from .runtime import evaluate, init_distributed, reduce_average
+from .runtime import evaluate, init_distributed, reduce_average, reduce_average_tensor
 
 __all__ = [
     "PROFILES",
@@ -27,6 +27,7 @@ __all__ = [
     "evaluate",
     "init_distributed",
     "reduce_average",
+    "reduce_average_tensor",
     "RandomTokenDataset",
     "LocalTextDataset",
     "FineWebDataset",
