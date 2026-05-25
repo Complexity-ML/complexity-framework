@@ -198,6 +198,75 @@ class TokenRoutedMLP(MLPBase):
             topk_token_to_expert,
         )
 
+        # Optional bigram routing overlay: (prev_id, cur_id) -> expert for top-N
+        # frequent bigrams, with unigram fallback for all other pairs. Kept
+        # deterministic + static, so Token-Routed invariants hold.
+        cfg_bigram_keys = getattr(config, "bigram_keys", None)
+        cfg_bigram_experts = getattr(config, "bigram_experts", None)
+        if (
+            cfg_bigram_keys is not None
+            and cfg_bigram_experts is not None
+            and not self.gate_proj_w.is_meta
+        ):
+            layer_idx = int(getattr(self.config, "layer_idx", 0))
+            g = torch.Generator().manual_seed(0xC0DE + layer_idx)
+            permutation = torch.randperm(self.num_experts, generator=g, device="cpu")
+            permuted_bigram_experts = permutation[cfg_bigram_experts.detach().cpu().long()]
+            self.register_buffer(
+                "bigram_keys", cfg_bigram_keys.detach().cpu().long(), persistent=False
+            )
+            self.register_buffer(
+                "bigram_experts", permuted_bigram_experts, persistent=False
+            )
+            self.bigram_bos_id = int(getattr(config, "bigram_bos_id", 0))
+            self.has_bigram_routing = True
+        else:
+            self.has_bigram_routing = False
+
+        # Optional context-signature routing overlay: (sig, cur_id) -> expert,
+        # where sig is a polynomial hash of K previous token classes. Wider
+        # context than bigram while still a pure function of token ids.
+        cfg_ctx_keys = getattr(config, "ctx_sig_keys", None)
+        cfg_ctx_experts = getattr(config, "ctx_sig_experts", None)
+        cfg_ctx_classes = getattr(config, "token_class_table", None)
+        cfg_ctx_window = int(getattr(config, "ctx_window", 0))
+        cfg_ctx_buckets = int(getattr(config, "ctx_num_buckets", 0))
+        if (
+            cfg_ctx_keys is not None
+            and cfg_ctx_experts is not None
+            and cfg_ctx_classes is not None
+            and cfg_ctx_window > 0
+            and cfg_ctx_buckets > 0
+            and not self.gate_proj_w.is_meta
+        ):
+            layer_idx = int(getattr(self.config, "layer_idx", 0))
+            g = torch.Generator().manual_seed(0xC0DE + layer_idx)
+            permutation = torch.randperm(self.num_experts, generator=g, device="cpu")
+            permuted_ctx_experts = permutation[cfg_ctx_experts.detach().cpu().long()]
+            self.register_buffer(
+                "ctx_sig_keys", cfg_ctx_keys.detach().cpu().long(), persistent=False
+            )
+            self.register_buffer(
+                "ctx_sig_experts", permuted_ctx_experts, persistent=False
+            )
+            self.register_buffer(
+                "token_class_table",
+                cfg_ctx_classes.detach().cpu().long(),
+                persistent=False,
+            )
+            self.ctx_window = cfg_ctx_window
+            self.ctx_num_buckets = cfg_ctx_buckets
+            self.register_buffer(
+                "ctx_class_weights",
+                torch.tensor(
+                    [8**i for i in range(cfg_ctx_window)], dtype=torch.long
+                ),
+                persistent=False,
+            )
+            self.has_ctx_sig_routing = True
+        else:
+            self.has_ctx_sig_routing = False
+
         # Expert utilization counters — accumulated across forward calls.
         # Reset manually via reset_expert_counts() (e.g. once per CSV log step).
         # Non-persistent so checkpoint save/load doesn't snapshot stale counters.
@@ -377,6 +446,112 @@ class TokenRoutedMLP(MLPBase):
         token_ids_clamped = token_ids.clamp(0, self.vocab_size - 1)
         expert_ids = self.token_to_expert[token_ids_clamped]  # [B, S]
         route_expert_ids = self.topk_token_to_expert[:, token_ids_clamped]  # [K, B, S]
+
+        # Context-signature overlay. Routing key = (sig, cur_id) where sig is
+        # a polynomial hash of K previous token classes. Mutually exclusive
+        # with bigram routing (config builder should pick one strategy).
+        if getattr(self, "has_ctx_sig_routing", False):
+            B_, S_ = token_ids_clamped.shape
+            K = self.ctx_window
+            class_table = self.token_class_table.to(token_ids_clamped.device)
+            class_weights = self.ctx_class_weights.to(token_ids_clamped.device)
+            class_seq = class_table[token_ids_clamped]  # [B, S], lexical class per token
+            padded = torch.cat(
+                [
+                    torch.zeros(
+                        (B_, K),
+                        dtype=class_seq.dtype,
+                        device=class_seq.device,
+                    ),
+                    class_seq,
+                ],
+                dim=1,
+            )  # [B, S+K]; padded[:, K+s] == class_seq[:, s]
+            windows = padded.unfold(dimension=1, size=K, step=1)[:, :S_, :]  # [B, S, K]
+            sig = ((windows.long() * class_weights).sum(-1) % self.ctx_num_buckets)
+            keys = sig.long() * self.vocab_size + token_ids_clamped.long()
+            flat_keys = keys.view(-1)
+            ctx_keys_dev = self.ctx_sig_keys.to(flat_keys.device)
+            ctx_experts_dev = self.ctx_sig_experts.to(flat_keys.device)
+            idx = torch.searchsorted(ctx_keys_dev, flat_keys)
+            idx_safe = idx.clamp(max=ctx_keys_dev.numel() - 1)
+            found = ctx_keys_dev[idx_safe] == flat_keys
+            ctx_exp = ctx_experts_dev[idx_safe].to(expert_ids.dtype)
+            if self.top_k >= 2:
+                flat_primary = expert_ids.view(-1)
+                flat_secondary = route_expert_ids[1].view(-1)
+                distinct_from_primary = ctx_exp != flat_primary
+                new_secondary = torch.where(
+                    found & distinct_from_primary, ctx_exp, flat_secondary
+                ).view(B_, S_)
+                route_expert_ids = torch.cat(
+                    [
+                        route_expert_ids[0:1],
+                        new_secondary.unsqueeze(0),
+                        route_expert_ids[2:],
+                    ],
+                    dim=0,
+                )
+            else:
+                expert_ids = torch.where(
+                    found.view(B_, S_), ctx_exp.view(B_, S_), expert_ids
+                )
+                route_expert_ids = torch.cat(
+                    [expert_ids.unsqueeze(0), route_expert_ids[1:]], dim=0
+                )
+
+        # Bigram overlay. Two modes:
+        #   top_k >= 2 (soft bias, default): keep unigram primary intact and
+        #     swap the auxiliary route to the bigram expert when matched and
+        #     distinct from the primary. The unigram-assigned expert keeps
+        #     its gradient signal; the bigram expert gets a contextual share
+        #     (1 - primary_weight). No cold-start switch.
+        #   top_k == 1 (hard switch): override the single route, original
+        #     overlay behaviour. Kept for parity but typically worse.
+        if getattr(self, "has_bigram_routing", False):
+            B_, S_ = token_ids_clamped.shape
+            prev_ids = torch.cat(
+                [
+                    torch.full(
+                        (B_, 1),
+                        self.bigram_bos_id,
+                        dtype=token_ids_clamped.dtype,
+                        device=token_ids_clamped.device,
+                    ),
+                    token_ids_clamped[:, :-1],
+                ],
+                dim=1,
+            )
+            keys = prev_ids.long() * self.vocab_size + token_ids_clamped.long()
+            flat_keys = keys.view(-1)
+            bigram_keys_dev = self.bigram_keys.to(flat_keys.device)
+            bigram_experts_dev = self.bigram_experts.to(flat_keys.device)
+            idx = torch.searchsorted(bigram_keys_dev, flat_keys)
+            idx_safe = idx.clamp(max=bigram_keys_dev.numel() - 1)
+            found = bigram_keys_dev[idx_safe] == flat_keys
+            bigram_exp = bigram_experts_dev[idx_safe].to(expert_ids.dtype)
+            if self.top_k >= 2:
+                flat_primary = expert_ids.view(-1)
+                flat_secondary = route_expert_ids[1].view(-1)
+                distinct_from_primary = bigram_exp != flat_primary
+                new_secondary = torch.where(
+                    found & distinct_from_primary, bigram_exp, flat_secondary
+                ).view(B_, S_)
+                route_expert_ids = torch.cat(
+                    [
+                        route_expert_ids[0:1],
+                        new_secondary.unsqueeze(0),
+                        route_expert_ids[2:],
+                    ],
+                    dim=0,
+                )
+            else:
+                expert_ids = torch.where(
+                    found.view(B_, S_), bigram_exp.view(B_, S_), expert_ids
+                )
+                route_expert_ids = torch.cat(
+                    [expert_ids.unsqueeze(0), route_expert_ids[1:]], dim=0
+                )
 
         flat_x = hidden_states.view(-1, H)
         flat_expert_ids = expert_ids.view(-1)

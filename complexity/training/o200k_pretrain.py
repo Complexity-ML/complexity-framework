@@ -33,6 +33,7 @@ from complexity.training.o200k import (
     PROFILES,
     apply_topk_primary_weight,
     batch_expert_counts,
+    build_bigram_expert_mapping,
     build_parser,
     build_loaders,
     build_optimizer,
@@ -43,6 +44,8 @@ from complexity.training.o200k import (
     reduce_average_tensor,
     save_checkpoint,
     scheduled_topk_primary_weight,
+    text_bigram_top_n,
+    text_context_sig_top_n,
     text_token_frequencies,
     token_shard_frequencies,
     tokenizer_token_classes,
@@ -132,6 +135,41 @@ def main():
         )
     if args.routing_strategy == "zipf_token_class":
         config.token_classes = tokenizer_token_classes(args.tokenizer, config.vocab_size)
+    if args.routing_strategy == "zipf_bigram":
+        if args.dataset != "text":
+            raise RuntimeError(
+                "routing_strategy=zipf_bigram requires --dataset text with --text-file pointing at a corpus"
+            )
+        bigram_keys, bigram_counts = text_bigram_top_n(
+            args.text_file,
+            args.tokenizer,
+            config.vocab_size,
+            args.bigram_top_n,
+            bos_id=0,
+        )
+        config.bigram_keys = bigram_keys
+        config.bigram_experts = build_bigram_expert_mapping(bigram_counts, config.num_experts)
+        config.bigram_bos_id = 0
+    if args.routing_strategy == "zipf_context_sig":
+        if args.dataset != "text":
+            raise RuntimeError(
+                "routing_strategy=zipf_context_sig requires --dataset text with --text-file pointing at a corpus"
+            )
+        ctx_class_table = tokenizer_token_classes(args.tokenizer, config.vocab_size)
+        ctx_keys, ctx_counts = text_context_sig_top_n(
+            args.text_file,
+            args.tokenizer,
+            config.vocab_size,
+            top_n=args.context_top_n,
+            window=args.context_window,
+            num_buckets=args.context_buckets,
+            token_class_table=ctx_class_table,
+        )
+        config.ctx_sig_keys = ctx_keys
+        config.ctx_sig_experts = build_bigram_expert_mapping(ctx_counts, config.num_experts)
+        config.token_class_table = ctx_class_table
+        config.ctx_window = int(args.context_window)
+        config.ctx_num_buckets = int(args.context_buckets)
     raw_model = ComplexityModel(config).to(device)
     if args.grad_ckpt:
         raw_model.gradient_checkpointing_enable()

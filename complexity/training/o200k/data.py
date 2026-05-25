@@ -112,6 +112,125 @@ def text_token_frequencies(path: str, tokenizer_path: str, vocab_size: int) -> t
     return freqs
 
 
+def text_bigram_top_n(
+    path: str,
+    tokenizer_path: str,
+    vocab_size: int,
+    top_n: int,
+    bos_id: int = 0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute the top-N most frequent (prev_id, cur_id) bigrams in a text file.
+
+    Returns (keys, counts) with keys = prev_id * vocab_size + cur_id, sorted ascending.
+    The very first token of the stream is paired with bos_id as its predecessor.
+    """
+    tokens = load_text_tokens(path, tokenizer_path)
+    ids = torch.tensor(tokens, dtype=torch.long)
+    ids = ids[(ids >= 0) & (ids < vocab_size)]
+    if ids.numel() < 2:
+        return torch.empty(0, dtype=torch.long), torch.empty(0, dtype=torch.long)
+    prev_ids = torch.cat([torch.tensor([bos_id], dtype=torch.long), ids[:-1]])
+    keys = prev_ids * vocab_size + ids
+    unique_keys, inverse, counts = torch.unique(
+        keys, return_inverse=True, return_counts=True
+    )
+    n = min(int(top_n), int(unique_keys.numel()))
+    top_counts, top_idx = torch.topk(counts, n)
+    top_keys = unique_keys[top_idx]
+    sort_idx = torch.argsort(top_keys)
+    sorted_keys = top_keys[sort_idx]
+    sorted_counts = top_counts[sort_idx]
+    logger.info(
+        f"Bigram routing: {int(ids.numel()):,} tokens, "
+        f"{int(unique_keys.numel()):,} unique bigrams, top {n:,} kept "
+        f"(coverage: {float(sorted_counts.sum() / counts.sum().clamp_min(1)):.1%} of bigram occurrences)"
+    )
+    return sorted_keys.long(), sorted_counts.long()
+
+
+def _hash_class_window(class_window: torch.Tensor, num_buckets: int) -> torch.Tensor:
+    """Polynomial hash of a window of token classes (last dim) into num_buckets.
+
+    Each class digit occupies log2(8) = 3 bits (we have 8 lexical classes), so
+    the polynomial base is 8. For K=4 the raw space is 8^4 = 4096, then reduced
+    modulo num_buckets to bound the signature space.
+    """
+    K = class_window.shape[-1]
+    weights = torch.tensor(
+        [8**i for i in range(K)], dtype=torch.long, device=class_window.device
+    )
+    sig_raw = (class_window.long() * weights).sum(-1)
+    return sig_raw % int(num_buckets)
+
+
+def text_context_sig_top_n(
+    path: str,
+    tokenizer_path: str,
+    vocab_size: int,
+    top_n: int,
+    window: int,
+    num_buckets: int,
+    token_class_table: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute the top-N most frequent (context_signature, cur_id) keys.
+
+    Returns (keys, counts) with keys = sig * vocab_size + cur_id, sorted ascending.
+    The first `window` positions of the stream use class 0 padding for any
+    missing predecessor (consistent with how the runtime fallback handles
+    sequence boundaries).
+    """
+    tokens = load_text_tokens(path, tokenizer_path)
+    ids = torch.tensor(tokens, dtype=torch.long)
+    ids = ids[(ids >= 0) & (ids < vocab_size)]
+    if ids.numel() < window + 1:
+        return torch.empty(0, dtype=torch.long), torch.empty(0, dtype=torch.long)
+    classes = token_class_table.detach().cpu().long()[ids]  # [T]
+    T = ids.numel()
+    padded = torch.cat([torch.zeros(window, dtype=torch.long), classes])  # [T+window]
+    windows = padded.unfold(0, window, 1)[:T]  # [T, window]: window[t] = classes[t-K..t-1]
+    sigs = _hash_class_window(windows, num_buckets)  # [T]
+    keys = sigs * vocab_size + ids
+    unique_keys, _, counts = torch.unique(
+        keys, return_inverse=True, return_counts=True
+    )
+    n = min(int(top_n), int(unique_keys.numel()))
+    top_counts, top_idx = torch.topk(counts, n)
+    top_keys = unique_keys[top_idx]
+    sort_idx = torch.argsort(top_keys)
+    sorted_keys = top_keys[sort_idx]
+    sorted_counts = top_counts[sort_idx]
+    logger.info(
+        f"Context-sig routing: {int(T):,} tokens, "
+        f"window=K={window}, buckets={num_buckets}, "
+        f"{int(unique_keys.numel()):,} unique (sig, cur) keys, top {n:,} kept "
+        f"(coverage: {float(sorted_counts.sum() / counts.sum().clamp_min(1)):.1%} of token occurrences)"
+    )
+    return sorted_keys.long(), sorted_counts.long()
+
+
+def build_bigram_expert_mapping(
+    bigram_counts: torch.Tensor, num_experts: int
+) -> torch.Tensor:
+    """Greedy bin-packing of bigram keys onto experts, balanced by count.
+
+    Iterates bigrams in descending count order and assigns each to the
+    currently least-loaded expert. Returns experts[i] for the i-th key in
+    the input order (caller is expected to keep keys and experts aligned).
+    """
+    n = int(bigram_counts.numel())
+    experts = torch.empty(n, dtype=torch.long)
+    if n == 0:
+        return experts
+    counts = bigram_counts.detach().cpu().long()
+    order = torch.argsort(counts, descending=True)
+    loads = [0] * num_experts
+    for pos in order.tolist():
+        e = min(range(num_experts), key=lambda i: loads[i])
+        experts[pos] = e
+        loads[e] += int(counts[pos].item())
+    return experts
+
+
 def tokenizer_token_classes(tokenizer_path: str, vocab_size: int) -> torch.Tensor:
     """Classify each token into coarse lexical buckets for static routing."""
 
@@ -250,6 +369,9 @@ __all__ = [
     "build_loaders",
     "infer_vocab_size",
     "text_token_frequencies",
+    "text_bigram_top_n",
+    "text_context_sig_top_n",
+    "build_bigram_expert_mapping",
     "token_shard_frequencies",
     "tokenizer_token_classes",
 ]

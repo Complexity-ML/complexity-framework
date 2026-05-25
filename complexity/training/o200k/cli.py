@@ -116,7 +116,35 @@ def build_parser() -> argparse.ArgumentParser:
         default="default",
         help="torch.compile mode.",
     )
-    parser.add_argument("--routing-strategy", choices=["zipf", "zipf_token_class"], default="zipf")
+    parser.add_argument(
+        "--routing-strategy",
+        choices=["zipf", "zipf_token_class", "zipf_bigram", "zipf_context_sig"],
+        default="zipf",
+    )
+    parser.add_argument(
+        "--bigram-top-n",
+        type=int,
+        default=200_000,
+        help="Number of top frequent bigrams to override unigram routing (zipf_bigram only).",
+    )
+    parser.add_argument(
+        "--context-window",
+        type=int,
+        default=4,
+        help="K previous tokens that feed the context signature (zipf_context_sig only).",
+    )
+    parser.add_argument(
+        "--context-buckets",
+        type=int,
+        default=32,
+        help="Number of distinct context signatures after hashing (zipf_context_sig only).",
+    )
+    parser.add_argument(
+        "--context-top-n",
+        type=int,
+        default=200_000,
+        help="Number of top (sig, cur) pairs to override unigram routing (zipf_context_sig only).",
+    )
     parser.add_argument("--use-mu-guidance", action="store_true")
     parser.add_argument("--mu-clamp", action="store_true")
     parser.add_argument("--mu-norm", action="store_true")
