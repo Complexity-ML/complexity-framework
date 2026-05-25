@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import math
 
 import torch
 import torch.distributed as dist
@@ -90,3 +91,34 @@ def reduce_average_tensor(value: torch.Tensor, distributed: bool) -> float:
     if distributed:
         dist.all_reduce(tensor, op=dist.ReduceOp.AVG)
     return tensor.item()
+
+
+def scheduled_topk_primary_weight(
+    step: int,
+    total_steps: int,
+    start: float,
+    final: float,
+    schedule_ratio: float,
+) -> float:
+    """Cosine ramp from lexical mixing toward primary expert specialization."""
+    start = min(1.0, max(0.0, float(start)))
+    final = min(1.0, max(0.0, float(final)))
+    ratio = min(1.0, max(0.0, float(schedule_ratio)))
+    ramp_steps = max(1, int(max(1, total_steps) * ratio))
+    if ratio <= 0.0 or ramp_steps <= 1:
+        return final
+    progress = min(1.0, max(0.0, step / ramp_steps))
+    blend = 0.5 - 0.5 * math.cos(math.pi * progress)
+    return start + (final - start) * blend
+
+
+def apply_topk_primary_weight(model, weight: float) -> int:
+    """Apply a scheduled top-k primary route weight to all Token-Routed layers."""
+    count = 0
+    for module in model.modules():
+        setter = getattr(module, "set_top_k_primary_weight", None)
+        if setter is None:
+            continue
+        setter(weight)
+        count += 1
+    return count

@@ -70,6 +70,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-k", type=int, default=2)
     parser.add_argument("--top-k-primary-weight", type=float, default=0.5)
     parser.add_argument(
+        "--top-k-primary-weight-final",
+        type=float,
+        default=0.85,
+        help="Final primary route weight for scheduled Token-Routed specialization. Set equal to --top-k-primary-weight to disable.",
+    )
+    parser.add_argument(
+        "--top-k-primary-weight-schedule-ratio",
+        type=float,
+        default=0.5,
+        help="Fraction of training steps used to ramp primary route weight from start to final.",
+    )
+    parser.add_argument(
         "--use-custom-kernels",
         choices=["auto", "true", "false"],
         default="auto",

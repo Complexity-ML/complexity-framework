@@ -33,7 +33,7 @@ class MLPConfig:
     use_shared_routed_gates: bool = False  # Learn scalar gates for shared vs routed expert outputs.
     shared_gate_init: float = 1.0  # Initial shared expert output multiplier.
     routed_gate_init: float = 1.0  # Initial routed expert output multiplier.
-    top_k: int = 1  # Token-Routed top-K deterministic: each token activates K experts via cyclic shift of the Zipf primary. Primary keeps weight 0.95, secondary experts share 0.05 (tuned for specialization preservation).
+    top_k: int = 1  # Token-Routed top-K deterministic: each token activates K Zipf-balanced expert routes.
     top_k_primary_weight: Optional[float] = None  # K>1 primary expert blend weight; None keeps the default 0.95.
     layer_idx: int = 0  # Layer index propagated from the block; used for the built-in per-layer routing permutation.
     static_expert_capacity: bool = False  # Fixed capacity for torch.export / pipeline tracing.

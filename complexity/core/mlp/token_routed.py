@@ -217,6 +217,13 @@ class TokenRoutedMLP(MLPBase):
         """Return current expert counts [num_experts] on-device."""
         return self.expert_counts
 
+    def set_top_k_primary_weight(self, weight: float) -> None:
+        """Update the primary/auxiliary blend for scheduled specialization."""
+        if self.top_k <= 1:
+            self._primary_weight = 1.0
+            return
+        self._primary_weight = min(1.0, max(0.0, float(weight)))
+
     def _create_token_mapping(self, vocab_size: int, num_experts: int) -> torch.Tensor:
         """
         Create deterministic mapping from token ID to expert ID.

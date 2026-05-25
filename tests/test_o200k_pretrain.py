@@ -78,6 +78,38 @@ def test_reduce_average_tensor_defers_to_single_item_sync():
     assert reduce_average_tensor(value, distributed=False) == pytest.approx(3.5)
 
 
+def test_topk_primary_weight_schedule_ramps_toward_final():
+    from complexity.training.o200k.runtime import scheduled_topk_primary_weight
+
+    assert scheduled_topk_primary_weight(0, 100, 0.5, 0.9, 0.5) == pytest.approx(0.5)
+    assert scheduled_topk_primary_weight(50, 100, 0.5, 0.9, 0.5) == pytest.approx(0.9)
+    assert scheduled_topk_primary_weight(100, 100, 0.5, 0.9, 0.5) == pytest.approx(0.9)
+
+    mid = scheduled_topk_primary_weight(25, 100, 0.5, 0.9, 0.5)
+    assert 0.5 < mid < 0.9
+
+
+def test_apply_topk_primary_weight_updates_token_routed_layers():
+    from complexity.core.mlp.base import MLPConfig
+    from complexity.core.mlp.token_routed import TokenRoutedMLP
+    from complexity.training.o200k.runtime import apply_topk_primary_weight
+
+    mlp = TokenRoutedMLP(
+        MLPConfig(
+            hidden_size=8,
+            intermediate_size=16,
+            num_experts=4,
+            vocab_size=16,
+            shared_expert=False,
+            top_k=2,
+            top_k_primary_weight=0.5,
+        )
+    )
+
+    assert apply_topk_primary_weight(mlp, 0.85) == 1
+    assert mlp._primary_weight == pytest.approx(0.85)
+
+
 def test_liger_fused_ce_availability_is_exposed(monkeypatch):
     from complexity.core.losses import fused_ce
 

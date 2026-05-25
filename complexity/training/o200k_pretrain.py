@@ -31,6 +31,7 @@ from complexity.core.losses import (
 from complexity.models import ComplexityModel
 from complexity.training.o200k import (
     PROFILES,
+    apply_topk_primary_weight,
     batch_expert_counts,
     build_parser,
     build_loaders,
@@ -41,6 +42,7 @@ from complexity.training.o200k import (
     make_config,
     reduce_average_tensor,
     save_checkpoint,
+    scheduled_topk_primary_weight,
     text_token_frequencies,
     token_shard_frequencies,
     tokenizer_token_classes,
@@ -162,6 +164,7 @@ def main():
             f"shared_chunk={args.shared_expert_chunk_tokens}, "
             f"grad_ckpt={args.grad_ckpt}, "
             f"experts=4, top_k={args.top_k}, primary_w={args.top_k_primary_weight}, "
+            f"primary_w_final={args.top_k_primary_weight_final}, "
             f"learn_gates={args.learn_shared_routed_gates}, "
             f"gates=({args.shared_gate_init},{args.routed_gate_init}), "
             f"use_mu={args.use_mu_guidance}, mu_clamp={args.mu_clamp}, mu_norm={args.mu_norm}, "
@@ -276,6 +279,14 @@ def main():
         should_log = step == 1 or step % args.log_steps == 0 or should_eval
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
+        topk_primary_weight = scheduled_topk_primary_weight(
+            step,
+            args.steps,
+            args.top_k_primary_weight,
+            args.top_k_primary_weight_final,
+            args.top_k_primary_weight_schedule_ratio,
+        )
+        apply_topk_primary_weight(raw_model, topk_primary_weight)
         optimizer.zero_grad(set_to_none=True)
         with autocast(device, dtype=amp_dtype, enabled=amp_dtype is not None):
             outputs = model(input_ids, return_logits=False)
@@ -349,7 +360,12 @@ def main():
                     ],
                 ])
                 csv_file.flush()
-                pbar.set_postfix(loss=f"{train_loss:.4f}", eval=f"{eval_loss:.4f}", tok_s=f"{tok_s:.0f}")
+                pbar.set_postfix(
+                    loss=f"{train_loss:.4f}",
+                    eval=f"{eval_loss:.4f}",
+                    tok_s=f"{tok_s:.0f}",
+                    topk_w=f"{topk_primary_weight:.3f}",
+                )
             t_log = now
             tokens_since_log = 0
 

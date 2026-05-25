@@ -15,7 +15,14 @@ from .cli import build_parser
 from .checkpointing import load_checkpoint, save_checkpoint
 from .optimizer import build_optimizer
 from .profiles import PROFILES, make_config
-from .runtime import evaluate, init_distributed, reduce_average, reduce_average_tensor
+from .runtime import (
+    apply_topk_primary_weight,
+    evaluate,
+    init_distributed,
+    reduce_average,
+    reduce_average_tensor,
+    scheduled_topk_primary_weight,
+)
 
 __all__ = [
     "PROFILES",
@@ -28,6 +35,8 @@ __all__ = [
     "init_distributed",
     "reduce_average",
     "reduce_average_tensor",
+    "scheduled_topk_primary_weight",
+    "apply_topk_primary_weight",
     "RandomTokenDataset",
     "LocalTextDataset",
     "FineWebDataset",
