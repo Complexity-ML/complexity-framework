@@ -280,7 +280,7 @@ def main():
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
         topk_primary_weight = scheduled_topk_primary_weight(
-            step,
+            step - 1,
             args.steps,
             args.top_k_primary_weight,
             args.top_k_primary_weight_final,
