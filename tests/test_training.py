@@ -72,6 +72,38 @@ class TestTrainer:
 
         assert trainer is not None
 
+    def test_evaluate_runs_without_backward(self, tmp_path):
+        """Evaluation should compute loss without touching gradients."""
+        from complexity.training import Trainer, TrainingConfig
+
+        model = torch.nn.Linear(1, 1)
+        training_config = TrainingConfig(
+            max_steps=1,
+            learning_rate=1e-4,
+            precision="fp32",
+            use_fsdp=False,
+            checkpoint_dir=str(tmp_path / "checkpoints"),
+            log_dir=str(tmp_path / "logs"),
+        )
+
+        batch = {"x": torch.ones(1, 1)}
+
+        def compute_loss(m, b):
+            return m(b["x"]).sum()
+
+        trainer = Trainer(
+            model=model,
+            config=training_config,
+            train_dataloader=[batch],
+            eval_dataloader=[batch],
+            compute_loss=compute_loss,
+        )
+
+        eval_loss = trainer.evaluate()
+
+        assert isinstance(eval_loss, float)
+        assert all(p.grad is None for p in model.parameters())
+
     @pytest.mark.skip(reason="Full training test - expensive")
     def test_train_step(self):
         """Test single training step."""

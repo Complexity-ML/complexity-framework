@@ -58,6 +58,15 @@ from .streaming import (
     InterleavedDataset,
 )
 
+from .token_shards import (
+    TokenShardDataset,
+    build_token_shard_from_texts,
+    iter_texts_from_files,
+    load_token_shard,
+    token_shard_frequencies,
+    write_token_shard,
+)
+
 from .tokenization import (
     # Base tokenizers
     Tokenizer,
@@ -99,6 +108,12 @@ __all__ = [
     "StreamingDataset",
     "ShardedDataset",
     "InterleavedDataset",
+    "TokenShardDataset",
+    "build_token_shard_from_texts",
+    "iter_texts_from_files",
+    "load_token_shard",
+    "token_shard_frequencies",
+    "write_token_shard",
     # Base tokenizers
     "Tokenizer",
     "BPETokenizer",

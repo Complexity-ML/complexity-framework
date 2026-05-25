@@ -15,6 +15,7 @@ import logging
 import time
 import math
 import warnings
+from contextlib import nullcontext
 
 warnings.filterwarnings("ignore", message=".*epoch parameter in.*scheduler.step.*")
 
@@ -370,9 +371,24 @@ class Trainer:
 
                         step_time = time.time() - step_start
                         self.metrics.log_step_time(step_time)
+                        loss_value = float(loss.detach().item())
+                        lr = self.scheduler.get_last_lr()[0]
+                        self.metrics.update(
+                            {
+                                "loss": loss_value,
+                                "ppl": math.exp(min(loss_value, 20)),
+                                "lr": lr,
+                            },
+                            step=self.global_step,
+                        )
 
-                        if self.eval_dataloader and self.global_step % self.config.eval_steps == 0:
+                        if (
+                            self.eval_dataloader
+                            and self.config.eval_steps > 0
+                            and self.global_step % self.config.eval_steps == 0
+                        ):
                             eval_loss = self.evaluate()
+                            self.metrics.update({"eval_loss": eval_loss}, step=self.global_step)
                             if self.is_main:
                                 logger.info(f"Step {self.global_step} - Eval Loss: {eval_loss:.4f}")
 
@@ -380,7 +396,7 @@ class Trainer:
                             self._save_checkpoint()
 
                         for callback in self.callbacks:
-                            callback(self, self.global_step, loss.item())
+                            callback(self, self.global_step, loss_value)
 
                         if self.global_step >= self.config.max_steps:
                             break
@@ -401,20 +417,28 @@ class Trainer:
 
         return summary
 
-    def _training_step(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Forward + backward pass under autocast."""
+    def _autocast_context(self):
+        """Return the appropriate autocast context for this trainer/device."""
         if self.config.precision in ["fp16", "bf16"]:
             dtype = torch.float16 if self.config.precision == "fp16" else torch.bfloat16
-            with torch.autocast(device_type="cuda", dtype=dtype):
-                loss = self.compute_loss(self.model, batch)
-                scaled_loss = loss / self.config.gradient_accumulation_steps
-                if self.scaler:
-                    self.scaler.scale(scaled_loss).backward()
-                else:
-                    scaled_loss.backward()
+            if self.device.type == "cuda":
+                return torch.autocast(device_type="cuda", dtype=dtype)
+            if self.device.type == "cpu" and dtype == torch.bfloat16:
+                return torch.autocast(device_type="cpu", dtype=dtype)
+        return nullcontext()
+
+    def _compute_batch_loss(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Compute loss under the configured autocast policy."""
+        with self._autocast_context():
+            return self.compute_loss(self.model, batch)
+
+    def _training_step(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Forward + backward pass under autocast."""
+        loss = self._compute_batch_loss(batch)
+        scaled_loss = loss / self.config.gradient_accumulation_steps
+        if self.scaler:
+            self.scaler.scale(scaled_loss).backward()
         else:
-            loss = self.compute_loss(self.model, batch)
-            scaled_loss = loss / self.config.gradient_accumulation_steps
             scaled_loss.backward()
 
         return loss
@@ -615,7 +639,7 @@ class Trainer:
         num_batches = 0
 
         for batch in self.eval_dataloader:
-            loss = self._training_step(batch)
+            loss = self._compute_batch_loss(batch)
             total_loss += loss.item()
             num_batches += 1
 

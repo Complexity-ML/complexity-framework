@@ -144,6 +144,41 @@ def test_o200k_parser_uses_auto_loss_backend_by_default():
     assert args.loss_backend == "auto"
 
 
+def test_o200k_parser_supports_token_shards():
+    from complexity.training.o200k_pretrain import build_parser
+
+    args = build_parser().parse_args(["--dataset", "tokens", "--tokens-path", "data/tokens"])
+
+    assert args.dataset == "tokens"
+    assert args.tokens_path == "data/tokens"
+
+
+def test_token_shard_dataset_and_frequencies(tmp_path):
+    from complexity.data.token_shards import (
+        TokenShardDataset,
+        load_token_shard,
+        token_shard_frequencies,
+        write_token_shard,
+    )
+
+    write_token_shard(tmp_path, range(100), vocab_size=128, tokenizer="dummy")
+    tokens, metadata = load_token_shard(tmp_path)
+
+    assert tokens.shape == (100,)
+    assert metadata["num_tokens"] == 100
+    assert metadata["dtype"] == "<u2"
+    assert len(metadata["sha256"]) == 64
+
+    freqs = token_shard_frequencies(tmp_path, vocab_size=128)
+    assert freqs.sum().item() == 100
+    assert freqs[42].item() == 1
+
+    ds = TokenShardDataset(tmp_path, seq_len=8, seed=0, eval_ratio=0.2)
+    batch = next(iter(ds))
+    assert batch["input_ids"].shape == (8,)
+    assert batch["labels"].shape == (8,)
+
+
 def test_token_routed_topk_reuses_sort_without_changing_output():
     from complexity.core.mlp.base import MLPConfig
     from complexity.core.mlp.token_routed import TokenRoutedMLP
