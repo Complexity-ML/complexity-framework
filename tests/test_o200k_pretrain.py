@@ -218,6 +218,49 @@ def test_token_routed_topk_reuses_sort_without_changing_output():
     assert torch.allclose(out_fast.reshape_as(out_ref), out_ref, atol=1e-6)
 
 
+def test_token_routed_masked_dispatch_matches_token_reference():
+    from complexity.core.mlp.base import MLPConfig
+    from complexity.core.mlp.token_routed import TokenRoutedMLP, sort_tokens_by_expert
+
+    torch.manual_seed(0)
+    cfg = MLPConfig(
+        hidden_size=8,
+        intermediate_size=16,
+        num_experts=4,
+        vocab_size=64,
+        shared_expert=False,
+        top_k=1,
+    )
+    mlp = TokenRoutedMLP(cfg)
+    flat_x = torch.randn(11, 8)
+    expert_ids = torch.tensor([0, 3, 1, 0, 2, 3, 1, 2, 0, 3, 2])
+    sorted_x, sorted_idx, expert_offsets, expert_counts = sort_tokens_by_expert(
+        flat_x, expert_ids, mlp.num_experts
+    )
+
+    out = mlp._dispatch_sorted(
+        flat_x,
+        sorted_x,
+        sorted_idx,
+        expert_offsets,
+        expert_counts,
+        mlp.gate_proj_w,
+        mlp.up_proj_w,
+        mlp.down_proj_w,
+        use_cggr=False,
+        H=8,
+    )
+
+    ref = torch.empty_like(flat_x)
+    for i, expert in enumerate(expert_ids.tolist()):
+        x = flat_x[i]
+        gate = x @ mlp.gate_proj_w[expert]
+        up = x @ mlp.up_proj_w[expert]
+        ref[i] = (torch.nn.functional.silu(gate) * up) @ mlp.down_proj_w[expert]
+
+    assert torch.allclose(out, ref, atol=1e-6)
+
+
 def test_shared_expert_chunking_matches_dense_path():
     from complexity.core.mlp.base import MLPConfig
     from complexity.core.mlp.token_routed import TokenRoutedMLP

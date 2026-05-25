@@ -303,8 +303,9 @@ class TokenRoutedMLP(MLPBase):
             self._fsdp_checked = True
 
         # Routing path selection:
-        #   - bmm (default, universal) : one batched matmul over all experts,
-        #     cuBLAS on CUDA, MPS-native on Apple, perfectly autograd-friendly.
+        #   - masked_dense (default, universal): fixed expert loop, no CPU
+        #     synchronization, autograd-friendly. It spends extra routed FLOPs
+        #     to avoid stalling the device on per-batch bucket sizes.
         #   - CGGR Triton (cuda + opt-in) : custom grouped-GEMM kernel,
         #     kept as fallback via config flag `use_cggr=True`.
         kernel_policy = getattr(self.config, "use_custom_kernels", "auto")
@@ -315,9 +316,8 @@ class TokenRoutedMLP(MLPBase):
             and cggr_grouped_gemm_autograd is not None
         )
 
-        # Log path selection once per process. Helps diagnose why a run is
-        # slower than expected (bmm path has 4x .cpu().tolist() syncs per
-        # step under top_k=2).
+        # Log path selection once per process. Helps diagnose whether a run is
+        # on the custom grouped-GEMM path or the universal no-sync fallback.
         if not getattr(self.__class__, "_path_logged", False):
             self.__class__._path_logged = True
             cfg = self.config
@@ -338,7 +338,7 @@ class TokenRoutedMLP(MLPBase):
                 logger.info("[TokenRoutedMLP] dispatch path = CGGR (Triton grouped-GEMM, no sync)")
             else:
                 logger.info(
-                    "[TokenRoutedMLP] dispatch path = bmm (padded, .cpu() sync) "
+                    "[TokenRoutedMLP] dispatch path = masked_dense (no CPU sync) "
                     f"(CGGR rejected: {', '.join(why_not_cggr) if why_not_cggr else 'unknown'})"
                 )
 
@@ -482,39 +482,45 @@ class TokenRoutedMLP(MLPBase):
             out[sorted_idx] = sorted_routed.to(out.dtype)
             return out
 
-        # bmm path — pad each bucket to max(counts), three torch.bmm.
-        # NOTE: a previous "fast bmm" optimisation assumed Zipf routing yields
-        # exactly chunk=N/E tokens per expert *per batch*. That's only true in
-        # expectation; per-batch counts fluctuate (an async assert fired on the
-        # very first step). Padded bmm is the correct fallback until the CGGR
-        # Triton path is confirmed working on ROCm gfx950.
-        counts_cpu = expert_counts.cpu().tolist()
-        offsets_cpu = expert_offsets.cpu().tolist()
-        capacity = max(counts_cpu) if counts_cpu else 0
+        return self._dispatch_masked_dense(
+            flat_x, sorted_x, sorted_idx, expert_counts, gate_w, up_w, down_w,
+        )
 
-        if capacity == 0:
-            return torch.zeros_like(flat_x)
+    def _dispatch_masked_dense(
+        self,
+        flat_x: torch.Tensor,
+        sorted_x: torch.Tensor,
+        sorted_idx: torch.Tensor,
+        expert_counts: torch.Tensor,
+        gate_w: torch.Tensor,
+        up_w: torch.Tensor,
+        down_w: torch.Tensor,
+    ) -> torch.Tensor:
+        """Universal no-sync fallback for Token-Routed dispatch.
 
-        padded = sorted_x.new_zeros(self.num_experts, capacity, H)
+        The old padded-bmm fallback needed ``expert_counts.cpu().tolist()`` to
+        allocate per-batch buckets, creating a device/host sync every dispatch.
+        This path keeps all control data on-device. It computes each expert over
+        the full sorted token block and masks inactive rows, trading extra routed
+        FLOPs for stable step times and no CPU synchronization.
+        """
+
+        sorted_expert_ids = torch.repeat_interleave(
+            torch.arange(self.num_experts, device=sorted_x.device),
+            expert_counts.to(device=sorted_x.device),
+            output_size=sorted_x.size(0),
+        )
+        sorted_routed = torch.zeros_like(flat_x)
         for e in range(self.num_experts):
-            n = counts_cpu[e]
-            if n == 0:
-                continue
-            s = offsets_cpu[e]
-            padded[e, :n] = sorted_x[s:s + n]
-
-        gate = torch.bmm(padded, gate_w)
-        up = torch.bmm(padded, up_w)
-        inter = fused_silu_mul(gate, up)
-        out_padded = torch.bmm(inter, down_w)
+            mask = (sorted_expert_ids == e).unsqueeze(-1).to(sorted_x.dtype)
+            x_e = sorted_x * mask
+            gate = x_e @ gate_w[e]
+            up = x_e @ up_w[e]
+            expert_out = fused_silu_mul(gate, up) @ down_w[e]
+            sorted_routed = sorted_routed + expert_out.to(sorted_routed.dtype) * mask
 
         out = torch.empty_like(flat_x)
-        for e in range(self.num_experts):
-            n = counts_cpu[e]
-            if n == 0:
-                continue
-            s = offsets_cpu[e]
-            out[sorted_idx[s:s + n]] = out_padded[e, :n].to(out.dtype)
+        out[sorted_idx] = sorted_routed.to(out.dtype)
         return out
 
     def _dispatch_static_all_experts(
