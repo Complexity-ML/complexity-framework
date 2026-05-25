@@ -24,12 +24,9 @@ class MLPConfig:
     num_experts: int = 1  # 1 = standard MLP, >1 = MoE
     vocab_size: int = 100000  # For token-routed MoE
     hash_routing: str = ""  # "" = modulo (token_id % E), "learned" = learned projection router
-    routing_strategy: str = "zipf"  # "zipf", "zipf_token_class", or "zipf_bigram"
+    routing_strategy: str = "zipf"  # "zipf", "zipf_token_class", or "zipf_context_sig"
     token_frequencies: Optional[torch.Tensor] = None  # [vocab_size] token counts for frequency-balanced routing
     token_classes: Optional[torch.Tensor] = None  # [vocab_size] coarse token classes for class-balanced routing
-    bigram_keys: Optional[torch.Tensor] = None  # [N] sorted int64: prev_id * vocab_size + cur_id
-    bigram_experts: Optional[torch.Tensor] = None  # [N] long: expert assignment per bigram key (unpermuted)
-    bigram_bos_id: int = 0  # token id used as "prev" for the first position in each sequence
     # Context-signature routing (zipf_context_sig): widen the routing key from
     # one previous token to a hashed window of K previous token classes.
     ctx_sig_keys: Optional[torch.Tensor] = None  # [N] sorted int64: sig * vocab_size + cur_id
@@ -66,9 +63,9 @@ class MLPConfig:
             raise ValueError("top_k cannot exceed num_experts")
         if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
             raise ValueError("top_k_primary_weight must be in [0, 1]")
-        if self.routing_strategy not in {"zipf", "zipf_token_class", "zipf_bigram", "zipf_context_sig"}:
+        if self.routing_strategy not in {"zipf", "zipf_token_class", "zipf_context_sig"}:
             raise ValueError(
-                "routing_strategy must be 'zipf', 'zipf_token_class', 'zipf_bigram', or 'zipf_context_sig'"
+                "routing_strategy must be 'zipf', 'zipf_token_class', or 'zipf_context_sig'"
             )
         if isinstance(self.use_cggr, str) and self.use_cggr.strip().lower() not in {"auto", "true", "false"}:
             raise ValueError("use_cggr must be one of 'auto', 'true', 'false', True, or False")

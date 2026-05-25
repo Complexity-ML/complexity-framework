@@ -118,14 +118,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--routing-strategy",
-        choices=["zipf", "zipf_token_class", "zipf_bigram", "zipf_context_sig"],
+        choices=["zipf", "zipf_token_class", "zipf_context_sig"],
         default="zipf",
     )
     parser.add_argument(
-        "--bigram-top-n",
-        type=int,
-        default=200_000,
-        help="Number of top frequent bigrams to override unigram routing (zipf_bigram only).",
+        "--mlp-type",
+        type=str,
+        default=None,
+        help="Override the MLP type (e.g. 'swiglu' for a dense baseline). Defaults to the profile's token_routed.",
     )
     parser.add_argument(
         "--context-window",

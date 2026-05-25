@@ -73,10 +73,7 @@ class ModelConfig:
     num_experts: int = 1  # 1 = standard MLP, >1 = MoE
     token_frequencies: Optional[torch.Tensor] = None  # Zipf-balanced routing
     token_classes: Optional[torch.Tensor] = None  # Coarse token classes for optional class-balanced routing
-    routing_strategy: str = "zipf"  # zipf, zipf_token_class, zipf_bigram
-    bigram_keys: Optional[torch.Tensor] = None  # Sorted int64 [N], prev_id*vocab_size + cur_id
-    bigram_experts: Optional[torch.Tensor] = None  # Long [N], unpermuted expert per bigram key
-    bigram_bos_id: int = 0  # Token id used as predecessor for the first position of each sequence
+    routing_strategy: str = "zipf"  # zipf, zipf_token_class, zipf_context_sig
     ctx_sig_keys: Optional[torch.Tensor] = None  # Sorted int64 [N], sig*vocab_size + cur_id
     ctx_sig_experts: Optional[torch.Tensor] = None  # Long [N], unpermuted expert per (sig, cur_id)
     token_class_table: Optional[torch.Tensor] = None  # Long [vocab_size], lexical class per token id
@@ -202,9 +199,9 @@ class ModelConfig:
             raise ValueError("top_k cannot exceed num_experts")
         if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
             raise ValueError("top_k_primary_weight must be in [0, 1]")
-        if self.routing_strategy not in {"zipf", "zipf_token_class", "zipf_bigram", "zipf_context_sig"}:
+        if self.routing_strategy not in {"zipf", "zipf_token_class", "zipf_context_sig"}:
             raise ValueError(
-                "routing_strategy must be 'zipf', 'zipf_token_class', 'zipf_bigram', or 'zipf_context_sig'"
+                "routing_strategy must be 'zipf', 'zipf_token_class', or 'zipf_context_sig'"
             )
         if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
             raise ValueError("shared_intermediate_size must be positive when set")

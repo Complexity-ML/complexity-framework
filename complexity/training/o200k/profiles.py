@@ -76,7 +76,7 @@ def make_config(args) -> ModelConfig:
         vocab_size=args.vocab_size,
         max_position_embeddings=2048,
         attention_type="gqa",
-        mlp_type="token_routed",
+        mlp_type=getattr(args, "mlp_type", None) or "token_routed",
         num_experts=4,
         shared_expert=True,
         shared_intermediate_size=args.shared_intermediate_size,

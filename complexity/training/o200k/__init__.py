@@ -8,9 +8,8 @@ from .data import (
     build_loaders,
     infer_vocab_size,
     text_token_frequencies,
-    text_bigram_top_n,
     text_context_sig_top_n,
-    build_bigram_expert_mapping,
+    build_key_expert_mapping,
     token_shard_frequencies,
     tokenizer_token_classes,
 )
@@ -47,9 +46,8 @@ __all__ = [
     "build_loaders",
     "infer_vocab_size",
     "text_token_frequencies",
-    "text_bigram_top_n",
     "text_context_sig_top_n",
-    "build_bigram_expert_mapping",
+    "build_key_expert_mapping",
     "token_shard_frequencies",
     "tokenizer_token_classes",
 ]
