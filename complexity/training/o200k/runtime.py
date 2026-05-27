@@ -122,3 +122,70 @@ def apply_topk_primary_weight(model, weight: float) -> int:
         setter(weight)
         count += 1
     return count
+
+
+def scheduled_value(
+    step: int,
+    total_steps: int,
+    start: float,
+    final: float | None,
+    schedule_ratio: float,
+) -> float:
+    """Cosine ramp helper for optional scalar curricula."""
+    if final is None:
+        return float(start)
+    ratio = min(1.0, max(0.0, float(schedule_ratio)))
+    ramp_steps = max(1, int(max(1, total_steps) * ratio))
+    if ratio <= 0.0 or ramp_steps <= 1:
+        return float(final)
+    progress = min(1.0, max(0.0, step / ramp_steps))
+    blend = 0.5 - 0.5 * math.cos(math.pi * progress)
+    return float(start) + (float(final) - float(start)) * blend
+
+
+@torch.no_grad()
+def apply_shared_routed_gates(model, shared_gate: float | None, routed_gate: float | None) -> int:
+    """Apply scheduled shared/routed scalar gates to Token-Routed layers."""
+    if shared_gate is None and routed_gate is None:
+        return 0
+    count = 0
+    for module in model.modules():
+        shared_param = getattr(module, "shared_output_gate", None)
+        routed_param = getattr(module, "routed_output_gate", None)
+        if shared_param is None or routed_param is None:
+            continue
+        if shared_gate is not None:
+            shared_param.fill_(float(shared_gate))
+        if routed_gate is not None:
+            routed_param.fill_(float(routed_gate))
+        count += 1
+    return count
+
+
+def expert_diversity_loss(model, target: str = "down") -> torch.Tensor | None:
+    """Penalize expert weight colinearity within each Token-Routed layer.
+
+    The penalty is the mean squared off-diagonal cosine similarity between
+    expert matrices. Minimizing it encourages experts to carve different
+    directions while leaving the deterministic routing rule unchanged.
+    """
+    losses = []
+    for module in model.modules():
+        down_w = getattr(module, "down_proj_w", None)
+        if down_w is None or down_w.ndim != 3:
+            continue
+        weights = [down_w]
+        if target == "all":
+            gate_w = getattr(module, "gate_proj_w", None)
+            up_w = getattr(module, "up_proj_w", None)
+            if gate_w is not None and up_w is not None:
+                weights = [gate_w, up_w, down_w]
+        for weight in weights:
+            flat = weight.float().reshape(weight.shape[0], -1)
+            flat = torch.nn.functional.normalize(flat, dim=1, eps=1e-6)
+            sim = flat @ flat.transpose(0, 1)
+            off_diag = sim - torch.eye(sim.shape[0], device=sim.device, dtype=sim.dtype)
+            losses.append(off_diag.pow(2).sum() / max(1, sim.numel() - sim.shape[0]))
+    if not losses:
+        return None
+    return torch.stack(losses).mean()
