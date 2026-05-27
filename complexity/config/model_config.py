@@ -72,17 +72,11 @@ class ModelConfig:
     # === MoE (Token-Routed) ===
     num_experts: int = 1  # 1 = standard MLP, >1 = MoE
     token_frequencies: Optional[torch.Tensor] = None  # Zipf-balanced routing
-    token_classes: Optional[torch.Tensor] = None  # Coarse token classes for optional class-balanced routing
-    routing_strategy: str = "zipf"  # zipf, zipf_token_class, zipf_context_sig
-    ctx_sig_keys: Optional[torch.Tensor] = None  # Sorted int64 [N], sig*vocab_size + cur_id
-    ctx_sig_experts: Optional[torch.Tensor] = None  # Long [N], unpermuted expert per (sig, cur_id)
-    token_class_table: Optional[torch.Tensor] = None  # Long [vocab_size], lexical class per token id
-    ctx_window: int = 0  # K previous tokens feeding the context signature
-    ctx_num_buckets: int = 0  # Number of distinct signature buckets after hashing
+    routing_strategy: str = "zipf"  # zipf, lsh_hidden
     lsh_routing: bool = False  # Route on a fixed random-hyperplane hash of h (semantic), not the token id
     lsh_bits: int = 0  # Number of hyperplanes (0 = ceil(log2(num_experts)))
     lsh_from_layer: int = 0  # LSH routing only for layers >= this index; earlier layers stay lexical
-    lsh_threshold_mode: str = "batch_median"  # batch_median balances training batches; zero is stable for inference.
+    lsh_threshold_mode: str = "zero"  # zero is stable for inference; batch_median maximises training-batch balance.
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
     shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
     shared_expert_chunk_tokens: int = 0  # 0 = one dense pass; >0 chunks token dimension to reduce shared SwiGLU activation peak.
@@ -203,10 +197,8 @@ class ModelConfig:
             raise ValueError("top_k cannot exceed num_experts")
         if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
             raise ValueError("top_k_primary_weight must be in [0, 1]")
-        if self.routing_strategy not in {"zipf", "zipf_token_class", "zipf_context_sig", "lsh_hidden"}:
-            raise ValueError(
-                "routing_strategy must be 'zipf', 'zipf_token_class', 'zipf_context_sig', or 'lsh_hidden'"
-            )
+        if self.routing_strategy not in {"zipf", "lsh_hidden"}:
+            raise ValueError("routing_strategy must be 'zipf' or 'lsh_hidden'")
         if self.lsh_threshold_mode not in {"batch_median", "zero"}:
             raise ValueError("lsh_threshold_mode must be 'batch_median' or 'zero'")
         if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
@@ -229,17 +221,6 @@ class ModelConfig:
                     f"token_frequencies length ({self.token_frequencies.numel()}) "
                     f"must match vocab_size ({self.vocab_size})"
                 )
-        if self.token_classes is not None:
-            if not isinstance(self.token_classes, torch.Tensor):
-                raise ValueError("token_classes must be a torch.Tensor")
-            if self.token_classes.ndim != 1:
-                raise ValueError("token_classes must be a 1D tensor")
-            if self.token_classes.numel() != self.vocab_size:
-                raise ValueError(
-                    f"token_classes length ({self.token_classes.numel()}) "
-                    f"must match vocab_size ({self.vocab_size})"
-                )
-
     @property
     def head_dim(self) -> int:
         """Dimension per attention head."""
@@ -292,6 +273,8 @@ class ModelConfig:
         import dataclasses
         valid_keys = {f.name for f in dataclasses.fields(cls)}
         filtered = {k: v for k, v in data.items() if k in valid_keys}
+        if filtered.get("routing_strategy") not in {None, "zipf", "lsh_hidden"}:
+            filtered["routing_strategy"] = "zipf"
         return cls(**filtered)
 
     @classmethod

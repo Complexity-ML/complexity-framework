@@ -154,8 +154,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--routing-strategy",
-        choices=["zipf", "zipf_token_class", "zipf_context_sig", "lsh_hidden"],
+        choices=["zipf", "lsh_hidden"],
         default="zipf",
+        help="Token-Routed strategy: zipf lexical routing, or lsh_hidden semantic routing.",
     )
     parser.add_argument(
         "--lsh-bits",
@@ -173,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--lsh-threshold-mode",
         choices=["batch_median", "zero"],
-        default="batch_median",
+        default="zero",
         help="Threshold for lsh_hidden bits. batch_median balances each training batch; zero is stable for inference.",
     )
     parser.add_argument(
@@ -181,39 +182,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Override the MLP type (e.g. 'swiglu' for a dense baseline). Defaults to the profile's token_routed.",
-    )
-    parser.add_argument(
-        "--context-window",
-        type=int,
-        default=4,
-        help="K previous tokens that feed the context signature (zipf_context_sig only).",
-    )
-    parser.add_argument(
-        "--context-buckets",
-        type=int,
-        default=32,
-        help="Number of distinct context signatures after hashing (zipf_context_sig only).",
-    )
-    parser.add_argument(
-        "--context-top-n",
-        type=int,
-        default=200_000,
-        help="Number of top (sig, cur) pairs to override unigram routing (zipf_context_sig only).",
-    )
-    parser.add_argument(
-        "--ctx-expert-mapping",
-        choices=["balance", "distributional"],
-        default="balance",
-        help="How (sig, cur) keys are assigned to experts (zipf_context_sig only). "
-        "'balance' = load bin-packing (default); 'distributional' = cluster keys by "
-        "corpus co-occurrence so similar tokens share an expert.",
-    )
-    parser.add_argument(
-        "--ctx-cluster-slack",
-        type=float,
-        default=1.05,
-        help="Capacity slack for distributional mapping: cap = slack * mean load. "
-        "1.0 = perfectly balanced (breaks clusters), higher = more coherent clusters, worse balance.",
     )
     parser.add_argument("--use-mu-guidance", action="store_true")
     parser.add_argument("--mu-clamp", action="store_true")

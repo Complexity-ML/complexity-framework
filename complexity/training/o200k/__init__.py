@@ -8,11 +8,6 @@ from .data import (
     build_loaders,
     infer_vocab_size,
     text_token_frequencies,
-    text_context_sig_top_n,
-    build_key_expert_mapping,
-    text_token_cooccurrence_embeddings,
-    build_clustered_expert_mapping,
-    build_ctx_expert_mapping,
     token_shard_frequencies,
     tokenizer_token_classes,
 )
@@ -55,11 +50,6 @@ __all__ = [
     "build_loaders",
     "infer_vocab_size",
     "text_token_frequencies",
-    "text_context_sig_top_n",
-    "build_key_expert_mapping",
-    "text_token_cooccurrence_embeddings",
-    "build_clustered_expert_mapping",
-    "build_ctx_expert_mapping",
     "token_shard_frequencies",
     "tokenizer_token_classes",
 ]

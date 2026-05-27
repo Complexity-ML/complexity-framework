@@ -34,7 +34,6 @@ from complexity.training.o200k import (
     apply_shared_routed_gates,
     apply_topk_primary_weight,
     batch_expert_counts,
-    build_ctx_expert_mapping,
     build_parser,
     build_loaders,
     build_optimizer,
@@ -47,10 +46,8 @@ from complexity.training.o200k import (
     scheduled_value,
     save_checkpoint,
     scheduled_topk_primary_weight,
-    text_context_sig_top_n,
     text_token_frequencies,
     token_shard_frequencies,
-    tokenizer_token_classes,
 )
 from complexity.training.moe_telemetry import global_expert_shares, global_tr_diagnostics
 from complexity.training.run_config import (
@@ -135,43 +132,11 @@ def main():
             args.tokenizer,
             config.vocab_size,
         )
-    if args.routing_strategy == "zipf_token_class":
-        config.token_classes = tokenizer_token_classes(args.tokenizer, config.vocab_size)
     if args.routing_strategy == "lsh_hidden":
         config.lsh_routing = True
         config.lsh_bits = int(getattr(args, "lsh_bits", 0))
         config.lsh_from_layer = int(getattr(args, "lsh_from_layer", 0))
-        config.lsh_threshold_mode = getattr(args, "lsh_threshold_mode", "batch_median")
-    if args.routing_strategy == "zipf_context_sig":
-        if args.dataset != "text":
-            raise RuntimeError(
-                "routing_strategy=zipf_context_sig requires --dataset text with --text-file pointing at a corpus"
-            )
-        ctx_class_table = tokenizer_token_classes(args.tokenizer, config.vocab_size)
-        ctx_keys, ctx_counts = text_context_sig_top_n(
-            args.text_file,
-            args.tokenizer,
-            config.vocab_size,
-            top_n=args.context_top_n,
-            window=args.context_window,
-            num_buckets=args.context_buckets,
-            token_class_table=ctx_class_table,
-        )
-        config.ctx_sig_keys = ctx_keys
-        config.ctx_sig_experts = build_ctx_expert_mapping(
-            getattr(args, "ctx_expert_mapping", "balance"),
-            ctx_keys,
-            ctx_counts,
-            config.num_experts,
-            text_file=args.text_file,
-            tokenizer_path=args.tokenizer,
-            vocab_size=config.vocab_size,
-            window=int(args.context_window),
-            slack=float(getattr(args, "ctx_cluster_slack", 1.05)),
-        )
-        config.token_class_table = ctx_class_table
-        config.ctx_window = int(args.context_window)
-        config.ctx_num_buckets = int(args.context_buckets)
+        config.lsh_threshold_mode = getattr(args, "lsh_threshold_mode", "zero")
     raw_model = ComplexityModel(config).to(device)
     if args.grad_ckpt:
         raw_model.gradient_checkpointing_enable()
@@ -205,7 +170,7 @@ def main():
             f"grad_ckpt={args.grad_ckpt}, "
             f"experts=4, top_k={args.top_k}, primary_w={args.top_k_primary_weight}, "
             f"primary_w_final={args.top_k_primary_weight_final}, "
-            f"lsh_threshold={getattr(args, 'lsh_threshold_mode', 'batch_median')}, "
+            f"lsh_threshold={getattr(args, 'lsh_threshold_mode', 'zero')}, "
             f"learn_gates={args.learn_shared_routed_gates}, "
             f"gates=({args.shared_gate_init}->{args.shared_gate_final},"
             f"{args.routed_gate_init}->{args.routed_gate_final}), "

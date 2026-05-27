@@ -30,10 +30,7 @@ from complexity.core.mlp.token_routed import TokenRoutedMLP
 from complexity.models import ComplexityModel
 from complexity.training.o200k import (
     LocalTextDataset,
-    build_ctx_expert_mapping,
-    text_context_sig_top_n,
     text_token_frequencies,
-    tokenizer_token_classes,
 )
 from complexity.training.o200k.data import split_tokens
 from complexity.tokenizer import Tokenizer
@@ -54,34 +51,7 @@ def _build_model(data: dict, device: torch.device) -> ComplexityModel:
         args["tokenizer"],
         cfg["vocab_size"],
     )
-    if cfg.get("routing_strategy") == "zipf_context_sig":
-        class_table = tokenizer_token_classes(args["tokenizer"], cfg["vocab_size"])
-        ctx_keys, ctx_counts = text_context_sig_top_n(
-            args["text_file"],
-            args["tokenizer"],
-            cfg["vocab_size"],
-            top_n=int(args.get("context_top_n", 1000)),
-            window=int(args.get("context_window", cfg.get("ctx_window", 4))),
-            num_buckets=int(args.get("context_buckets", cfg.get("ctx_num_buckets", 32))),
-            token_class_table=class_table,
-        )
-        cfg["ctx_sig_keys"] = ctx_keys
-        cfg["ctx_sig_experts"] = build_ctx_expert_mapping(
-            args.get("ctx_expert_mapping", "balance"),
-            ctx_keys,
-            ctx_counts,
-            cfg["num_experts"],
-            text_file=args["text_file"],
-            tokenizer_path=args["tokenizer"],
-            vocab_size=cfg["vocab_size"],
-            window=int(args.get("context_window", cfg.get("ctx_window", 4))),
-            slack=float(args.get("ctx_cluster_slack", 1.05)),
-        )
-        cfg["token_class_table"] = class_table
-        cfg["ctx_window"] = int(args.get("context_window", cfg.get("ctx_window", 4)))
-        cfg["ctx_num_buckets"] = int(args.get("context_buckets", cfg.get("ctx_num_buckets", 32)))
-
-    config = ModelConfig(**cfg)
+    config = ModelConfig.from_dict(cfg)
     model = ComplexityModel(config)
     missing, unexpected = model.load_state_dict(data["model"], strict=False)
     ignored_missing = {
@@ -90,10 +60,6 @@ def _build_model(data: dict, device: torch.device) -> ComplexityModel:
         if any(
             suffix in name
             for suffix in (
-                "ctx_sig_keys",
-                "ctx_sig_experts",
-                "token_class_table",
-                "ctx_class_weights",
                 "expert_counts",
                 "last_shared_rms",
                 "last_routed_rms",
@@ -109,34 +75,32 @@ def _build_model(data: dict, device: torch.device) -> ComplexityModel:
     return model
 
 
-def _route_ids(module: TokenRoutedMLP, token_ids: torch.Tensor) -> torch.Tensor:
+def _route_ids(
+    module: TokenRoutedMLP,
+    token_ids: torch.Tensor,
+    hidden_states: torch.Tensor | None = None,
+) -> torch.Tensor:
     token_ids = token_ids.clamp(0, module.vocab_size - 1)
-    expert_ids = module.token_to_expert[token_ids]
-    routes = module.topk_token_to_expert[:, token_ids]
-    if getattr(module, "has_ctx_sig_routing", False) and module.top_k >= 2:
-        batch, seq = token_ids.shape
-        window = module.ctx_window
-        class_table = module.token_class_table.to(token_ids.device)
-        class_weights = module.ctx_class_weights.to(token_ids.device)
-        class_seq = class_table[token_ids]
-        padded = torch.cat(
-            [torch.zeros((batch, window), dtype=class_seq.dtype, device=class_seq.device), class_seq],
-            dim=1,
-        )
-        windows = padded.unfold(dimension=1, size=window, step=1)[:, :seq, :]
-        sig = (windows.long() * class_weights).sum(-1) % module.ctx_num_buckets
-        keys = sig.long() * module.vocab_size + token_ids.long()
-        flat_keys = keys.reshape(-1)
-        ctx_keys = module.ctx_sig_keys.to(flat_keys.device)
-        ctx_experts = module.ctx_sig_experts.to(flat_keys.device)
-        idx = torch.searchsorted(ctx_keys, flat_keys)
-        idx = idx.clamp(max=ctx_keys.numel() - 1)
-        found = ctx_keys[idx] == flat_keys
-        ctx_exp = ctx_experts[idx].to(expert_ids.dtype)
-        primary = expert_ids.reshape(-1)
-        secondary = routes[1].reshape(-1)
-        routes[1] = torch.where(found & (ctx_exp != primary), ctx_exp, secondary).view(batch, seq)
-    return routes
+    if getattr(module, "has_lsh_routing", False) and hidden_states is not None:
+        planes = module.lsh_planes.to(hidden_states.dtype)
+        bit_vals = module.lsh_bit_values.to(hidden_states.device)
+        proj = hidden_states @ planes.t()
+        if getattr(module.config, "lsh_threshold_mode", "zero") == "zero":
+            thresh = torch.zeros(proj.shape[-1], dtype=proj.dtype, device=proj.device)
+        else:
+            thresh = proj.reshape(-1, proj.shape[-1]).median(dim=0).values
+        bits = (proj > thresh).long()
+        bucket = (bits * bit_vals).sum(-1)
+        primary = module.lsh_bucket_to_expert[bucket]
+        routes = [primary]
+        if module.top_k >= 2:
+            margins = (proj - thresh).abs()
+            flip_order = torch.argsort(margins, dim=-1)
+            for idx in range(1, module.top_k):
+                flip_bit = flip_order[..., min(idx - 1, module.lsh_bits - 1)]
+                routes.append(module.lsh_bucket_to_expert[bucket ^ bit_vals[flip_bit]])
+        return torch.stack(routes, dim=0)
+    return module.topk_token_to_expert[:, token_ids]
 
 
 class RoutedOnlyCollector:
@@ -163,7 +127,7 @@ class RoutedOnlyCollector:
             token_ids = kwargs.get("token_ids")
             if token_ids is None:
                 return
-            routes = _route_ids(module, token_ids)
+            routes = _route_ids(module, token_ids, hidden)
             flat_x = hidden.reshape(-1, hidden.shape[-1])
             gate_w = module.gate_proj_w
             up_w = module.up_proj_w

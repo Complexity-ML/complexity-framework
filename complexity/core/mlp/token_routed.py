@@ -198,50 +198,6 @@ class TokenRoutedMLP(MLPBase):
             topk_token_to_expert,
         )
 
-        # Optional context-signature routing overlay: (sig, cur_id) -> expert,
-        # where sig is a polynomial hash of K previous token classes. Wider
-        # context than bigram while still a pure function of token ids.
-        cfg_ctx_keys = getattr(config, "ctx_sig_keys", None)
-        cfg_ctx_experts = getattr(config, "ctx_sig_experts", None)
-        cfg_ctx_classes = getattr(config, "token_class_table", None)
-        cfg_ctx_window = int(getattr(config, "ctx_window", 0))
-        cfg_ctx_buckets = int(getattr(config, "ctx_num_buckets", 0))
-        if (
-            cfg_ctx_keys is not None
-            and cfg_ctx_experts is not None
-            and cfg_ctx_classes is not None
-            and cfg_ctx_window > 0
-            and cfg_ctx_buckets > 0
-            and not self.gate_proj_w.is_meta
-        ):
-            layer_idx = int(getattr(self.config, "layer_idx", 0))
-            g = torch.Generator().manual_seed(0xC0DE + layer_idx)
-            permutation = torch.randperm(self.num_experts, generator=g, device="cpu")
-            permuted_ctx_experts = permutation[cfg_ctx_experts.detach().cpu().long()]
-            self.register_buffer(
-                "ctx_sig_keys", cfg_ctx_keys.detach().cpu().long(), persistent=False
-            )
-            self.register_buffer(
-                "ctx_sig_experts", permuted_ctx_experts, persistent=False
-            )
-            self.register_buffer(
-                "token_class_table",
-                cfg_ctx_classes.detach().cpu().long(),
-                persistent=False,
-            )
-            self.ctx_window = cfg_ctx_window
-            self.ctx_num_buckets = cfg_ctx_buckets
-            self.register_buffer(
-                "ctx_class_weights",
-                torch.tensor(
-                    [8**i for i in range(cfg_ctx_window)], dtype=torch.long
-                ),
-                persistent=False,
-            )
-            self.has_ctx_sig_routing = True
-        else:
-            self.has_ctx_sig_routing = False
-
         # Semantic LSH routing: route the primary (and top-k neighbour) experts
         # on a fixed random-hyperplane hash of the hidden state, not the token
         # id. The planes are seeded per layer and saved, so routing is fully
@@ -318,23 +274,16 @@ class TokenRoutedMLP(MLPBase):
         token→expert assignment, enriching specialization.
         """
         freqs = getattr(self.config, 'token_frequencies', None)
-        classes = getattr(self.config, 'token_classes', None)
-        strategy = getattr(self.config, 'routing_strategy', 'zipf')
-        if freqs is not None or strategy == "zipf_token_class":
-            if freqs is None:
-                freqs = torch.ones(vocab_size, dtype=torch.float32, device="cpu")
-            if strategy == "zipf_token_class" and classes is not None:
-                mapping = self._create_token_class_mapping(freqs, classes, vocab_size, num_experts)
-            else:
-                freqs = freqs.detach().cpu().float()
-                sorted_indices = freqs.argsort(descending=True)
-                mapping = torch.empty(vocab_size, dtype=torch.long, device="cpu")
-                expert_loads = [0.0] * num_experts
-                for rank_pos in range(vocab_size):
-                    token_id = sorted_indices[rank_pos].item()
-                    e = min(range(num_experts), key=lambda i: expert_loads[i])
-                    mapping[token_id] = e
-                    expert_loads[e] += freqs[token_id].item()
+        if freqs is not None:
+            freqs = freqs.detach().cpu().float()
+            sorted_indices = freqs.argsort(descending=True)
+            mapping = torch.empty(vocab_size, dtype=torch.long, device="cpu")
+            expert_loads = [0.0] * num_experts
+            for rank_pos in range(vocab_size):
+                token_id = sorted_indices[rank_pos].item()
+                e = min(range(num_experts), key=lambda i: expert_loads[i])
+                mapping[token_id] = e
+                expert_loads[e] += freqs[token_id].item()
         else:
             mapping = torch.arange(vocab_size, dtype=torch.long, device="cpu") % num_experts
 
@@ -397,39 +346,6 @@ class TokenRoutedMLP(MLPBase):
             routes[route_idx] = mapping
         return routes
 
-    def _create_token_class_mapping(
-        self,
-        freqs: torch.Tensor,
-        classes: torch.Tensor,
-        vocab_size: int,
-        num_experts: int,
-    ) -> torch.Tensor:
-        """Greedy routing that balances total Zipf load and coarse token classes."""
-
-        freqs = freqs.detach().cpu().float()
-        classes = classes.detach().cpu().long()
-        sorted_indices = freqs.argsort(descending=True)
-        mapping = torch.empty(vocab_size, dtype=torch.long, device="cpu")
-        expert_loads = [0.0] * num_experts
-        class_ids = sorted(set(int(x) for x in classes.tolist()))
-        class_loads = {
-            class_id: [0.0] * num_experts
-            for class_id in class_ids
-        }
-
-        for rank_pos in range(vocab_size):
-            token_id = int(sorted_indices[rank_pos].item())
-            cls = int(classes[token_id].item())
-            weight = float(freqs[token_id].item())
-            e = min(
-                range(num_experts),
-                key=lambda idx: (class_loads[cls][idx], expert_loads[idx]),
-            )
-            mapping[token_id] = e
-            expert_loads[e] += weight
-            class_loads[cls][e] += weight
-        return mapping
-
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -466,7 +382,7 @@ class TokenRoutedMLP(MLPBase):
             b2e = self.lsh_bucket_to_expert
             bit_vals = self.lsh_bit_values.to(hidden_states.device)
             proj = torch.matmul(hidden_states, planes.t())  # [B, S, bits]
-            if getattr(self.config, "lsh_threshold_mode", "batch_median") == "zero":
+            if getattr(self.config, "lsh_threshold_mode", "zero") == "zero":
                 thresh = torch.zeros(proj.shape[-1], dtype=proj.dtype, device=proj.device)
             else:
                 # Threshold each plane at the median of the projection over the
@@ -488,54 +404,6 @@ class TokenRoutedMLP(MLPBase):
                     nb = bucket ^ bit_vals[flip_bit]
                     routes.append(b2e[nb])
             route_expert_ids = torch.stack(routes, dim=0)  # [K, B, S]
-
-        # Context-signature overlay. Routing key = (sig, cur_id), where sig is
-        # a polynomial hash of K previous token classes. Applied as a soft
-        # bias on the secondary top-k route (top_k >= 2 required): the unigram
-        # primary stays intact so the unigram bin-pack load balance is
-        # preserved, and the contextual expert receives the (1 - primary_w)
-        # share of the gradient signal.
-        if getattr(self, "has_ctx_sig_routing", False) and self.top_k >= 2:
-            B_, S_ = token_ids_clamped.shape
-            K = self.ctx_window
-            class_table = self.token_class_table.to(token_ids_clamped.device)
-            class_weights = self.ctx_class_weights.to(token_ids_clamped.device)
-            class_seq = class_table[token_ids_clamped]
-            padded = torch.cat(
-                [
-                    torch.zeros(
-                        (B_, K),
-                        dtype=class_seq.dtype,
-                        device=class_seq.device,
-                    ),
-                    class_seq,
-                ],
-                dim=1,
-            )  # padded[:, K+s] == class_seq[:, s]
-            windows = padded.unfold(dimension=1, size=K, step=1)[:, :S_, :]
-            sig = (windows.long() * class_weights).sum(-1) % self.ctx_num_buckets
-            keys = sig.long() * self.vocab_size + token_ids_clamped.long()
-            flat_keys = keys.view(-1)
-            ctx_keys_dev = self.ctx_sig_keys.to(flat_keys.device)
-            ctx_experts_dev = self.ctx_sig_experts.to(flat_keys.device)
-            idx = torch.searchsorted(ctx_keys_dev, flat_keys)
-            idx_safe = idx.clamp(max=ctx_keys_dev.numel() - 1)
-            found = ctx_keys_dev[idx_safe] == flat_keys
-            ctx_exp = ctx_experts_dev[idx_safe].to(expert_ids.dtype)
-            flat_primary = expert_ids.view(-1)
-            flat_secondary = route_expert_ids[1].view(-1)
-            distinct_from_primary = ctx_exp != flat_primary
-            new_secondary = torch.where(
-                found & distinct_from_primary, ctx_exp, flat_secondary
-            ).view(B_, S_)
-            route_expert_ids = torch.cat(
-                [
-                    route_expert_ids[0:1],
-                    new_secondary.unsqueeze(0),
-                    route_expert_ids[2:],
-                ],
-                dim=0,
-            )
 
         flat_x = hidden_states.view(-1, H)
         flat_expert_ids = expert_ids.view(-1)
