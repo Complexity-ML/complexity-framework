@@ -94,6 +94,7 @@ def make_config(args) -> ModelConfig:
         static_expert_capacity=bool(getattr(args, "static_expert_capacity", False)),
         collect_moe_telemetry=bool(getattr(args, "moe_telemetry", False)),
         routing_strategy=getattr(args, "routing_strategy", "zipf"),
+        lsh_threshold_mode=getattr(args, "lsh_threshold_mode", "batch_median"),
         clamp_mu_contextual=args.mu_clamp,
         use_mu_norm=args.mu_norm,
         mu_alpha_init=args.mu_alpha_init,

@@ -82,6 +82,7 @@ class ModelConfig:
     lsh_routing: bool = False  # Route on a fixed random-hyperplane hash of h (semantic), not the token id
     lsh_bits: int = 0  # Number of hyperplanes (0 = ceil(log2(num_experts)))
     lsh_from_layer: int = 0  # LSH routing only for layers >= this index; earlier layers stay lexical
+    lsh_threshold_mode: str = "batch_median"  # batch_median balances training batches; zero is stable for inference.
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
     shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
     shared_expert_chunk_tokens: int = 0  # 0 = one dense pass; >0 chunks token dimension to reduce shared SwiGLU activation peak.
@@ -206,6 +207,8 @@ class ModelConfig:
             raise ValueError(
                 "routing_strategy must be 'zipf', 'zipf_token_class', 'zipf_context_sig', or 'lsh_hidden'"
             )
+        if self.lsh_threshold_mode not in {"batch_median", "zero"}:
+            raise ValueError("lsh_threshold_mode must be 'batch_median' or 'zero'")
         if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
             raise ValueError("shared_intermediate_size must be positive when set")
         if self.shared_expert_chunk_tokens < 0:

@@ -41,6 +41,7 @@ class MLPConfig:
     lsh_routing: bool = False
     lsh_bits: int = 0
     lsh_from_layer: int = 0  # Use LSH routing only for layers >= this index; earlier layers stay lexical (h not yet semantic).
+    lsh_threshold_mode: str = "batch_median"  # "batch_median" or "zero"
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
     shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
     shared_expert_chunk_tokens: int = 0  # 0 = dense shared expert in one pass; >0 chunks token dimension to reduce activation peak.
@@ -74,6 +75,8 @@ class MLPConfig:
             raise ValueError(
                 "routing_strategy must be 'zipf', 'zipf_token_class', 'zipf_context_sig', or 'lsh_hidden'"
             )
+        if self.lsh_threshold_mode not in {"batch_median", "zero"}:
+            raise ValueError("lsh_threshold_mode must be 'batch_median' or 'zero'")
         if isinstance(self.use_cggr, str) and self.use_cggr.strip().lower() not in {"auto", "true", "false"}:
             raise ValueError("use_cggr must be one of 'auto', 'true', 'false', True, or False")
         if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:

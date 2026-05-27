@@ -466,12 +466,15 @@ class TokenRoutedMLP(MLPBase):
             b2e = self.lsh_bucket_to_expert
             bit_vals = self.lsh_bit_values.to(hidden_states.device)
             proj = torch.matmul(hidden_states, planes.t())  # [B, S, bits]
-            # Threshold each plane at the median of the projection over the
-            # batch tokens (not 0): guarantees each bit splits ~50/50, which
-            # absorbs the residual-stream common mode and prevents the deep-layer
-            # bucket collapse a through-origin hyperplane would cause.
-            flat_proj = proj.reshape(-1, proj.shape[-1])
-            thresh = flat_proj.median(dim=0).values  # [bits]
+            if getattr(self.config, "lsh_threshold_mode", "batch_median") == "zero":
+                thresh = torch.zeros(proj.shape[-1], dtype=proj.dtype, device=proj.device)
+            else:
+                # Threshold each plane at the median of the projection over the
+                # batch tokens (not 0): guarantees each bit splits ~50/50, which
+                # absorbs the residual-stream common mode and prevents the deep-layer
+                # bucket collapse a through-origin hyperplane would cause.
+                flat_proj = proj.reshape(-1, proj.shape[-1])
+                thresh = flat_proj.median(dim=0).values  # [bits]
             bits = (proj > thresh).long()
             bucket = (bits * bit_vals).sum(-1)  # [B, S]
             expert_ids = b2e[bucket]

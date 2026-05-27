@@ -141,6 +141,7 @@ def main():
         config.lsh_routing = True
         config.lsh_bits = int(getattr(args, "lsh_bits", 0))
         config.lsh_from_layer = int(getattr(args, "lsh_from_layer", 0))
+        config.lsh_threshold_mode = getattr(args, "lsh_threshold_mode", "batch_median")
     if args.routing_strategy == "zipf_context_sig":
         if args.dataset != "text":
             raise RuntimeError(
@@ -204,6 +205,7 @@ def main():
             f"grad_ckpt={args.grad_ckpt}, "
             f"experts=4, top_k={args.top_k}, primary_w={args.top_k_primary_weight}, "
             f"primary_w_final={args.top_k_primary_weight_final}, "
+            f"lsh_threshold={getattr(args, 'lsh_threshold_mode', 'batch_median')}, "
             f"learn_gates={args.learn_shared_routed_gates}, "
             f"gates=({args.shared_gate_init}->{args.shared_gate_final},"
             f"{args.routed_gate_init}->{args.routed_gate_final}), "

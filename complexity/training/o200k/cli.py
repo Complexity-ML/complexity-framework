@@ -171,6 +171,12 @@ def build_parser() -> argparse.ArgumentParser:
         "(h not yet semantic). 0 = LSH everywhere.",
     )
     parser.add_argument(
+        "--lsh-threshold-mode",
+        choices=["batch_median", "zero"],
+        default="batch_median",
+        help="Threshold for lsh_hidden bits. batch_median balances each training batch; zero is stable for inference.",
+    )
+    parser.add_argument(
         "--mlp-type",
         type=str,
         default=None,

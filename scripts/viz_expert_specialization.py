@@ -116,7 +116,10 @@ class PerTokenCollector:
                 planes = module.lsh_planes.to(flat_x.dtype)
                 bit_vals = module.lsh_bit_values.to(flat_x.device)
                 proj = flat_x @ planes.t()
-                thresh = proj.median(dim=0).values  # per-plane median (matches forward)
+                if getattr(module.config, "lsh_threshold_mode", "batch_median") == "zero":
+                    thresh = torch.zeros(proj.shape[-1], dtype=proj.dtype, device=proj.device)
+                else:
+                    thresh = proj.median(dim=0).values  # per-plane median (matches forward)
                 bucket = ((proj > thresh).long() * bit_vals).sum(-1)
                 primary = module.lsh_bucket_to_expert[bucket]
             else:
