@@ -10,6 +10,9 @@ from .data import (
     text_token_frequencies,
     text_context_sig_top_n,
     build_key_expert_mapping,
+    text_token_cooccurrence_embeddings,
+    build_clustered_expert_mapping,
+    build_ctx_expert_mapping,
     token_shard_frequencies,
     tokenizer_token_classes,
 )
@@ -19,10 +22,13 @@ from .optimizer import build_optimizer
 from .profiles import PROFILES, make_config
 from .runtime import (
     apply_topk_primary_weight,
+    apply_shared_routed_gates,
     evaluate,
+    expert_diversity_loss,
     init_distributed,
     reduce_average,
     reduce_average_tensor,
+    scheduled_value,
     scheduled_topk_primary_weight,
 )
 
@@ -38,7 +44,10 @@ __all__ = [
     "reduce_average",
     "reduce_average_tensor",
     "scheduled_topk_primary_weight",
+    "scheduled_value",
     "apply_topk_primary_weight",
+    "apply_shared_routed_gates",
+    "expert_diversity_loss",
     "RandomTokenDataset",
     "LocalTextDataset",
     "FineWebDataset",
@@ -48,6 +57,9 @@ __all__ = [
     "text_token_frequencies",
     "text_context_sig_top_n",
     "build_key_expert_mapping",
+    "text_token_cooccurrence_embeddings",
+    "build_clustered_expert_mapping",
+    "build_ctx_expert_mapping",
     "token_shard_frequencies",
     "tokenizer_token_classes",
 ]

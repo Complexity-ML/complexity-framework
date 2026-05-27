@@ -242,6 +242,41 @@ class TokenRoutedMLP(MLPBase):
         else:
             self.has_ctx_sig_routing = False
 
+        # Semantic LSH routing: route the primary (and top-k neighbour) experts
+        # on a fixed random-hyperplane hash of the hidden state, not the token
+        # id. The planes are seeded per layer and saved, so routing is fully
+        # deterministic with no learned gate — the expert choice now depends on
+        # the contextual representation h (which carries meaning via attention).
+        _lsh_layer_idx = int(getattr(config, "layer_idx", 0))
+        self.has_lsh_routing = bool(getattr(config, "lsh_routing", False)) and (
+            _lsh_layer_idx >= int(getattr(config, "lsh_from_layer", 0))
+        )
+        if self.has_lsh_routing:
+            import math
+
+            bits = int(getattr(config, "lsh_bits", 0)) or max(
+                1, math.ceil(math.log2(max(2, self.num_experts)))
+            )
+            self.lsh_bits = bits
+            if not self.gate_proj_w.is_meta:
+                layer_idx = int(getattr(self.config, "layer_idx", 0))
+                g = torch.Generator().manual_seed(0x15B5 + layer_idx)
+                planes = torch.randn(bits, self.hidden_size, generator=g)
+                planes = planes / planes.norm(dim=1, keepdim=True).clamp_min(1e-12)
+                # bucket -> expert: spread the 2**bits buckets across experts.
+                buckets = torch.arange(2**bits, dtype=torch.long)
+                bucket_to_expert = buckets % self.num_experts
+            else:
+                planes = torch.empty(bits, self.hidden_size, device="meta")
+                bucket_to_expert = torch.empty(2**bits, dtype=torch.long, device="meta")
+            self.register_buffer("lsh_planes", planes, persistent=True)
+            self.register_buffer("lsh_bucket_to_expert", bucket_to_expert, persistent=True)
+            self.register_buffer(
+                "lsh_bit_values",
+                torch.tensor([2**i for i in range(bits)], dtype=torch.long),
+                persistent=False,
+            )
+
         # Expert utilization counters — accumulated across forward calls.
         # Reset manually via reset_expert_counts() (e.g. once per CSV log step).
         # Non-persistent so checkpoint save/load doesn't snapshot stale counters.
@@ -421,6 +456,35 @@ class TokenRoutedMLP(MLPBase):
         token_ids_clamped = token_ids.clamp(0, self.vocab_size - 1)
         expert_ids = self.token_to_expert[token_ids_clamped]  # [B, S]
         route_expert_ids = self.topk_token_to_expert[:, token_ids_clamped]  # [K, B, S]
+
+        # Semantic LSH overlay: replace the lexical routing with a fixed
+        # random-hyperplane hash of h. proj = h . planes; the sign bits index a
+        # bucket -> expert. The top-k neighbour routes flip the lowest-margin
+        # bits (the most ambiguous boundaries), i.e. the nearest buckets.
+        if self.has_lsh_routing:
+            planes = self.lsh_planes.to(hidden_states.dtype)
+            b2e = self.lsh_bucket_to_expert
+            bit_vals = self.lsh_bit_values.to(hidden_states.device)
+            proj = torch.matmul(hidden_states, planes.t())  # [B, S, bits]
+            # Threshold each plane at the median of the projection over the
+            # batch tokens (not 0): guarantees each bit splits ~50/50, which
+            # absorbs the residual-stream common mode and prevents the deep-layer
+            # bucket collapse a through-origin hyperplane would cause.
+            flat_proj = proj.reshape(-1, proj.shape[-1])
+            thresh = flat_proj.median(dim=0).values  # [bits]
+            bits = (proj > thresh).long()
+            bucket = (bits * bit_vals).sum(-1)  # [B, S]
+            expert_ids = b2e[bucket]
+            routes = [expert_ids]
+            if self.top_k >= 2:
+                margins = (proj - thresh).abs()
+                # flip the j-th smallest-margin bit for each extra route
+                flip_order = torch.argsort(margins, dim=-1)  # [B, S, bits]
+                for j in range(1, self.top_k):
+                    flip_bit = flip_order[..., min(j - 1, self.lsh_bits - 1)]  # [B, S]
+                    nb = bucket ^ bit_vals[flip_bit]
+                    routes.append(b2e[nb])
+            route_expert_ids = torch.stack(routes, dim=0)  # [K, B, S]
 
         # Context-signature overlay. Routing key = (sig, cur_id), where sig is
         # a polynomial hash of K previous token classes. Applied as a soft

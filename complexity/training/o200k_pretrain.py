@@ -31,17 +31,20 @@ from complexity.core.losses import (
 from complexity.models import ComplexityModel
 from complexity.training.o200k import (
     PROFILES,
+    apply_shared_routed_gates,
     apply_topk_primary_weight,
     batch_expert_counts,
-    build_key_expert_mapping,
+    build_ctx_expert_mapping,
     build_parser,
     build_loaders,
     build_optimizer,
     evaluate,
+    expert_diversity_loss,
     init_distributed,
     load_checkpoint,
     make_config,
     reduce_average_tensor,
+    scheduled_value,
     save_checkpoint,
     scheduled_topk_primary_weight,
     text_context_sig_top_n,
@@ -134,6 +137,10 @@ def main():
         )
     if args.routing_strategy == "zipf_token_class":
         config.token_classes = tokenizer_token_classes(args.tokenizer, config.vocab_size)
+    if args.routing_strategy == "lsh_hidden":
+        config.lsh_routing = True
+        config.lsh_bits = int(getattr(args, "lsh_bits", 0))
+        config.lsh_from_layer = int(getattr(args, "lsh_from_layer", 0))
     if args.routing_strategy == "zipf_context_sig":
         if args.dataset != "text":
             raise RuntimeError(
@@ -150,7 +157,17 @@ def main():
             token_class_table=ctx_class_table,
         )
         config.ctx_sig_keys = ctx_keys
-        config.ctx_sig_experts = build_key_expert_mapping(ctx_counts, config.num_experts)
+        config.ctx_sig_experts = build_ctx_expert_mapping(
+            getattr(args, "ctx_expert_mapping", "balance"),
+            ctx_keys,
+            ctx_counts,
+            config.num_experts,
+            text_file=args.text_file,
+            tokenizer_path=args.tokenizer,
+            vocab_size=config.vocab_size,
+            window=int(args.context_window),
+            slack=float(getattr(args, "ctx_cluster_slack", 1.05)),
+        )
         config.token_class_table = ctx_class_table
         config.ctx_window = int(args.context_window)
         config.ctx_num_buckets = int(args.context_buckets)
@@ -188,7 +205,9 @@ def main():
             f"experts=4, top_k={args.top_k}, primary_w={args.top_k_primary_weight}, "
             f"primary_w_final={args.top_k_primary_weight_final}, "
             f"learn_gates={args.learn_shared_routed_gates}, "
-            f"gates=({args.shared_gate_init},{args.routed_gate_init}), "
+            f"gates=({args.shared_gate_init}->{args.shared_gate_final},"
+            f"{args.routed_gate_init}->{args.routed_gate_final}), "
+            f"expert_diversity={args.expert_diversity_lambda} target={args.expert_diversity_target}, "
             f"use_mu={args.use_mu_guidance}, mu_clamp={args.mu_clamp}, mu_norm={args.mu_norm}, "
             f"mu_alpha={args.mu_alpha_init}, mu_init={args.mu_init_value}"
         )
@@ -281,6 +300,7 @@ def main():
                 "expert_dead_count", "shared_gate", "routed_gate", "shared_rms", "routed_rms",
                 "shared_grad_norm", "routed_grad_norm", "expert_0_grad_norm",
                 "expert_1_grad_norm", "expert_2_grad_norm", "expert_3_grad_norm",
+                "expert_diversity_loss", "expert_diversity_lambda", "total_loss",
             ])
         csv_file.flush()
 
@@ -309,7 +329,37 @@ def main():
             args.top_k_primary_weight_schedule_ratio,
         )
         apply_topk_primary_weight(raw_model, topk_primary_weight)
+        shared_gate = (
+            scheduled_value(
+                step - 1,
+                args.steps,
+                args.shared_gate_init,
+                args.shared_gate_final,
+                args.gate_schedule_ratio,
+            )
+            if args.shared_gate_final is not None
+            else None
+        )
+        routed_gate = (
+            scheduled_value(
+                step - 1,
+                args.steps,
+                args.routed_gate_init,
+                args.routed_gate_final,
+                args.gate_schedule_ratio,
+            )
+            if args.routed_gate_final is not None
+            else None
+        )
+        apply_shared_routed_gates(raw_model, shared_gate, routed_gate)
         optimizer.zero_grad(set_to_none=True)
+        diversity_lambda = scheduled_value(
+            step - 1,
+            args.steps,
+            0.0,
+            args.expert_diversity_lambda,
+            args.expert_diversity_schedule_ratio,
+        )
         with autocast(device, dtype=amp_dtype, enabled=amp_dtype is not None):
             outputs = model(input_ids, return_logits=False)
             if args.loss_backend_active == "liger":
@@ -332,7 +382,13 @@ def main():
                     checkpoint_chunks=args.loss_checkpoint_chunks,
                     sync_metrics=False,
                 )
-        loss.backward()
+            diversity = expert_diversity_loss(raw_model, args.expert_diversity_target)
+            total_loss = (
+                loss
+                if diversity is None or diversity_lambda <= 0.0
+                else loss + diversity_lambda * diversity
+            )
+        total_loss.backward()
         if args.max_grad_norm and args.max_grad_norm > 0.0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
         if hasattr(optimizer, "update_token_counts"):
@@ -357,6 +413,12 @@ def main():
                     args.label_smoothing, args.z_loss, args.loss_chunk_tokens, distributed,
                 )
             train_loss = reduce_average_tensor(loss, distributed)
+            train_total_loss = reduce_average_tensor(total_loss, distributed)
+            train_diversity_loss = (
+                reduce_average_tensor(diversity, distributed)
+                if diversity is not None
+                else float("nan")
+            )
             train_ppl = math.exp(min(train_loss, 20))
             eval_ppl = math.exp(min(eval_loss, 20)) if math.isfinite(eval_loss) else float("nan")
             lr_now = scheduler.get_last_lr()[0]
@@ -380,6 +442,9 @@ def main():
                         f"{tr_diag.get(f'expert_{idx}_grad_norm', float('nan')):.6f}"
                         for idx in range(config.num_experts)
                     ],
+                    f"{train_diversity_loss:.8f}",
+                    f"{diversity_lambda:.8e}",
+                    f"{train_total_loss:.6f}",
                 ])
                 csv_file.flush()
                 pbar.set_postfix(
@@ -387,6 +452,9 @@ def main():
                     eval=f"{eval_loss:.4f}",
                     tok_s=f"{tok_s:.0f}",
                     topk_w=f"{topk_primary_weight:.3f}",
+                    gate=f"{shared_gate if shared_gate is not None else args.shared_gate_init:.2f}/"
+                    f"{routed_gate if routed_gate is not None else args.routed_gate_init:.2f}",
+                    div=f"{diversity_lambda:.1e}",
                 )
             t_log = now
             tokens_since_log = 0

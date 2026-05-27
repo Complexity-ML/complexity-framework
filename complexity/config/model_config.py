@@ -79,6 +79,9 @@ class ModelConfig:
     token_class_table: Optional[torch.Tensor] = None  # Long [vocab_size], lexical class per token id
     ctx_window: int = 0  # K previous tokens feeding the context signature
     ctx_num_buckets: int = 0  # Number of distinct signature buckets after hashing
+    lsh_routing: bool = False  # Route on a fixed random-hyperplane hash of h (semantic), not the token id
+    lsh_bits: int = 0  # Number of hyperplanes (0 = ceil(log2(num_experts)))
+    lsh_from_layer: int = 0  # LSH routing only for layers >= this index; earlier layers stay lexical
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
     shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
     shared_expert_chunk_tokens: int = 0  # 0 = one dense pass; >0 chunks token dimension to reduce shared SwiGLU activation peak.
@@ -199,9 +202,9 @@ class ModelConfig:
             raise ValueError("top_k cannot exceed num_experts")
         if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
             raise ValueError("top_k_primary_weight must be in [0, 1]")
-        if self.routing_strategy not in {"zipf", "zipf_token_class", "zipf_context_sig"}:
+        if self.routing_strategy not in {"zipf", "zipf_token_class", "zipf_context_sig", "lsh_hidden"}:
             raise ValueError(
-                "routing_strategy must be 'zipf', 'zipf_token_class', or 'zipf_context_sig'"
+                "routing_strategy must be 'zipf', 'zipf_token_class', 'zipf_context_sig', or 'lsh_hidden'"
             )
         if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
             raise ValueError("shared_intermediate_size must be positive when set")

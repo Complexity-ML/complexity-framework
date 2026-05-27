@@ -65,6 +65,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--shared-gate-init", type=float, default=1.0)
     parser.add_argument("--routed-gate-init", type=float, default=0.1)
+    parser.add_argument(
+        "--shared-gate-final",
+        type=float,
+        default=None,
+        help="Optional final shared gate value for dense-to-expert curriculum. Disabled when omitted.",
+    )
+    parser.add_argument(
+        "--routed-gate-final",
+        type=float,
+        default=None,
+        help="Optional final routed gate value for dense-to-expert curriculum. Disabled when omitted.",
+    )
+    parser.add_argument(
+        "--gate-schedule-ratio",
+        type=float,
+        default=0.5,
+        help="Fraction of training steps used to ramp shared/routed gates to their final values.",
+    )
+    parser.add_argument(
+        "--expert-diversity-lambda",
+        type=float,
+        default=0.0,
+        help="Optional expert separation penalty. 0 disables it.",
+    )
+    parser.add_argument(
+        "--expert-diversity-schedule-ratio",
+        type=float,
+        default=0.7,
+        help="Fraction of training steps used to ramp expert diversity from 0 to lambda.",
+    )
+    parser.add_argument(
+        "--expert-diversity-target",
+        choices=["down", "all"],
+        default="down",
+        help="Expert weights used by the separation penalty.",
+    )
     parser.add_argument("--learn-shared-routed-gates", dest="learn_shared_routed_gates", action="store_true", default=True)
     parser.add_argument("--no-learn-shared-routed-gates", dest="learn_shared_routed_gates", action="store_false")
     parser.add_argument("--top-k", type=int, default=2)
@@ -118,8 +154,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--routing-strategy",
-        choices=["zipf", "zipf_token_class", "zipf_context_sig"],
+        choices=["zipf", "zipf_token_class", "zipf_context_sig", "lsh_hidden"],
         default="zipf",
+    )
+    parser.add_argument(
+        "--lsh-bits",
+        type=int,
+        default=0,
+        help="Number of random hyperplanes for lsh_hidden routing (0 = ceil(log2(num_experts))).",
+    )
+    parser.add_argument(
+        "--lsh-from-layer",
+        type=int,
+        default=0,
+        help="lsh_hidden routing applies only to layers >= this index; earlier layers stay lexical "
+        "(h not yet semantic). 0 = LSH everywhere.",
     )
     parser.add_argument(
         "--mlp-type",
@@ -144,6 +193,21 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=200_000,
         help="Number of top (sig, cur) pairs to override unigram routing (zipf_context_sig only).",
+    )
+    parser.add_argument(
+        "--ctx-expert-mapping",
+        choices=["balance", "distributional"],
+        default="balance",
+        help="How (sig, cur) keys are assigned to experts (zipf_context_sig only). "
+        "'balance' = load bin-packing (default); 'distributional' = cluster keys by "
+        "corpus co-occurrence so similar tokens share an expert.",
+    )
+    parser.add_argument(
+        "--ctx-cluster-slack",
+        type=float,
+        default=1.05,
+        help="Capacity slack for distributional mapping: cap = slack * mean load. "
+        "1.0 = perfectly balanced (breaks clusters), higher = more coherent clusters, worse balance.",
     )
     parser.add_argument("--use-mu-guidance", action="store_true")
     parser.add_argument("--mu-clamp", action="store_true")

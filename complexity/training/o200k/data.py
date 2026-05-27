@@ -196,6 +196,160 @@ def build_key_expert_mapping(
     return experts
 
 
+def text_token_cooccurrence_embeddings(
+    path: str,
+    tokenizer_path: str,
+    vocab_size: int,
+    target_ids: torch.Tensor,
+    window: int = 4,
+    dim: int = 64,
+    num_features: int = 2000,
+    seed: int = 0,
+) -> dict[int, "object"]:
+    """Distributional (≈ semantic) embeddings for ``target_ids`` from the corpus.
+
+    Builds a dense ``(n_targets, num_features)`` co-occurrence matrix of each
+    target token against the ``num_features`` most frequent context tokens
+    inside a +/-``window`` neighbourhood, applies PPMI, then truncated SVD to
+    ``dim``. Returns ``{token_id -> np.ndarray[dim]}`` (L2-normalised); targets
+    that never co-occur get a zero vector. Deterministic given ``seed`` so the
+    mapping can be recomputed identically at load time.
+    """
+    import numpy as np
+    from sklearn.decomposition import TruncatedSVD
+
+    tokens = load_text_tokens(path, tokenizer_path)
+    ids = torch.tensor(tokens, dtype=torch.long)
+    ids = ids[(ids >= 0) & (ids < vocab_size)]
+    targets = sorted({int(t) for t in target_ids.tolist()})
+    if ids.numel() < 2 or not targets:
+        return {t: np.zeros(dim, dtype=np.float32) for t in targets}
+
+    freqs = torch.bincount(ids, minlength=vocab_size)
+    feature_ids = torch.topk(freqs, min(num_features, vocab_size)).indices.tolist()
+    feature_index = {int(f): j for j, f in enumerate(feature_ids)}
+    target_index = {t: i for i, t in enumerate(targets)}
+
+    cooc = np.zeros((len(targets), len(feature_ids)), dtype=np.float64)
+    seq = ids.tolist()
+    n = len(seq)
+    for pos, tok in enumerate(seq):
+        ti = target_index.get(tok)
+        if ti is None:
+            continue
+        lo, hi = max(0, pos - window), min(n, pos + window + 1)
+        for ctx in range(lo, hi):
+            if ctx == pos:
+                continue
+            fj = feature_index.get(seq[ctx])
+            if fj is not None:
+                cooc[ti, fj] += 1.0
+
+    total = cooc.sum()
+    if total <= 0:
+        return {t: np.zeros(dim, dtype=np.float32) for t in targets}
+    # PPMI: log( p(t,f) / (p(t) p(f)) ), clipped at 0.
+    p_tf = cooc / total
+    p_t = p_tf.sum(axis=1, keepdims=True)
+    p_f = p_tf.sum(axis=0, keepdims=True)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pmi = np.log(p_tf / (p_t * p_f))
+    ppmi = np.nan_to_num(np.maximum(pmi, 0.0))
+
+    svd_dim = min(dim, max(1, min(ppmi.shape) - 1))
+    emb = TruncatedSVD(n_components=svd_dim, random_state=seed).fit_transform(ppmi)
+    if svd_dim < dim:
+        emb = np.pad(emb, ((0, 0), (0, dim - svd_dim)))
+    norms = np.linalg.norm(emb, axis=1, keepdims=True)
+    emb = emb / np.clip(norms, 1e-12, None)
+    return {t: emb[i].astype(np.float32) for t, i in target_index.items()}
+
+
+def build_clustered_expert_mapping(
+    keys: torch.Tensor,
+    key_counts: torch.Tensor,
+    num_experts: int,
+    embeddings: dict[int, "object"],
+    vocab_size: int,
+    dim: int,
+    balance_slack: float = 1.05,
+    seed: int = 0,
+) -> torch.Tensor:
+    """Distributional clustering of routing keys onto experts (TR, deterministic).
+
+    Drop-in replacement for :func:`build_key_expert_mapping` that puts
+    *similar* keys on the *same* expert instead of pure load-balancing. Each key
+    is represented by the distributional embedding of its ``cur_id``
+    (``key % vocab_size``); k-means (k=``num_experts``, weighted by count) gives
+    expert centroids, then keys are assigned greedily by descending count to the
+    nearest centroid that still has capacity (``balance_slack`` * mean load),
+    falling back to the least-loaded expert. Keeps experts aligned to ``keys``.
+    """
+    import numpy as np
+    from sklearn.cluster import KMeans
+
+    n = int(keys.numel())
+    experts = torch.empty(n, dtype=torch.long)
+    if n == 0:
+        return experts
+
+    counts = key_counts.detach().cpu().long().numpy()
+    cur_ids = (keys.detach().cpu().long() % vocab_size).numpy()
+    zero = np.zeros(dim, dtype=np.float32)
+    X = np.stack([embeddings.get(int(c), zero) for c in cur_ids], axis=0)
+
+    if num_experts <= 1 or not np.any(X):
+        return build_key_expert_mapping(key_counts, num_experts)
+
+    km = KMeans(n_clusters=num_experts, random_state=seed, n_init=10)
+    km.fit(X, sample_weight=counts.astype(np.float64))
+    centroids = km.cluster_centers_
+
+    capacity = balance_slack * counts.sum() / num_experts
+    loads = np.zeros(num_experts, dtype=np.float64)
+    dist = np.linalg.norm(X[:, None, :] - centroids[None, :, :], axis=2)  # (n, E)
+    order = np.argsort(-counts)
+    for pos in order:
+        ranked = np.argsort(dist[pos])
+        chosen = next((e for e in ranked if loads[e] + counts[pos] <= capacity), None)
+        if chosen is None:
+            chosen = int(np.argmin(loads))
+        experts[int(pos)] = int(chosen)
+        loads[int(chosen)] += counts[pos]
+    return experts
+
+
+def build_ctx_expert_mapping(
+    mode: str,
+    keys: torch.Tensor,
+    counts: torch.Tensor,
+    num_experts: int,
+    *,
+    text_file: str,
+    tokenizer_path: str,
+    vocab_size: int,
+    window: int,
+    slack: float = 1.05,
+    dim: int = 64,
+) -> torch.Tensor:
+    """Dispatch (sig, cur) keys onto experts per ``mode``.
+
+    ``balance`` -> load bin-packing (:func:`build_key_expert_mapping`).
+    ``distributional`` -> co-occurrence clustering
+    (:func:`build_clustered_expert_mapping`). Deterministic, so both the
+    training run and any load-time recompute produce the identical mapping.
+    """
+    if mode == "distributional":
+        targets = torch.unique(keys % vocab_size)
+        embeddings = text_token_cooccurrence_embeddings(
+            text_file, tokenizer_path, vocab_size, targets, window=window, dim=dim
+        )
+        return build_clustered_expert_mapping(
+            keys, counts, num_experts, embeddings, vocab_size, dim, balance_slack=slack
+        )
+    return build_key_expert_mapping(counts, num_experts)
+
+
 def tokenizer_token_classes(tokenizer_path: str, vocab_size: int) -> torch.Tensor:
     """Classify each token into coarse lexical buckets for static routing."""
 
@@ -336,6 +490,9 @@ __all__ = [
     "text_token_frequencies",
     "text_context_sig_top_n",
     "build_key_expert_mapping",
+    "text_token_cooccurrence_embeddings",
+    "build_clustered_expert_mapping",
+    "build_ctx_expert_mapping",
     "token_shard_frequencies",
     "tokenizer_token_classes",
 ]

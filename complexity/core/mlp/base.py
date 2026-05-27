@@ -34,6 +34,13 @@ class MLPConfig:
     token_class_table: Optional[torch.Tensor] = None  # [vocab_size] long: lexical class per token id
     ctx_window: int = 0  # K, number of previous tokens that feed the signature
     ctx_num_buckets: int = 0  # number of distinct signature buckets (after hashing)
+    # Semantic LSH routing: route on a fixed random-hyperplane hash of the
+    # hidden state (post-attention) instead of the token id. Deterministic, no
+    # learned gate; the expert choice now depends on the contextual/semantic
+    # representation. lsh_bits=0 falls back to ceil(log2(num_experts)).
+    lsh_routing: bool = False
+    lsh_bits: int = 0
+    lsh_from_layer: int = 0  # Use LSH routing only for layers >= this index; earlier layers stay lexical (h not yet semantic).
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
     shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
     shared_expert_chunk_tokens: int = 0  # 0 = dense shared expert in one pass; >0 chunks token dimension to reduce activation peak.
@@ -63,9 +70,9 @@ class MLPConfig:
             raise ValueError("top_k cannot exceed num_experts")
         if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
             raise ValueError("top_k_primary_weight must be in [0, 1]")
-        if self.routing_strategy not in {"zipf", "zipf_token_class", "zipf_context_sig"}:
+        if self.routing_strategy not in {"zipf", "zipf_token_class", "zipf_context_sig", "lsh_hidden"}:
             raise ValueError(
-                "routing_strategy must be 'zipf', 'zipf_token_class', or 'zipf_context_sig'"
+                "routing_strategy must be 'zipf', 'zipf_token_class', 'zipf_context_sig', or 'lsh_hidden'"
             )
         if isinstance(self.use_cggr, str) and self.use_cggr.strip().lower() not in {"auto", "true", "false"}:
             raise ValueError("use_cggr must be one of 'auto', 'true', 'false', True, or False")
