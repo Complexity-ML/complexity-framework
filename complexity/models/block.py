@@ -136,6 +136,7 @@ class TransformerBlock(nn.Module):
             lsh_routing=getattr(config, 'lsh_routing', False),
             lsh_bits=getattr(config, 'lsh_bits', 0),
             lsh_from_layer=getattr(config, 'lsh_from_layer', 0),
+            lsh_threshold_mode=getattr(config, 'lsh_threshold_mode', 'batch_median'),
             shared_expert=getattr(config, 'shared_expert', False),
             shared_intermediate_size=getattr(config, 'shared_intermediate_size', None),
             shared_expert_chunk_tokens=getattr(config, 'shared_expert_chunk_tokens', 0),

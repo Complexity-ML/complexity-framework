@@ -690,6 +690,33 @@ def test_batch_expert_counts_counts_all_topk_routes():
     assert counts.shape == (4,)
 
 
+def test_lsh_threshold_mode_propagates_to_token_routed_mlp():
+    from complexity.config import ModelConfig
+    from complexity.core.mlp import TokenRoutedMLP
+    from complexity.models import ComplexityModel
+
+    config = ModelConfig(
+        hidden_size=16,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=1,
+        intermediate_size=16,
+        vocab_size=16,
+        mlp_type="token_routed",
+        num_experts=4,
+        routing_strategy="lsh_hidden",
+        lsh_routing=True,
+        lsh_threshold_mode="zero",
+        shared_expert=False,
+    )
+
+    model = ComplexityModel(config)
+    mlps = [module for module in model.modules() if isinstance(module, TokenRoutedMLP)]
+
+    assert mlps
+    assert all(module.config.lsh_threshold_mode == "zero" for module in mlps)
+
+
 def test_plan_run_math():
     from complexity.training.plan_run import parse_tokens
 
