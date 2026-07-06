@@ -24,7 +24,7 @@ class MLPConfig:
     num_experts: int = 1  # 1 = standard MLP, >1 = MoE
     vocab_size: int = 100000  # For token-routed MoE
     hash_routing: str = ""  # "" = modulo (token_id % E), "learned" = learned projection router
-    routing_strategy: str = "zipf"  # "zipf" or "lsh_hidden"
+    routing_strategy: str = "zipf"  # zipf, modulo, round_robin, random, lsh_hidden
     token_frequencies: Optional[torch.Tensor] = None  # [vocab_size] token counts for frequency-balanced routing
     # Semantic LSH routing: route on a fixed random-hyperplane hash of the
     # hidden state (post-attention) instead of the token id. Deterministic, no
@@ -63,8 +63,8 @@ class MLPConfig:
             raise ValueError("top_k cannot exceed num_experts")
         if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
             raise ValueError("top_k_primary_weight must be in [0, 1]")
-        if self.routing_strategy not in {"zipf", "lsh_hidden"}:
-            raise ValueError("routing_strategy must be 'zipf' or 'lsh_hidden'")
+        if self.routing_strategy not in {"zipf", "modulo", "round_robin", "random", "lsh_hidden"}:
+            raise ValueError("routing_strategy must be one of zipf, modulo, round_robin, random, lsh_hidden")
         if self.lsh_threshold_mode not in {"batch_median", "zero"}:
             raise ValueError("lsh_threshold_mode must be 'batch_median' or 'zero'")
         if isinstance(self.use_cggr, str) and self.use_cggr.strip().lower() not in {"auto", "true", "false"}:

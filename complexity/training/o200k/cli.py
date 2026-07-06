@@ -63,6 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Set 0 to compute it in one pass."
         ),
     )
+    parser.add_argument("--shared-expert", dest="shared_expert", action="store_true", default=True)
+    parser.add_argument("--no-shared-expert", dest="shared_expert", action="store_false")
     parser.add_argument("--shared-gate-init", type=float, default=1.0)
     parser.add_argument("--routed-gate-init", type=float, default=0.1)
     parser.add_argument(
@@ -154,9 +156,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--routing-strategy",
-        choices=["zipf", "lsh_hidden"],
+        choices=["zipf", "modulo", "round_robin", "random", "lsh_hidden"],
         default="zipf",
-        help="Token-Routed strategy: zipf lexical routing, or lsh_hidden semantic routing.",
+        help="Token-Routed strategy: zipf/modulo/round_robin/random lexical routing, or lsh_hidden semantic routing.",
     )
     parser.add_argument(
         "--lsh-bits",

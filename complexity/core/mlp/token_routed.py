@@ -273,8 +273,9 @@ class TokenRoutedMLP(MLPBase):
         preserves load distribution) while giving each layer a different
         token→expert assignment, enriching specialization.
         """
+        strategy = str(getattr(self.config, "routing_strategy", "zipf")).lower()
         freqs = getattr(self.config, 'token_frequencies', None)
-        if freqs is not None:
+        if strategy == "zipf" and freqs is not None:
             freqs = freqs.detach().cpu().float()
             sorted_indices = freqs.argsort(descending=True)
             mapping = torch.empty(vocab_size, dtype=torch.long, device="cpu")
@@ -284,8 +285,25 @@ class TokenRoutedMLP(MLPBase):
                 e = min(range(num_experts), key=lambda i: expert_loads[i])
                 mapping[token_id] = e
                 expert_loads[e] += freqs[token_id].item()
-        else:
+        elif strategy in {"zipf", "modulo"}:
+            # zipf without frequencies intentionally falls back to modulo.
             mapping = torch.arange(vocab_size, dtype=torch.long, device="cpu") % num_experts
+        elif strategy == "round_robin":
+            # Round-robin over frequency rank (or token id if no frequencies),
+            # giving a routing-table control distinct from token-id modulo.
+            if freqs is not None:
+                order = freqs.detach().cpu().float().argsort(descending=True)
+            else:
+                order = torch.arange(vocab_size, dtype=torch.long, device="cpu")
+            mapping = torch.empty(vocab_size, dtype=torch.long, device="cpu")
+            mapping[order] = torch.arange(vocab_size, dtype=torch.long, device="cpu") % num_experts
+        elif strategy == "random":
+            # Deterministic random lexical partition: stable across runs/layers,
+            # then layer permutation below still varies expert labels by layer.
+            g = torch.Generator().manual_seed(0xA61A710)
+            mapping = torch.randint(0, num_experts, (vocab_size,), generator=g, dtype=torch.long, device="cpu")
+        else:
+            raise ValueError(f"Unsupported lexical routing_strategy: {strategy}")
 
         # Per-layer routing is always on: a deterministic layer-dependent
         # permutation of expert indices. Preserves Zipf load balance (a
@@ -314,17 +332,43 @@ class TokenRoutedMLP(MLPBase):
         num_experts: int,
         top_k: int,
     ) -> torch.Tensor:
-        """Build deterministic Zipf-balanced auxiliary expert maps.
+        """Build deterministic auxiliary expert maps.
 
         For k>0 each token is assigned to an expert different from all earlier
-        routes for that token. The assignment greedily balances corpus frequency
-        load per auxiliary route, so secondary experts are not just a fixed
-        cyclic neighbor of the primary expert.
+        routes for that token. Zipf keeps frequency-balanced auxiliary routes;
+        routing controls preserve their own control strategy instead of leaking
+        Zipf-balanced auxiliaries into random/modulo/round-robin ablations.
         """
 
         routes = torch.empty(top_k, vocab_size, dtype=torch.long, device="cpu")
         routes[0] = primary_mapping.detach().to(device="cpu", dtype=torch.long)
         if top_k == 1:
+            return routes
+
+        strategy = str(getattr(self.config, "routing_strategy", "zipf")).lower()
+        if strategy in {"modulo", "round_robin"}:
+            for route_idx in range(1, top_k):
+                routes[route_idx] = (routes[0] + route_idx) % num_experts
+            return routes
+
+        if strategy == "random":
+            for route_idx in range(1, top_k):
+                g = torch.Generator().manual_seed(0xA61A710 + 7919 * route_idx)
+                mapping = torch.randint(
+                    0,
+                    num_experts - route_idx,
+                    (vocab_size,),
+                    generator=g,
+                    dtype=torch.long,
+                    device="cpu",
+                )
+                for token_id in range(vocab_size):
+                    blocked = sorted(int(routes[prev_idx, token_id].item()) for prev_idx in range(route_idx))
+                    candidate = int(mapping[token_id].item())
+                    for blocked_expert in blocked:
+                        if candidate >= blocked_expert:
+                            candidate += 1
+                    routes[route_idx, token_id] = candidate
             return routes
 
         freqs = self._routing_frequencies(vocab_size)
