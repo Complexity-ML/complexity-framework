@@ -28,6 +28,7 @@ mkdir -p runs/b200x2_100m_ablation_1b
 
 run_one() {
   local name="$1"
+  shift
   local run_name="b200x2-1b-${name}"
   local metrics="runs/${run_name}/metrics.csv"
   local log="runs/b200x2_100m_ablation_1b/${run_name}.log"
