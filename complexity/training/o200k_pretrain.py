@@ -165,7 +165,7 @@ def main():
         logger.info(f"Model: {params / 1e6:.1f}M params")
         for line in format_run_summary(run_config):
             logger.info(line)
-        if active_controls.lexical_layers:
+        if "lexical_object_gate" in active_controls.capabilities:
             logger.info(
                 "Config: attention-free lexical residual, "
                 f"mixer={args.attention_type}, hidden={args.hidden_size}, "
@@ -310,7 +310,7 @@ def main():
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
         topk_primary_weight = None
-        if active_controls.token_routed_layers:
+        if "topk_primary_weight" in active_controls.capabilities:
             topk_primary_weight = scheduled_topk_primary_weight(
                 step - 1,
                 args.steps,
@@ -327,7 +327,8 @@ def main():
                 args.shared_gate_final,
                 args.gate_schedule_ratio,
             )
-            if active_controls.token_routed_layers and args.shared_gate_final is not None
+            if "shared_routed_gates" in active_controls.capabilities
+            and args.shared_gate_final is not None
             else None
         )
         routed_gate = (
@@ -338,7 +339,8 @@ def main():
                 args.routed_gate_final,
                 args.gate_schedule_ratio,
             )
-            if active_controls.token_routed_layers and args.routed_gate_final is not None
+            if "shared_routed_gates" in active_controls.capabilities
+            and args.routed_gate_final is not None
             else None
         )
         apply_shared_routed_gates(raw_model, shared_gate, routed_gate)
@@ -442,19 +444,15 @@ def main():
                     "eval": f"{eval_loss:.4f}",
                     "tok_s": f"{tok_s:.0f}",
                 }
-                if active_controls.token_routed_layers:
-                    postfix.update(
-                        topk_w=f"{topk_primary_weight:.3f}",
-                        gate=f"{shared_gate if shared_gate is not None else args.shared_gate_init:.2f}/"
-                        f"{routed_gate if routed_gate is not None else args.routed_gate_init:.2f}",
-                        div=f"{diversity_lambda:.1e}",
-                    )
-                elif active_controls.lexical_layers:
-                    lexical_controls = runtime_controls(raw_model)
-                    postfix.update(
-                        object_gate=f"{lexical_controls.object_gate:.3f}",
-                        micro_gate=f"{lexical_controls.micro_gate:.3f}",
-                    )
+                current_controls = runtime_controls(raw_model)
+                postfix.update(
+                    {
+                        name: f"{value:.3f}"
+                        for name, value in current_controls.telemetry.items()
+                    }
+                )
+                if "expert_diversity" in current_controls.capabilities:
+                    postfix["div"] = f"{diversity_lambda:.1e}"
                 pbar.set_postfix(postfix)
             t_log = now
             tokens_since_log = 0

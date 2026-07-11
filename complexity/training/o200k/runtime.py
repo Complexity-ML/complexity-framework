@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import math
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from typing import cast
 
 import torch
 import torch.distributed as dist
@@ -21,30 +23,52 @@ class RuntimeControls:
     lexical_layers: int
     object_gate: float | None
     micro_gate: float | None
+    capabilities: frozenset[str]
+    telemetry: dict[str, float]
 
 
 @torch.no_grad()
 def runtime_controls(model) -> RuntimeControls:
-    """Inspect active routing controls instead of trusting generic CLI defaults."""
+    """Collect capabilities and telemetry declared by model modules."""
 
     token_routed_layers = 0
     object_gates = []
     micro_gates = []
+    all_capabilities: set[str] = set()
+    telemetry_values: dict[str, list[float]] = {}
     for module in model.modules():
-        if callable(getattr(module, "set_top_k_primary_weight", None)):
+        capabilities_fn = getattr(module, "training_control_capabilities", None)
+        telemetry_fn = getattr(module, "training_telemetry", None)
+        if not callable(capabilities_fn) or not callable(telemetry_fn):
+            continue
+        capabilities = frozenset(
+            cast(Callable[[], Iterable[str]], capabilities_fn)()
+        )
+        telemetry = dict(
+            cast(Callable[[], Mapping[str, float]], telemetry_fn)()
+        )
+        all_capabilities.update(capabilities)
+        for name, value in telemetry.items():
+            telemetry_values.setdefault(name, []).append(float(value))
+        if "topk_primary_weight" in capabilities:
             token_routed_layers += 1
-        object_gate = getattr(module, "object_output_gate", None)
-        micro_gate = getattr(module, "micro_output_gate", None)
-        if object_gate is not None:
-            object_gates.append(float(object_gate.detach().float().item()))
-        if micro_gate is not None:
-            micro_gates.append(float(micro_gate.detach().float().item()))
+        if "object_gate" in telemetry:
+            object_gates.append(float(telemetry["object_gate"]))
+        if "micro_gate" in telemetry:
+            micro_gates.append(float(telemetry["micro_gate"]))
     lexical_layers = max(len(object_gates), len(micro_gates))
+    averaged_telemetry = {
+        name: sum(values) / len(values)
+        for name, values in telemetry_values.items()
+        if values
+    }
     return RuntimeControls(
         token_routed_layers=token_routed_layers,
         lexical_layers=lexical_layers,
         object_gate=sum(object_gates) / len(object_gates) if object_gates else None,
         micro_gate=sum(micro_gates) / len(micro_gates) if micro_gates else None,
+        capabilities=frozenset(all_capabilities),
+        telemetry=averaged_telemetry,
     )
 
 

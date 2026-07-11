@@ -112,6 +112,16 @@ class MLPBase(nn.Module, ABC):
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
 
+    def training_control_capabilities(self) -> frozenset[str]:
+        """Declare trainer-side curricula supported by this module."""
+
+        return frozenset()
+
+    def training_telemetry(self) -> dict[str, float]:
+        """Return scalar values suitable for progress logs and metrics."""
+
+        return {}
+
     @abstractmethod
     def forward(
         self,
