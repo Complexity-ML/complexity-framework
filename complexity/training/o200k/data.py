@@ -53,7 +53,7 @@ class FineWebDataset(IterableDataset):
         rank: int,
         world_size: int,
         split: str = "train",
-        eval_stride: int = 1000,
+        eval_stride: int = 20,
     ):
         from datasets import load_dataset
 
