@@ -1,0 +1,27 @@
+\section{Protocole expérimental}
+\label{sec:experiments}
+
+\subsection{Contrôles appariés}
+
+L'étude principale compare quatre modèles de langage causaux d'environ 100 millions de paramètres :
+\begin{enumerate}
+    \item un Transformer dense à attention groupée (GQA) et SwiGLU dense ;
+    \item une convolution causale avec SwiGLU dense ;
+    \item une convolution causale avec objet lexical partagé, sans résidu de micro-expert ;
+    \item le modèle complet combinant convolution causale, objet lexical partagé et micro-experts.
+\end{enumerate}
+Le nombre de paramètres, le tokenizer, le corpus, la partition tenue à part, l'optimiseur, le calendrier du taux d'apprentissage, la précision, la longueur de séquence, le nombre effectif de tokens par batch, la seed et le nombre total de tokens d'entraînement sont maintenus constants ou explicitement rapportés lorsqu'une égalité exacte est impossible.
+
+\subsection{Données et tokenizer}
+
+Les modèles utilisent le tokenizer \texttt{o200k\_base} de 200~019 entrées et FineWeb-Edu sample-10BT. Les documents dont l'indice dans le flux source est congru à zéro modulo 20 forment un flux fixe tenu à part et sont exclus de l'entraînement. Les 95\% restants constituent le flux d'entraînement. Le budget principal est de 1~000~013~824 tokens d'entraînement par condition, avec des séquences de longueur 2~048.
+
+\subsection{Mesures}
+
+Nous rapportons l'entropie croisée next-token sur les données tenues à part, le nombre de paramètres, le nombre réel de tokens, le débit d'entraînement, le pic mémoire de l'accélérateur, le débit de prefill et la latence du décodage incrémental à batch un. La qualité à nombre de tokens apparié et l'efficacité en temps réel sont traitées comme des affirmations distinctes. La correction du décodage exige que les logits produits token par token avec cache correspondent aux logits de la séquence complète dans la tolérance numérique annoncée.
+
+Nous ajoutons des diagnostics de rappel associatif : association clé-valeur, induction et apprentissage synthétique en contexte, évalués selon la distance. Ils visent à mesurer directement une faiblesse potentielle des modèles sans attention que la loss moyenne peut masquer.
+
+\subsection{Matériel}
+
+Les entraînements principaux utilisent un seul NVIDIA H100 80GB HBM3 en BF16. Les expériences Apple M5 ne sont rapportées que comme diagnostics courts et ne servent pas de preuve principale de qualité.

@@ -1,0 +1,51 @@
+\section{Method}
+\label{sec:method}
+
+\subsection{Shared causal sequence mixer}
+
+Let $\mH\in\mathbb{R}^{B\times T\times d}$ be normalized hidden states. Layer $\ell$ uses a depthwise causal convolution with kernel width $k$ and dilation
+\begin{equation}
+    \delta_\ell = 2^{\ell \bmod C},
+\end{equation}
+where $C$ is the dilation cycle. After left padding by $(k-1)\delta_\ell$, the mixer is
+\begin{align}
+    \mC_\ell &= \operatorname{DWConv}_{k,\delta_\ell}(\mH),\\
+    \mM_\ell &= \mW_o\left[\operatorname{SiLU}(\mW_g\mC_\ell)\odot(\mW_u\mC_\ell)\right].
+\end{align}
+All tokens use the same parameters and computation. No QKV projection or attention matrix is instantiated.
+
+For incremental decoding, layer $\ell$ stores only its last $(k-1)\delta_\ell$ input vectors. The total state per sequence is
+\begin{equation}
+    S = d\sum_{\ell=0}^{L-1}(k-1)\delta_\ell,
+\end{equation}
+which is independent of the number of previously generated tokens. The implementation updates preallocated state buffers in place under inference mode.
+
+\subsection{Tied lexical residual object}
+
+The shared feed-forward transformation is a dense SwiGLU,
+\begin{equation}
+    \mF(\vh)=\mW_d\left[\operatorname{SiLU}(\mW_g\vh)\odot \mW_u\vh\right].
+\end{equation}
+For token identity $x_t$, a tied table $\mE\in\mathbb{R}^{|\mathcal V|\times r}$ provides a low-rank modulation:
+\begin{align}
+    \vz_t &= \operatorname{SiLU}(\mU\vh_t)\odot(\mathbf{1}+\mE[x_t]),\\
+    \mO(\vh_t,x_t) &= \mD\vz_t.
+\end{align}
+The same table $\mE$ is shared across layers; projection matrices remain layer-specific. The branch is initialized neutrally by setting $\mE$ to zero and using a small learned output gate $\alpha$:
+\begin{equation}
+    \mF_{\mathrm{object}}(\vh_t,x_t)=\mF(\vh_t)+\alpha\mO(\vh_t,x_t).
+\end{equation}
+
+\subsection{Deterministic micro-expert residual}
+
+Each layer assigns token $x_t$ to one of $N$ micro-experts using
+\begin{equation}
+    e_\ell(x_t)=(x_t+\ell)\bmod N.
+\end{equation}
+All expert hidden activations are computed as one regular tensor operation and the selected output is gathered without sorting or scatter. With expert width $w$,
+\begin{equation}
+    \mR_\ell(\vh_t,x_t)=\beta\,\mW^{(e_\ell(x_t))}_{d}
+    \left[\operatorname{SiLU}(\mW^{(e_\ell(x_t))}_{g}\vh_t)
+    \odot \mW^{(e_\ell(x_t))}_{u}\vh_t\right].
+\end{equation}
+The complete feed-forward output is $\mF+\alpha\mO+\beta\mR$. This is a lexical residual over a shared dense path, not a claim that routing replaces shared computation.

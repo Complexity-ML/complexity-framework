@@ -1,0 +1,15 @@
+\section{Introduction}
+
+Attention-based language models couple two functions: transporting information across positions and dynamically selecting which positions interact. This coupling is expressive, but autoregressive deployment typically stores a key--value (KV) cache whose size grows with context length. We ask a narrower empirical question: at the 100M-parameter scale, can a regular causal sequence substrate carry context while small token-conditioned residuals provide specialization?
+
+Our design follows a shared-plus-residual principle. Every token traverses the same dense, causal computation path. Token identity only modulates narrow residual branches. The shared sequence mixer is a stack of depthwise causal convolutions with cycling dilations; it contains no query, key, value, attention softmax, or positional attention operation. A tied low-rank lexical table and deterministic micro-experts then adjust the shared transformation.
+
+The intended contributions are empirical rather than claims that any individual component is new:
+\begin{itemize}
+    \item a controlled integration of a shared causal-convolution substrate with tied lexical residual objects and narrow deterministic micro-experts;
+    \item matched-parameter ablations that separate the effects of sequence mixing and lexical specialization;
+    \item an exact incremental-decode formulation with fixed-size state, tested for equivalence to full-sequence evaluation; and
+    \item a transparent account of quality, training throughput, decode throughput, memory, and failed ablations at the 100M scale.
+\end{itemize}
+
+We deliberately avoid claiming a universal replacement for attention. The study tests a specific scale, tokenizer, corpus, and receptive-field schedule.

@@ -1,0 +1,14 @@
+\section{Reproducibility Checklist}
+
+The final anonymous supplement will include:
+\begin{itemize}
+    \item the exact model source and realized configuration for every reported condition;
+    \item tokenizer name, vocabulary size, dataset revision, and deterministic train/eval partition rule;
+    \item parameter counts and exact token-budget assertions;
+    \item raw per-step CSV metrics and scripts that regenerate tables;
+    \item environment, accelerator, CUDA, and PyTorch versions;
+    \item tests for causality, absence of QKV parameters, tied-object identity, full/incremental equivalence, and fixed cache addresses; and
+    \item commands for training and inference benchmarks without credentials, hostnames, local paths, or repository history.
+\end{itemize}
+
+The review artifact will exclude checkpoints unless required for a reported evaluation, as well as Git history, author metadata, cloud addresses, and transient logs.

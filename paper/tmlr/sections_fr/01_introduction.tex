@@ -1,0 +1,15 @@
+\section{Introduction}
+
+Les modèles de langage fondés sur l'attention couplent deux fonctions : transporter l'information entre les positions et sélectionner dynamiquement les positions qui interagissent. Ce couplage est expressif, mais le déploiement autorégressif conserve généralement un cache clés-valeurs (KV) dont la taille croît avec la longueur du contexte. Nous posons une question empirique plus étroite : à l'échelle de 100 millions de paramètres, un substrat causal régulier peut-il transporter le contexte tandis que de petits résidus conditionnés par les tokens assurent la spécialisation ?
+
+Notre conception suit un principe de chemin partagé complété par des résidus. Chaque token traverse le même chemin de calcul dense et causal. L'identité du token ne module que des branches résiduelles étroites. Le mélangeur séquentiel partagé est une pile de convolutions causales depthwise dont les dilatations suivent un cycle ; il ne contient ni projection de requêtes, clés ou valeurs, ni softmax d'attention, ni opération d'attention positionnelle. Une table lexicale de faible rang partagée et des micro-experts déterministes ajustent ensuite la transformation commune.
+
+Les contributions visées sont empiriques et ne prétendent pas que chaque composant pris séparément est nouveau :
+\begin{itemize}
+    \item une intégration contrôlée d'un substrat convolutionnel causal partagé, d'objets lexicaux résiduels liés et de micro-experts déterministes étroits ;
+    \item des ablations à nombre de paramètres apparié qui séparent les effets du mélange séquentiel et de la spécialisation lexicale ;
+    \item une formulation exacte du décodage incrémental à état de taille fixe, testée par équivalence avec l'évaluation de la séquence complète ;
+    \item une présentation transparente de la qualité, du débit d'entraînement, du débit de décodage, de la mémoire et des ablations ayant échoué à l'échelle de 100 millions de paramètres.
+\end{itemize}
+
+Nous ne prétendons pas remplacer universellement l'attention. L'étude porte sur une échelle, un tokenizer, un corpus et un calendrier de champs réceptifs précis.

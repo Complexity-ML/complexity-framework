@@ -1,0 +1,28 @@
+\section{Results}
+\label{sec:results}
+
+\begin{table}[t]
+\caption{Headline matched-token results. Cells remain pending until each run reaches its registered token budget and its metrics artifact is archived.}
+\label{tab:headline}
+\centering
+\begin{tabular}{lrrr}
+\toprule
+Model & Parameters & Held-out loss $\downarrow$ & Train tok/s $\uparrow$ \\
+\midrule
+Dense GQA baseline & pending & \BaselineEval & pending \\
+Causal convolution, dense FFN & pending & pending & pending \\
+Causal convolution + lexical object & pending & pending & pending \\
+Full lexical micro-expert model & 98,194,244 & \HeadlineEval & \HeadlineThroughput \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Diagnostic evidence}
+
+Before the headline runs, short matched-parameter diagnostics were used only to reject broken configurations and select the candidate. On Apple M5, the full 98.2M attention-free candidate reached held-out loss 7.557967 after 204,800 tokens, versus 7.944988 for a saved dense control, while the last measured training throughput was 6,145 versus 4,779 tokens/s. These short-run values are not treated as final evidence because early optimization dynamics may differ across architectures.
+
+A persistent diagonal recurrent-state extension was also tested. It was numerically stabilized with chunkwise parallel evaluation, but underperformed the simpler convolutional candidate in both loss and throughput at sequence lengths 256 and 1,024. We therefore retain the simpler model as the registered candidate rather than adding an unsupported mechanism.
+
+\subsection{Incremental equivalence and fixed state}
+
+For the selected model, incremental cached decoding reproduces full-sequence logits at absolute and relative tolerance $10^{-5}$ in unit tests. Cache addresses remain stable over repeated decode calls. The ten-layer, width-384 configuration stores 297,216 state elements per sequence, or 580.5 KiB in BF16/FP16, independent of generated context length. CUDA Graph capture and target-device decode benchmarks remain pending and will not be claimed until executed.

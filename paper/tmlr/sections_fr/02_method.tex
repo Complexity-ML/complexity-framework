@@ -1,0 +1,51 @@
+\section{Méthode}
+\label{sec:method}
+
+\subsection{Mélangeur séquentiel causal partagé}
+
+Soit $\mH\in\mathbb{R}^{B\times T\times d}$ le tenseur des états cachés normalisés. La couche $\ell$ utilise une convolution causale depthwise de largeur de noyau $k$ et de dilatation
+\begin{equation}
+    \delta_\ell = 2^{\ell \bmod C},
+\end{equation}
+où $C$ désigne la longueur du cycle de dilatation. Après un remplissage à gauche de $(k-1)\delta_\ell$, le mélangeur s'écrit
+\begin{align}
+    \mC_\ell &= \operatorname{DWConv}_{k,\delta_\ell}(\mH),\\
+    \mM_\ell &= \mW_o\left[\operatorname{SiLU}(\mW_g\mC_\ell)\odot(\mW_u\mC_\ell)\right].
+\end{align}
+Tous les tokens utilisent les mêmes paramètres et le même calcul. Aucune projection QKV ni matrice d'attention n'est instanciée.
+
+Pour le décodage incrémental, la couche $\ell$ ne conserve que ses $(k-1)\delta_\ell$ derniers vecteurs d'entrée. L'état total par séquence est
+\begin{equation}
+    S = d\sum_{\ell=0}^{L-1}(k-1)\delta_\ell,
+\end{equation}
+indépendamment du nombre de tokens déjà générés. En mode inférence, l'implémentation met à jour sur place des buffers d'état préalloués.
+
+\subsection{Objet lexical résiduel partagé}
+
+La transformation feed-forward partagée est un SwiGLU dense,
+\begin{equation}
+    \mF(\vh)=\mW_d\left[\operatorname{SiLU}(\mW_g\vh)\odot \mW_u\vh\right].
+\end{equation}
+Pour l'identité de token $x_t$, une table partagée $\mE\in\mathbb{R}^{|\mathcal V|\times r}$ fournit une modulation de faible rang :
+\begin{align}
+    \vz_t &= \operatorname{SiLU}(\mU\vh_t)\odot(\mathbf{1}+\mE[x_t]),\\
+    \mO(\vh_t,x_t) &= \mD\vz_t.
+\end{align}
+La même table $\mE$ est partagée entre les couches ; les matrices de projection restent propres à chaque couche. La branche est initialisée de façon neutre en mettant $\mE$ à zéro et en employant une petite porte de sortie apprise $\alpha$ :
+\begin{equation}
+    \mF_{\mathrm{objet}}(\vh_t,x_t)=\mF(\vh_t)+\alpha\mO(\vh_t,x_t).
+\end{equation}
+
+\subsection{Résidu de micro-expert déterministe}
+
+Chaque couche affecte le token $x_t$ à l'un des $N$ micro-experts selon
+\begin{equation}
+    e_\ell(x_t)=(x_t+\ell)\bmod N.
+\end{equation}
+Toutes les activations cachées expertes sont calculées dans une même opération tensorielle régulière, puis la sortie retenue est sélectionnée sans tri ni dispersion. Pour une largeur experte $w$,
+\begin{equation}
+    \mR_\ell(\vh_t,x_t)=\beta\,\mW^{(e_\ell(x_t))}_{d}
+    \left[\operatorname{SiLU}(\mW^{(e_\ell(x_t))}_{g}\vh_t)
+    \odot \mW^{(e_\ell(x_t))}_{u}\vh_t\right].
+\end{equation}
+La sortie feed-forward complète est $\mF+\alpha\mO+\beta\mR$. Il s'agit d'un résidu lexical ajouté à un chemin dense partagé, et non d'une affirmation selon laquelle le routage remplacerait le calcul commun.

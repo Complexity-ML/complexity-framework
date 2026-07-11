@@ -1,0 +1,5 @@
+\section{Limitations and Broader Impact}
+
+The current study is limited to approximately 100M parameters, one primary tokenizer, one web-text corpus, and a finite set of seeds. A favorable result would not establish scaling behavior or universal superiority to attention. The convolutional receptive field is finite; fixed decode state is obtained partly by declining unbounded access to the complete prefix. Hardware throughput is implementation- and device-specific and must not be generalized from Apple M5 or a single H100.
+
+Token-identity conditioning may encode corpus-specific frequency and lexical biases. FineWeb-Edu inherits limitations of large web corpora, including uncertain provenance, representational imbalance, and potentially harmful content. The proposed architecture does not remove these risks. Its fixed-state inference could reduce serving memory and energy, but efficiency gains can also lower the cost of deploying low-quality or harmful models. We report data provenance, held-out construction, and deployment constraints so these tradeoffs can be assessed.

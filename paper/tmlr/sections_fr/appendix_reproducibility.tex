@@ -1,0 +1,14 @@
+\section{Liste de contrôle pour la reproductibilité}
+
+Le supplément anonyme final contiendra :
+\begin{itemize}
+    \item le code source exact du modèle et la configuration réalisée pour chaque condition rapportée ;
+    \item le nom du tokenizer, la taille du vocabulaire, la révision du dataset et la règle déterministe de partition train/évaluation ;
+    \item le nombre de paramètres et les assertions sur le nombre exact de tokens ;
+    \item les métriques CSV brutes par étape et les scripts qui régénèrent les tableaux ;
+    \item l'environnement, l'accélérateur et les versions de CUDA et PyTorch ;
+    \item les tests de causalité, d'absence de paramètres QKV, d'identité de l'objet partagé, d'équivalence entre séquence complète et décodage incrémental, et de stabilité des adresses du cache ;
+    \item les commandes d'entraînement et de benchmark d'inférence, sans identifiants, noms d'hôtes, chemins locaux ni historique Git.
+\end{itemize}
+
+L'artefact d'évaluation exclura les checkpoints sauf lorsqu'ils sont nécessaires à une évaluation rapportée, ainsi que l'historique Git, les métadonnées d'auteur, les adresses cloud et les logs transitoires.

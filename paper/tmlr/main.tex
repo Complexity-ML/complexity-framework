@@ -1,0 +1,45 @@
+\documentclass[10pt]{article}
+\usepackage{tmlr}
+\input{math_commands.tex}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{url}
+
+\title{Shared Causal Convolutions with Lexical Residual Objects\\for Attention-Free Language Modeling}
+
+% Keep the source anonymous as well as the rendered review PDF.
+\author{\name Anonymous Authors \\
+        \addr Anonymous Institution}
+
+\def\month{MM}
+\def\year{YYYY}
+\def\openreview{\url{https://openreview.net/forum?id=ANONYMOUS}}
+
+% Headline values are populated only from completed, archived metrics.
+\newcommand{\HeadlineEval}{\textsc{pending}}
+\newcommand{\HeadlineThroughput}{\textsc{pending}}
+\newcommand{\BaselineEval}{\textsc{pending}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We study whether a small causal language model can separate sequence transport from token-specific computation without query--key--value attention. The proposed model uses a shared stack of dilated depthwise causal convolutions for sequence mixing, a tied low-rank object indexed by token identity, and narrow deterministic micro-expert residuals. The resulting decode state has fixed size with respect to generated context length and requires no attention matrix or growing key--value cache. We specify matched controls that isolate the sequence mixer, lexical object, and micro-expert residual at approximately 100M parameters. This draft intentionally withholds headline numerical claims until the preregistered one-billion-token runs and held-out evaluations are complete. The study is designed to report both matched-token language-model quality and hardware-specific training and incremental-decode throughput.
+\end{abstract}
+
+\input{sections/01_introduction}
+\input{sections/02_method}
+\input{sections/03_experiments}
+\input{sections/04_results}
+\input{sections/05_related_work}
+\input{sections/06_limitations}
+\input{sections/07_conclusion}
+
+\bibliography{references}
+\bibliographystyle{tmlr}
+
+\appendix
+\input{sections/appendix_reproducibility}
+
+\end{document}

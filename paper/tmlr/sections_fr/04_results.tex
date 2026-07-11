@@ -1,0 +1,28 @@
+\section{Résultats}
+\label{sec:results}
+
+\begin{table}[t]
+\caption{Résultats principaux à nombre de tokens apparié. Les cellules restent en attente jusqu'à ce que chaque entraînement atteigne son budget enregistré et que ses métriques soient archivées.}
+\label{tab:headline}
+\centering
+\begin{tabular}{lrrr}
+\toprule
+Modèle & Paramètres & Loss tenue à part $\downarrow$ & Tokens/s $\uparrow$ \\
+\midrule
+Baseline GQA dense & en attente & \BaselineEval & en attente \\
+Convolution causale, FFN dense & en attente & en attente & en attente \\
+Convolution causale + objet lexical & en attente & en attente & en attente \\
+Modèle lexical à micro-experts complet & 98~194~244 & \HeadlineEval & \HeadlineThroughput \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Éléments diagnostiques}
+
+Avant les entraînements principaux, de courts diagnostics à nombre de paramètres apparié ont uniquement servi à éliminer les configurations défectueuses et à sélectionner le candidat. Sur Apple M5, le candidat complet sans attention, comptant 98,2 millions de paramètres, a atteint une loss tenue à part de 7,557967 après 204~800 tokens, contre 7,944988 pour un contrôle dense sauvegardé ; le dernier débit d'entraînement mesuré était de 6~145 contre 4~779 tokens/s. Ces valeurs de très court terme ne constituent pas une preuve finale, car la dynamique d'optimisation initiale peut différer entre architectures.
+
+Une extension à état récurrent diagonal persistant a également été testée. Elle a été stabilisée numériquement au moyen d'une évaluation parallèle par segments, mais s'est montrée inférieure au candidat convolutionnel plus simple en loss comme en débit aux longueurs 256 et 1~024. Comme ces longueurs dépassent peu le champ réceptif de la convolution, cette extension reste une ablation à réévaluer à 4--8k plutôt qu'une composante du modèle canonique.
+
+\subsection{Équivalence incrémentale et état fixe}
+
+Pour le modèle sélectionné, le décodage incrémental avec cache reproduit les logits de la séquence complète avec une tolérance absolue et relative de $10^{-5}$ dans les tests unitaires. Les adresses des caches restent stables au cours d'appels de décodage répétés. La configuration à dix couches et de largeur 384 conserve 297~216 éléments d'état par séquence, soit 580,5 Kio en BF16/FP16, indépendamment de la longueur du contexte généré. La capture CUDA Graph et les benchmarks de décodage sur le matériel cible restent en attente et ne seront pas revendiqués avant leur exécution.

@@ -1,0 +1,25 @@
+\section{Experimental Design}
+\label{sec:experiments}
+
+\subsection{Matched controls}
+
+The headline study compares four approximately 100M-parameter causal language models:
+\begin{enumerate}
+    \item a dense grouped-query-attention Transformer with dense SwiGLU;
+    \item causal convolution with dense SwiGLU;
+    \item causal convolution with the tied lexical object but no micro-expert residual; and
+    \item the complete causal convolution, tied lexical object, and micro-expert model.
+\end{enumerate}
+Parameter counts, tokenizer, corpus, held-out partition, optimizer, learning-rate schedule, precision, sequence length, effective token batch, random seed, and total training tokens are held fixed or reported explicitly where exact equality is impossible.
+
+\subsection{Data and tokenizer}
+
+Models use the 200,019-entry \texttt{o200k\_base} tokenizer and FineWeb-Edu sample-10BT. Documents with source-stream index congruent to zero modulo 20 form a fixed held-out stream and are excluded from training. The remaining 95\% form the training stream. The headline budget is 1,000,013,824 training tokens per condition at sequence length 2,048.
+
+\subsection{Metrics}
+
+We report held-out next-token cross-entropy, parameter count, realized token count, training throughput, peak accelerator memory, prefill throughput, and batch-one incremental-decode latency. Matched-token quality and wall-clock efficiency are treated as separate claims. Decode correctness requires cached token-by-token logits to match full-sequence logits within stated numerical tolerance.
+
+\subsection{Hardware}
+
+Headline training runs use a single NVIDIA H100 80GB HBM3 in BF16. Apple M5 runs are reported only as short diagnostics and are not used as headline quality evidence.

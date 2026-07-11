@@ -1,0 +1,46 @@
+\documentclass[10pt]{article}
+\usepackage{tmlr}
+\input{math_commands.tex}
+\usepackage[french]{babel}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{url}
+
+\title{Convolutions causales partagées et objets lexicaux résiduels\\pour la modélisation du langage sans attention}
+
+% La source comme le PDF d'évaluation restent anonymes.
+\author{\name Auteurs anonymes \\
+        \addr Institution anonyme}
+
+\def\month{MM}
+\def\year{YYYY}
+\def\openreview{\url{https://openreview.net/forum?id=ANONYMOUS}}
+
+% Ces valeurs ne seront renseignées qu'à partir de métriques achevées et archivées.
+\newcommand{\HeadlineEval}{\textsc{en attente}}
+\newcommand{\HeadlineThroughput}{\textsc{en attente}}
+\newcommand{\BaselineEval}{\textsc{en attente}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Nous étudions si un petit modèle de langage causal peut séparer le transport de l'information séquentielle du calcul propre aux tokens, sans attention fondée sur des requêtes, clés et valeurs. Le modèle proposé emploie une pile partagée de convolutions causales depthwise dilatées pour le mélange séquentiel, un objet de faible rang indexé par l'identité du token et partagé entre les couches, ainsi que d'étroits résidus de micro-experts déterministes. L'état de décodage obtenu conserve une taille fixe par rapport à la longueur du contexte généré et ne nécessite ni matrice d'attention ni cache clés-valeurs croissant. Nous définissons des contrôles appariés qui isolent le mélangeur séquentiel, l'objet lexical et le résidu de micro-experts à environ 100 millions de paramètres. Ce brouillon omet volontairement les résultats numériques principaux jusqu'à l'achèvement des entraînements préenregistrés sur un milliard de tokens et des évaluations tenues à part. L'étude est conçue pour rapporter à la fois la qualité du modèle de langage à nombre de tokens apparié, le débit d'entraînement propre au matériel et le débit de décodage incrémental.
+\end{abstract}
+
+\input{sections_fr/01_introduction}
+\input{sections_fr/02_method}
+\input{sections_fr/03_experiments}
+\input{sections_fr/04_results}
+\input{sections_fr/05_related_work}
+\input{sections_fr/06_limitations}
+\input{sections_fr/07_conclusion}
+
+\bibliography{references}
+\bibliographystyle{tmlr}
+
+\appendix
+\input{sections_fr/appendix_reproducibility}
+
+\end{document}
