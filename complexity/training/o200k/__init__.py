@@ -23,6 +23,7 @@ from .runtime import (
     init_distributed,
     reduce_average,
     reduce_average_tensor,
+    runtime_controls,
     scheduled_value,
     scheduled_topk_primary_weight,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "init_distributed",
     "reduce_average",
     "reduce_average_tensor",
+    "runtime_controls",
     "scheduled_topk_primary_weight",
     "scheduled_value",
     "apply_topk_primary_weight",

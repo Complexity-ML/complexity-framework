@@ -43,6 +43,7 @@ from complexity.training.o200k import (
     load_checkpoint,
     make_config,
     reduce_average_tensor,
+    runtime_controls,
     scheduled_value,
     save_checkpoint,
     scheduled_topk_primary_weight,
@@ -70,7 +71,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logging.getLogger("complexity.core.mlp.token_routed").setLevel(logging.WARNING)
 for noisy_logger in ("httpx", "httpcore", "huggingface_hub", "datasets"):
-    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+    library_logger = logging.getLogger(noisy_logger)
+    library_logger.setLevel(logging.ERROR)
+    library_logger.propagate = False
 
 
 def infer_vocab_size(args) -> int:
@@ -138,6 +141,7 @@ def main():
         config.lsh_from_layer = int(getattr(args, "lsh_from_layer", 0))
         config.lsh_threshold_mode = getattr(args, "lsh_threshold_mode", "zero")
     raw_model = ComplexityModel(config).to(device)
+    active_controls = runtime_controls(raw_model)
     if args.grad_ckpt:
         raw_model.gradient_checkpointing_enable()
 
@@ -161,34 +165,51 @@ def main():
         logger.info(f"Model: {params / 1e6:.1f}M params")
         for line in format_run_summary(run_config):
             logger.info(line)
-        logger.info(
-            "Config: Token-Routed residual, "
-            f"hidden={args.hidden_size}, layers={args.num_hidden_layers}, "
-            f"GQA={args.num_attention_heads}/{args.num_key_value_heads}, "
-            f"inter={args.intermediate_size}, shared_inter={args.shared_intermediate_size}, "
-            f"shared_chunk={args.shared_expert_chunk_tokens}, "
-            f"grad_ckpt={args.grad_ckpt}, "
-            f"experts=4, top_k={args.top_k}, primary_w={args.top_k_primary_weight}, "
-            f"primary_w_final={args.top_k_primary_weight_final}, "
-            f"lsh_threshold={getattr(args, 'lsh_threshold_mode', 'zero')}, "
-            f"learn_gates={args.learn_shared_routed_gates}, "
-            f"gates=({args.shared_gate_init}->{args.shared_gate_final},"
-            f"{args.routed_gate_init}->{args.routed_gate_final}), "
-            f"expert_diversity={args.expert_diversity_lambda} target={args.expert_diversity_target}, "
-            f"use_mu={args.use_mu_guidance}, mu_clamp={args.mu_clamp}, mu_norm={args.mu_norm}, "
-            f"mu_alpha={args.mu_alpha_init}, mu_init={args.mu_init_value}"
-        )
+        if active_controls.lexical_layers:
+            logger.info(
+                "Config: attention-free lexical residual, "
+                f"mixer={args.attention_type}, hidden={args.hidden_size}, "
+                f"layers={args.num_hidden_layers}, inter={args.intermediate_size}, "
+                f"conv_kernel={args.causal_conv_kernel_size}, "
+                f"dilation_cycle={args.causal_conv_dilation_cycle}, "
+                f"object_rank={args.lexical_object_rank}, "
+                f"tied_objects={args.tie_lexical_object_embeddings}, "
+                f"micro_experts={args.micro_num_experts}x{args.micro_expert_width}, "
+                f"object_gate={active_controls.object_gate:.4f}, "
+                f"micro_gate={active_controls.micro_gate:.4f}, "
+                f"grad_ckpt={args.grad_ckpt}"
+            )
+        else:
+            logger.info(
+                "Config: Token-Routed residual, "
+                f"hidden={args.hidden_size}, layers={args.num_hidden_layers}, "
+                f"GQA={args.num_attention_heads}/{args.num_key_value_heads}, "
+                f"inter={args.intermediate_size}, shared_inter={args.shared_intermediate_size}, "
+                f"shared_chunk={args.shared_expert_chunk_tokens}, "
+                f"grad_ckpt={args.grad_ckpt}, experts=4, top_k={args.top_k}, "
+                f"primary_w={args.top_k_primary_weight}, "
+                f"primary_w_final={args.top_k_primary_weight_final}, "
+                f"lsh_threshold={getattr(args, 'lsh_threshold_mode', 'zero')}, "
+                f"learn_gates={args.learn_shared_routed_gates}, "
+                f"gates=({args.shared_gate_init}->{args.shared_gate_final},"
+                f"{args.routed_gate_init}->{args.routed_gate_final}), "
+                f"expert_diversity={args.expert_diversity_lambda} "
+                f"target={args.expert_diversity_target}"
+            )
         logger.info(
             "Loss: "
             f"backend={args.loss_backend_active}, chunk_tokens={args.loss_chunk_tokens}, "
             f"checkpoint_chunks={args.loss_checkpoint_chunks}, vocab=exact"
         )
-        logger.info(
-            "Optimizer: "
-            f"{args.optimizer}, adam_lr={args.lr:.2e}, weight_decay={args.weight_decay}, "
-            f"muon_lr={args.muon_lr:.2e}, muon_scope={args.muon_scope}, "
-            f"expert_lr_scale={args.expert_lr_scale}"
+        optimizer_summary = (
+            f"{args.optimizer}, adam_lr={args.lr:.2e}, weight_decay={args.weight_decay}"
         )
+        if args.optimizer == "muon_tr":
+            optimizer_summary += (
+                f", muon_lr={args.muon_lr:.2e}, muon_scope={args.muon_scope}, "
+                f"expert_lr_scale={args.expert_lr_scale}"
+            )
+        logger.info(f"Optimizer: {optimizer_summary}")
         if distributed:
             logger.info(f"DDP: world_size={world_size}, per_gpu_batch={args.batch_size}")
 
@@ -288,14 +309,16 @@ def main():
         should_log = step == 1 or step % args.log_steps == 0 or should_eval
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
-        topk_primary_weight = scheduled_topk_primary_weight(
-            step - 1,
-            args.steps,
-            args.top_k_primary_weight,
-            args.top_k_primary_weight_final,
-            args.top_k_primary_weight_schedule_ratio,
-        )
-        apply_topk_primary_weight(raw_model, topk_primary_weight)
+        topk_primary_weight = None
+        if active_controls.token_routed_layers:
+            topk_primary_weight = scheduled_topk_primary_weight(
+                step - 1,
+                args.steps,
+                args.top_k_primary_weight,
+                args.top_k_primary_weight_final,
+                args.top_k_primary_weight_schedule_ratio,
+            )
+            apply_topk_primary_weight(raw_model, topk_primary_weight)
         shared_gate = (
             scheduled_value(
                 step - 1,
@@ -304,7 +327,7 @@ def main():
                 args.shared_gate_final,
                 args.gate_schedule_ratio,
             )
-            if args.shared_gate_final is not None
+            if active_controls.token_routed_layers and args.shared_gate_final is not None
             else None
         )
         routed_gate = (
@@ -315,7 +338,7 @@ def main():
                 args.routed_gate_final,
                 args.gate_schedule_ratio,
             )
-            if args.routed_gate_final is not None
+            if active_controls.token_routed_layers and args.routed_gate_final is not None
             else None
         )
         apply_shared_routed_gates(raw_model, shared_gate, routed_gate)
@@ -414,15 +437,25 @@ def main():
                     f"{train_total_loss:.6f}",
                 ])
                 csv_file.flush()
-                pbar.set_postfix(
-                    loss=f"{train_loss:.4f}",
-                    eval=f"{eval_loss:.4f}",
-                    tok_s=f"{tok_s:.0f}",
-                    topk_w=f"{topk_primary_weight:.3f}",
-                    gate=f"{shared_gate if shared_gate is not None else args.shared_gate_init:.2f}/"
-                    f"{routed_gate if routed_gate is not None else args.routed_gate_init:.2f}",
-                    div=f"{diversity_lambda:.1e}",
-                )
+                postfix = {
+                    "loss": f"{train_loss:.4f}",
+                    "eval": f"{eval_loss:.4f}",
+                    "tok_s": f"{tok_s:.0f}",
+                }
+                if active_controls.token_routed_layers:
+                    postfix.update(
+                        topk_w=f"{topk_primary_weight:.3f}",
+                        gate=f"{shared_gate if shared_gate is not None else args.shared_gate_init:.2f}/"
+                        f"{routed_gate if routed_gate is not None else args.routed_gate_init:.2f}",
+                        div=f"{diversity_lambda:.1e}",
+                    )
+                elif active_controls.lexical_layers:
+                    lexical_controls = runtime_controls(raw_model)
+                    postfix.update(
+                        object_gate=f"{lexical_controls.object_gate:.3f}",
+                        micro_gate=f"{lexical_controls.micro_gate:.3f}",
+                    )
+                pbar.set_postfix(postfix)
             t_log = now
             tokens_since_log = 0
 

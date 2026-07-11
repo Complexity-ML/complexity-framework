@@ -4,12 +4,48 @@ from __future__ import annotations
 
 import os
 import math
+from dataclasses import dataclass
 
 import torch
 import torch.distributed as dist
 
 from complexity.core.losses import causal_lm_loss_from_hidden
 from complexity.utils import autocast, setup_mps
+
+
+@dataclass(frozen=True)
+class RuntimeControls:
+    """Controls and learned scalar gates actually present in a built model."""
+
+    token_routed_layers: int
+    lexical_layers: int
+    object_gate: float | None
+    micro_gate: float | None
+
+
+@torch.no_grad()
+def runtime_controls(model) -> RuntimeControls:
+    """Inspect active routing controls instead of trusting generic CLI defaults."""
+
+    token_routed_layers = 0
+    object_gates = []
+    micro_gates = []
+    for module in model.modules():
+        if callable(getattr(module, "set_top_k_primary_weight", None)):
+            token_routed_layers += 1
+        object_gate = getattr(module, "object_output_gate", None)
+        micro_gate = getattr(module, "micro_output_gate", None)
+        if object_gate is not None:
+            object_gates.append(float(object_gate.detach().float().item()))
+        if micro_gate is not None:
+            micro_gates.append(float(micro_gate.detach().float().item()))
+    lexical_layers = max(len(object_gates), len(micro_gates))
+    return RuntimeControls(
+        token_routed_layers=token_routed_layers,
+        lexical_layers=lexical_layers,
+        object_gate=sum(object_gates) / len(object_gates) if object_gates else None,
+        micro_gate=sum(micro_gates) / len(micro_gates) if micro_gates else None,
+    )
 
 
 @torch.no_grad()
