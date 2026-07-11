@@ -10,7 +10,7 @@ A block consists of:
 
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from ..config import ModelConfig
 from ..core.attention import AttentionConfig
@@ -108,6 +108,11 @@ class TransformerBlock(nn.Module):
             rope_type=config.rope_type,
             use_mup_attn_scale=getattr(config, "use_mup_attn_scale", False),
             use_mu_guidance=config.effective_mu_guidance,
+            causal_conv_kernel_size=getattr(config, "causal_conv_kernel_size", 4),
+            causal_conv_dilation=2 ** (
+                layer_idx % int(getattr(config, "causal_conv_dilation_cycle", 8))
+            ),
+            causal_state_rank=getattr(config, "causal_state_rank", 16),
         )
         self.self_attn = ATTENTION_REGISTRY.build(config.attention_type, attn_config)
 
@@ -144,6 +149,11 @@ class TransformerBlock(nn.Module):
             collect_moe_telemetry=getattr(config, 'collect_moe_telemetry', False),
             use_custom_kernels=getattr(config, 'use_custom_kernels', 'auto'),
             use_cggr=getattr(config, 'use_cggr', False),
+            lexical_object_rank=getattr(config, 'lexical_object_rank', 16),
+            lexical_object_gate_init=getattr(config, 'lexical_object_gate_init', 0.1),
+            micro_num_experts=getattr(config, 'micro_num_experts', 4),
+            micro_expert_width=getattr(config, 'micro_expert_width', 16),
+            micro_expert_gate_init=getattr(config, 'micro_expert_gate_init', 0.1),
         )
         self.mlp = MLP_REGISTRY.build(config.mlp_type, mlp_config)
 
@@ -168,13 +178,13 @@ class TransformerBlock(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        past_key_value: Optional[Any] = None,
         use_cache: bool = False,
         token_ids: Optional[torch.Tensor] = None,
         velocity_state: Optional[torch.Tensor] = None,
         mu_prev: Optional[torch.Tensor] = None,
         sort_idx: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor], Optional[torch.Tensor]]:
+    ) -> Tuple[torch.Tensor, Optional[Any], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Forward pass through the transformer block.
 

@@ -48,6 +48,14 @@ class MLPConfig:
     use_custom_kernels: object = "auto"  # "auto", True, or False. Controls optional Triton paths.
     use_cggr: object = "auto"  # "auto", True, or False. Use CGGR grouped-GEMM when the backend policy allows custom Triton.
 
+    # Lexical feature-modulated residual: dense shared SwiGLU plus a low-rank
+    # token-conditioned residual with no expert dispatch.
+    lexical_object_rank: int = 16
+    lexical_object_gate_init: float = 0.1
+    micro_num_experts: int = 4
+    micro_expert_width: int = 16
+    micro_expert_gate_init: float = 0.1
+
     def __post_init__(self):
         if self.hidden_size <= 0:
             raise ValueError("hidden_size must be positive")
@@ -73,6 +81,12 @@ class MLPConfig:
             raise ValueError("shared_intermediate_size must be positive when set")
         if self.shared_expert_chunk_tokens < 0:
             raise ValueError("shared_expert_chunk_tokens must be non-negative")
+        if self.lexical_object_rank <= 0:
+            raise ValueError("lexical_object_rank must be positive")
+        if self.micro_num_experts <= 0:
+            raise ValueError("micro_num_experts must be positive")
+        if self.micro_expert_width <= 0:
+            raise ValueError("micro_expert_width must be positive")
         if self.token_frequencies is not None:
             if not isinstance(self.token_frequencies, torch.Tensor):
                 raise ValueError("token_frequencies must be a torch.Tensor")

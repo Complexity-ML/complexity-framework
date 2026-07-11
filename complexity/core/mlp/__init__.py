@@ -32,6 +32,9 @@ from .token_routed import TokenRoutedMLP
 from .mixtral_moe import MixtralMoE
 from .i64_mlp import I64SwiGLUMLP, I64TokenRoutedMLP
 from .dense_deterministic import DenseDeterministicMLP
+from .lexical_modulated import LexicalModulatedMLP
+from .lexical_channel_modulated import LexicalChannelModulatedMLP
+from .lexical_object_micro_expert import LexicalObjectMicroExpertMLP
 from .deterministic_init import deterministic_gaussian_init_
 
 __all__ = [
@@ -45,5 +48,8 @@ __all__ = [
     "I64SwiGLUMLP",
     "I64TokenRoutedMLP",
     "DenseDeterministicMLP",
+    "LexicalModulatedMLP",
+    "LexicalChannelModulatedMLP",
+    "LexicalObjectMicroExpertMLP",
     "deterministic_gaussian_init_",
 ]

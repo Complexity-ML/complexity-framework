@@ -41,21 +41,32 @@ for noisy_logger in ("httpx", "httpcore", "huggingface_hub", "datasets"):
 
 
 def make_config(args) -> ModelConfig:
+    variant = getattr(args, "variant", "dense")
+    if variant == "dense":
+        mlp_type = "swiglu"
+        intermediate_size = 3584
+    elif variant == "lexical-object":
+        mlp_type = "lexical_modulated"
+        intermediate_size = 3307
+    else:
+        raise ValueError(f"Unknown variant: {variant}")
     return ModelConfig(
         hidden_size=640,
         num_hidden_layers=10,
         num_attention_heads=10,
         num_key_value_heads=2,
-        intermediate_size=3584,
+        intermediate_size=intermediate_size,
         vocab_size=args.vocab_size,
         max_position_embeddings=2048,
         attention_type="gqa",
-        mlp_type="swiglu",
+        mlp_type=mlp_type,
         num_experts=1,
         shared_expert=False,
         norm_type="rmsnorm",
         use_qk_norm=True,
         use_mu_guidance=False,
+        lexical_object_rank=16,
+        lexical_object_gate_init=0.1,
     )
 
 
@@ -191,6 +202,7 @@ def build_loaders(args, config):
 
 def main():
     parser = argparse.ArgumentParser(description="Local ~100M dense baseline")
+    parser.add_argument("--variant", choices=["dense", "lexical-object"], default="dense")
     parser.add_argument("--dataset", choices=["random", "text", "fineweb"], default="random")
     parser.add_argument("--text-file", type=str, default=None)
     parser.add_argument("--tokenizer", type=str, default="./tokenizer")
@@ -222,7 +234,10 @@ def main():
 
     params = model.num_parameters()
     logger.info(f"Model: {params / 1e6:.1f}M params")
-    logger.info("Config: dense SwiGLU, hidden=640, layers=10, GQA=10/2, inter=3584")
+    logger.info(
+        f"Config: variant={args.variant}, hidden=640, layers=10, GQA=10/2, "
+        f"inter={config.intermediate_size}, object_rank={config.lexical_object_rank}"
+    )
 
     amp_dtype = autocast_dtype(device) if args.bf16 else None
     train_loader, eval_loader = build_loaders(args, config)
@@ -256,7 +271,7 @@ def main():
     csv_file.flush()
 
     model.train()
-    pbar = tqdm(total=args.steps, desc="100M dense", unit="step", dynamic_ncols=True)
+    pbar = tqdm(total=args.steps, desc=f"100M {args.variant}", unit="step", dynamic_ncols=True)
     t_log = time.perf_counter()
     tokens_since_log = 0
 

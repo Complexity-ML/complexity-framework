@@ -51,6 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-hidden-layers", type=int, default=None)
     parser.add_argument("--num-attention-heads", type=int, default=None)
     parser.add_argument("--num-key-value-heads", type=int, default=None)
+    parser.add_argument("--attention-type", type=str, default="gqa")
+    parser.add_argument("--causal-conv-kernel-size", type=int, default=4)
+    parser.add_argument("--causal-conv-dilation-cycle", type=int, default=8)
+    parser.add_argument("--causal-state-rank", type=int, default=16)
     parser.add_argument("--intermediate-size", type=int, default=None)
     parser.add_argument("--shared-intermediate-size", type=int, default=None)
     parser.add_argument(
@@ -185,6 +189,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override the MLP type (e.g. 'swiglu' for a dense baseline). Defaults to the profile's token_routed.",
     )
+    parser.add_argument("--lexical-object-rank", type=int, default=16)
+    parser.add_argument("--lexical-object-gate-init", type=float, default=0.1)
+    parser.add_argument(
+        "--tie-lexical-object-embeddings",
+        action="store_true",
+        help="Share one lexical modulation table across all transformer layers.",
+    )
+    parser.add_argument("--micro-num-experts", type=int, default=4)
+    parser.add_argument("--micro-expert-width", type=int, default=16)
+    parser.add_argument("--micro-expert-gate-init", type=float, default=0.1)
     parser.add_argument("--use-mu-guidance", action="store_true")
     parser.add_argument("--mu-clamp", action="store_true")
     parser.add_argument("--mu-norm", action="store_true")

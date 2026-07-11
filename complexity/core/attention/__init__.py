@@ -1,10 +1,15 @@
 """
-Attention implementations for framework-complexity.
+Sequence-mixer implementations for framework-complexity.
 
-Available attention types:
+The historical package and registry names remain ``attention`` for backward
+compatibility, but registered modules are not required to use attention.
+
+Available sequence-mixer types:
 - gqa / grouped_query: Grouped Query Attention (Llama 2/3 style)
 - mha / multi_head: Standard Multi-Head Attention
 - mqa / multi_query: Multi-Query Attention (single KV head)
+- causal_conv / lexical_object_conv: attention-free dilated causal convolution
+- causal_state_conv: attention-free causal convolution with persistent state
 
 Usage:
     from complexity.core.attention import GroupedQueryAttention, AttentionConfig
@@ -22,6 +27,8 @@ from .base import AttentionBase, AttentionConfig
 from .gqa import GroupedQueryAttention, MultiHeadAttention, MultiQueryAttention
 from .routed_gqa import RoutedGQA
 from .i64_attention import I64Attention
+from .causal_conv import CausalConvMixer
+from .causal_state_conv import CausalStateConvMixer
 
 __all__ = [
     "AttentionBase",
@@ -31,4 +38,6 @@ __all__ = [
     "MultiQueryAttention",
     "RoutedGQA",
     "I64Attention",
+    "CausalConvMixer",
+    "CausalStateConvMixer",
 ]

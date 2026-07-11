@@ -58,6 +58,9 @@ class ModelConfig:
     attention_dropout: float = 0.0
     use_qk_norm: bool = True
     sliding_window: Optional[int] = None  # None = full attention
+    causal_conv_kernel_size: int = 4
+    causal_conv_dilation_cycle: int = 8
+    causal_state_rank: int = 16
 
     # === Position Embeddings ===
     max_position_embeddings: int = 2048
@@ -89,6 +92,14 @@ class ModelConfig:
     use_custom_kernels: Any = "auto"  # "auto", True, or False. ROCm defaults to PyTorch fallback in auto mode.
     collect_moe_telemetry: bool = False  # Per-layer expert/RMS diagnostics. Disabled by default for throughput.
     use_cggr: Any = "auto"  # "auto", True, or False. CGGR grouped-GEMM Triton path for TokenRoutedMLP when custom Triton is available.
+
+    # === Lexical feature-modulated residual ===
+    lexical_object_rank: int = 16
+    lexical_object_gate_init: float = 0.1
+    tie_lexical_object_embeddings: bool = False
+    micro_num_experts: int = 4
+    micro_expert_width: int = 16
+    micro_expert_gate_init: float = 0.1
 
     # === Mu-Guidance ===
     use_mu_guidance: bool = False  # Enable contextual mu flowing between layers
@@ -189,6 +200,12 @@ class ModelConfig:
             raise ValueError("rope_fraction must be in (0, 1]")
         if self.sliding_window is not None and self.sliding_window <= 0:
             raise ValueError("sliding_window must be positive when set")
+        if self.causal_conv_kernel_size <= 0:
+            raise ValueError("causal_conv_kernel_size must be positive")
+        if self.causal_conv_dilation_cycle <= 0:
+            raise ValueError("causal_conv_dilation_cycle must be positive")
+        if self.causal_state_rank <= 0:
+            raise ValueError("causal_state_rank must be positive")
         if self.num_experts <= 0:
             raise ValueError("num_experts must be positive")
         if self.top_k <= 0:
@@ -205,6 +222,12 @@ class ModelConfig:
             raise ValueError("shared_intermediate_size must be positive when set")
         if self.shared_expert_chunk_tokens < 0:
             raise ValueError("shared_expert_chunk_tokens must be non-negative")
+        if self.lexical_object_rank <= 0:
+            raise ValueError("lexical_object_rank must be positive")
+        if self.micro_num_experts <= 0:
+            raise ValueError("micro_num_experts must be positive")
+        if self.micro_expert_width <= 0:
+            raise ValueError("micro_expert_width must be positive")
         if self.mu_min > self.mu_max:
             raise ValueError("mu_min must be <= mu_max")
         if self.mu_context_min > self.mu_context_max:

@@ -28,6 +28,9 @@ class AttentionConfig:
     use_mup_attn_scale: bool = False  # μP: 1/d_head attention logit scale (vs 1/√d_head)
     use_mu_guidance: bool = False  # Add mu-to-K/Q/V projections for guided attention.
     scale: Optional[float] = None
+    causal_conv_kernel_size: int = 4
+    causal_conv_dilation: int = 1
+    causal_state_rank: int = 16
 
     def __post_init__(self):
         if self.head_dim is None:
@@ -59,6 +62,12 @@ class AttentionConfig:
             raise ValueError("attention_dropout must be in [0, 1)")
         if self.sliding_window is not None and self.sliding_window <= 0:
             raise ValueError("sliding_window must be positive when set")
+        if self.causal_conv_kernel_size <= 0:
+            raise ValueError("causal_conv_kernel_size must be positive")
+        if self.causal_conv_dilation <= 0:
+            raise ValueError("causal_conv_dilation must be positive")
+        if self.causal_state_rank <= 0:
+            raise ValueError("causal_state_rank must be positive")
 
 
 class AttentionBase(nn.Module, ABC):

@@ -61,6 +61,19 @@ class ComplexityModel(nn.Module):
             TransformerBlock(config, layer_idx=i)
             for i in range(config.num_hidden_layers)
         ])
+        lexical_object_types = {
+            "lexical_modulated",
+            "lexical_object",
+            "lexical_channel_modulated",
+            "lexical_channel_object",
+            "lexical_object_micro_expert",
+        }
+        if config.mlp_type in lexical_object_types and bool(
+            getattr(config, "tie_lexical_object_embeddings", False)
+        ):
+            shared_token_scale = self.layers[0].mlp.token_scale
+            for layer in self.layers[1:]:
+                layer.mlp.token_scale = shared_token_scale
 
         # Final normalization
         self.norm = NORMALIZATION_REGISTRY.build(
@@ -90,6 +103,8 @@ class ComplexityModel(nn.Module):
 
         # Initialize weights (GPT-style: residual projections scaled by 1/√(2N))
         self.apply(self._init_weights)
+        if config.mlp_type in lexical_object_types:
+            nn.init.zeros_(self.layers[0].mlp.token_scale.weight)
         self._init_residual_scaling()
         # μP: scale hidden→hidden Linears by 1/√(hidden_size / mup_base_width).
         # No-op at base width or when use_mup_init=False. Applied AFTER
@@ -148,6 +163,10 @@ class ComplexityModel(nn.Module):
             # Shared expert down projection (TokenRoutedMLP with shared=True)
             if hasattr(mlp, 'shared_down') and isinstance(mlp.shared_down, nn.Linear):
                 nn.init.normal_(mlp.shared_down.weight, mean=0.0, std=residual_std)
+            if hasattr(mlp, 'object_down') and isinstance(mlp.object_down, nn.Linear):
+                nn.init.normal_(mlp.object_down.weight, mean=0.0, std=residual_std)
+            if hasattr(mlp, 'micro_down') and isinstance(mlp.micro_down, nn.Parameter):
+                nn.init.normal_(mlp.micro_down, mean=0.0, std=residual_std)
 
     def _apply_mup_init_scaling(self):
         """
@@ -291,7 +310,7 @@ class ComplexityModel(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-        past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
+        past_key_values: Optional[List[Any]] = None,
         use_cache: bool = False,
         return_hidden_states: bool = False,
         return_logits: bool = True,
@@ -323,7 +342,8 @@ class ComplexityModel(nn.Module):
         # Store hidden states if requested
         all_hidden_states = [hidden_states] if return_hidden_states else None
 
-        # Initialize KV cache list
+        # Initialize per-layer cache/state list. Attention layers return KV
+        # tuples; attention-free mixers return fixed-size state tensors.
         new_past_key_values = [] if use_cache else None
 
         # Process through layers (mu flows from layer to layer)
