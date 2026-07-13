@@ -1,0 +1,13 @@
+\section{Liste de contrôle pour la reproductibilité}
+
+L'instantané du dépôt accompagnant cette révision contient :
+\begin{itemize}
+    \item le code du modèle et les configurations JSON réalisées des conditions WVR et W/R/V récentes ; la ligne GQA possède des métriques mais pas de configuration réalisée archivée ;
+    \item le nom du tokenizer, la taille du vocabulaire, l'identifiant du dataset, le ratio déterministe d'évaluation, les seeds, longueurs de séquence, taux d'apprentissage et budgets exacts de tokens ;
+    \item les métriques CSV par étape ou mesures JSON archivées pour chaque ligne du tableau, y compris les ablations négatives ;
+    \item les scripts déterministes de collecte et de tracé des diagnostics de checkpoint et de contexte ;
+    \item les tests de causalité W/R/V, formes des têtes groupées, identité de table lexicale liée, initialisation lexicale neutre, RoPE et équivalence FP32 full/incrémental, ainsi que les tests WVR à état fixe ;
+    \item un audit des noms et formes du checkpoint historique sans attention, explicitement non appliqué au modèle final avec attention.
+\end{itemize}
+
+Les checkpoints lourds, l'historique Git, les credentials, adresses cloud, noms d'hôtes, chemins utilisateur locaux et logs transitoires sont exclus. Aucun checkpoint final W/R/V n'existe et le run n'enregistre aucun commit Git. La source relue corrige après le run les masques causaux, le cache par chunks et l'initialisation de projection résiduelle : c'est une implémentation corrigée par audit, non le snapshot historique octet pour octet, et le résultat doit être répliqué. Les chemins identifiants sont remplacés par \texttt{[REDACTED]} ; le supplément double aveugle doit être une archive scannée sans \texttt{.git}.

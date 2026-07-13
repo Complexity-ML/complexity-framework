@@ -1,0 +1,26 @@
+\section{Experimental Design}
+\label{sec:experiments}
+
+\subsection{Controls and architectural path}
+
+The study compares GQA, fixed-state associative variants, hybrid WVR--attention models, and the final ten-layer contextual W/R/V model at approximately 98.2M parameters. Fixed-state conditions include the additive predecessor, Stable Delta, collision normalization, multiple timescales, lexical values, Lexical Forge V3, Forge V3 plus collision normalization, and compact context-plus-position addressing. The archived attention path evaluates one W/R/V layer, eight strongly lexical W/R/V layers, eight contextual W/R/V layers with two WVR layers, and the final ten-layer contextual W/R/V model with per-head RMS normalization.
+
+The historical causal-convolution lexical micro-expert run trained for 1,000,013,824 tokens is reported separately. It is not a matched control for the 100M-token WVR table.
+
+\subsection{Data, tokenizer, and budget}
+
+Models use a 200,019-entry tokenizer recorded as \texttt{o200k\_base} and FineWeb-Edu sample-10BT. The tokenizer asset checksum was not archived and remains a reproducibility blocker. The principal runs use sequence length 2,048, seed 42, BF16, and 100,007,936 training tokens. A deterministic 5\% document stream is reserved for evaluation and excluded from training by the data pipeline. Each final estimate averages 8 batches, or 262,144 tokens; no uncertainty estimate is available. Table~\ref{tab:wvr-100m} reports the last finite evaluation, normally step 3,000.
+
+The archived GQA metrics used peak learning rate $3\times10^{-4}$; recent WVR and contextual W/R/V runs use $4\times10^{-4}$. No realized GQA configuration is colocated with its CSV, so dimensions, exact token budget, tokenizer, dataset construction, seed, software path, and kernel settings cannot be independently reverified from the review artifact. Cross-run comparisons are descriptive rather than controlled architecture comparisons.
+
+\subsection{Metrics and evidence rule}
+
+We report held-out next-token cross-entropy, realized parameter count, exact token count, and the training throughput logged at the finite evaluation step. Quality and throughput are separate claims. Every numerical table entry must map to an archived CSV or JSON artifact; generated figures are derived from those files and are not primary evidence. Short proxies are used only as failure screens because several favorable proxy rankings did not transfer to full budget.
+
+\subsection{Context diagnostics}
+
+Associative recall, induction, and synthetic in-context probes are evaluated by distance. They test instance-selective retrieval that average language-model loss may hide. The completed attention-free checkpoints score zero on the archived recall and induction probes at all tested distances. The available GQA synthetic artifact is not sufficiently documented as the same protocol, so no numerical positive-control claim is made. Persistent-state claims beyond the convolutional receptive field remain unsupported and require dedicated 4--8k-context tests.
+
+\subsection{Hardware and numerical checks}
+
+The full runs use one NVIDIA H100 80GB HBM3. FP32 unit tests cover causality and full/incremental equivalence for contextual W/R/V, plus fixed state and stable state addresses for convolutional and recurrent WVR primitives. Archived BF16 checkpoint profiles are reported separately and do not support an exact $10^{-5}$ checkpoint-level equivalence claim. The final W/R/V run disabled periodic checkpoint saving; its metric and realized configuration artifacts are archived, but learned gate values cannot be recovered. Generic top-$k$/Zipf fields in the serialized CLI namespace are inactive for the realized \texttt{lexical\_object\_micro\_expert} module, whose actual assignment is the modulo rule in Section~\ref{sec:method}.

@@ -46,13 +46,23 @@ class LocalTextDataset(IterableDataset):
 
 
 class FineWebDataset(IterableDataset):
-    def __init__(self, tokenizer, seq_len: int, rank: int, world_size: int):
+    def __init__(
+        self,
+        tokenizer,
+        seq_len: int,
+        rank: int,
+        world_size: int,
+        split: str = "train",
+        eval_stride: int = 20,
+    ):
         from datasets import load_dataset
 
         self.tokenizer = tokenizer
         self.seq_len = seq_len
         self.rank = rank
         self.world_size = world_size
+        self.split = split
+        self.eval_stride = eval_stride
         self.dataset = load_dataset(
             "HuggingFaceFW/fineweb-edu",
             name="sample-10BT",
@@ -60,9 +70,19 @@ class FineWebDataset(IterableDataset):
             streaming=True,
         )
 
+    def _uses_document(self, index: int) -> bool:
+        is_eval = index % self.eval_stride == 0
+        if self.split == "train":
+            return not is_eval
+        if self.split == "eval":
+            return is_eval
+        raise ValueError(f"Unknown FineWeb split: {self.split}")
+
     def __iter__(self):
         buffer: list[int] = []
         for idx, example in enumerate(self.dataset):
+            if not self._uses_document(idx):
+                continue
             if idx % self.world_size != self.rank:
                 continue
             text = example.get("text", "")
@@ -170,8 +190,14 @@ def build_loaders(args, config, rank: int, world_size: int):
         tokenizer = Tokenizer.load(args.tokenizer)
         if rank == 0:
             logger.info("Dataset: FineWeb-Edu sample-10BT streaming")
-        train_ds = FineWebDataset(tokenizer, args.seq_len, rank, world_size)
-        eval_ds = FineWebDataset(tokenizer, args.seq_len, rank, world_size) if args.eval_steps > 0 else None
+        train_ds = FineWebDataset(
+            tokenizer, args.seq_len, rank, world_size, split="train"
+        )
+        eval_ds = (
+            FineWebDataset(tokenizer, args.seq_len, rank, world_size, split="eval")
+            if args.eval_steps > 0
+            else None
+        )
     elif args.dataset == "tokens":
         if not args.tokens_path:
             raise ValueError("--tokens-path is required when --dataset tokens")

@@ -113,6 +113,38 @@ class TransformerBlock(nn.Module):
                 layer_idx % int(getattr(config, "causal_conv_dilation_cycle", 8))
             ),
             causal_state_rank=getattr(config, "causal_state_rank", 16),
+            causal_context_gate_init=getattr(
+                config, "causal_context_gate_init", 1.0
+            ),
+            causal_contextual_mix_init=getattr(
+                config, "causal_contextual_mix_init", 0.0
+            ),
+            causal_context_fusion_size=getattr(
+                config, "causal_context_fusion_size", 0
+            ),
+            causal_stable_delta=getattr(config, "causal_stable_delta", False),
+            causal_delta_chunk_size=getattr(
+                config, "causal_delta_chunk_size", 512
+            ),
+            causal_delta_timescales=getattr(
+                config, "causal_delta_timescales", 1
+            ),
+            causal_delta_collision_normalized=getattr(
+                config, "causal_delta_collision_normalized", False
+            ),
+            causal_delta_lexical_values=getattr(
+                config, "causal_delta_lexical_values", False
+            ),
+            causal_delta_lexical_forge=getattr(
+                config, "causal_delta_lexical_forge", False
+            ),
+            causal_delta_occurrence_address=getattr(
+                config, "causal_delta_occurrence_address", False
+            ),
+
+            lexical_object_rank=config.lexical_object_rank,
+            vocab_size=config.vocab_size,
+            layer_idx=layer_idx,
         )
         self.self_attn = ATTENTION_REGISTRY.build(config.attention_type, attn_config)
 
@@ -214,6 +246,11 @@ class TransformerBlock(nn.Module):
             past_key_value=past_key_value,
             use_cache=use_cache,
         )
+        if self.config.attention_type in {
+            "causal_fast_weight_conv",
+            "lexical_wrv",
+        }:
+            attn_kwargs["token_ids"] = token_ids
         if mu_prev is not None:
             attn_kwargs["mu_prev"] = mu_prev
         hidden_states, new_kv = self.self_attn(hidden_states, **attn_kwargs)

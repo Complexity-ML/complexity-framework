@@ -1,0 +1,239 @@
+{
+  "schema_version": 1,
+  "protocol": {
+    "tokenizer": "tokenizer-o200k",
+    "output": "runs/lexical-forge-v5-paired-fineweb-3052/results.json",
+    "steps": 3052,
+    "seq_len": 256,
+    "batch_size": 16,
+    "eval_batch_size": 8,
+    "eval_batches": 8,
+    "eval_every": 250,
+    "chunk_tokens": 512,
+    "lr": 0.0004,
+    "seed": 42,
+    "contextual_mix_init": 0.1,
+    "architectures": [
+      "lexical_forge_v3",
+      "lexical_forge_v5"
+    ]
+  },
+  "matched_widths": {
+    "gqa": 512,
+    "lexical_forge_v3": 512,
+    "lexical_forge_v5": 512
+  },
+  "device": "NVIDIA H100 80GB HBM3",
+  "results": [
+    {
+      "architecture": "lexical_forge_v3",
+      "parameters": 29830391,
+      "intermediate_size": 512,
+      "history": [
+        {
+          "step": 1,
+          "train_loss": 12.224334716796875,
+          "eval_loss": 12.228229522705078,
+          "tok_s": 1238.6061614084038,
+          "elapsed_seconds": 3.3069430200011993
+        },
+        {
+          "step": 250,
+          "train_loss": 7.955554962158203,
+          "eval_loss": 7.848711967468262,
+          "tok_s": 143183.28935727122,
+          "elapsed_seconds": 12.943023628999072
+        },
+        {
+          "step": 500,
+          "train_loss": 7.458271026611328,
+          "eval_loss": 7.384726524353027,
+          "tok_s": 143132.46700334415,
+          "elapsed_seconds": 22.86788117800097
+        },
+        {
+          "step": 750,
+          "train_loss": 6.754636764526367,
+          "eval_loss": 7.086395263671875,
+          "tok_s": 146342.3057124582,
+          "elapsed_seconds": 32.71311898700151
+        },
+        {
+          "step": 1000,
+          "train_loss": 7.422016143798828,
+          "eval_loss": 6.929652690887451,
+          "tok_s": 148584.4593837034,
+          "elapsed_seconds": 42.0157534760001
+        },
+        {
+          "step": 1250,
+          "train_loss": 7.034428596496582,
+          "eval_loss": 6.840081691741943,
+          "tok_s": 147028.0344882321,
+          "elapsed_seconds": 51.7789762249995
+        },
+        {
+          "step": 1500,
+          "train_loss": 6.917533874511719,
+          "eval_loss": 6.770299911499023,
+          "tok_s": 147139.75842634373,
+          "elapsed_seconds": 61.34589117499854
+        },
+        {
+          "step": 1750,
+          "train_loss": 6.067948341369629,
+          "eval_loss": 6.734797716140747,
+          "tok_s": 147165.46100214426,
+          "elapsed_seconds": 70.9050531440007
+        },
+        {
+          "step": 2000,
+          "train_loss": 6.573740005493164,
+          "eval_loss": 6.714024782180786,
+          "tok_s": 147466.86446200186,
+          "elapsed_seconds": 80.6552795030002
+        },
+        {
+          "step": 2250,
+          "train_loss": 6.531244277954102,
+          "eval_loss": 6.702709674835205,
+          "tok_s": 145471.40652044912,
+          "elapsed_seconds": 90.36456557199926
+        },
+        {
+          "step": 2500,
+          "train_loss": 6.6438493728637695,
+          "eval_loss": 6.695206165313721,
+          "tok_s": 147154.54184027488,
+          "elapsed_seconds": 99.94576906099974
+        },
+        {
+          "step": 2750,
+          "train_loss": 6.804042816162109,
+          "eval_loss": 6.69223427772522,
+          "tok_s": 147262.3824095724,
+          "elapsed_seconds": 109.52365759000168
+        },
+        {
+          "step": 3000,
+          "train_loss": 6.06391716003418,
+          "eval_loss": 6.690316677093506,
+          "tok_s": 147274.62554663926,
+          "elapsed_seconds": 118.93963023900142
+        },
+        {
+          "step": 3052,
+          "train_loss": 6.564455032348633,
+          "eval_loss": 6.69019627571106,
+          "tok_s": 146959.55209373287,
+          "elapsed_seconds": 123.20224778899865
+        }
+      ]
+    },
+    {
+      "architecture": "lexical_forge_v5",
+      "parameters": 29830648,
+      "intermediate_size": 512,
+      "history": [
+        {
+          "step": 1,
+          "train_loss": 12.224334716796875,
+          "eval_loss": 12.228229522705078,
+          "tok_s": 1924.8260592333856,
+          "elapsed_seconds": 2.127984490001836
+        },
+        {
+          "step": 250,
+          "train_loss": 7.9326324462890625,
+          "eval_loss": 7.824822425842285,
+          "tok_s": 141121.65496979165,
+          "elapsed_seconds": 11.54852929900153
+        },
+        {
+          "step": 500,
+          "train_loss": 7.459779739379883,
+          "eval_loss": 7.387807369232178,
+          "tok_s": 139114.36085535344,
+          "elapsed_seconds": 21.152511198000866
+        },
+        {
+          "step": 750,
+          "train_loss": 6.765901565551758,
+          "eval_loss": 7.095988750457764,
+          "tok_s": 143694.18213615942,
+          "elapsed_seconds": 30.658964666999964
+        },
+        {
+          "step": 1000,
+          "train_loss": 7.406120300292969,
+          "eval_loss": 6.945148944854736,
+          "tok_s": 145488.2815831778,
+          "elapsed_seconds": 40.18856306700036
+        },
+        {
+          "step": 1250,
+          "train_loss": 7.047032356262207,
+          "eval_loss": 6.853350639343262,
+          "tok_s": 146156.27703403536,
+          "elapsed_seconds": 49.88796585599994
+        },
+        {
+          "step": 1500,
+          "train_loss": 6.921987533569336,
+          "eval_loss": 6.784909009933472,
+          "tok_s": 146258.98629176107,
+          "elapsed_seconds": 59.42056582499936
+        },
+        {
+          "step": 1750,
+          "train_loss": 6.076756477355957,
+          "eval_loss": 6.747781038284302,
+          "tok_s": 146299.17403964524,
+          "elapsed_seconds": 68.96297520400185
+        },
+        {
+          "step": 2000,
+          "train_loss": 6.587912559509277,
+          "eval_loss": 6.729073762893677,
+          "tok_s": 146539.10344405234,
+          "elapsed_seconds": 78.52570346300126
+        },
+        {
+          "step": 2250,
+          "train_loss": 6.543325424194336,
+          "eval_loss": 6.716598272323608,
+          "tok_s": 145360.0230554257,
+          "elapsed_seconds": 88.04989471199951
+        },
+        {
+          "step": 2500,
+          "train_loss": 6.6621198654174805,
+          "eval_loss": 6.7095818519592285,
+          "tok_s": 144882.81811809188,
+          "elapsed_seconds": 97.775833341002
+        },
+        {
+          "step": 2750,
+          "train_loss": 6.817806243896484,
+          "eval_loss": 6.706692457199097,
+          "tok_s": 144183.64406936773,
+          "elapsed_seconds": 107.66346427000099
+        },
+        {
+          "step": 3000,
+          "train_loss": 6.079194068908691,
+          "eval_loss": 6.705044746398926,
+          "tok_s": 144239.08145879942,
+          "elapsed_seconds": 117.23510182900282
+        },
+        {
+          "step": 3052,
+          "train_loss": 6.576327323913574,
+          "eval_loss": 6.704825162887573,
+          "tok_s": 144328.74634163207,
+          "elapsed_seconds": 121.30168896900068
+        }
+      ]
+    }
+  ]
+}

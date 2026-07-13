@@ -1,0 +1,52 @@
+\section{Résultats}
+\label{sec:results}
+
+\subsection{Chemin architectural terminé à 100M tokens}
+
+\begin{table}[t]
+\caption{Résultats nominaux à 100M tokens lus depuis les CSV/JSON archivés. Le débit est un point journalisé à la dernière évaluation finie sur un H100. GQA n'a pas de configuration réalisée archivée et utilise $3\times10^{-4}$ ; les runs récents utilisent $4\times10^{-4}$.}
+\label{tab:wvr-100m}
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+Mécanisme & Loss tenue à part $\downarrow$ & Tokens/s $\uparrow$ \\
+\midrule
+GQA dense (QKV) & \textbf{4,820476} & 111~355 \\
+Contexte associatif additif partagé & 4,921405 & 124~363 \\
+WVR Stable Delta & 4,898880 & 121~971 \\
+WVR Delta multi-échelles & 4,905554 & 120~496 \\
+WVR à collisions normalisées & \underline{4,895427} & 122~282 \\
+WVR collision + 1 couche W/R/V lexicale & 4,892026 & 123~145 \\
+WVR à valeur lexicale & 4,963167 & 123~113 \\
+WVR Forge lexicale V3 & 4,900726 & 121~697 \\
+Forge V3 + normalisation des collisions & 4,897241 & 121~312 \\
+Adresse compacte contexte + position & 4,899072 & 122~764 \\
+W/R/V fortement lexical, 8/10 couches & 4,973798 & 118~546 \\
+W/R/V contextuel, 8/10 couches & 4,852761 & 118~936 \\
+W/R/V contextuel + RMSNorm, 10/10 & \textbf{4,706118} & 118~416 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+WVR à collisions normalisées est la meilleure variante à état fixe. La condition à une couche W/R/V diffère de 0,003401. La condition huit couches fortement lexicale atteint 4,973798 et l'hybride contextuel 4,852761. La condition finale retire conjointement les deux couches WVR et ajoute RMSNorm par tête, atteignant 4,706118 à 118~416 tokens/s. Ces comparaisons n'isolent ni résidu lexical, ni normalisation, ni remplacement de couches.
+
+La dernière ligne est inférieure de 0,114358 en loss et son point de débit est supérieur de 6,34\% au point GQA. Ce n'est ni une estimation de supériorité architecturale ni un speedup reproductible : LR et provenance diffèrent. Un GQA entièrement archivé à $4\times10^{-4}$ est requis.
+
+La forge lexicale réutilise la table d'objets lexicaux de rang 16 au moyen d'un réseau $16\rightarrow4\rightarrow128$. Son fort gain sur proxy court ne s'est pas transféré : Forge V3 atteint 4,900726 au budget complet, et sa combinaison avec la normalisation des collisions atteint 4,897241 sans améliorer la variante collision seule. Une valeur purement lexicale est nettement moins bonne à 4,963167, ce qui soutient le maintien de $\mathbf{v}_t=\mW_v\vh_t$. Les forges de lecture/écriture indépendantes ou faiblement couplées ont été rejetées sur proxies appariés ; leurs JSON bruts sont conservés comme ablations négatives plutôt que promus dans l'implémentation canonique.
+
+\subsection{Fiabilité des proxies}
+
+Les proxies courts appariés ont permis de détecter les échecs catastrophiques, mais n'ont pas correctement classé les losses finales à 100M tokens. Delta multi-échelles, Forge lexicale V3 et Forge V3 avec normalisation des collisions semblaient favorables sur proxy court et n'ont pas amélioré leur contrôle au budget complet. Aucune revendication du tableau~\ref{tab:wvr-100m} ne repose donc sur un proxy. L'adresse d'occurrence compacte contexte plus position échoue elle aussi à améliorer la normalisation des collisions au budget complet (4,899072 contre 4,895427).
+
+\subsection{Entraînement convolutionnel à budget plus long}
+
+L'entraînement historique séparé à un milliard de tokens du modèle convolutionnel sans attention compte 98~194~244 paramètres et atteint une loss tenue à part de 4,180625 à l'étape 30~000, avec un débit mesuré de 113~621 tokens/s. Son budget étant dix fois supérieur, il n'est pas utilisé pour classer les mécanismes QKV et WVR entraînés sur 100M tokens.
+
+\subsection{Équivalence incrémentale et état fixe}
+
+Les tests unitaires FP32 reproduisent les sorties de séquence complète sous exécution incrémentale token par token avec une tolérance de $10^{-5}$ pour les primitives convolutionnelles et WVR. Les profils BF16 archivés des checkpoints montrent des différences numériques plus grandes (environ 0,02--0,17 d'erreur absolue maximale) ; nous ne revendiquons donc pas une équivalence BF16 exacte au niveau checkpoint. Pour WVR, l'état récurrent comprend une matrice associative de rang 128, l'adresse d'écriture précédente et, pour la normalisation des collisions, un vecteur diagonal de charge de rang 128. L'ablation d'adresse d'occurrence ajoute un unique compteur scalaire de position absolue. Ces formes d'état ne croissent pas avec la longueur du contexte généré.
+
+Nous auditons le checkpoint convolutionnel exporté réellement utilisé plutôt que de déduire l'absence d'attention de sa configuration. Parmi 182 tenseurs, l'audit des noms et formes ne trouve aucune projection de requête, clé, valeur ou QKV fusionnée. Les chemins de compatibilité comme \texttt{self\_attn} ne correspondent pas à une opération d'attention. Cet audit structurel ne remplace pas les tests d'exécution.
+
+Les sondes archivées de rappel associatif et d'induction rapportent une précision nulle pour les checkpoints sans attention évalués. L'artefact synthétique GQA disponible ne documente pas un protocole identique ; aucune comparaison positive quantitative n'est donc revendiquée.

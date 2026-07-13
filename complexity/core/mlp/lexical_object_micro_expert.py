@@ -61,3 +61,11 @@ class LexicalObjectMicroExpertMLP(LexicalModulatedMLP):
             expert_ids[..., None, None].expand(*expert_ids.shape, 1, self.hidden_size),
         ).squeeze(-2)
         return output + self.micro_output_gate * selected
+
+    def training_control_capabilities(self) -> frozenset[str]:
+        return super().training_control_capabilities() | {"micro_expert_gate"}
+
+    def training_telemetry(self) -> dict[str, float]:
+        values = super().training_telemetry()
+        values["micro_gate"] = float(self.micro_output_gate.detach().float().item())
+        return values

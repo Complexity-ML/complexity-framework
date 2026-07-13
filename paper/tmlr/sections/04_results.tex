@@ -1,0 +1,52 @@
+\section{Results}
+\label{sec:results}
+
+\subsection{Completed 100M-token architecture path}
+
+\begin{table}[t]
+\caption{Completed nominal 100M-token results read from archived CSV/JSON measurements. Throughput is one logged point at the final finite evaluation step on one H100. The GQA row lacks a realized configuration and used peak LR $3\times10^{-4}$; recent WVR and W/R/V runs used $4\times10^{-4}$.}
+\label{tab:wvr-100m}
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+Mechanism & Held-out loss $\downarrow$ & Train tok/s $\uparrow$ \\
+\midrule
+Dense GQA (QKV) & \textbf{4.820476} & 111,355 \\
+Shared additive associative context & 4.921405 & 124,363 \\
+Stable Delta WVR & 4.898880 & 121,971 \\
+Multi-timescale Delta WVR & 4.905554 & 120,496 \\
+Collision-normalized WVR & \underline{4.895427} & 122,282 \\
+Collision WVR + 1 lexical W/R/V layer & 4.892026 & 123,145 \\
+Lexical-value WVR & 4.963167 & 123,113 \\
+Lexical Forge V3 WVR & 4.900726 & 121,697 \\
+Forge V3 + collision normalization & 4.897241 & 121,312 \\
+Compact context + position address & 4.899072 & 122,764 \\
+Strongly lexical W/R/V, 8/10 layers & 4.973798 & 118,546 \\
+Contextual W/R/V, 8/10 layers & 4.852761 & 118,936 \\
+Contextual W/R/V + RMSNorm, 10/10 & \textbf{4.706118} & 118,416 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Collision-normalized WVR is the best completed fixed-state associative variant, improving Stable Delta by 0.003453 loss. Adding one W/R/V attention layer changes loss by 0.003401. The strongly lexical eight-layer condition reaches 4.973798, while the contextual eight-layer hybrid reaches 4.852761. The final jointly changed condition removes the two remaining WVR layers and adds per-head RMS normalization, reaching 4.706118 at 118,416 tokens/s. These path comparisons do not isolate lexical residuals, normalization, or layer replacement as causes.
+
+The final row is 0.114358 lower in loss, and its single logged throughput point is 6.34\% higher than the archived GQA point. This is not an architectural superiority or reproducible speedup estimate: peak learning rate differs and the GQA realized configuration is missing. A fully archived GQA rerun at $4\times10^{-4}$ is required before declaring a controlled winner.
+
+The lexical forge reuses the rank-16 lexical-object table through a $16\rightarrow4\rightarrow128$ network. Its strong short-proxy improvement did not transfer: Forge V3 reached 4.900726 at full budget, and combining it with collision normalization reached 4.897241 rather than improving the collision-only result. A lexical payload was substantially worse at 4.963167, supporting the design decision to retain $\mathbf{v}_t=\mW_v\vh_t$. Independent and weakly coupled read/write forge variants were rejected in paired proxies; their raw JSON artifacts are retained as negative ablations rather than promoted to the canonical implementation.
+
+\subsection{Proxy reliability}
+
+Short matched proxies were useful for detecting catastrophic failures but were not reliable rankers of final 100M-token loss. Multi-timescale Delta, Lexical Forge V3, and Forge V3 plus collision normalization each looked favorable in a short proxy and failed to improve the corresponding full-budget control. Consequently, no architectural claim in Table~\ref{tab:wvr-100m} is based on a proxy. The compact context-plus-position occurrence address also failed to improve collision normalization at full budget (4.899072 versus 4.895427).
+
+\subsection{Longer-budget convolutional run}
+
+The separate historical 1B-token attention-free convolutional run contains 98,194,244 parameters and reached held-out loss 4.180625 at step 30,000 with measured throughput 113,621 tokens/s. Because its token budget differs by a factor of ten, it is not used to rank the 100M-token QKV and WVR mechanisms.
+
+\subsection{Incremental equivalence and fixed state}
+
+FP32 unit tests reproduce full-sequence outputs under token-by-token incremental execution at tolerance $10^{-5}$ for the convolution and WVR primitives. The archived BF16 checkpoint profiles show larger numerical differences (approximately 0.02--0.17 maximum absolute error), so exact checkpoint-level BF16 equivalence is not claimed. For WVR, the recurrent state is one rank-128 association matrix, the previous write address, and---for collision normalization---one rank-128 diagonal load vector. The occurrence-address ablation adds one scalar absolute-position counter. These state shapes do not grow with generated context length.
+
+We audit the realized exported convolutional checkpoint rather than inferring the absence of attention from configuration alone. Across 182 tensors, the name-and-shape audit finds no query, key, value, or fused-QKV projection. Compatibility paths such as \texttt{self\_attn} do not correspond to an attention operation. This structural audit is not treated as a substitute for runtime tests.
+
+The archived associative-recall and induction probes report zero accuracy for the evaluated attention-free checkpoints at every tested distance. The available GQA synthetic artifact does not document an identical protocol, so we do not report a quantitative positive-control comparison. The negative attention-free diagnostic alone does not establish instance-selective retrieval.

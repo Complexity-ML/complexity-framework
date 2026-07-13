@@ -1,0 +1,97 @@
+\section{Méthode}
+\label{sec:method}
+
+\subsection{Attention contextuelle W/R/V}
+
+Soit $\mH\in\mathbb{R}^{B\times T\times d}$ le tenseur des états cachés normalisés. Chaque couche projette des lectures, écritures et valeurs contextuelles,
+\begin{align}
+    \mR &= \mH\mW_r, &
+    \mW_{\mathrm{ctx}} &= \mH\mW_w, &
+    \mV &= \mH\mW_v.
+\end{align}
+Le modèle évalué utilise huit têtes de lecture et deux têtes partagées d'écriture/valeur, de dimension 48. Un code déterministe du token et une projection apprise de la table lexicale liée de rang 16 forment une adresse lexicale $\mL(x_t)$. Pour la tête d'écriture $h$,
+\begin{equation}
+    \vw_{t,h}=\vw^{\mathrm{ctx}}_{t,h}
+      +\tanh(g_h)\,\mL_h(x_t),
+    \qquad g_h=0\ \text{à l'initialisation}.
+\end{equation}
+La branche lexicale est donc exactement neutre au départ, tandis que le flux contextuel reste actif. Lectures et écritures reçoivent des normalisations RMS indépendantes par tête et un encodage rotatif. Les têtes W/V sont répétées par groupes de quatre têtes R, puis l'attention causale est
+\begin{equation}
+    \vy_{t,h}=\sum_{j\le t}
+    \operatorname{softmax}_j\!\left(
+      \frac{\operatorname{RoPE}(\vr_{t,h})^\top
+      \operatorname{RoPE}(\vw_{j,\kappa(h)})}{\sqrt{48}}
+    \right)\vv_{j,\kappa(h)}.
+\end{equation}
+PyTorch SDPA est configuré pour autoriser le dispatch FlashAttention sur H100. W/R/V est donc bien un mécanisme d'attention ; sa terminologie décrit le flux et le résidu lexical, non une absence de softmax. En décodage incrémental, les tenseurs W et V passés sont conservés et croissent avec le préfixe.
+
+\subsection{Objet lexical résiduel partagé}
+
+La transformation feed-forward partagée est un SwiGLU dense,
+\begin{equation}
+    \mF(\vh)=\mW_d\left[\operatorname{SiLU}(\mW_g\vh)\odot \mW_u\vh\right].
+\end{equation}
+Pour l'identité de token $x_t$, une table partagée $\mE\in\mathbb{R}^{|\mathcal V|\times r}$ fournit une modulation de faible rang :
+\begin{align}
+    \vz_t &= \operatorname{SiLU}(\mU\vh_t)\odot(\mathbf{1}+\mE[x_t]),\\
+    \mO(\vh_t,x_t) &= \mD\vz_t.
+\end{align}
+La même table $\mE$ est partagée entre les couches ; les matrices de projection restent propres à chaque couche. Mettre $\mE$ à zéro neutralise initialement la modulation dépendante du token, mais la branche objet reste active via une porte non nulle $\alpha$ :
+\begin{equation}
+    \mF_{\mathrm{objet}}(\vh_t,x_t)=\mF(\vh_t)+\alpha\mO(\vh_t,x_t).
+\end{equation}
+
+\subsection{Résidu de micro-expert déterministe}
+
+Chaque couche affecte le token $x_t$ à l'un des $N$ micro-experts selon
+\begin{equation}
+    e_\ell(x_t)=(x_t+\ell)\bmod N.
+\end{equation}
+Toutes les activations cachées expertes sont calculées dans une même opération tensorielle régulière, puis la sortie retenue est sélectionnée sans tri ni dispersion. Pour une largeur experte $w$,
+\begin{equation}
+    \mR_\ell(\vh_t,x_t)=\beta\,\mW^{(e_\ell(x_t))}_{d}
+    \left[\operatorname{SiLU}(\mW^{(e_\ell(x_t))}_{g}\vh_t)
+    \odot \mW^{(e_\ell(x_t))}_{u}\vh_t\right].
+\end{equation}
+La sortie feed-forward complète est $\mF+\alpha\mO+\beta\mR$. Il s'agit d'un résidu lexical ajouté à un chemin dense partagé, et non d'une affirmation selon laquelle le routage remplacerait le calcul commun.
+
+\subsection{Ablation associative WVR à état fixe}
+
+L'ablation antérieure à état fixe utilise une matrice associative récurrente plutôt qu'une attention softmax. Nous appelons ce mécanisme \emph{WVR} : adresse d'écriture (Write), valeur contextualisée (Value) et adresse de lecture (Read). Pour le token $x_t$ et l'état caché $\vh_t$, une forge lexicale compressée réutilise la table d'objets lexicaux liée,
+\begin{equation}
+    \vf_t=\mW_{f,2}\operatorname{SiLU}(\mW_{f,1}\mE[x_t]),
+\end{equation}
+avec un goulot implémenté $16\rightarrow4\rightarrow128$. L'adresse commune combine ce code lexical déterministe avec une signature projetée de l'état caché,
+\begin{align}
+    \vc_t &= \operatorname{norm}(\mW_c\vh_t),\\
+    \va_t &= \operatorname{norm}\!\left(\operatorname{forge}(x_t)+
+        \tanh(\eta)\vc_t\right).
+\end{align}
+Le code lexical est une adresse liée à l'identité du token ; il ne constitue pas une preuve de représentation sémantique. La projection contextuelle est elle aussi décrite opérationnellement, sans revendication sémantique.
+
+L'écriture emploie l'adresse précédente et la valeur cachée contextualisée courante,
+\begin{align}
+    \mathbf{w}_t &= \va_{t-1}, & \mathbf{v}_t &= \mW_v\vh_t, & \mathbf{r}_t &= \va_t,\\
+    \widehat{\mathbf{v}}_t &= \mathbf{w}_t^\top\mM_{t-1},\\
+    \mM_t &= \lambda\mM_{t-1}+\rho\mathbf{w}_t
+        (\mathbf{v}_t-\widehat{\mathbf{v}}_t)^\top,\\
+    \vy_t &= \mathbf{r}_t^\top\mM_{t-1},\\
+    \vc^{\mathrm{WVR}}_t &= \gamma\mW_o\vy_t.
+\end{align}
+Le résidu de contexte $\vc^{\mathrm{WVR}}_t$ est ajouté à la sortie de la convolution causale. L'implémentation décale causalement le flux d'écriture : la lecture courante utilise $\mathbf{r}_t$, tandis que l'adresse d'écriture précédente est appariée au payload courant. La résolution triangulaire par segments constitue une parallélisation exacte de cette récurrence. WVR mémorise donc une valeur cachée contextualisée, et non un code lexical. L'état comprend une matrice de rang 128 ainsi que des vecteurs d'adresse et de charge de taille fixe, indépendamment de la longueur du préfixe.
+
+La normalisation des collisions maintient une estimation diagonale amortie de charge $\vd_t$ et redimensionne les coordonnées de lecture et d'écriture par $(\vd_t+\epsilon)^{-1/2}$ avant normalisation. Elle ne partitionne pas la matrice de rang 128 en plusieurs mémoires.
+
+L'attention QKV compare une requête contextualisée à chaque clé conservée et réalise une compétition normalisée entre occurrences individuelles. WVR lit au contraire l'association récurrente pré-mise-à-jour par $\mathbf{r}_t^\top\mM_{t-1}$. Notre comparaison porte sur la qualité et le débit, sans crédit lié à la taille d'un KV cache. WVR possède un état fixe, mais des occurrences répétées ou en collision peuvent s'écraser.
+
+L'extension expérimentale d'adresse d'occurrence remplace la projection contextuelle dense par une signature compacte $d\rightarrow8\rightarrow128$ et ajoute une signature positionnelle déterministe contrôlée,
+\begin{equation}
+    \va_t=\operatorname{norm}\!\left(
+    \operatorname{forge}(x_t)+\operatorname{smallctx}(\vh_t)
+    +\tanh(\gamma)\operatorname{pos}(t)\right),
+\end{equation}
+avec $\gamma=0$ à l'initialisation et un unique compteur de position de taille fixe pour le décodage incrémental. Son entraînement terminé au budget complet est rapporté comme ablation négative.
+
+\subsection{Ablations du chemin architectural}
+
+Nous conservons trois conditions intermédiaires terminées : une couche W/R/V insérée dans le modèle WVR à collisions, huit couches aux adresses fortement lexicales, puis huit couches contextuelles avec deux couches WVR restantes. Ce sont des ablations de chemin, non des contrôles factoriels isolés ; leur ordre motive des hypothèses sans en identifier les causes.

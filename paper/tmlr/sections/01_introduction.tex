@@ -1,0 +1,18 @@
+\section{Introduction}
+
+Attention-based language models combine contextual transport with content-dependent selection over individual past token representations. We study whether this selection can be parameterized as contextual Write--Read--Value (W/R/V) attention while injecting token identity only through a narrow, tied lexical residual.
+
+Our design follows a shared-plus-residual principle. Every token traverses the same dense computation path. Token identity modulates narrow lexical-object and micro-expert branches, and a zero-initialized lexical write residual is tied to the same rank-16 table. The main sequence mixer is causal W/R/V attention with eight contextual read heads and two shared contextual write/value heads. Per-head RMS normalization and rotary position encoding precede PyTorch scaled dot-product attention.
+
+The architecture emerged from a systematic fixed-state WVR study. Those recurrent variants are consistent with a limitation of a single compressed matrix for instance-selective retrieval. We retain them as negative path ablations rather than presenting them as the final architecture.
+
+Our contributions are empirical:
+\begin{itemize}
+    \item contextual W/R/V attention with grouped read/write heads, per-head RMS normalization, RoPE, and SDPA configured to permit FlashAttention;
+    \item an implementation of a tied, zero-initialized lexical residual on contextual write streams, alongside tied lexical feed-forward objects and deterministic micro-experts;
+    \item a completed 100M-token W/R/V result at 4.706118 held-out loss and 118,416 tokens/s;
+    \item fixed-state WVR and attention-path ablations that motivate, but do not isolate, hypotheses about compressed and lexical addressing; and
+    \item raw-artifact-backed reporting that separates completed observations from optimizer-matched architectural claims.
+\end{itemize}
+
+The observed W/R/V run is numerically better and faster than our archived GQA run, but the peak learning rates differ. We therefore do not yet claim an optimizer-matched win. The required confirmation is a GQA rerun at $4\times10^{-4}$ with the same harness, plus saved final checkpoints and direct lexical-residual ablations.

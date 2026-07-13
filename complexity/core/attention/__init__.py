@@ -25,10 +25,12 @@ Usage:
 
 from .base import AttentionBase, AttentionConfig
 from .gqa import GroupedQueryAttention, MultiHeadAttention, MultiQueryAttention
+from .lexical_wrv import LexicalWRVAttention
 from .routed_gqa import RoutedGQA
 from .i64_attention import I64Attention
 from .causal_conv import CausalConvMixer
 from .causal_state_conv import CausalStateConvMixer
+from .causal_fast_weight_conv import CausalFastWeightConvMixer
 
 __all__ = [
     "AttentionBase",
@@ -36,8 +38,10 @@ __all__ = [
     "GroupedQueryAttention",
     "MultiHeadAttention",
     "MultiQueryAttention",
+    "LexicalWRVAttention",
     "RoutedGQA",
     "I64Attention",
     "CausalConvMixer",
     "CausalStateConvMixer",
+    "CausalFastWeightConvMixer",
 ]

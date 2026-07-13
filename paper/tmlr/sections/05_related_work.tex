@@ -1,0 +1,7 @@
+\section{Related Work}
+
+Transformers use contextual query--key competition and value aggregation \citep{vaswani2017attention}. Grouped-query attention shares key/value heads across query groups to reduce memory and bandwidth \citep{ainslie2023gqa}. The central W/R/V operation is in this family: read heads play the query role, shared write heads play the key role, and values remain contextual. We therefore do not claim that renaming the streams creates a new attention operator. The architectural distinction studied here is a tied, zero-initialized lexical residual on contextual writes, integrated with lexical feed-forward residuals.
+
+The final model also uses established components: rotary position encoding \citep{su2021roformer}, per-head read/write normalization closely related to query--key normalization \citep{henry2020qknorm}, and exact IO-aware attention kernels \citep{dao2022flashattention}. Our empirical question is whether their combination with tied lexical residuals changes the quality--throughput tradeoff under a small-model budget.
+
+RWKV, RetNet, and Mamba develop recurrent or state-space alternatives with linear-time sequence processing \citep{peng2023rwkv,sun2023retnet,gu2023mamba}. Our fixed-state WVR ablations are closer in motivation than the final W/R/V model, but they use a distinct single associative matrix and perform worse in the present controls. The final model abandons fixed-state decoding and retains grouped W/V caches; it should not be presented as a linear-state competitor to those methods.

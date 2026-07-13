@@ -61,6 +61,17 @@ class ModelConfig:
     causal_conv_kernel_size: int = 4
     causal_conv_dilation_cycle: int = 8
     causal_state_rank: int = 16
+    causal_context_gate_init: float = 1.0
+    causal_contextual_mix_init: float = 0.0
+    causal_context_fusion_size: int = 0
+    causal_stable_delta: bool = False
+    causal_delta_chunk_size: int = 512
+    causal_delta_timescales: int = 1
+    causal_delta_collision_normalized: bool = False
+    causal_delta_lexical_values: bool = False
+    causal_delta_lexical_forge: bool = False
+    causal_delta_occurrence_address: bool = False
+    lexical_attention_layer_indices: tuple[int, ...] = ()
 
     # === Position Embeddings ===
     max_position_embeddings: int = 2048

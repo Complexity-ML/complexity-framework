@@ -1,0 +1,13 @@
+\section{Reproducibility Checklist}
+
+The repository snapshot accompanying this revision contains:
+\begin{itemize}
+    \item model source and realized JSON configurations for the recent WVR and contextual W/R/V conditions; the GQA row has metrics but no realized archived configuration;
+    \item tokenizer name, vocabulary size, dataset identifier, deterministic evaluation ratio, seeds, sequence lengths, learning rates, and exact token budgets;
+    \item archived per-step CSV metrics or JSON measurements for every table row, including negative ablations;
+    \item deterministic collection and plotting scripts for the checkpoint and context diagnostics;
+    \item unit tests for contextual W/R/V causality, grouped head shapes, tied lexical-table identity, neutral lexical initialization, RoPE, and FP32 full/incremental equivalence, plus fixed-state WVR tests;
+    \item a name-and-shape checkpoint audit for the historical attention-free control, explicitly not applied to the final attention model.
+\end{itemize}
+
+Large checkpoints, Git history, credentials, cloud addresses, hostnames, local user paths, and transient logs are excluded from the review artifact. No final checkpoint exists for the reported best W/R/V run because checkpoint saving was disabled; this prevents post-training gate inspection. The run also records no Git commit. The reviewed source fixes post-run causal-mask/chunked-cache handling and residual-output initialization; it is an audit-corrected implementation, not a byte-identical historical snapshot, and the reported result requires replication. Raw run configurations are scrubbed only for identifying paths, which are replaced by \texttt{[REDACTED]}. The double-blind supplement must be built as a separately scanned archive without \texttt{.git} metadata or repository links.

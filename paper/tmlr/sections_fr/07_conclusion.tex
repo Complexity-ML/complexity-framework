@@ -1,0 +1,5 @@
+\section{Conclusion}
+
+Nous avons évalué une configuration W/R/V complète avec têtes groupées, RMSNorm par tête, RoPE, SDPA, objets lexicaux liés et micro-experts. Le run de 98~195~224 paramètres atteint 4,706118 en évaluation et un point journalisé de 118~416 tokens/s. Il est numériquement inférieur au GQA archivé à 4,820476, tandis que WVR collision atteint 4,895427.
+
+Cet ordre n'est pas une supériorité contrôlée : GQA emploie un autre LR et manque de configuration réalisée archivée. Aucun checkpoint W/R/V final n'existe. Il faut un GQA entièrement archivé, un contrôle sans résidu lexical, des contrôles factoriels couches/normalisation, des checkpoints et des mesures répétées de débit.

@@ -57,3 +57,9 @@ class LexicalModulatedMLP(MLPBase):
         object_hidden = F.silu(self.object_up(hidden_states)) * scale
         object_residual = self.object_down(object_hidden)
         return shared + self.object_output_gate * object_residual
+
+    def training_control_capabilities(self) -> frozenset[str]:
+        return frozenset({"lexical_object_gate"})
+
+    def training_telemetry(self) -> dict[str, float]:
+        return {"object_gate": float(self.object_output_gate.detach().float().item())}

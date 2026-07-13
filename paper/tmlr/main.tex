@@ -1,0 +1,45 @@
+\documentclass[10pt]{article}
+\usepackage{tmlr}
+\input{math_commands.tex}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{url}
+
+\title{Contextual Write--Read--Value Attention:\\An Architecture-Path Study}
+
+% Keep the source anonymous as well as the rendered review PDF.
+\author{\name Anonymous Authors \\
+        \addr Anonymous Institution}
+
+\def\month{MM}
+\def\year{YYYY}
+\def\openreview{\url{https://openreview.net/forum?id=ANONYMOUS}}
+
+% Headline values are populated only from completed, archived metrics.
+\newcommand{\HeadlineEval}{4.706118}
+\newcommand{\HeadlineThroughput}{118,416}
+\newcommand{\BaselineEval}{4.820476}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We study contextual Write--Read--Value (W/R/V) attention for an approximately 98.2M-parameter causal language model with tied lexical residual objects and deterministic micro-experts. W/R/V uses eight contextual read heads, two shared contextual write/value heads, per-head RMS normalization, rotary position encoding, and a zero-initialized lexical residual in each write stream. PyTorch scaled dot-product attention is configured to permit FlashAttention dispatch for the resulting causal softmax. A completed 100M-token run reaches 4.706118 evaluation loss at 118,416 logged training tokens/s on one H100. An archived grouped-query-attention run reaches 4.820476 at 111,355 tokens/s, but it used a lower peak learning rate ($3\times10^{-4}$ versus $4\times10^{-4}$) and lacks a colocated realized configuration; we therefore report the numerical difference without claiming an aligned architectural win. Fixed-state WVR ablations remain informative negative controls: their best completed result is 4.895427. The evidence supports the complete realized W/R/V configuration as a candidate for controlled replication, not an isolated lexical-residual effect.
+\end{abstract}
+
+\input{sections/01_introduction}
+\input{sections/02_method}
+\input{sections/03_experiments}
+\input{sections/04_results}
+\input{sections/05_related_work}
+\input{sections/06_limitations}
+\input{sections/07_conclusion}
+
+\bibliography{references}
+\bibliographystyle{tmlr}
+
+\appendix
+\input{sections/appendix_reproducibility}
+
+\end{document}

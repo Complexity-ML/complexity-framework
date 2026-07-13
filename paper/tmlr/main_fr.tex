@@ -1,0 +1,46 @@
+\documentclass[10pt]{article}
+\usepackage{tmlr}
+\input{math_commands.tex}
+\usepackage[french]{babel}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{url}
+
+\title{Attention contextuelle Write--Read--Value :\\étude d'un chemin architectural}
+
+% La source comme le PDF d'évaluation restent anonymes.
+\author{\name Auteurs anonymes \\
+        \addr Institution anonyme}
+
+\def\month{MM}
+\def\year{YYYY}
+\def\openreview{\url{https://openreview.net/forum?id=ANONYMOUS}}
+
+% Ces valeurs ne seront renseignées qu'à partir de métriques achevées et archivées.
+\newcommand{\HeadlineEval}{4,706118}
+\newcommand{\HeadlineThroughput}{118~416}
+\newcommand{\BaselineEval}{4,820476}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Nous étudions une attention contextuelle Write--Read--Value (W/R/V) pour un modèle de langage causal d'environ 98,2 millions de paramètres avec objets lexicaux résiduels liés et micro-experts déterministes. W/R/V emploie huit têtes de lecture contextuelles, deux têtes partagées d'écriture/valeur, une normalisation RMS par tête, un encodage positionnel rotatif et un résidu lexical initialisé à zéro dans chaque flux d'écriture. PyTorch SDPA est configuré pour autoriser le dispatch FlashAttention du softmax causal. Un entraînement terminé à 100M tokens atteint une loss d'évaluation de 4,706118 à 118~416 tokens/s d'entraînement journalisés sur un H100. Un entraînement GQA archivé atteint 4,820476 à 111~355 tokens/s, mais avec un learning rate maximal inférieur ($3\times10^{-4}$ contre $4\times10^{-4}$) et sans configuration réalisée colocalisée ; nous rapportons donc l'écart sans revendiquer une victoire architecturale alignée. Les ablations WVR à état fixe restent des contrôles négatifs informatifs, avec un meilleur résultat de 4,895427. Les preuves soutiennent la configuration W/R/V réalisée complète comme candidate à une réplication contrôlée, non un effet lexical résiduel isolé.
+\end{abstract}
+
+\input{sections_fr/01_introduction}
+\input{sections_fr/02_method}
+\input{sections_fr/03_experiments}
+\input{sections_fr/04_results}
+\input{sections_fr/05_related_work}
+\input{sections_fr/06_limitations}
+\input{sections_fr/07_conclusion}
+
+\bibliography{references}
+\bibliographystyle{tmlr}
+
+\appendix
+\input{sections_fr/appendix_reproducibility}
+
+\end{document}

@@ -1,0 +1,470 @@
+{
+  "schema_version": 1,
+  "protocol": {
+    "device": "cuda",
+    "steps": 1500,
+    "batch_size": 64,
+    "eval_batch_size": 64,
+    "eval_batches": 4,
+    "eval_every": 500,
+    "lr": 0.0003,
+    "seed": 42,
+    "state_rank": 128,
+    "train_distances": [
+      8,
+      16,
+      32,
+      64
+    ],
+    "eval_distances": [
+      8,
+      16,
+      32,
+      64,
+      128
+    ],
+    "architectures": [
+      "causal_fast_weight_conv"
+    ],
+    "output_dir": "runs/h100-two-shared-context-probe",
+    "device_name": "cuda"
+  },
+  "matched_widths": {
+    "gqa": 256,
+    "causal_fast_weight_conv": 233
+  },
+  "results": [
+    {
+      "architecture": "causal_fast_weight_conv",
+      "task": "associative_recall",
+      "parameters": 262467,
+      "intermediate_size": 233,
+      "train_distances": [
+        8,
+        16,
+        32,
+        64
+      ],
+      "eval_distances": [
+        8,
+        16,
+        32,
+        64,
+        128
+      ],
+      "dilations": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "receptive_field_tokens": 46,
+      "history": [
+        {
+          "step": 1,
+          "train_loss": 5.589275360107422,
+          "elapsed_seconds": 0.4726296899971203,
+          "evaluation": [
+            {
+              "distance": 8,
+              "examples": 256,
+              "accuracy": 0.0,
+              "mean_rank": 111.3046875,
+              "mean_margin": -0.9487562924623489,
+              "nll": 5.529150605201721
+            },
+            {
+              "distance": 16,
+              "examples": 256,
+              "accuracy": 0.0,
+              "mean_rank": 114.56640625,
+              "mean_margin": -0.8968284875154495,
+              "nll": 5.5285404920578
+            },
+            {
+              "distance": 32,
+              "examples": 256,
+              "accuracy": 0.0,
+              "mean_rank": 127.33984375,
+              "mean_margin": -0.8629193753004074,
+              "nll": 5.559290289878845
+            },
+            {
+              "distance": 64,
+              "examples": 256,
+              "accuracy": 0.0,
+              "mean_rank": 120.54296875,
+              "mean_margin": -0.7528920471668243,
+              "nll": 5.5421706438064575
+            },
+            {
+              "distance": 128,
+              "examples": 256,
+              "accuracy": 0.0,
+              "mean_rank": 119.9609375,
+              "mean_margin": -0.664556011557579,
+              "nll": 5.541676044464111
+            }
+          ]
+        },
+        {
+          "step": 500,
+          "train_loss": 2.7222046852111816,
+          "elapsed_seconds": 5.013359438999032,
+          "evaluation": [
+            {
+              "distance": 8,
+              "examples": 256,
+              "accuracy": 0.98828125,
+              "mean_rank": 1.01953125,
+              "mean_margin": 1.5575098395347595,
+              "nll": 2.1026123762130737
+            },
+            {
+              "distance": 16,
+              "examples": 256,
+              "accuracy": 0.9609375,
+              "mean_rank": 1.375,
+              "mean_margin": 1.431658148765564,
+              "nll": 2.2057621479034424
+            },
+            {
+              "distance": 32,
+              "examples": 256,
+              "accuracy": 0.95703125,
+              "mean_rank": 1.0703125,
+              "mean_margin": 1.256814330816269,
+              "nll": 2.338314175605774
+            },
+            {
+              "distance": 64,
+              "examples": 256,
+              "accuracy": 0.9140625,
+              "mean_rank": 1.23828125,
+              "mean_margin": 0.9187810122966766,
+              "nll": 2.6978805661201477
+            },
+            {
+              "distance": 128,
+              "examples": 256,
+              "accuracy": 0.69921875,
+              "mean_rank": 2.515625,
+              "mean_margin": 0.3374098017811775,
+              "nll": 3.191439211368561
+            }
+          ]
+        },
+        {
+          "step": 1000,
+          "train_loss": 0.19000382721424103,
+          "elapsed_seconds": 9.551233008998679,
+          "evaluation": [
+            {
+              "distance": 8,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 4.502044439315796,
+              "nll": 0.18633515760302544
+            },
+            {
+              "distance": 16,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 4.5054227113723755,
+              "nll": 0.18426460772752762
+            },
+            {
+              "distance": 32,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 4.482765078544617,
+              "nll": 0.18725624307990074
+            },
+            {
+              "distance": 64,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 4.491676449775696,
+              "nll": 0.1888093650341034
+            },
+            {
+              "distance": 128,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 4.3297438621521,
+              "nll": 0.21007082611322403
+            }
+          ]
+        },
+        {
+          "step": 1500,
+          "train_loss": 0.04942822456359863,
+          "elapsed_seconds": 13.784297197998967,
+          "evaluation": [
+            {
+              "distance": 8,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 5.865452766418457,
+              "nll": 0.04902983643114567
+            },
+            {
+              "distance": 16,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 5.846238851547241,
+              "nll": 0.04903314635157585
+            },
+            {
+              "distance": 32,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 5.850553274154663,
+              "nll": 0.04912796430289745
+            },
+            {
+              "distance": 64,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 5.859029769897461,
+              "nll": 0.049232590943574905
+            },
+            {
+              "distance": 128,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 5.782831430435181,
+              "nll": 0.05186581611633301
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "architecture": "causal_fast_weight_conv",
+      "task": "induction",
+      "parameters": 262467,
+      "intermediate_size": 233,
+      "train_distances": [
+        8,
+        16,
+        32,
+        64
+      ],
+      "eval_distances": [
+        8,
+        16,
+        32,
+        64,
+        128
+      ],
+      "dilations": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "receptive_field_tokens": 46,
+      "history": [
+        {
+          "step": 1,
+          "train_loss": 5.573464393615723,
+          "elapsed_seconds": 0.06444361000103527,
+          "evaluation": [
+            {
+              "distance": 8,
+              "examples": 256,
+              "accuracy": 0.0078125,
+              "mean_rank": 118.296875,
+              "mean_margin": -0.8784483820199966,
+              "nll": 5.536566138267517
+            },
+            {
+              "distance": 16,
+              "examples": 256,
+              "accuracy": 0.0,
+              "mean_rank": 123.23046875,
+              "mean_margin": -0.8579945415258408,
+              "nll": 5.543127536773682
+            },
+            {
+              "distance": 32,
+              "examples": 256,
+              "accuracy": 0.0,
+              "mean_rank": 128.83984375,
+              "mean_margin": -0.8437271565198898,
+              "nll": 5.560790181159973
+            },
+            {
+              "distance": 64,
+              "examples": 256,
+              "accuracy": 0.0,
+              "mean_rank": 124.25,
+              "mean_margin": -0.7511244267225266,
+              "nll": 5.550917863845825
+            },
+            {
+              "distance": 128,
+              "examples": 256,
+              "accuracy": 0.0,
+              "mean_rank": 122.41796875,
+              "mean_margin": -0.6553595960140228,
+              "nll": 5.546716690063477
+            }
+          ]
+        },
+        {
+          "step": 500,
+          "train_loss": 2.8095779418945312,
+          "elapsed_seconds": 4.251640480000788,
+          "evaluation": [
+            {
+              "distance": 8,
+              "examples": 256,
+              "accuracy": 0.98046875,
+              "mean_rank": 1.03515625,
+              "mean_margin": 1.388346642255783,
+              "nll": 2.2275837063789368
+            },
+            {
+              "distance": 16,
+              "examples": 256,
+              "accuracy": 0.9609375,
+              "mean_rank": 1.0859375,
+              "mean_margin": 1.2507030963897705,
+              "nll": 2.326341211795807
+            },
+            {
+              "distance": 32,
+              "examples": 256,
+              "accuracy": 0.9765625,
+              "mean_rank": 1.0703125,
+              "mean_margin": 1.1069937348365784,
+              "nll": 2.4644009470939636
+            },
+            {
+              "distance": 64,
+              "examples": 256,
+              "accuracy": 0.921875,
+              "mean_rank": 1.33984375,
+              "mean_margin": 0.8168209791183472,
+              "nll": 2.7671998143196106
+            },
+            {
+              "distance": 128,
+              "examples": 256,
+              "accuracy": 0.6796875,
+              "mean_rank": 3.94921875,
+              "mean_margin": 0.2501722164452076,
+              "nll": 3.2897595167160034
+            }
+          ]
+        },
+        {
+          "step": 1000,
+          "train_loss": 0.27863359451293945,
+          "elapsed_seconds": 8.452006139999867,
+          "evaluation": [
+            {
+              "distance": 8,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 3.915096163749695,
+              "nll": 0.26765159517526627
+            },
+            {
+              "distance": 16,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 3.9670803546905518,
+              "nll": 0.2584131173789501
+            },
+            {
+              "distance": 32,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 3.896735906600952,
+              "nll": 0.2694036215543747
+            },
+            {
+              "distance": 64,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 3.8364185094833374,
+              "nll": 0.28363457322120667
+            },
+            {
+              "distance": 128,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 3.5369491577148438,
+              "nll": 0.3456985354423523
+            }
+          ]
+        },
+        {
+          "step": 1500,
+          "train_loss": 0.06440842151641846,
+          "elapsed_seconds": 12.645127908999712,
+          "evaluation": [
+            {
+              "distance": 8,
+              "examples": 256,
+              "accuracy": 0.99609375,
+              "mean_rank": 1.00390625,
+              "mean_margin": 5.348265767097473,
+              "nll": 0.0695323757827282
+            },
+            {
+              "distance": 16,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 5.4078367948532104,
+              "nll": 0.06020451337099075
+            },
+            {
+              "distance": 32,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 5.354578137397766,
+              "nll": 0.06218075193464756
+            },
+            {
+              "distance": 64,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 5.298349499702454,
+              "nll": 0.06369843240827322
+            },
+            {
+              "distance": 128,
+              "examples": 256,
+              "accuracy": 1.0,
+              "mean_rank": 1.0,
+              "mean_margin": 5.083468914031982,
+              "nll": 0.07386704906821251
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

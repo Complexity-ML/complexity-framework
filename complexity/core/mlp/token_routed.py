@@ -259,6 +259,21 @@ class TokenRoutedMLP(MLPBase):
             return
         self._primary_weight = min(1.0, max(0.0, float(weight)))
 
+    def training_control_capabilities(self) -> frozenset[str]:
+        capabilities = {"topk_primary_weight", "expert_diversity"}
+        if self.use_shared_routed_gates:
+            capabilities.add("shared_routed_gates")
+        return frozenset(capabilities)
+
+    def training_telemetry(self) -> dict[str, float]:
+        values = {"topk_w": float(self._primary_weight)}
+        if self.use_shared_routed_gates:
+            values.update(
+                shared_gate=float(self.shared_output_gate.detach().float().item()),
+                routed_gate=float(self.routed_output_gate.detach().float().item()),
+            )
+        return values
+
     def _create_token_mapping(self, vocab_size: int, num_experts: int) -> torch.Tensor:
         """
         Create deterministic mapping from token ID to expert ID.

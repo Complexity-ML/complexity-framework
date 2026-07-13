@@ -56,6 +56,23 @@ def test_model_builds_causal_conv_layers_with_dilation_cycle():
     output = model(torch.randint(0, 64, (2, 8)))
     assert output["logits"].shape == (2, 8, 64)
 
+    forbidden_parameter_fragments = (
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "qkv",
+        "query",
+        "key_proj",
+        "value_proj",
+    )
+    parameter_names = [name.lower() for name, _ in model.named_parameters()]
+    assert not any(
+        fragment in name
+        for name in parameter_names
+        for fragment in forbidden_parameter_fragments
+    )
+    assert not any(isinstance(module, torch.nn.MultiheadAttention) for module in model.modules())
+
 
 def test_causal_conv_cached_decode_matches_full_sequence_logits():
     from complexity.config import ModelConfig
@@ -161,3 +178,35 @@ def test_causal_state_conv_has_persistent_fixed_state_and_exact_decode():
     model(input_ids)["logits"].square().mean().backward()
     assert model.layers[0].self_attn.state_decay_down.weight.grad is not None
     assert model.layers[0].self_attn.state_decay_up.weight.grad is not None
+
+
+def test_lexical_attention_layers_preserve_shared_wvr_context_positions() -> None:
+    from complexity.config import ModelConfig
+    from complexity.models import ComplexityModel
+    from complexity.core.attention.lexical_wrv import LexicalWRVAttention
+    from complexity.core.attention.causal_fast_weight_conv import CausalFastWeightConvMixer
+
+    config = ModelConfig(
+        vocab_size=64, hidden_size=32, num_hidden_layers=10,
+        num_attention_heads=4, num_key_value_heads=2, intermediate_size=64,
+        attention_type="causal_fast_weight_conv",
+        mlp_type="lexical_object_micro_expert",
+        lexical_object_rank=16,
+        tie_lexical_object_embeddings=True,
+        causal_stable_delta=True, causal_state_rank=8,
+        lexical_attention_layer_indices=(4, 9), max_position_embeddings=64,
+    )
+    model = ComplexityModel(config)
+    assert isinstance(model.layers[4].self_attn, LexicalWRVAttention)
+    assert isinstance(model.layers[9].self_attn, LexicalWRVAttention)
+    assert model.layers[4].self_attn.lexical_token_scale is model.layers[0].mlp.token_scale
+    assert model.layers[9].self_attn.lexical_token_scale is model.layers[0].mlp.token_scale
+    conv_layers = [model.layers[i].self_attn for i in range(10) if i not in {4, 9}]
+    assert all(isinstance(layer, CausalFastWeightConvMixer) for layer in conv_layers)
+    assert model.layers[0].self_attn.context_enabled
+    assert model.layers[5].self_attn.context_enabled
+    assert model.layers[0].self_attn.shared_context is model.layers[5].self_attn.shared_context
+    assert all(
+        not model.layers[i].self_attn.context_enabled
+        for i in (1, 2, 3, 6, 7, 8)
+    )

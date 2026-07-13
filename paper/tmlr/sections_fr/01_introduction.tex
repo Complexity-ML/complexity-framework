@@ -1,0 +1,18 @@
+\section{Introduction}
+
+Les modèles de langage fondés sur l'attention combinent transport contextuel et sélection dépendante du contenu parmi les représentations individuelles des tokens passés. Nous étudions si cette sélection peut être paramétrée comme une attention contextuelle Write--Read--Value (W/R/V), tandis que l'identité lexicale n'intervient que par un résidu étroit et lié.
+
+Notre conception suit un principe de chemin partagé complété par des résidus. Chaque token traverse le même calcul dense. L'identité du token module des branches étroites d'objets lexicaux et de micro-experts ; un résidu lexical d'écriture initialisé à zéro est lié à la même table de rang 16. Le mélangeur principal est une attention causale W/R/V à huit têtes de lecture contextuelles et deux têtes contextuelles partagées d'écriture/valeur. Une normalisation RMS par tête et RoPE précèdent PyTorch SDPA.
+
+Cette architecture provient d'une étude systématique de WVR à état fixe. Ces variantes sont compatibles avec une limitation d'une matrice comprimée unique pour la sélection d'occurrences. Nous les conservons comme ablations de chemin négatives plutôt que comme architecture finale.
+
+Nos contributions sont empiriques :
+\begin{itemize}
+    \item une attention contextuelle W/R/V avec têtes de lecture/écriture groupées, normalisation RMS par tête, RoPE et SDPA configuré pour autoriser FlashAttention ;
+    \item un résidu lexical lié et initialisé à zéro sur les flux d'écriture, avec objets lexicaux feed-forward liés et micro-experts déterministes ;
+    \item un résultat W/R/V terminé à 100M tokens de 4,706118 à 118~416 tokens/s ;
+    \item des ablations de chemin qui motivent, sans les isoler, des hypothèses sur l'adressage comprimé ou lexical ;
+    \item un rapport fondé sur les artefacts bruts qui sépare observations terminées et revendications architecturales appariées en optimisation.
+\end{itemize}
+
+Le run W/R/V observé est numériquement meilleur et plus rapide que notre run GQA archivé, mais les learning rates maximaux diffèrent. Nous ne revendiquons donc pas encore une victoire appariée en optimisation. La confirmation requise est un nouveau GQA à $4\times10^{-4}$ dans le même harness, ainsi que des checkpoints finaux sauvegardés et des ablations directes du résidu lexical.

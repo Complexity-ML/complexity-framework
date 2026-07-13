@@ -1,0 +1,11 @@
+\section{Limites et impact élargi}
+
+L'étude actuelle se limite à environ 100 millions de paramètres, un tokenizer, un corpus web et une seed pour les runs principaux. Un résultat favorable n'établit ni le comportement à grande échelle ni une supériorité universelle sur GQA. Le débit dépend de l'implémentation et ne doit pas être généralisé à partir d'un seul H100.
+
+L'étude n'établit pas le débit d'inférence en production. W/R/V conserve un cache W/V qui croît avec le contexte, comme un cache KV groupé. Prefill long contexte, temps jusqu'au premier token, latence de service et replay CUDA Graph restent hors des revendications.
+
+Le conditionnement sur l'identité des tokens peut encoder des biais propres au corpus. FineWeb-Edu hérite des limites des grands corpus web, notamment une provenance incertaine, des déséquilibres de représentation et des contenus potentiellement nocifs. L'architecture ne supprime pas ces risques, et les gains d'efficacité peuvent réduire le coût de déploiement de modèles nuisibles.
+
+WVR à état fixe ne conserve pas d'occurrences individuellement adressables. Ces contrôles négatifs motivent W/R/V contextuel ; ils ne décrivent pas le modèle final.
+
+La comparaison principale n'est pas appariée en optimisation : GQA utilise $3\times10^{-4}$ et W/R/V final $4\times10^{-4}$. Aucun checkpoint final W/R/V n'a été sauvegardé, empêchant l'inspection des portes lexicales. Les preuves actuelles ne séparent donc pas learning rate, RMSNorm, détails d'implémentation et résidu lexical. Il faut un GQA à $4\times10^{-4}$ et un W/R/V au résidu lexical maintenu désactivé, avec checkpoints et idéalement plusieurs seeds. Les proxies courts doivent rester de simples filtres d'échec.
