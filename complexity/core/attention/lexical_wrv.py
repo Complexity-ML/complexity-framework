@@ -173,21 +173,33 @@ class LexicalWRVAttention(AttentionBase):
         if token_ids is None:
             raise ValueError("token_ids are required for lexical W/R/V attention")
         batch_size, sequence_length, _ = hidden_states.shape
+        write_width = self.num_write_heads * self.head_dim
+        rwv_weight = torch.cat(
+            (
+                self.read_proj.weight,
+                self.write_context_proj.weight,
+                self.value_proj.weight,
+            ),
+            dim=0,
+        )
+        reads, contextual_write, values = F.linear(
+            hidden_states, rwv_weight
+        ).split((self.hidden_size, write_width, write_width), dim=-1)
         lexical = self._lexical_writes(
             token_ids, lexical_token_scale_values, lexical_base_writes
         )
-        contextual_write = self.write_context_proj(hidden_states).view(
+        contextual_write = contextual_write.view(
             batch_size, sequence_length, self.num_write_heads, self.head_dim
         )
         writes = (
             contextual_write.float()
             + torch.tanh(self.lexical_gate.float())[None, None, :, None] * lexical
         ).to(hidden_states.dtype)
-        reads = self.read_proj(hidden_states).view(
+        reads = reads.view(
             batch_size, sequence_length, self.num_read_heads, self.head_dim
         )
         reads = reads.to(hidden_states.dtype)
-        values = self.value_proj(hidden_states).view(
+        values = values.view(
             batch_size, sequence_length, self.num_write_heads, self.head_dim
         )
         writes = writes.transpose(1, 2)
