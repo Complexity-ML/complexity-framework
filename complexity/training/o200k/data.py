@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import string
 
 import torch
@@ -63,12 +64,21 @@ class FineWebDataset(IterableDataset):
         self.world_size = world_size
         self.split = split
         self.eval_stride = eval_stride
-        self.dataset = load_dataset(
-            "HuggingFaceFW/fineweb-edu",
-            name="sample-10BT",
-            split="train",
-            streaming=True,
-        )
+        local_parquet = os.environ.get("FINEWEB_PARQUET_PATH")
+        if local_parquet:
+            self.dataset = load_dataset(
+                "parquet",
+                data_files={"train": local_parquet},
+                split="train",
+                streaming=True,
+            )
+        else:
+            self.dataset = load_dataset(
+                "HuggingFaceFW/fineweb-edu",
+                name="sample-10BT",
+                split="train",
+                streaming=True,
+            )
 
     def _uses_document(self, index: int) -> bool:
         is_eval = index % self.eval_stride == 0
