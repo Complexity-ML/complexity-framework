@@ -209,6 +209,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lexical-object-rank", type=int, default=16)
     parser.add_argument("--lexical-object-gate-init", type=float, default=0.1)
     parser.add_argument(
+        "--disable-lexical-wrv-residual",
+        action="store_true",
+        help="Keep W/R/V lexical attention gates fixed at zero.",
+    )
+    parser.add_argument(
         "--tie-lexical-object-embeddings",
         action="store_true",
         help="Share one lexical modulation table across all transformer layers.",

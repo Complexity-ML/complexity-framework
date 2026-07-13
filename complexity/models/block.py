@@ -143,6 +143,9 @@ class TransformerBlock(nn.Module):
             ),
 
             lexical_object_rank=config.lexical_object_rank,
+            disable_lexical_wrv_residual=getattr(
+                config, "disable_lexical_wrv_residual", False
+            ),
             vocab_size=config.vocab_size,
             layer_idx=layer_idx,
         )

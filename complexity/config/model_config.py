@@ -111,6 +111,7 @@ class ModelConfig:
     micro_num_experts: int = 4
     micro_expert_width: int = 16
     micro_expert_gate_init: float = 0.1
+    disable_lexical_wrv_residual: bool = False
 
     # === Mu-Guidance ===
     use_mu_guidance: bool = False  # Enable contextual mu flowing between layers

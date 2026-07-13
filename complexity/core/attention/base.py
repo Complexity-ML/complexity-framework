@@ -43,6 +43,7 @@ class AttentionConfig:
     causal_delta_occurrence_address: bool = False
 
     lexical_object_rank: int = 16
+    disable_lexical_wrv_residual: bool = False
     vocab_size: Optional[int] = None
     layer_idx: int = 0
 

@@ -46,6 +46,9 @@ class LexicalWRVAttention(AttentionBase):
             int(config.lexical_object_rank), write_width, bias=False
         )
         self.lexical_gate = nn.Parameter(torch.zeros(self.num_write_heads))
+        self.disable_lexical_residual = bool(config.disable_lexical_wrv_residual)
+        if self.disable_lexical_residual:
+            self.lexical_gate.requires_grad_(False)
         self.attention_dropout = float(config.attention_dropout)
         self.scale = 1.0 / math.sqrt(self.head_dim)
         self.rope_theta = float(config.rope_theta)
@@ -185,16 +188,19 @@ class LexicalWRVAttention(AttentionBase):
         reads, contextual_write, values = F.linear(
             hidden_states, rwv_weight
         ).split((self.hidden_size, write_width, write_width), dim=-1)
-        lexical = self._lexical_writes(
-            token_ids, lexical_token_scale_values, lexical_base_writes
-        )
         contextual_write = contextual_write.view(
             batch_size, sequence_length, self.num_write_heads, self.head_dim
         )
-        writes = (
-            contextual_write.float()
-            + torch.tanh(self.lexical_gate.float())[None, None, :, None] * lexical
-        ).to(hidden_states.dtype)
+        if self.disable_lexical_residual:
+            writes = contextual_write
+        else:
+            lexical = self._lexical_writes(
+                token_ids, lexical_token_scale_values, lexical_base_writes
+            )
+            writes = (
+                contextual_write.float()
+                + torch.tanh(self.lexical_gate.float())[None, None, :, None] * lexical
+            ).to(hidden_states.dtype)
         reads = reads.view(
             batch_size, sequence_length, self.num_read_heads, self.head_dim
         )

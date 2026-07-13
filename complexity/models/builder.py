@@ -399,6 +399,7 @@ class ComplexityModel(nn.Module):
         lexical_base_writes = (
             self.layers[0].self_attn.lexical_base_writes(input_ids)
             if self.config.attention_type == "lexical_wrv"
+            and not getattr(self.config, "disable_lexical_wrv_residual", False)
             else None
         )
         for i, layer in enumerate(self.layers):

@@ -122,6 +122,9 @@ def make_config(args) -> ModelConfig:
         lsh_threshold_mode=getattr(args, "lsh_threshold_mode", "zero"),
         lexical_object_rank=getattr(args, "lexical_object_rank", 16),
         lexical_object_gate_init=getattr(args, "lexical_object_gate_init", 0.1),
+        disable_lexical_wrv_residual=bool(
+            getattr(args, "disable_lexical_wrv_residual", False)
+        ),
         tie_lexical_object_embeddings=bool(
             getattr(args, "tie_lexical_object_embeddings", False)
         ),

@@ -56,6 +56,20 @@ def test_lexical_wrv_starts_from_contextual_attention_with_neutral_lexical_resid
     torch.testing.assert_close(module.lexical_gate, torch.zeros(2))
 
 
+def test_lexical_wrv_can_fix_lexical_residual_at_zero() -> None:
+    config = _config()
+    config.disable_lexical_wrv_residual = True
+    module = LexicalWRVAttention(config).eval()
+    hidden = torch.randn(2, 7, 32)
+    token_ids_a = torch.randint(0, 64, (2, 7))
+    token_ids_b = torch.randint(0, 64, (2, 7))
+    output_a, _ = module(hidden, token_ids=token_ids_a)
+    output_b, _ = module(hidden, token_ids=token_ids_b)
+    torch.testing.assert_close(output_a, output_b)
+    assert not module.lexical_gate.requires_grad
+    torch.testing.assert_close(module.lexical_gate, torch.zeros(2))
+
+
 def test_lexical_wrv_reuses_precomputed_base_writes_exactly() -> None:
     module = LexicalWRVAttention(_config())
     token_ids = torch.randint(0, 64, (2, 7))
