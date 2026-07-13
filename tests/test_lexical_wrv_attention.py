@@ -122,11 +122,12 @@ def test_global_lexical_wrv_layers_share_the_lexical_object_table() -> None:
         tie_lexical_object_embeddings=True,
     )
     model = ComplexityModel(config)
-    shared_table = model.layers[0].mlp.token_scale
-    assert all(
-        layer.self_attn.lexical_token_scale is shared_table
-        for layer in model.layers
-    )
+    assert hasattr(model, "lexical_token_scale")
+    assert all(not hasattr(layer.mlp, "token_scale") for layer in model.layers)
+    token_scale_parameters = [
+        name for name, _ in model.named_parameters() if name.endswith("token_scale.weight")
+    ]
+    assert token_scale_parameters == ["lexical_token_scale.weight"]
     expected_std = config.initializer_range / (2 * config.num_hidden_layers) ** 0.5
     for layer in model.layers:
         output_proj = getattr(layer.self_attn, "output_proj")

@@ -41,7 +41,7 @@ class LexicalWRVAttention(AttentionBase):
         self.output_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
         self.read_norm = RMSNorm(self.head_dim, eps=1e-6)
         self.write_norm = RMSNorm(self.head_dim, eps=1e-6)
-        self.lexical_token_scale: nn.Embedding | None = None
+
         self.lexical_forge = nn.Linear(
             int(config.lexical_object_rank), write_width, bias=False
         )
@@ -50,10 +50,6 @@ class LexicalWRVAttention(AttentionBase):
         self.scale = 1.0 / math.sqrt(self.head_dim)
         self.rope_theta = float(config.rope_theta)
 
-    def attach_token_scale(self, token_scale: nn.Embedding) -> None:
-        if token_scale.embedding_dim != self.lexical_forge.in_features:
-            raise ValueError("token_scale rank does not match lexical forge rank")
-        self.lexical_token_scale = token_scale
 
     def _apply_rotary(
         self, tensor: torch.Tensor, position_offset: int
@@ -80,7 +76,11 @@ class LexicalWRVAttention(AttentionBase):
             rotated = torch.cat((rotated, tensor[..., 2 * half :]), dim=-1)
         return rotated
 
-    def _lexical_writes(self, token_ids: torch.Tensor) -> torch.Tensor:
+    def _lexical_writes(
+        self,
+        token_ids: torch.Tensor,
+        lexical_token_scale_weight: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         write_width = self.num_write_heads * self.head_dim
         dimensions = torch.arange(
             1, write_width + 1, device=token_ids.device, dtype=torch.float64
@@ -93,8 +93,10 @@ class LexicalWRVAttention(AttentionBase):
         writes = torch.sin(phases).float().view(
             *token_ids.shape, self.num_write_heads, self.head_dim
         )
-        if self.lexical_token_scale is not None:
-            learned = self.lexical_forge(self.lexical_token_scale(token_ids)).view(
+        if lexical_token_scale_weight is not None:
+            learned = self.lexical_forge(
+                F.embedding(token_ids, lexical_token_scale_weight)
+            ).view(
                 *token_ids.shape, self.num_write_heads, self.head_dim
             )
             writes = writes + learned.float()
@@ -155,6 +157,7 @@ class LexicalWRVAttention(AttentionBase):
         past_key_value: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
         token_ids: Optional[torch.Tensor] = None,
+        lexical_token_scale_weight: Optional[torch.Tensor] = None,
         **kwargs: Any,
     ) -> tuple[
         torch.Tensor, Optional[tuple[torch.Tensor, torch.Tensor]]
@@ -163,7 +166,7 @@ class LexicalWRVAttention(AttentionBase):
         if token_ids is None:
             raise ValueError("token_ids are required for lexical W/R/V attention")
         batch_size, sequence_length, _ = hidden_states.shape
-        lexical = self._lexical_writes(token_ids)
+        lexical = self._lexical_writes(token_ids, lexical_token_scale_weight)
         contextual_write = self.write_context_proj(hidden_states).view(
             batch_size, sequence_length, self.num_write_heads, self.head_dim
         )

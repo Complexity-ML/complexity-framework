@@ -40,6 +40,7 @@ class LexicalModulatedMLP(MLPBase):
         self,
         hidden_states: torch.Tensor,
         token_ids: Optional[torch.Tensor] = None,
+        lexical_token_scale_weight: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor:
         if token_ids is None:
@@ -53,7 +54,11 @@ class LexicalModulatedMLP(MLPBase):
         shared = self.shared_down(
             fused_silu_mul(self.shared_gate(hidden_states), self.shared_up(hidden_states))
         )
-        scale = 1.0 + self.token_scale(token_ids)
+        scale = 1.0 + (
+            F.embedding(token_ids, lexical_token_scale_weight)
+            if lexical_token_scale_weight is not None
+            else self.token_scale(token_ids)
+        )
         object_hidden = F.silu(self.object_up(hidden_states)) * scale
         object_residual = self.object_down(object_hidden)
         return shared + self.object_output_gate * object_residual

@@ -46,8 +46,7 @@ class ComplexityModel(nn.Module):
         # Forward pass
         logits = model(input_ids)
 
-        # Generation
-        output_ids = model.generate(input_ids, max_new_tokens=100)
+        # Generation/serving is delegated to vLLM or SGLang.
     """
 
     def __init__(self, config: ModelConfig):
@@ -106,24 +105,9 @@ class ComplexityModel(nn.Module):
             getattr(config, "tie_lexical_object_embeddings", False)
         ):
             shared_token_scale = self.layers[0].mlp.token_scale
-            for layer in self.layers[1:]:
-                layer.mlp.token_scale = shared_token_scale
-            if config.attention_type == "causal_fast_weight_conv":
-                shared_context = self.layers[0].self_attn.shared_context
-                attach_token_scale = getattr(
-                    shared_context, "attach_token_scale", None
-                )
-                if attach_token_scale is not None:
-                    attach_token_scale(shared_token_scale)
-            wrv_attention_layers = lexical_attention_layers
-            if config.attention_type == "lexical_wrv":
-                wrv_attention_layers = set(range(config.num_hidden_layers))
-            for index in wrv_attention_layers:
-                attach_token_scale = getattr(
-                    self.layers[index].self_attn, "attach_token_scale", None
-                )
-                if attach_token_scale is not None:
-                    attach_token_scale(shared_token_scale)
+            self.lexical_token_scale = shared_token_scale
+            for layer in self.layers:
+                delattr(layer.mlp, "token_scale")
 
         # Final normalization
         self.norm = NORMALIZATION_REGISTRY.build(
@@ -154,7 +138,10 @@ class ComplexityModel(nn.Module):
         # Initialize weights (GPT-style: residual projections scaled by 1/√(2N))
         self.apply(self._init_weights)
         if config.mlp_type in lexical_object_types:
-            nn.init.zeros_(self.layers[0].mlp.token_scale.weight)
+            if hasattr(self, "lexical_token_scale"):
+                nn.init.zeros_(self.lexical_token_scale.weight)
+            else:
+                nn.init.zeros_(self.layers[0].mlp.token_scale.weight)
         self._init_residual_scaling()
         # μP: scale hidden→hidden Linears by 1/√(hidden_size / mup_base_width).
         # No-op at base width or when use_mup_init=False. Applied AFTER
@@ -404,6 +391,11 @@ class ComplexityModel(nn.Module):
         mu_prev = None
         if self._has_mu:
             mu_prev = self.mu_init.expand(batch_size, seq_len, -1)
+        lexical_token_scale_weight = (
+            self.lexical_token_scale.weight
+            if hasattr(self, "lexical_token_scale")
+            else None
+        )
         for i, layer in enumerate(self.layers):
             past_kv = past_key_values[i] if past_key_values is not None else None
 
@@ -418,6 +410,7 @@ class ComplexityModel(nn.Module):
                     None,  # velocity_state (unused, kept for compat)
                     mu_prev,
                     None,  # sort_idx (computed internally by token_routed)
+                    lexical_token_scale_weight,
                     use_reentrant=False,
                 )
             else:
@@ -428,6 +421,7 @@ class ComplexityModel(nn.Module):
                     use_cache=use_cache,
                     token_ids=input_ids,
                     mu_prev=mu_prev,
+                    lexical_token_scale_weight=lexical_token_scale_weight,
                 )
 
             # mu from this layer guides next layer's attention — free (no clamp).
@@ -473,10 +467,9 @@ class ComplexityModel(nn.Module):
         }
 
     def set_tokenizer(self, tokenizer):
-        """Set tokenizer for text-based generation."""
+        """Set tokenizer for callers that need tokenization metadata."""
         self.tokenizer = tokenizer
 
-    @torch.no_grad()
     def generate(
         self,
         input_ids: Optional[torch.Tensor] = None,
@@ -490,94 +483,19 @@ class ComplexityModel(nn.Module):
         return_text: bool = False,
     ) -> Union[torch.Tensor, str]:
         """
-        Generate text autoregressively.
+        Text generation is intentionally not implemented as a native PyTorch
+        loop on ``ComplexityModel``.
 
-        Args:
-            input_ids: [batch, seq_len] initial token IDs (or use text=)
-            text: Input text (requires tokenizer to be set)
-            max_new_tokens: Maximum tokens to generate
-            temperature: Sampling temperature (1.0 = neutral)
-            top_k: Top-k sampling (0 = disabled)
-            top_p: Top-p (nucleus) sampling
-            do_sample: Whether to sample (False = greedy)
-            eos_token_id: Stop token ID
-            return_text: Return decoded text instead of IDs (requires tokenizer)
-
-        Returns:
-            output_ids: [batch, seq_len + new_tokens] or decoded text string
+        Complexity's PyTorch layer is for model definition, forward passes,
+        training, and checkpoint export. Serving/generation must go through an
+        external inference runtime such as vLLM or SGLang, using the OpenAI-
+        compatible helpers in ``complexity.inference.external`` or the CLI.
         """
-        # Handle text input
-        if text is not None:
-            if not hasattr(self, 'tokenizer') or self.tokenizer is None:
-                raise ValueError("Tokenizer not set. Use model.set_tokenizer(tokenizer) first.")
-            input_ids = torch.tensor([self.tokenizer.encode(text, add_bos=True)], device=next(self.parameters()).device)
-            if eos_token_id is None:
-                eos_token_id = self.tokenizer.eos_token_id
-
-        if input_ids is None:
-            raise ValueError("Either input_ids or text must be provided.")
-        self.eval()
-        device = input_ids.device
-
-        # Use KV cache for efficient generation
-        past_key_values = None
-
-        for _ in range(max_new_tokens):
-            # Get model output
-            if past_key_values is None:
-                outputs = self.forward(input_ids, use_cache=True)
-            else:
-                outputs = self.forward(
-                    input_ids[:, -1:],
-                    past_key_values=past_key_values,
-                    use_cache=True,
-                )
-
-            past_key_values = outputs["past_key_values"]
-            logits = outputs["logits"][:, -1, :]  # [batch, vocab]
-
-            # Apply temperature
-            if temperature != 1.0:
-                logits = logits / temperature
-
-            # Sampling
-            if do_sample:
-                # Top-k filtering
-                if top_k > 0:
-                    indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
-                    logits[indices_to_remove] = float("-inf")
-
-                # Top-p (nucleus) filtering
-                if top_p < 1.0:
-                    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-                    cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-                    sorted_indices_to_remove = cumulative_probs > top_p
-                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                    sorted_indices_to_remove[..., 0] = False
-                    indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-                    logits[indices_to_remove] = float("-inf")
-
-                # Sample
-                probs = torch.softmax(logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-            else:
-                # Greedy
-                next_token = torch.argmax(logits, dim=-1, keepdim=True)
-
-            # Append to sequence
-            input_ids = torch.cat([input_ids, next_token], dim=1)
-
-            # Check for EOS
-            if eos_token_id is not None and (next_token == eos_token_id).all():
-                break
-
-        # Return text if requested
-        if return_text:
-            if not hasattr(self, 'tokenizer') or self.tokenizer is None:
-                raise ValueError("Tokenizer not set. Use model.set_tokenizer(tokenizer) first.")
-            return self.tokenizer.decode(input_ids[0].tolist())
-
-        return input_ids
+        raise RuntimeError(
+            "ComplexityModel.generate is disabled by architecture contract: "
+            "use vLLM or SGLang for generation/serving. Export the checkpoint "
+            "and call a vLLM/SGLang OpenAI-compatible endpoint instead."
+        )
 
     @classmethod
     def from_preset(cls, name: str) -> "ComplexityModel":
