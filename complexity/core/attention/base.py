@@ -44,6 +44,7 @@ class AttentionConfig:
 
     lexical_object_rank: int = 16
     disable_lexical_wrv_residual: bool = False
+    disable_lexical_wrv_norms: bool = False
     vocab_size: Optional[int] = None
     layer_idx: int = 0
 

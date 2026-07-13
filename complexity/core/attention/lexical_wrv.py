@@ -41,6 +41,10 @@ class LexicalWRVAttention(AttentionBase):
         self.output_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
         self.read_norm = RMSNorm(self.head_dim, eps=1e-6)
         self.write_norm = RMSNorm(self.head_dim, eps=1e-6)
+        self.disable_read_write_norms = bool(config.disable_lexical_wrv_norms)
+        if self.disable_read_write_norms:
+            self.read_norm.requires_grad_(False)
+            self.write_norm.requires_grad_(False)
 
         self.lexical_forge = nn.Linear(
             int(config.lexical_object_rank), write_width, bias=False
@@ -211,8 +215,9 @@ class LexicalWRVAttention(AttentionBase):
         writes = writes.transpose(1, 2)
         reads = reads.transpose(1, 2)
         values = values.transpose(1, 2)
-        writes = self.write_norm(writes)
-        reads = self.read_norm(reads)
+        if not self.disable_read_write_norms:
+            writes = self.write_norm(writes)
+            reads = self.read_norm(reads)
         position_offset = 0 if past_key_value is None else past_key_value[0].shape[2]
         writes = self._apply_rotary(writes, position_offset)
         reads = self._apply_rotary(reads, position_offset)

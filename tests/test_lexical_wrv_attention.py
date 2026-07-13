@@ -70,6 +70,15 @@ def test_lexical_wrv_can_fix_lexical_residual_at_zero() -> None:
     torch.testing.assert_close(module.lexical_gate, torch.zeros(2))
 
 
+def test_lexical_wrv_can_bypass_and_freeze_read_write_norms() -> None:
+    config = _config()
+    config.disable_lexical_wrv_norms = True
+    module = LexicalWRVAttention(config)
+    assert module.disable_read_write_norms
+    assert not module.read_norm.weight.requires_grad
+    assert not module.write_norm.weight.requires_grad
+
+
 def test_lexical_wrv_reuses_precomputed_base_writes_exactly() -> None:
     module = LexicalWRVAttention(_config())
     token_ids = torch.randint(0, 64, (2, 7))

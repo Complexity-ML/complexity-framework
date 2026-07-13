@@ -214,6 +214,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep W/R/V lexical attention gates fixed at zero.",
     )
     parser.add_argument(
+        "--disable-lexical-wrv-norms",
+        action="store_true",
+        help="Bypass and freeze W/R/V per-head read/write RMSNorm.",
+    )
+    parser.add_argument(
         "--tie-lexical-object-embeddings",
         action="store_true",
         help="Share one lexical modulation table across all transformer layers.",
