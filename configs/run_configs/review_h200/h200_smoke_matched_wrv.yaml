@@ -21,7 +21,8 @@ run:
   micro_expert_gate_init: 0.1
   bf16: true
   grad_ckpt: false
-  compile: true
+  # torch.compile corrupts lexical gates on the H200/PyTorch 2.11 stack.
+  compile: false
   compile_mode: reduce-overhead
   eval_steps: 0
   eval_batches: 8
