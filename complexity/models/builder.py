@@ -391,8 +391,8 @@ class ComplexityModel(nn.Module):
         mu_prev = None
         if self._has_mu:
             mu_prev = self.mu_init.expand(batch_size, seq_len, -1)
-        lexical_token_scale_weight = (
-            self.lexical_token_scale.weight
+        lexical_token_scale_values = (
+            self.lexical_token_scale(input_ids)
             if hasattr(self, "lexical_token_scale")
             else None
         )
@@ -410,7 +410,7 @@ class ComplexityModel(nn.Module):
                     None,  # velocity_state (unused, kept for compat)
                     mu_prev,
                     None,  # sort_idx (computed internally by token_routed)
-                    lexical_token_scale_weight,
+                    lexical_token_scale_values,
                     use_reentrant=False,
                 )
             else:
@@ -421,7 +421,7 @@ class ComplexityModel(nn.Module):
                     use_cache=use_cache,
                     token_ids=input_ids,
                     mu_prev=mu_prev,
-                    lexical_token_scale_weight=lexical_token_scale_weight,
+                    lexical_token_scale_values=lexical_token_scale_values,
                 )
 
             # mu from this layer guides next layer's attention — free (no clamp).

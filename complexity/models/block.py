@@ -216,7 +216,7 @@ class TransformerBlock(nn.Module):
         velocity_state: Optional[torch.Tensor] = None,
         mu_prev: Optional[torch.Tensor] = None,
         sort_idx: Optional[torch.Tensor] = None,
-        lexical_token_scale_weight: Optional[torch.Tensor] = None,
+        lexical_token_scale_values: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[Any], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Forward pass through the transformer block.
@@ -252,7 +252,7 @@ class TransformerBlock(nn.Module):
             "lexical_wrv",
         }:
             attn_kwargs["token_ids"] = token_ids
-            attn_kwargs["lexical_token_scale_weight"] = lexical_token_scale_weight
+            attn_kwargs["lexical_token_scale_values"] = lexical_token_scale_values
         if mu_prev is not None:
             attn_kwargs["mu_prev"] = mu_prev
         hidden_states, new_kv = self.self_attn(hidden_states, **attn_kwargs)
@@ -264,7 +264,7 @@ class TransformerBlock(nn.Module):
         hidden_states = self.mlp(
             hidden_states,
             token_ids=token_ids,
-            lexical_token_scale_weight=lexical_token_scale_weight,
+            lexical_token_scale_values=lexical_token_scale_values,
         )
         hidden_states = residual + hidden_states
 

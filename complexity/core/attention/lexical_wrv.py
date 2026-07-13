@@ -79,7 +79,7 @@ class LexicalWRVAttention(AttentionBase):
     def _lexical_writes(
         self,
         token_ids: torch.Tensor,
-        lexical_token_scale_weight: Optional[torch.Tensor] = None,
+        lexical_token_scale_values: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         write_width = self.num_write_heads * self.head_dim
         dimensions = torch.arange(
@@ -93,10 +93,8 @@ class LexicalWRVAttention(AttentionBase):
         writes = torch.sin(phases).float().view(
             *token_ids.shape, self.num_write_heads, self.head_dim
         )
-        if lexical_token_scale_weight is not None:
-            learned = self.lexical_forge(
-                F.embedding(token_ids, lexical_token_scale_weight)
-            ).view(
+        if lexical_token_scale_values is not None:
+            learned = self.lexical_forge(lexical_token_scale_values).view(
                 *token_ids.shape, self.num_write_heads, self.head_dim
             )
             writes = writes + learned.float()
@@ -157,7 +155,7 @@ class LexicalWRVAttention(AttentionBase):
         past_key_value: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
         token_ids: Optional[torch.Tensor] = None,
-        lexical_token_scale_weight: Optional[torch.Tensor] = None,
+        lexical_token_scale_values: Optional[torch.Tensor] = None,
         **kwargs: Any,
     ) -> tuple[
         torch.Tensor, Optional[tuple[torch.Tensor, torch.Tensor]]
@@ -166,7 +164,7 @@ class LexicalWRVAttention(AttentionBase):
         if token_ids is None:
             raise ValueError("token_ids are required for lexical W/R/V attention")
         batch_size, sequence_length, _ = hidden_states.shape
-        lexical = self._lexical_writes(token_ids, lexical_token_scale_weight)
+        lexical = self._lexical_writes(token_ids, lexical_token_scale_values)
         contextual_write = self.write_context_proj(hidden_states).view(
             batch_size, sequence_length, self.num_write_heads, self.head_dim
         )
