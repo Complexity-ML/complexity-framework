@@ -29,7 +29,8 @@ run:
   loss_backend: chunked
   loss_chunk_tokens: 512
   optimizer: adamw
-  lr: 0.0004
+  # Smoke-only stability LR; full 3052-step controls use 4e-4 with long warmup.
+  lr: 0.00001
   weight_decay: 0.1
   max_grad_norm: 0.0
   save_steps: 0
