@@ -1,0 +1,539 @@
+{
+  "schema_version": 1,
+  "checkpoint": {
+    "sha256": "acd580a7a068573ceae583d8f3df815de6c36d3b9d6db3e6faba1e8dbee355bf",
+    "step": 3052,
+    "registered_total_tokens": 100007936,
+    "parameters": 98188871
+  },
+  "architecture": {
+    "attention_type": "causal_fast_weight_conv",
+    "mlp_type": "lexical_object_micro_expert",
+    "has_qkv_parameter_names": false,
+    "dilations": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64,
+      128,
+      1,
+      2
+    ],
+    "receptive_field_tokens": 775
+  },
+  "protocol": {
+    "distances": [
+      8,
+      16,
+      32,
+      64,
+      128,
+      256,
+      384,
+      512,
+      768,
+      1024,
+      1536
+    ],
+    "batch_size": 8,
+    "seeds": [
+      11,
+      29,
+      47,
+      71
+    ],
+    "precision": "bfloat16",
+    "device": "NVIDIA H100 80GB HBM3"
+  },
+  "associative_recall": [
+    {
+      "distance": 8,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 87524.1875,
+      "mean_margin": -9.037811279296875,
+      "nll": 12.847537755966187
+    },
+    {
+      "distance": 16,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 86179.34375,
+      "mean_margin": -8.48016357421875,
+      "nll": 12.716608047485352
+    },
+    {
+      "distance": 32,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 90097.65625,
+      "mean_margin": -7.945840358734131,
+      "nll": 12.581253051757812
+    },
+    {
+      "distance": 64,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 86631.78125,
+      "mean_margin": -7.569605827331543,
+      "nll": 12.579021215438843
+    },
+    {
+      "distance": 128,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 85026.625,
+      "mean_margin": -7.009321212768555,
+      "nll": 12.452052354812622
+    },
+    {
+      "distance": 256,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 80614.21875,
+      "mean_margin": -6.79461669921875,
+      "nll": 12.389641523361206
+    },
+    {
+      "distance": 384,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 85517.46875,
+      "mean_margin": -6.871978759765625,
+      "nll": 12.449752569198608
+    },
+    {
+      "distance": 512,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 87252.34375,
+      "mean_margin": -6.866424560546875,
+      "nll": 12.552813291549683
+    },
+    {
+      "distance": 768,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 86004.9375,
+      "mean_margin": -6.9499053955078125,
+      "nll": 12.485325813293457
+    },
+    {
+      "distance": 1024,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 85162.6875,
+      "mean_margin": -6.85296630859375,
+      "nll": 12.456892490386963
+    },
+    {
+      "distance": 1536,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 81220.0625,
+      "mean_margin": -6.8461151123046875,
+      "nll": 12.431206464767456
+    }
+  ],
+  "induction": [
+    {
+      "distance": 8,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 98363.625,
+      "mean_margin": -7.971122741699219,
+      "nll": 12.694710731506348
+    },
+    {
+      "distance": 16,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 98553.6875,
+      "mean_margin": -7.731956481933594,
+      "nll": 12.685519218444824
+    },
+    {
+      "distance": 32,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 102233.96875,
+      "mean_margin": -7.386938095092773,
+      "nll": 12.71903109550476
+    },
+    {
+      "distance": 64,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 99219.5,
+      "mean_margin": -6.794284820556641,
+      "nll": 12.591302394866943
+    },
+    {
+      "distance": 128,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 97568.90625,
+      "mean_margin": -6.8999786376953125,
+      "nll": 12.626898527145386
+    },
+    {
+      "distance": 256,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 97982.03125,
+      "mean_margin": -6.467018127441406,
+      "nll": 12.5819571018219
+    },
+    {
+      "distance": 384,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 103527.625,
+      "mean_margin": -6.361572265625,
+      "nll": 12.618887186050415
+    },
+    {
+      "distance": 512,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 98085.03125,
+      "mean_margin": -6.53143310546875,
+      "nll": 12.632219552993774
+    },
+    {
+      "distance": 768,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 105858.21875,
+      "mean_margin": -6.603670120239258,
+      "nll": 12.64200496673584
+    },
+    {
+      "distance": 1024,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 98056.46875,
+      "mean_margin": -6.692840576171875,
+      "nll": 12.637146949768066
+    },
+    {
+      "distance": 1536,
+      "examples": 32,
+      "accuracy": 0.0,
+      "mean_rank": 107105.875,
+      "mean_margin": -6.8448028564453125,
+      "nll": 12.754502296447754
+    }
+  ],
+  "causality": {
+    "prefix_tokens": 256,
+    "future_tokens": 256,
+    "max_abs_difference": 0.0,
+    "mean_abs_difference": 0.0
+  },
+  "incremental_equivalence": {
+    "comparisons": [
+      {
+        "length": 1,
+        "max_abs_difference": 0.05097430944442749,
+        "mean_abs_difference": 0.008937900885939598,
+        "cache_addresses_stable": true
+      },
+      {
+        "length": 8,
+        "max_abs_difference": 0.04356980323791504,
+        "mean_abs_difference": 0.007189491298049688,
+        "cache_addresses_stable": true
+      },
+      {
+        "length": 32,
+        "max_abs_difference": 0.04891490936279297,
+        "mean_abs_difference": 0.006816583685576916,
+        "cache_addresses_stable": true
+      },
+      {
+        "length": 128,
+        "max_abs_difference": 0.044371604919433594,
+        "mean_abs_difference": 0.007043974474072456,
+        "cache_addresses_stable": true
+      },
+      {
+        "length": 256,
+        "max_abs_difference": 0.05501365661621094,
+        "mean_abs_difference": 0.006311193108558655,
+        "cache_addresses_stable": true
+      },
+      {
+        "length": 512,
+        "max_abs_difference": 0.022333145141601562,
+        "mean_abs_difference": 0.004920386243611574,
+        "cache_addresses_stable": true
+      },
+      {
+        "length": 1024,
+        "max_abs_difference": 0.04093503952026367,
+        "mean_abs_difference": 0.006776776164770126,
+        "cache_addresses_stable": true
+      }
+    ],
+    "state_shapes": [
+      [
+        1,
+        3,
+        384
+      ],
+      [
+        1,
+        128,
+        128
+      ],
+      [
+        1,
+        128
+      ],
+      [
+        1,
+        6,
+        384
+      ],
+      [
+        1,
+        12,
+        384
+      ],
+      [
+        1,
+        24,
+        384
+      ],
+      [
+        1,
+        48,
+        384
+      ],
+      [
+        1,
+        96,
+        384
+      ],
+      [
+        1,
+        128,
+        128
+      ],
+      [
+        1,
+        128
+      ],
+      [
+        1,
+        192,
+        384
+      ],
+      [
+        1,
+        384,
+        384
+      ],
+      [
+        1,
+        3,
+        384
+      ],
+      [
+        1,
+        6,
+        384
+      ]
+    ],
+    "state_elements": 330240,
+    "state_bytes_bf16": 660480,
+    "state_independent_of_context": true
+  },
+  "context_ablation": {
+    "intervention": "shared associative context output gate forced to zero",
+    "associative_recall": [
+      {
+        "distance": 8,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 91135.15625,
+        "mean_margin": -9.723724365234375,
+        "nll": 13.155645370483398
+      },
+      {
+        "distance": 16,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 90974.375,
+        "mean_margin": -9.13720703125,
+        "nll": 12.954120874404907
+      },
+      {
+        "distance": 32,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 93581.90625,
+        "mean_margin": -8.659759521484375,
+        "nll": 12.81177544593811
+      },
+      {
+        "distance": 64,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 90809.9375,
+        "mean_margin": -8.27007007598877,
+        "nll": 12.77452802658081
+      },
+      {
+        "distance": 128,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 89447.90625,
+        "mean_margin": -7.700996398925781,
+        "nll": 12.607698440551758
+      },
+      {
+        "distance": 256,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 87427.3125,
+        "mean_margin": -7.390743255615234,
+        "nll": 12.524169206619263
+      },
+      {
+        "distance": 384,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 90876.4375,
+        "mean_margin": -7.4424896240234375,
+        "nll": 12.609024047851562
+      },
+      {
+        "distance": 512,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 91196.5625,
+        "mean_margin": -7.511077880859375,
+        "nll": 12.691002368927002
+      },
+      {
+        "distance": 768,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 91795.21875,
+        "mean_margin": -7.528228759765625,
+        "nll": 12.655323266983032
+      },
+      {
+        "distance": 1024,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 89884.625,
+        "mean_margin": -7.435829162597656,
+        "nll": 12.58288288116455
+      },
+      {
+        "distance": 1536,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 89569.59375,
+        "mean_margin": -7.536614894866943,
+        "nll": 12.609093189239502
+      }
+    ],
+    "induction": [
+      {
+        "distance": 8,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 101810.875,
+        "mean_margin": -8.357635498046875,
+        "nll": 12.845884799957275
+      },
+      {
+        "distance": 16,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 101905.3125,
+        "mean_margin": -8.136978149414062,
+        "nll": 12.819698333740234
+      },
+      {
+        "distance": 32,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 105043.8125,
+        "mean_margin": -7.770103454589844,
+        "nll": 12.842262506484985
+      },
+      {
+        "distance": 64,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 101444.53125,
+        "mean_margin": -7.207978248596191,
+        "nll": 12.694081783294678
+      },
+      {
+        "distance": 128,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 100112.40625,
+        "mean_margin": -7.290026664733887,
+        "nll": 12.739804029464722
+      },
+      {
+        "distance": 256,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 100525.15625,
+        "mean_margin": -6.8115997314453125,
+        "nll": 12.684530258178711
+      },
+      {
+        "distance": 384,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 107490.75,
+        "mean_margin": -6.78472900390625,
+        "nll": 12.74496841430664
+      },
+      {
+        "distance": 512,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 101574.84375,
+        "mean_margin": -6.853937864303589,
+        "nll": 12.750121116638184
+      },
+      {
+        "distance": 768,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 105591.625,
+        "mean_margin": -6.807708740234375,
+        "nll": 12.68630313873291
+      },
+      {
+        "distance": 1024,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 100399.53125,
+        "mean_margin": -6.803752899169922,
+        "nll": 12.682494401931763
+      },
+      {
+        "distance": 1536,
+        "examples": 32,
+        "accuracy": 0.0,
+        "mean_rank": 106174.03125,
+        "mean_margin": -6.8790283203125,
+        "nll": 12.765792846679688
+      }
+    ]
+  }
+}

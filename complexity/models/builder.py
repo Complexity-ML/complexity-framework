@@ -9,6 +9,7 @@ import json
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from dataclasses import replace
 from torch.utils.checkpoint import checkpoint as activation_checkpoint
 from typing import Optional, Tuple, List, Dict, Any, Union
 from pathlib import Path
@@ -57,10 +58,43 @@ class ComplexityModel(nn.Module):
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
 
         # Transformer layers
-        self.layers = nn.ModuleList([
-            TransformerBlock(config, layer_idx=i)
-            for i in range(config.num_hidden_layers)
-        ])
+        lexical_attention_layers = set(
+            getattr(config, "lexical_attention_layer_indices", ())
+        )
+        context_layers = {0, config.num_hidden_layers // 2}
+        invalid_layers = {
+            index
+            for index in lexical_attention_layers
+            if index < 0 or index >= config.num_hidden_layers
+        }
+        if invalid_layers:
+            raise ValueError(
+                "lexical attention layer indices are out of range: "
+                f"{sorted(invalid_layers)}"
+            )
+        overlap = lexical_attention_layers & context_layers
+        if overlap and config.attention_type == "causal_fast_weight_conv":
+            raise ValueError(
+                "lexical attention must preserve WVR context layers "
+                f"{sorted(context_layers)}; overlap={sorted(overlap)}"
+            )
+        self.layers = nn.ModuleList(
+            [
+                TransformerBlock(
+                    replace(config, attention_type="lexical_wrv")
+                    if index in lexical_attention_layers
+                    else config,
+                    layer_idx=index,
+                )
+                for index in range(config.num_hidden_layers)
+            ]
+        )
+        if config.attention_type == "causal_fast_weight_conv":
+            shared_context = getattr(self.layers[0].self_attn, "shared_context")
+            for index, layer in enumerate(self.layers):
+                if index not in lexical_attention_layers:
+                    setattr(layer.self_attn, "shared_context", shared_context)
+                    setattr(layer.self_attn, "context_enabled", index in context_layers)
         lexical_object_types = {
             "lexical_modulated",
             "lexical_object",
@@ -74,6 +108,22 @@ class ComplexityModel(nn.Module):
             shared_token_scale = self.layers[0].mlp.token_scale
             for layer in self.layers[1:]:
                 layer.mlp.token_scale = shared_token_scale
+            if config.attention_type == "causal_fast_weight_conv":
+                shared_context = self.layers[0].self_attn.shared_context
+                attach_token_scale = getattr(
+                    shared_context, "attach_token_scale", None
+                )
+                if attach_token_scale is not None:
+                    attach_token_scale(shared_token_scale)
+            wrv_attention_layers = lexical_attention_layers
+            if config.attention_type == "lexical_wrv":
+                wrv_attention_layers = set(range(config.num_hidden_layers))
+            for index in wrv_attention_layers:
+                attach_token_scale = getattr(
+                    self.layers[index].self_attn, "attach_token_scale", None
+                )
+                if attach_token_scale is not None:
+                    attach_token_scale(shared_token_scale)
 
         # Final normalization
         self.norm = NORMALIZATION_REGISTRY.build(
@@ -151,6 +201,9 @@ class ComplexityModel(nn.Module):
             attn = layer.self_attn
             if hasattr(attn, 'o_proj') and isinstance(attn.o_proj, nn.Linear):
                 nn.init.normal_(attn.o_proj.weight, mean=0.0, std=residual_std)
+            output_proj = getattr(attn, 'output_proj', None)
+            if isinstance(output_proj, nn.Linear):
+                nn.init.normal_(output_proj.weight, mean=0.0, std=residual_std)
             # MLP down projection (nn.Linear or nn.Parameter) — routed experts and dense SwiGLU
             mlp = layer.mlp
             if hasattr(mlp, 'down_proj'):

@@ -1,3 +1,5 @@
 \section{Conclusion}
 
-Nous formulons la modélisation du langage sans attention comme une séparation entre transport causal partagé et spécialisation lexicale étroite. Le candidat obtenu emploie des opérations tensorielles régulières et un état incrémental de taille fixe. Les conclusions finales sont différées jusqu'à l'achèvement de tous les contrôles appariés sur un milliard de tokens et des évaluations tenues à part. Si le candidat ne surpasse pas ses contrôles, le résultat négatif indiquera néanmoins quelles décisions d'intégration échouent à budget apparié et les affirmations seront réduites en conséquence.
+Nous avons évalué une configuration W/R/V complète avec têtes groupées, RMSNorm par tête, RoPE, SDPA, objets lexicaux liés et micro-experts. Le run de 98~195~224 paramètres atteint 4,706118 en évaluation et un point journalisé de 118~416 tokens/s. Il est numériquement inférieur au GQA archivé à 4,820476, tandis que WVR collision atteint 4,895427.
+
+Cet ordre n'est pas une supériorité contrôlée : GQA emploie un autre LR et manque de configuration réalisée archivée. Aucun checkpoint W/R/V final n'existe. Il faut un GQA entièrement archivé, un contrôle sans résidu lexical, des contrôles factoriels couches/normalisation, des checkpoints et des mesures répétées de débit.

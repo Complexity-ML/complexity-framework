@@ -31,6 +31,20 @@ class AttentionConfig:
     causal_conv_kernel_size: int = 4
     causal_conv_dilation: int = 1
     causal_state_rank: int = 16
+    causal_context_gate_init: float = 1.0
+    causal_contextual_mix_init: float = 0.0
+    causal_context_fusion_size: int = 0
+    causal_stable_delta: bool = False
+    causal_delta_chunk_size: int = 512
+    causal_delta_timescales: int = 1
+    causal_delta_collision_normalized: bool = False
+    causal_delta_lexical_values: bool = False
+    causal_delta_lexical_forge: bool = False
+    causal_delta_occurrence_address: bool = False
+
+    lexical_object_rank: int = 16
+    vocab_size: Optional[int] = None
+    layer_idx: int = 0
 
     def __post_init__(self):
         if self.head_dim is None:
@@ -68,6 +82,9 @@ class AttentionConfig:
             raise ValueError("causal_conv_dilation must be positive")
         if self.causal_state_rank <= 0:
             raise ValueError("causal_state_rank must be positive")
+
+        if self.causal_context_gate_init < 0.0:
+            raise ValueError("causal_context_gate_init must be non-negative")
 
 
 class AttentionBase(nn.Module, ABC):

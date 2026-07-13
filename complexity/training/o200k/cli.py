@@ -55,6 +55,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--causal-conv-kernel-size", type=int, default=4)
     parser.add_argument("--causal-conv-dilation-cycle", type=int, default=8)
     parser.add_argument("--causal-state-rank", type=int, default=16)
+    parser.add_argument("--causal-context-gate-init", type=float, default=1.0)
+    parser.add_argument("--causal-contextual-mix-init", type=float, default=0.0)
+    parser.add_argument("--causal-context-fusion-size", type=int, default=0)
+    parser.add_argument("--causal-stable-delta", action="store_true")
+    parser.add_argument("--causal-delta-chunk-size", type=int, default=512)
+    parser.add_argument("--causal-delta-timescales", type=int, default=1)
+    parser.add_argument("--causal-delta-collision-normalized", action="store_true")
+    parser.add_argument("--causal-delta-lexical-values", action="store_true")
+    parser.add_argument("--causal-delta-lexical-forge", action="store_true")
+    parser.add_argument("--causal-delta-occurrence-address", action="store_true")
+
+    parser.add_argument(
+        "--lexical-attention-layer-indices",
+        type=int,
+        nargs="*",
+        default=(),
+    )
     parser.add_argument("--intermediate-size", type=int, default=None)
     parser.add_argument("--shared-intermediate-size", type=int, default=None)
     parser.add_argument(

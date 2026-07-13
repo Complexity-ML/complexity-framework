@@ -166,6 +166,11 @@ def main():
         for line in format_run_summary(run_config):
             logger.info(line)
         if "lexical_object_gate" in active_controls.capabilities:
+            micro_gate = (
+                f"{active_controls.micro_gate:.4f}"
+                if active_controls.micro_gate is not None
+                else "disabled"
+            )
             logger.info(
                 "Config: attention-free lexical residual, "
                 f"mixer={args.attention_type}, hidden={args.hidden_size}, "
@@ -176,7 +181,7 @@ def main():
                 f"tied_objects={args.tie_lexical_object_embeddings}, "
                 f"micro_experts={args.micro_num_experts}x{args.micro_expert_width}, "
                 f"object_gate={active_controls.object_gate:.4f}, "
-                f"micro_gate={active_controls.micro_gate:.4f}, "
+                f"micro_gate={micro_gate}, "
                 f"grad_ckpt={args.grad_ckpt}"
             )
         else:

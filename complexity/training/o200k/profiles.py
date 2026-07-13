@@ -79,6 +79,28 @@ def make_config(args) -> ModelConfig:
         causal_conv_kernel_size=getattr(args, "causal_conv_kernel_size", 4),
         causal_conv_dilation_cycle=getattr(args, "causal_conv_dilation_cycle", 8),
         causal_state_rank=getattr(args, "causal_state_rank", 16),
+        causal_context_gate_init=getattr(args, "causal_context_gate_init", 1.0),
+        causal_contextual_mix_init=getattr(args, "causal_contextual_mix_init", 0.0),
+        causal_context_fusion_size=getattr(args, "causal_context_fusion_size", 0),
+        causal_stable_delta=bool(getattr(args, "causal_stable_delta", False)),
+        causal_delta_chunk_size=getattr(args, "causal_delta_chunk_size", 512),
+        causal_delta_timescales=getattr(args, "causal_delta_timescales", 1),
+        causal_delta_collision_normalized=bool(
+            getattr(args, "causal_delta_collision_normalized", False)
+        ),
+        causal_delta_lexical_values=bool(
+            getattr(args, "causal_delta_lexical_values", False)
+        ),
+        causal_delta_lexical_forge=bool(
+            getattr(args, "causal_delta_lexical_forge", False)
+        ),
+        causal_delta_occurrence_address=bool(
+            getattr(args, "causal_delta_occurrence_address", False)
+        ),
+
+        lexical_attention_layer_indices=tuple(
+            getattr(args, "lexical_attention_layer_indices", ())
+        ),
         mlp_type=getattr(args, "mlp_type", None) or "token_routed",
         num_experts=4,
         shared_expert=bool(getattr(args, "shared_expert", True)),

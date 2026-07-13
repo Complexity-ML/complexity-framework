@@ -1,27 +1,26 @@
 \section{Protocole expérimental}
 \label{sec:experiments}
 
-\subsection{Contrôles appariés}
+\subsection{Contrôles et chemin architectural}
 
-L'étude principale compare quatre modèles de langage causaux d'environ 100 millions de paramètres :
-\begin{enumerate}
-    \item un Transformer dense à attention groupée (GQA) et SwiGLU dense ;
-    \item une convolution causale avec SwiGLU dense ;
-    \item une convolution causale avec objet lexical partagé, sans résidu de micro-expert ;
-    \item le modèle complet combinant convolution causale, objet lexical partagé et micro-experts.
-\end{enumerate}
-Le nombre de paramètres, le tokenizer, le corpus, la partition tenue à part, l'optimiseur, le calendrier du taux d'apprentissage, la précision, la longueur de séquence, le nombre effectif de tokens par batch, la seed et le nombre total de tokens d'entraînement sont maintenus constants ou explicitement rapportés lorsqu'une égalité exacte est impossible.
+L'étude compare GQA, des variantes associatives à état fixe, des hybrides WVR--attention et le modèle contextuel W/R/V final à dix couches, tous autour de 98,2 millions de paramètres. Le chemin archivé évalue une couche W/R/V, huit couches fortement lexicales, huit couches contextuelles avec deux couches WVR, puis le modèle final à dix couches contextuelles avec normalisation RMS par tête.
 
-\subsection{Données et tokenizer}
+L'entraînement historique séparé du modèle convolutionnel à micro-experts lexicaux sur 1~000~013~824 tokens est rapporté à part. Il ne constitue pas un contrôle apparié pour le tableau WVR à 100M tokens.
 
-Les modèles utilisent le tokenizer \texttt{o200k\_base} de 200~019 entrées et FineWeb-Edu sample-10BT. Les documents dont l'indice dans le flux source est congru à zéro modulo 20 forment un flux fixe tenu à part et sont exclus de l'entraînement. Les 95\% restants constituent le flux d'entraînement. Le budget principal est de 1~000~013~824 tokens d'entraînement par condition, avec des séquences de longueur 2~048.
+\subsection{Données, tokenizer et budget}
 
-\subsection{Mesures}
+Les modèles utilisent un tokenizer de 200~019 entrées enregistré comme \texttt{o200k\_base} et FineWeb-Edu sample-10BT. Son checksum n'a pas été archivé. Les runs principaux utilisent une séquence de 2~048, la seed 42, BF16 et 100~007~936 tokens. Chaque estimation finale moyenne 8 batches, soit 262~144 tokens, sans estimation d'incertitude. Le tableau~\ref{tab:wvr-100m} rapporte la dernière évaluation finie.
 
-Nous rapportons l'entropie croisée next-token sur les données tenues à part, le nombre de paramètres, le nombre réel de tokens, le débit d'entraînement, le pic mémoire de l'accélérateur, le débit de prefill et la latence du décodage incrémental à batch un. La qualité à nombre de tokens apparié et l'efficacité en temps réel sont traitées comme des affirmations distinctes. La correction du décodage exige que les logits produits token par token avec cache correspondent aux logits de la séquence complète dans la tolérance numérique annoncée.
+Les métriques GQA archivées utilisent $3\times10^{-4}$ ; les runs récents utilisent $4\times10^{-4}$. Aucune configuration GQA réalisée n'est colocalisée avec son CSV ; dimensions, budget exact, tokenizer, données, seed et kernels ne sont donc pas revérifiables depuis l'artefact. La comparaison reste descriptive.
 
-Nous ajoutons des diagnostics de rappel associatif : association clé-valeur, induction et apprentissage synthétique en contexte, évalués selon la distance. Ils visent à mesurer directement une faiblesse potentielle des modèles sans attention que la loss moyenne peut masquer.
+\subsection{Mesures et règle de preuve}
 
-\subsection{Matériel}
+Nous rapportons l'entropie croisée next-token sur les données tenues à part, le nombre réel de paramètres, le nombre exact de tokens et le débit d'entraînement journalisé à l'étape d'évaluation finie. Qualité et débit constituent des affirmations séparées. Chaque entrée numérique d'un tableau doit correspondre à un artefact CSV ou JSON archivé ; les figures générées sont dérivées de ces fichiers et ne constituent pas la preuve primaire. Les proxies courts servent uniquement de filtres d'échec, plusieurs classements favorables sur proxy ne s'étant pas transférés au budget complet.
 
-Les entraînements principaux utilisent un seul NVIDIA H100 80GB HBM3 en BF16. Les expériences Apple M5 ne sont rapportées que comme diagnostics courts et ne servent pas de preuve principale de qualité.
+\subsection{Diagnostics de contexte}
+
+Le rappel associatif, l'induction et l'apprentissage synthétique en contexte sont évalués selon la distance. Ils testent une récupération sélective des occurrences que la loss moyenne peut masquer. Les checkpoints sans attention terminés obtiennent une précision nulle sur les sondes archivées de rappel et d'induction à toutes les distances testées, tandis que GQA fournit le contrôle positif. Les revendications d'état persistant au-delà du champ réceptif convolutionnel restent donc non étayées et exigent des tests dédiés à 4--8k de contexte.
+
+\subsection{Matériel et vérifications numériques}
+
+Les runs complets utilisent un NVIDIA H100 80GB HBM3. Les tests FP32 couvrent la causalité et l'équivalence full/incrémental de W/R/V, ainsi que l'état fixe des primitives convolutionnelles et WVR. Les profils BF16 archivés ne soutiennent pas une équivalence exacte à $10^{-5}$ au niveau checkpoint. Le run final n'a pas de checkpoint ; les portes apprises sont irrécupérables. Les champs génériques top-$k$/Zipf du namespace CLI sont inactifs pour le module micro-expert réalisé, qui utilise le modulo défini en Section~\ref{sec:method}.

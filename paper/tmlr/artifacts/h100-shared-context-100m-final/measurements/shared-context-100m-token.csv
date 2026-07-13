@@ -1,0 +1,2 @@
+label,parameters,registered_total_tokens,attention_type,mlp_type,final_step,final_train_loss,last_eval_loss,best_eval_loss,median_post_warmup_tokens_per_second
+shared_context,98188871,100007936,causal_fast_weight_conv,lexical_object_micro_expert,3050,4.824383,4.928697,4.928697,125924.0

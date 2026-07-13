@@ -6,7 +6,7 @@
 \usepackage{microtype}
 \usepackage{url}
 
-\title{Shared Causal Convolutions with Lexical Residual Objects\\for Attention-Free Language Modeling}
+\title{Contextual Write--Read--Value Attention:\\An Architecture-Path Study}
 
 % Keep the source anonymous as well as the rendered review PDF.
 \author{\name Anonymous Authors \\
@@ -17,15 +17,15 @@
 \def\openreview{\url{https://openreview.net/forum?id=ANONYMOUS}}
 
 % Headline values are populated only from completed, archived metrics.
-\newcommand{\HeadlineEval}{\textsc{pending}}
-\newcommand{\HeadlineThroughput}{\textsc{pending}}
-\newcommand{\BaselineEval}{\textsc{pending}}
+\newcommand{\HeadlineEval}{4.706118}
+\newcommand{\HeadlineThroughput}{118,416}
+\newcommand{\BaselineEval}{4.820476}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-We study whether a small causal language model can separate sequence transport from token-specific computation without query--key--value attention. The proposed model uses a shared stack of dilated depthwise causal convolutions for sequence mixing, a tied low-rank object indexed by token identity, and narrow deterministic micro-expert residuals. The resulting decode state has fixed size with respect to generated context length and requires no attention matrix or growing key--value cache. We specify matched controls that isolate the sequence mixer, lexical object, and micro-expert residual at approximately 100M parameters. This draft intentionally withholds headline numerical claims until the preregistered one-billion-token runs and held-out evaluations are complete. The study is designed to report both matched-token language-model quality and hardware-specific training and incremental-decode throughput.
+We study contextual Write--Read--Value (W/R/V) attention for an approximately 98.2M-parameter causal language model with tied lexical residual objects and deterministic micro-experts. W/R/V uses eight contextual read heads, two shared contextual write/value heads, per-head RMS normalization, rotary position encoding, and a zero-initialized lexical residual in each write stream. PyTorch scaled dot-product attention is configured to permit FlashAttention dispatch for the resulting causal softmax. A completed 100M-token run reaches 4.706118 evaluation loss at 118,416 logged training tokens/s on one H100. An archived grouped-query-attention run reaches 4.820476 at 111,355 tokens/s, but it used a lower peak learning rate ($3\times10^{-4}$ versus $4\times10^{-4}$) and lacks a colocated realized configuration; we therefore report the numerical difference without claiming an aligned architectural win. Fixed-state WVR ablations remain informative negative controls: their best completed result is 4.895427. The evidence supports the complete realized W/R/V configuration as a candidate for controlled replication, not an isolated lexical-residual effect.
 \end{abstract}
 
 \input{sections/01_introduction}

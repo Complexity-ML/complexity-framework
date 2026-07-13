@@ -1,24 +1,29 @@
 \section{Method}
 \label{sec:method}
 
-\subsection{Shared causal sequence mixer}
+\subsection{Contextual W/R/V attention}
 
-Let $\mH\in\mathbb{R}^{B\times T\times d}$ be normalized hidden states. Layer $\ell$ uses a depthwise causal convolution with kernel width $k$ and dilation
-\begin{equation}
-    \delta_\ell = 2^{\ell \bmod C},
-\end{equation}
-where $C$ is the dilation cycle. After left padding by $(k-1)\delta_\ell$, the mixer is
+Let $\mH\in\mathbb{R}^{B\times T\times d}$ be normalized hidden states. Each layer projects contextual reads, writes, and values,
 \begin{align}
-    \mC_\ell &= \operatorname{DWConv}_{k,\delta_\ell}(\mH),\\
-    \mM_\ell &= \mW_o\left[\operatorname{SiLU}(\mW_g\mC_\ell)\odot(\mW_u\mC_\ell)\right].
+    \mR &= \mH\mW_r, &
+    \mW_{\mathrm{ctx}} &= \mH\mW_w, &
+    \mV &= \mH\mW_v.
 \end{align}
-All tokens use the same parameters and computation. No QKV projection or attention matrix is instantiated.
-
-For incremental decoding, layer $\ell$ stores only its last $(k-1)\delta_\ell$ input vectors. The total state per sequence is
+The evaluated model uses eight read heads and two shared write/value heads, with head dimension 48. A deterministic token code and a learned projection of the tied rank-16 lexical table form a lexical write address $\mL(x_t)$. For write head $h$,
 \begin{equation}
-    S = d\sum_{\ell=0}^{L-1}(k-1)\delta_\ell,
+    \vw_{t,h}=\vw^{\mathrm{ctx}}_{t,h}
+      +\tanh(g_h)\,\mL_h(x_t),
+    \qquad g_h=0\ \text{at initialization}.
 \end{equation}
-which is independent of the number of previously generated tokens. The implementation updates preallocated state buffers in place under inference mode.
+Thus the lexical branch is exactly neutral initially; the contextual write stream remains fully active. Reads and writes receive independent RMS normalization per head and rotary position encoding. Write/value heads are repeated across their four read-head groups, and causal attention is
+\begin{equation}
+    \vy_{t,h}=\sum_{j\le t}
+    \operatorname{softmax}_j\!\left(
+      \frac{\operatorname{RoPE}(\vr_{t,h})^\top
+      \operatorname{RoPE}(\vw_{j,\kappa(h)})}{\sqrt{48}}
+    \right)\vv_{j,\kappa(h)},
+\end{equation}
+where $\kappa(h)$ maps each read head to one of the two shared write/value heads. PyTorch scaled dot-product attention is configured to permit FlashAttention dispatch on H100. W/R/V is therefore an attention mechanism; the terminology describes data flow and the lexical write residual, not the absence of softmax attention. Incremental execution retains past W and V tensors and grows with prefix length.
 
 \subsection{Tied lexical residual object}
 
@@ -31,7 +36,7 @@ For token identity $x_t$, a tied table $\mE\in\mathbb{R}^{|\mathcal V|\times r}$
     \vz_t &= \operatorname{SiLU}(\mU\vh_t)\odot(\mathbf{1}+\mE[x_t]),\\
     \mO(\vh_t,x_t) &= \mD\vz_t.
 \end{align}
-The same table $\mE$ is shared across layers; projection matrices remain layer-specific. The branch is initialized neutrally by setting $\mE$ to zero and using a small learned output gate $\alpha$:
+The same table $\mE$ is shared across layers; projection matrices remain layer-specific. Setting $\mE$ to zero makes the token-dependent modulation neutral initially, but the object branch itself remains active through a nonzero output gate $\alpha$:
 \begin{equation}
     \mF_{\mathrm{object}}(\vh_t,x_t)=\mF(\vh_t)+\alpha\mO(\vh_t,x_t).
 \end{equation}
@@ -49,3 +54,44 @@ All expert hidden activations are computed as one regular tensor operation and t
     \odot \mW^{(e_\ell(x_t))}_{u}\vh_t\right].
 \end{equation}
 The complete feed-forward output is $\mF+\alpha\mO+\beta\mR$. This is a lexical residual over a shared dense path, not a claim that routing replaces shared computation.
+
+\subsection{Fixed-state WVR associative ablation}
+
+The earlier fixed-state ablation uses one recurrent associative matrix rather than softmax attention. We denote that mechanism by \emph{WVR}: write address, contextual value, and read address. For token $x_t$ and hidden state $\vh_t$, a compressed lexical forge reuses the tied lexical object table,
+\begin{equation}
+    \vf_t=\mW_{f,2}\operatorname{SiLU}(\mW_{f,1}\mE[x_t]),
+\end{equation}
+where the implemented bottleneck is $16\rightarrow4\rightarrow128$. The common address combines this deterministic lexical code with a projected hidden-state signature,
+\begin{align}
+    \vc_t &= \operatorname{norm}(\mW_c\vh_t),\\
+    \va_t &= \operatorname{norm}\!\left(\operatorname{forge}(x_t)+
+        \tanh(\eta)\vc_t\right).
+\end{align}
+The lexical code is an address tied to token identity; it is not evidence of semantic representation. The contextual projection is likewise described operationally rather than semantically.
+
+Writing uses the preceding address and the current contextual payload,
+\begin{align}
+    \mathbf{w}_t &= \va_{t-1}, & \mathbf{v}_t &= \mW_v\vh_t, & \mathbf{r}_t &= \va_t,\\
+    \widehat{\mathbf{v}}_t &= \mathbf{w}_t^\top\mM_{t-1},\\
+    \mM_t &= \lambda\mM_{t-1}+\rho\mathbf{w}_t
+        (\mathbf{v}_t-\widehat{\mathbf{v}}_t)^\top,\\
+    \vy_t &= \mathbf{r}_t^\top\mM_{t-1},\\
+    \vc^{\mathrm{WVR}}_t &= \gamma\mW_o\vy_t.
+\end{align}
+The context residual $\vc^{\mathrm{WVR}}_t$ is added to the causal-convolution output. The implementation shifts the write stream causally: the current read uses $\mathbf{r}_t$, while the preceding write address is paired with the current payload. The chunkwise triangular solve is an exact parallelization of this recurrence. Thus WVR stores a contextual hidden value rather than a lexical code. The state is one rank-$128$ matrix plus fixed-size address and collision-load vectors, independent of prefix length.
+
+Collision normalization maintains a decayed diagonal load estimate $\vd_t$ and scales write and read coordinates by $(\vd_t+\epsilon)^{-1/2}$ before normalization. It does not partition the rank-$128$ matrix into separate memories.
+
+QKV attention compares a contextual query with every retained key and performs normalized competition over individual token occurrences. WVR instead reads the pre-update compressed recurrent association through $\mathbf{r}_t^\top\mM_{t-1}$. Our training comparison concerns modeling quality and throughput without assigning credit for KV-cache size. The representational tradeoff is explicit: WVR has fixed state, but repeated or colliding occurrences may overwrite one another.
+
+The experimental occurrence-address extension replaces the dense contextual projection by a compact $d\rightarrow8\rightarrow128$ signature and adds a gated deterministic position signature,
+\begin{equation}
+    \va_t=\operatorname{norm}\!\left(
+    \operatorname{forge}(x_t)+\operatorname{smallctx}(\vh_t)
+    +\tanh(\gamma)\operatorname{pos}(t)\right),
+\end{equation}
+with $\gamma=0$ initially and one fixed-size position counter for incremental decoding. Its completed full-budget run is reported as a negative ablation.
+
+\subsection{Architectural path ablations}
+
+We retain three completed intermediate conditions: one W/R/V layer inserted into a collision-normalized WVR model; eight W/R/V layers with strongly lexical normalized addresses; and eight contextual W/R/V layers with two remaining WVR layers. These are path ablations, not isolated factorial controls. Their ordering motivates hypotheses about insufficient selective attention, overly dominant lexical addressing, and residual fixed-state bottlenecks, but does not identify those causes independently.

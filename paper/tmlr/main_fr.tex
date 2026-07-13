@@ -7,7 +7,7 @@
 \usepackage{microtype}
 \usepackage{url}
 
-\title{Convolutions causales partagées et objets lexicaux résiduels\\pour la modélisation du langage sans attention}
+\title{Attention contextuelle Write--Read--Value :\\étude d'un chemin architectural}
 
 % La source comme le PDF d'évaluation restent anonymes.
 \author{\name Auteurs anonymes \\
@@ -18,15 +18,15 @@
 \def\openreview{\url{https://openreview.net/forum?id=ANONYMOUS}}
 
 % Ces valeurs ne seront renseignées qu'à partir de métriques achevées et archivées.
-\newcommand{\HeadlineEval}{\textsc{en attente}}
-\newcommand{\HeadlineThroughput}{\textsc{en attente}}
-\newcommand{\BaselineEval}{\textsc{en attente}}
+\newcommand{\HeadlineEval}{4,706118}
+\newcommand{\HeadlineThroughput}{118~416}
+\newcommand{\BaselineEval}{4,820476}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-Nous étudions si un petit modèle de langage causal peut séparer le transport de l'information séquentielle du calcul propre aux tokens, sans attention fondée sur des requêtes, clés et valeurs. Le modèle proposé emploie une pile partagée de convolutions causales depthwise dilatées pour le mélange séquentiel, un objet de faible rang indexé par l'identité du token et partagé entre les couches, ainsi que d'étroits résidus de micro-experts déterministes. L'état de décodage obtenu conserve une taille fixe par rapport à la longueur du contexte généré et ne nécessite ni matrice d'attention ni cache clés-valeurs croissant. Nous définissons des contrôles appariés qui isolent le mélangeur séquentiel, l'objet lexical et le résidu de micro-experts à environ 100 millions de paramètres. Ce brouillon omet volontairement les résultats numériques principaux jusqu'à l'achèvement des entraînements préenregistrés sur un milliard de tokens et des évaluations tenues à part. L'étude est conçue pour rapporter à la fois la qualité du modèle de langage à nombre de tokens apparié, le débit d'entraînement propre au matériel et le débit de décodage incrémental.
+Nous étudions une attention contextuelle Write--Read--Value (W/R/V) pour un modèle de langage causal d'environ 98,2 millions de paramètres avec objets lexicaux résiduels liés et micro-experts déterministes. W/R/V emploie huit têtes de lecture contextuelles, deux têtes partagées d'écriture/valeur, une normalisation RMS par tête, un encodage positionnel rotatif et un résidu lexical initialisé à zéro dans chaque flux d'écriture. PyTorch SDPA est configuré pour autoriser le dispatch FlashAttention du softmax causal. Un entraînement terminé à 100M tokens atteint une loss d'évaluation de 4,706118 à 118~416 tokens/s d'entraînement journalisés sur un H100. Un entraînement GQA archivé atteint 4,820476 à 111~355 tokens/s, mais avec un learning rate maximal inférieur ($3\times10^{-4}$ contre $4\times10^{-4}$) et sans configuration réalisée colocalisée ; nous rapportons donc l'écart sans revendiquer une victoire architecturale alignée. Les ablations WVR à état fixe restent des contrôles négatifs informatifs, avec un meilleur résultat de 4,895427. Les preuves soutiennent la configuration W/R/V réalisée complète comme candidate à une réplication contrôlée, non un effet lexical résiduel isolé.
 \end{abstract}
 
 \input{sections_fr/01_introduction}
