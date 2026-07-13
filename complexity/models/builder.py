@@ -396,13 +396,13 @@ class ComplexityModel(nn.Module):
             if hasattr(self, "lexical_token_scale")
             else None
         )
+        lexical_base_writes = (
+            self.layers[0].self_attn.lexical_base_writes(input_ids)
+            if self.config.attention_type == "lexical_wrv"
+            else None
+        )
         for i, layer in enumerate(self.layers):
             past_kv = past_key_values[i] if past_key_values is not None else None
-            layer_lexical_token_scale_values = (
-                lexical_token_scale_values.clone()
-                if lexical_token_scale_values is not None
-                else None
-            )
 
             if self._gradient_checkpointing and self.training:
                 hidden_states, new_kv, _, mu_contextual = activation_checkpoint(
@@ -415,7 +415,8 @@ class ComplexityModel(nn.Module):
                     None,  # velocity_state (unused, kept for compat)
                     mu_prev,
                     None,  # sort_idx (computed internally by token_routed)
-                    layer_lexical_token_scale_values,
+                    lexical_token_scale_values,
+                    lexical_base_writes,
                     use_reentrant=False,
                 )
             else:
@@ -426,7 +427,8 @@ class ComplexityModel(nn.Module):
                     use_cache=use_cache,
                     token_ids=input_ids,
                     mu_prev=mu_prev,
-                    lexical_token_scale_values=layer_lexical_token_scale_values,
+                    lexical_token_scale_values=lexical_token_scale_values,
+                    lexical_base_writes=lexical_base_writes,
                 )
 
             # mu from this layer guides next layer's attention — free (no clamp).

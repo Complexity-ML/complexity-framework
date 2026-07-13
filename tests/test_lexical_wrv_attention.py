@@ -56,6 +56,15 @@ def test_lexical_wrv_starts_from_contextual_attention_with_neutral_lexical_resid
     torch.testing.assert_close(module.lexical_gate, torch.zeros(2))
 
 
+def test_lexical_wrv_reuses_precomputed_base_writes_exactly() -> None:
+    module = LexicalWRVAttention(_config())
+    token_ids = torch.randint(0, 64, (2, 7))
+    base = module.lexical_base_writes(token_ids)
+    expected = module._lexical_writes(token_ids)
+    actual = module._lexical_writes(token_ids, lexical_base_writes=base)
+    torch.testing.assert_close(actual, expected)
+
+
 def test_lexical_wrv_rotates_repeated_writes_by_position() -> None:
     module = LexicalWRVAttention(_config())
     repeated = torch.ones(1, 2, 2, module.head_dim)

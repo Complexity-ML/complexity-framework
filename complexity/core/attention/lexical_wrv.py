@@ -76,11 +76,7 @@ class LexicalWRVAttention(AttentionBase):
             rotated = torch.cat((rotated, tensor[..., 2 * half :]), dim=-1)
         return rotated
 
-    def _lexical_writes(
-        self,
-        token_ids: torch.Tensor,
-        lexical_token_scale_values: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    def lexical_base_writes(self, token_ids: torch.Tensor) -> torch.Tensor:
         write_width = self.num_write_heads * self.head_dim
         dimensions = torch.arange(
             1, write_width + 1, device=token_ids.device, dtype=torch.float64
@@ -90,8 +86,20 @@ class LexicalWRVAttention(AttentionBase):
             * torch.pi
             * torch.sqrt(dimensions)
         )
-        writes = torch.sin(phases).float().view(
+        return torch.sin(phases).float().view(
             *token_ids.shape, self.num_write_heads, self.head_dim
+        )
+
+    def _lexical_writes(
+        self,
+        token_ids: torch.Tensor,
+        lexical_token_scale_values: Optional[torch.Tensor] = None,
+        lexical_base_writes: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        writes = (
+            lexical_base_writes
+            if lexical_base_writes is not None
+            else self.lexical_base_writes(token_ids)
         )
         if lexical_token_scale_values is not None:
             learned = self.lexical_forge(lexical_token_scale_values).view(
@@ -156,6 +164,7 @@ class LexicalWRVAttention(AttentionBase):
         use_cache: bool = False,
         token_ids: Optional[torch.Tensor] = None,
         lexical_token_scale_values: Optional[torch.Tensor] = None,
+        lexical_base_writes: Optional[torch.Tensor] = None,
         **kwargs: Any,
     ) -> tuple[
         torch.Tensor, Optional[tuple[torch.Tensor, torch.Tensor]]
@@ -164,7 +173,9 @@ class LexicalWRVAttention(AttentionBase):
         if token_ids is None:
             raise ValueError("token_ids are required for lexical W/R/V attention")
         batch_size, sequence_length, _ = hidden_states.shape
-        lexical = self._lexical_writes(token_ids, lexical_token_scale_values)
+        lexical = self._lexical_writes(
+            token_ids, lexical_token_scale_values, lexical_base_writes
+        )
         contextual_write = self.write_context_proj(hidden_states).view(
             batch_size, sequence_length, self.num_write_heads, self.head_dim
         )
