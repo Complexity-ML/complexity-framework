@@ -251,6 +251,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use only the learned lexical object as the lexical key source.",
     )
     parser.add_argument(
+        "--lexical-key-gate-init",
+        type=float,
+        default=0.05,
+        help="Initial gate for the in-place lexical key residual.",
+    )
+    parser.add_argument(
         "--tie-lexical-object-embeddings",
         action="store_true",
         help="Share one lexical modulation table across all transformer layers.",

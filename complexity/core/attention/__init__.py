@@ -26,6 +26,7 @@ Usage:
 from .base import AttentionBase, AttentionConfig
 from .gqa import GroupedQueryAttention, MultiHeadAttention, MultiQueryAttention
 from .lexical_gqa import LexicalBiasGQA
+from .lexical_key_gqa import LexicalKeyGQA
 from .lexical_wrv import LexicalWRVAttention
 from .routed_gqa import RoutedGQA
 from .i64_attention import I64Attention
@@ -40,6 +41,7 @@ __all__ = [
     "MultiHeadAttention",
     "MultiQueryAttention",
     "LexicalBiasGQA",
+    "LexicalKeyGQA",
     "LexicalWRVAttention",
     "RoutedGQA",
     "I64Attention",

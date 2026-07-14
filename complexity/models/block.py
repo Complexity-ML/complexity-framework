@@ -156,6 +156,7 @@ class TransformerBlock(nn.Module):
             lexical_gqa_use_token_code=getattr(
                 config, "lexical_gqa_use_token_code", True
             ),
+            lexical_key_gate_init=getattr(config, "lexical_key_gate_init", 0.05),
             vocab_size=config.vocab_size,
             layer_idx=layer_idx,
         )
@@ -265,6 +266,7 @@ class TransformerBlock(nn.Module):
             "causal_fast_weight_conv",
             "lexical_gqa",
             "lexical_bias_gqa",
+            "lexical_key_gqa",
             "lexical_wrv",
         }:
             attn_kwargs["token_ids"] = token_ids
@@ -274,7 +276,11 @@ class TransformerBlock(nn.Module):
         }:
             attn_kwargs["lexical_token_scale_values"] = lexical_token_scale_values
             attn_kwargs["lexical_base_writes"] = lexical_base_writes
-        elif self.config.attention_type in {"lexical_gqa", "lexical_bias_gqa"}:
+        elif self.config.attention_type in {
+            "lexical_gqa",
+            "lexical_bias_gqa",
+            "lexical_key_gqa",
+        }:
             attn_kwargs["lexical_scale"] = lexical_token_scale_values
         if mu_prev is not None:
             attn_kwargs["mu_prev"] = mu_prev

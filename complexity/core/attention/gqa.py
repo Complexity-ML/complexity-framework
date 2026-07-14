@@ -145,6 +145,8 @@ class GroupedQueryAttention(AttentionBase):
             q = self.q_norm(q)
             k = self.k_norm(k)
 
+        q, k = self._modify_qk(q, k, hidden_states=hidden_states, **kwargs)
+
         # Handle KV cache for generation
         kv_seq_len = seq_len
         if past_key_value is not None:
@@ -185,6 +187,15 @@ class GroupedQueryAttention(AttentionBase):
         attn_output = self.o_proj(attn_output)
 
         return attn_output, new_past_key_value
+
+    def _modify_qk(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Optional architecture hook; standard GQA leaves Q/K unchanged."""
+        return q, k
 
     def _sdpa_attention(
         self,

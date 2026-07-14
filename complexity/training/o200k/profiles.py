@@ -135,6 +135,7 @@ def make_config(args) -> ModelConfig:
         lexical_gqa_use_token_code=bool(
             getattr(args, "lexical_gqa_use_token_code", True)
         ),
+        lexical_key_gate_init=float(getattr(args, "lexical_key_gate_init", 0.05)),
         tie_lexical_object_embeddings=bool(
             getattr(args, "tie_lexical_object_embeddings", False)
         ),
