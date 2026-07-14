@@ -233,6 +233,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Initial shared lexical R/W gate before tanh (0 keeps legacy behavior).",
     )
     parser.add_argument(
+        "--lexical-gqa-rank",
+        type=int,
+        default=16,
+        help="Rank of the baseline-preserving lexical GQA score channel.",
+    )
+    parser.add_argument(
+        "--lexical-gqa-gate-init",
+        type=float,
+        default=0.0,
+        help="Initial lexical GQA score gate before tanh.",
+    )
+    parser.add_argument(
         "--tie-lexical-object-embeddings",
         action="store_true",
         help="Share one lexical modulation table across all transformer layers.",

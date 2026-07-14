@@ -47,6 +47,8 @@ class AttentionConfig:
     disable_lexical_wrv_norms: bool = False
     lexical_wrv_hybrid: bool = False
     lexical_wrv_gate_init: float = 0.0
+    lexical_gqa_rank: int = 16
+    lexical_gqa_gate_init: float = 0.0
     vocab_size: Optional[int] = None
     layer_idx: int = 0
 

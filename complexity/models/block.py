@@ -151,6 +151,8 @@ class TransformerBlock(nn.Module):
             ),
             lexical_wrv_hybrid=getattr(config, "lexical_wrv_hybrid", False),
             lexical_wrv_gate_init=getattr(config, "lexical_wrv_gate_init", 0.0),
+            lexical_gqa_rank=getattr(config, "lexical_gqa_rank", 16),
+            lexical_gqa_gate_init=getattr(config, "lexical_gqa_gate_init", 0.0),
             vocab_size=config.vocab_size,
             layer_idx=layer_idx,
         )
@@ -258,11 +260,19 @@ class TransformerBlock(nn.Module):
         )
         if self.config.attention_type in {
             "causal_fast_weight_conv",
+            "lexical_gqa",
+            "lexical_bias_gqa",
             "lexical_wrv",
         }:
             attn_kwargs["token_ids"] = token_ids
+        if self.config.attention_type in {
+            "causal_fast_weight_conv",
+            "lexical_wrv",
+        }:
             attn_kwargs["lexical_token_scale_values"] = lexical_token_scale_values
             attn_kwargs["lexical_base_writes"] = lexical_base_writes
+        elif self.config.attention_type in {"lexical_gqa", "lexical_bias_gqa"}:
+            attn_kwargs["lexical_scale"] = lexical_token_scale_values
         if mu_prev is not None:
             attn_kwargs["mu_prev"] = mu_prev
         hidden_states, new_kv = self.self_attn(hidden_states, **attn_kwargs)
