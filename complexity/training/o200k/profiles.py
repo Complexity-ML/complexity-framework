@@ -132,6 +132,9 @@ def make_config(args) -> ModelConfig:
         lexical_wrv_gate_init=float(getattr(args, "lexical_wrv_gate_init", 0.0)),
         lexical_gqa_rank=int(getattr(args, "lexical_gqa_rank", 16)),
         lexical_gqa_gate_init=float(getattr(args, "lexical_gqa_gate_init", 0.0)),
+        lexical_gqa_use_token_code=bool(
+            getattr(args, "lexical_gqa_use_token_code", True)
+        ),
         tie_lexical_object_embeddings=bool(
             getattr(args, "tie_lexical_object_embeddings", False)
         ),

@@ -117,6 +117,7 @@ class ModelConfig:
     lexical_wrv_gate_init: float = 0.0
     lexical_gqa_rank: int = 16
     lexical_gqa_gate_init: float = 0.0
+    lexical_gqa_use_token_code: bool = True
 
     # === Mu-Guidance ===
     use_mu_guidance: bool = False  # Enable contextual mu flowing between layers

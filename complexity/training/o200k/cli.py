@@ -245,6 +245,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Initial lexical GQA score gate before tanh.",
     )
     parser.add_argument(
+        "--disable-lexical-gqa-token-code",
+        action="store_false",
+        dest="lexical_gqa_use_token_code",
+        help="Use only the learned lexical object as the lexical key source.",
+    )
+    parser.add_argument(
         "--tie-lexical-object-embeddings",
         action="store_true",
         help="Share one lexical modulation table across all transformer layers.",

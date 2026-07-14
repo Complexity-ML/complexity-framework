@@ -153,6 +153,9 @@ class TransformerBlock(nn.Module):
             lexical_wrv_gate_init=getattr(config, "lexical_wrv_gate_init", 0.0),
             lexical_gqa_rank=getattr(config, "lexical_gqa_rank", 16),
             lexical_gqa_gate_init=getattr(config, "lexical_gqa_gate_init", 0.0),
+            lexical_gqa_use_token_code=getattr(
+                config, "lexical_gqa_use_token_code", True
+            ),
             vocab_size=config.vocab_size,
             layer_idx=layer_idx,
         )

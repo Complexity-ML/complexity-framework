@@ -26,6 +26,7 @@ class LexicalBiasGQA(GroupedQueryAttention):
         if self.lexical_rank <= 0:
             raise ValueError("lexical_gqa_rank must be positive")
         self.lexical_object_rank = int(config.lexical_object_rank)
+        self.use_token_code = bool(config.lexical_gqa_use_token_code)
         self.lexical_q_proj = nn.Linear(
             self.hidden_size,
             self.num_heads * self.lexical_rank,
@@ -137,9 +138,11 @@ class LexicalBiasGQA(GroupedQueryAttention):
         lexical_q = self.lexical_q_proj(hidden_states).view(
             batch_size, seq_len, self.num_heads, self.lexical_rank
         ).transpose(1, 2)
-        lexical_source = lexical_scale + self._token_code(token_ids).to(
-            lexical_scale.dtype
-        )
+        lexical_source = lexical_scale
+        if self.use_token_code:
+            lexical_source = lexical_source + self._token_code(token_ids).to(
+                lexical_scale.dtype
+            )
         lexical_k = self.lexical_k_proj(lexical_source).view(
             batch_size, seq_len, self.num_kv_heads, self.lexical_rank
         ).transpose(1, 2)

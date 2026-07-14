@@ -4,7 +4,12 @@ from complexity.core.attention.base import AttentionConfig
 from complexity.core.attention.gqa import GroupedQueryAttention
 
 
-def _config(*, use_sdpa: bool = False) -> AttentionConfig:
+def _config(
+    *,
+    use_sdpa: bool = False,
+    gate_init: float = 0.0,
+    use_token_code: bool = True,
+) -> AttentionConfig:
     return AttentionConfig(
         hidden_size=32,
         num_attention_heads=4,
@@ -14,7 +19,8 @@ def _config(*, use_sdpa: bool = False) -> AttentionConfig:
         use_sdpa=use_sdpa,
         lexical_object_rank=8,
         lexical_gqa_rank=8,
-        lexical_gqa_gate_init=0.0,
+        lexical_gqa_gate_init=gate_init,
+        lexical_gqa_use_token_code=use_token_code,
     )
 
 
@@ -81,6 +87,30 @@ def test_zero_initialized_lexical_gate_receives_gradient() -> None:
     assert module.lexical_gate.grad is not None
     assert torch.isfinite(module.lexical_gate.grad).all()
     assert module.lexical_gate.grad.abs().sum() > 0
+
+
+def test_learned_only_key_starts_as_gqa_but_trains_lexical_objects() -> None:
+    from complexity.core.attention.lexical_gqa import LexicalBiasGQA
+
+    torch.manual_seed(9)
+    baseline = GroupedQueryAttention(_config()).eval()
+    lexical = LexicalBiasGQA(
+        _config(gate_init=0.05, use_token_code=False)
+    ).eval()
+    _copy_gqa_weights(baseline, lexical)
+    hidden = torch.randn(2, 6, 32)
+    lexical_scale = torch.zeros(2, 6, 8, requires_grad=True)
+    token_ids = torch.randint(0, 64, (2, 6))
+
+    expected, _ = baseline(hidden)
+    actual, _ = lexical(
+        hidden, lexical_scale=lexical_scale, token_ids=token_ids
+    )
+    torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-6)
+    actual.square().mean().backward()
+    assert lexical_scale.grad is not None
+    assert torch.isfinite(lexical_scale.grad).all()
+    assert torch.count_nonzero(lexical_scale.grad) > 0
 
 
 def test_lexical_gqa_incremental_cache_matches_full_sequence() -> None:
