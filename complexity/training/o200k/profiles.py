@@ -128,6 +128,8 @@ def make_config(args) -> ModelConfig:
         disable_lexical_wrv_norms=bool(
             getattr(args, "disable_lexical_wrv_norms", False)
         ),
+        lexical_wrv_hybrid=bool(getattr(args, "lexical_wrv_hybrid", False)),
+        lexical_wrv_gate_init=float(getattr(args, "lexical_wrv_gate_init", 0.0)),
         tie_lexical_object_embeddings=bool(
             getattr(args, "tie_lexical_object_embeddings", False)
         ),

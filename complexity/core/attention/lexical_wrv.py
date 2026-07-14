@@ -15,7 +15,7 @@ from .base import AttentionBase, AttentionConfig
 
 @register_attention("lexical_wrv")
 class LexicalWRVAttention(AttentionBase):
-    """Multi-read causal attention with shared contextual W/V heads."""
+    """Contextual W/R/V attention with optional shared lexical R/W addresses."""
 
     def __init__(self, config: AttentionConfig):
         super().__init__(config)
@@ -49,8 +49,17 @@ class LexicalWRVAttention(AttentionBase):
         self.lexical_forge = nn.Linear(
             int(config.lexical_object_rank), write_width, bias=False
         )
-        self.lexical_gate = nn.Parameter(torch.zeros(self.num_write_heads))
+        self.lexical_gate = nn.Parameter(
+            torch.full(
+                (self.num_write_heads,), float(config.lexical_wrv_gate_init)
+            )
+        )
         self.disable_lexical_residual = bool(config.disable_lexical_wrv_residual)
+        self.lexical_wrv_hybrid = bool(config.lexical_wrv_hybrid)
+        if self.lexical_wrv_hybrid and self.disable_lexical_residual:
+            raise ValueError(
+                "lexical_wrv hybrid attention requires the lexical residual"
+            )
         if self.disable_lexical_residual:
             self.lexical_gate.requires_grad_(False)
         self.attention_dropout = float(config.attention_dropout)
@@ -85,17 +94,25 @@ class LexicalWRVAttention(AttentionBase):
 
     def lexical_base_writes(self, token_ids: torch.Tensor) -> torch.Tensor:
         write_width = self.num_write_heads * self.head_dim
+        phase_dtype = (
+            torch.float32 if token_ids.device.type == "mps" else torch.float64
+        )
         dimensions = torch.arange(
-            1, write_width + 1, device=token_ids.device, dtype=torch.float64
+            1, write_width + 1, device=token_ids.device, dtype=phase_dtype
         )
         phases = (
-            (token_ids.to(torch.float64)[..., None] + 1.0)
+            (token_ids.to(phase_dtype)[..., None] + 1.0)
             * torch.pi
             * torch.sqrt(dimensions)
         )
         return torch.sin(phases).float().view(
             *token_ids.shape, self.num_write_heads, self.head_dim
         )
+
+    def lexical_base_reads(self, lexical_writes: torch.Tensor) -> torch.Tensor:
+        """Map each shared lexical write address to its grouped read heads."""
+        repeat_factor = self.num_read_heads // self.num_write_heads
+        return lexical_writes.repeat_interleave(repeat_factor, dim=-2)
 
     def _lexical_writes(
         self,
@@ -195,6 +212,9 @@ class LexicalWRVAttention(AttentionBase):
         contextual_write = contextual_write.view(
             batch_size, sequence_length, self.num_write_heads, self.head_dim
         )
+        reads = reads.view(
+            batch_size, sequence_length, self.num_read_heads, self.head_dim
+        )
         if self.disable_lexical_residual:
             writes = contextual_write
         else:
@@ -205,9 +225,15 @@ class LexicalWRVAttention(AttentionBase):
                 contextual_write.float()
                 + torch.tanh(self.lexical_gate.float())[None, None, :, None] * lexical
             ).to(hidden_states.dtype)
-        reads = reads.view(
-            batch_size, sequence_length, self.num_read_heads, self.head_dim
-        )
+            if self.lexical_wrv_hybrid:
+                lexical_reads = self.lexical_base_reads(lexical)
+                read_gate = torch.tanh(self.lexical_gate.float()).repeat_interleave(
+                    self.num_read_heads // self.num_write_heads
+                )
+                reads = (
+                    reads.float()
+                    + read_gate[None, None, :, None] * lexical_reads
+                ).to(hidden_states.dtype)
         reads = reads.to(hidden_states.dtype)
         values = values.view(
             batch_size, sequence_length, self.num_write_heads, self.head_dim

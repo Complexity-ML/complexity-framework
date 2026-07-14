@@ -219,6 +219,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Bypass and freeze W/R/V per-head read/write RMSNorm.",
     )
     parser.add_argument(
+        "--lexical-wrv-hybrid",
+        action="store_true",
+        help=(
+            "Inject the same lexical address into grouped reads and writes; "
+            "values remain contextual."
+        ),
+    )
+    parser.add_argument(
+        "--lexical-wrv-gate-init",
+        type=float,
+        default=0.0,
+        help="Initial shared lexical R/W gate before tanh (0 keeps legacy behavior).",
+    )
+    parser.add_argument(
         "--tie-lexical-object-embeddings",
         action="store_true",
         help="Share one lexical modulation table across all transformer layers.",

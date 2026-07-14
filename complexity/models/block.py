@@ -149,6 +149,8 @@ class TransformerBlock(nn.Module):
             disable_lexical_wrv_norms=getattr(
                 config, "disable_lexical_wrv_norms", False
             ),
+            lexical_wrv_hybrid=getattr(config, "lexical_wrv_hybrid", False),
+            lexical_wrv_gate_init=getattr(config, "lexical_wrv_gate_init", 0.0),
             vocab_size=config.vocab_size,
             layer_idx=layer_idx,
         )
