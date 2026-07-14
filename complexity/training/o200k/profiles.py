@@ -136,6 +136,13 @@ def make_config(args) -> ModelConfig:
             getattr(args, "lexical_gqa_use_token_code", True)
         ),
         lexical_key_gate_init=float(getattr(args, "lexical_key_gate_init", 0.05)),
+        lexical_zipf_path=getattr(args, "lexical_zipf_path", None),
+        lexical_zipf_mode=str(getattr(args, "lexical_zipf_mode", "uniform")),
+        lexical_zipf_alpha=float(getattr(args, "lexical_zipf_alpha", 0.25)),
+        lexical_zipf_floor=float(getattr(args, "lexical_zipf_floor", 0.1)),
+        lexical_zipf_permutation_seed=int(
+            getattr(args, "lexical_zipf_permutation_seed", 1729)
+        ),
         tie_lexical_object_embeddings=bool(
             getattr(args, "tie_lexical_object_embeddings", False)
         ),

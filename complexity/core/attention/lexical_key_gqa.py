@@ -102,6 +102,13 @@ class ProjectedLexicalKeyGQA(GroupedQueryAttention):
                 f"expected lexical rank {self.lexical_object_rank}, "
                 f"got {lexical_scale.shape[-1]}"
             )
+        lexical_weight = kwargs.get("lexical_weight")
+        if lexical_weight is not None:
+            if lexical_weight.shape != lexical_scale.shape[:2]:
+                raise ValueError("lexical_weight must match lexical batch and sequence")
+            lexical_scale = lexical_scale * lexical_weight.unsqueeze(-1).to(
+                lexical_scale.dtype
+            )
         lexical_key = self.lexical_k_proj(lexical_scale).view(
             k.shape[0], k.shape[2], self.num_kv_heads, self.head_dim
         ).transpose(1, 2)

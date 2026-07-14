@@ -19,6 +19,35 @@ from ..core.registry import NORMALIZATION_REGISTRY, MODEL_REGISTRY, register_mod
 from .block import TransformerBlock
 
 
+def build_lexical_zipf_weights(
+    counts: torch.Tensor,
+    *,
+    mode: str,
+    alpha: float,
+    floor: float,
+    permutation_seed: int,
+) -> torch.Tensor:
+    """Build RMS-matched token weights from descending frequency ranks."""
+    if counts.ndim != 1:
+        raise ValueError("Zipf counts must be a 1D tensor")
+    if mode not in {"ordered", "permuted"}:
+        raise ValueError(f"Unsupported Zipf mode: {mode}")
+    if alpha <= 0.0:
+        raise ValueError("lexical_zipf_alpha must be positive")
+    if not 0.0 <= floor <= 1.0:
+        raise ValueError("lexical_zipf_floor must lie in [0, 1]")
+    vocab_size = counts.numel()
+    order = torch.argsort(counts.to(torch.float64), descending=True, stable=True)
+    ranks = torch.empty(vocab_size, dtype=torch.float32)
+    ranks[order] = torch.arange(1, vocab_size + 1, dtype=torch.float32)
+    weights = (ranks / float(vocab_size)).pow(float(alpha)).clamp_min(float(floor))
+    weights = weights / weights.square().mean().sqrt().clamp_min(1e-12)
+    if mode == "permuted":
+        generator = torch.Generator().manual_seed(int(permutation_seed))
+        weights = weights[torch.randperm(vocab_size, generator=generator)]
+    return weights
+
+
 @register_model("complexity")
 @register_model("decoder")
 @register_model("causal_lm")
@@ -108,6 +137,31 @@ class ComplexityModel(nn.Module):
             self.lexical_token_scale = shared_token_scale
             for layer in self.layers:
                 delattr(layer.mlp, "token_scale")
+
+        zipf_mode = str(getattr(config, "lexical_zipf_mode", "uniform"))
+        if zipf_mode != "uniform":
+            zipf_path = getattr(config, "lexical_zipf_path", None)
+            if not zipf_path:
+                raise ValueError("lexical_zipf_path is required for non-uniform Zipf")
+            artifact = torch.load(zipf_path, map_location="cpu", weights_only=True)
+            counts = artifact["counts"] if isinstance(artifact, dict) else artifact
+            if counts.numel() != config.vocab_size:
+                raise ValueError(
+                    f"Zipf counts have vocab {counts.numel()}, expected {config.vocab_size}"
+                )
+            self.register_buffer(
+                "lexical_zipf_weights",
+                build_lexical_zipf_weights(
+                    counts,
+                    mode=zipf_mode,
+                    alpha=float(getattr(config, "lexical_zipf_alpha", 0.25)),
+                    floor=float(getattr(config, "lexical_zipf_floor", 0.1)),
+                    permutation_seed=int(
+                        getattr(config, "lexical_zipf_permutation_seed", 1729)
+                    ),
+                ),
+                persistent=True,
+            )
 
         # Final normalization
         self.norm = NORMALIZATION_REGISTRY.build(
@@ -396,6 +450,11 @@ class ComplexityModel(nn.Module):
             if hasattr(self, "lexical_token_scale")
             else None
         )
+        lexical_zipf_values = (
+            self.lexical_zipf_weights[input_ids]
+            if hasattr(self, "lexical_zipf_weights")
+            else None
+        )
         lexical_base_writes = (
             self.layers[0].self_attn.lexical_base_writes(input_ids)
             if self.config.attention_type == "lexical_wrv"
@@ -418,6 +477,7 @@ class ComplexityModel(nn.Module):
                     None,  # sort_idx (computed internally by token_routed)
                     lexical_token_scale_values,
                     lexical_base_writes,
+                    lexical_zipf_values,
                     use_reentrant=False,
                 )
             else:
@@ -430,6 +490,7 @@ class ComplexityModel(nn.Module):
                     mu_prev=mu_prev,
                     lexical_token_scale_values=lexical_token_scale_values,
                     lexical_base_writes=lexical_base_writes,
+                    lexical_zipf_values=lexical_zipf_values,
                 )
 
             # mu from this layer guides next layer's attention — free (no clamp).

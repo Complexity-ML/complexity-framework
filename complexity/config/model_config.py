@@ -119,6 +119,11 @@ class ModelConfig:
     lexical_gqa_gate_init: float = 0.0
     lexical_gqa_use_token_code: bool = True
     lexical_key_gate_init: float = 0.05
+    lexical_zipf_path: Optional[str] = None
+    lexical_zipf_mode: str = "uniform"
+    lexical_zipf_alpha: float = 0.25
+    lexical_zipf_floor: float = 0.1
+    lexical_zipf_permutation_seed: int = 1729
 
     # === Mu-Guidance ===
     use_mu_guidance: bool = False  # Enable contextual mu flowing between layers

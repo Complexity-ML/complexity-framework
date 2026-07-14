@@ -256,6 +256,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.05,
         help="Initial gate for the in-place lexical key residual.",
     )
+    parser.add_argument("--lexical-zipf-path", type=str, default=None)
+    parser.add_argument(
+        "--lexical-zipf-mode",
+        choices=("uniform", "ordered", "permuted"),
+        default="uniform",
+    )
+    parser.add_argument("--lexical-zipf-alpha", type=float, default=0.25)
+    parser.add_argument("--lexical-zipf-floor", type=float, default=0.1)
+    parser.add_argument(
+        "--lexical-zipf-permutation-seed", type=int, default=1729
+    )
     parser.add_argument(
         "--tie-lexical-object-embeddings",
         action="store_true",

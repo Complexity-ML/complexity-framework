@@ -232,6 +232,7 @@ class TransformerBlock(nn.Module):
         sort_idx: Optional[torch.Tensor] = None,
         lexical_token_scale_values: Optional[torch.Tensor] = None,
         lexical_base_writes: Optional[torch.Tensor] = None,
+        lexical_zipf_values: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[Any], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Forward pass through the transformer block.
@@ -284,6 +285,8 @@ class TransformerBlock(nn.Module):
             "projected_lexical_key_gqa",
         }:
             attn_kwargs["lexical_scale"] = lexical_token_scale_values
+            if self.config.attention_type == "projected_lexical_key_gqa":
+                attn_kwargs["lexical_weight"] = lexical_zipf_values
         if mu_prev is not None:
             attn_kwargs["mu_prev"] = mu_prev
         hidden_states, new_kv = self.self_attn(hidden_states, **attn_kwargs)
