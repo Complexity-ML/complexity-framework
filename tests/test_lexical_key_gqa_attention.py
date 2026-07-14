@@ -78,3 +78,23 @@ def test_lexical_key_cache_matches_full_sequence() -> None:
     torch.testing.assert_close(
         torch.cat(pieces, dim=1), full, atol=2e-5, rtol=2e-5
     )
+
+
+def test_projected_lexical_key_starts_as_gqa_and_trains_objects() -> None:
+    from complexity.core.attention.lexical_key_gqa import (
+        ProjectedLexicalKeyGQA,
+    )
+
+    torch.manual_seed(23)
+    baseline = GroupedQueryAttention(_config()).eval()
+    lexical = ProjectedLexicalKeyGQA(_config()).eval()
+    _copy_gqa(baseline, lexical)
+    hidden = torch.randn(2, 6, 32)
+    lexical_scale = torch.zeros(2, 6, 8, requires_grad=True)
+    expected, _ = baseline(hidden)
+    actual, _ = lexical(hidden, lexical_scale=lexical_scale)
+    torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-6)
+    actual.square().mean().backward()
+    assert lexical_scale.grad is not None
+    assert torch.isfinite(lexical_scale.grad).all()
+    assert torch.count_nonzero(lexical_scale.grad) > 0

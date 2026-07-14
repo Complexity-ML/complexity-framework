@@ -61,3 +61,49 @@ class LexicalKeyGQA(GroupedQueryAttention):
         lexical_key = lexical_key.expand(-1, self.num_kv_heads, -1, -1)
         gate = torch.tanh(self.lexical_gate).view(1, self.num_kv_heads, 1, 1)
         return q, k + gate.to(k.dtype) * lexical_key.to(k.dtype)
+
+
+@register_attention("projected_lexical_key_gqa")
+class ProjectedLexicalKeyGQA(GroupedQueryAttention):
+    """Project learned lexical objects into K without widening GQA heads."""
+
+    def __init__(self, config: AttentionConfig):
+        super().__init__(config)
+        self.lexical_object_rank = int(config.lexical_object_rank)
+        if self.lexical_object_rank <= 0:
+            raise ValueError("lexical_object_rank must be positive")
+        self.lexical_k_proj = nn.Linear(
+            self.lexical_object_rank,
+            self.num_kv_heads * self.head_dim,
+            bias=False,
+        )
+        self.lexical_gate = nn.Parameter(
+            torch.full(
+                (self.num_kv_heads,),
+                float(config.lexical_key_gate_init),
+            )
+        )
+
+    def _modify_qk(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        lexical_scale = kwargs.get("lexical_scale")
+        if lexical_scale is None:
+            raise ValueError(
+                "projected_lexical_key_gqa requires the tied lexical object scale"
+            )
+        if lexical_scale.shape[:2] != (k.shape[0], k.shape[2]):
+            raise ValueError("lexical_scale must match K batch and sequence")
+        if lexical_scale.shape[-1] != self.lexical_object_rank:
+            raise ValueError(
+                f"expected lexical rank {self.lexical_object_rank}, "
+                f"got {lexical_scale.shape[-1]}"
+            )
+        lexical_key = self.lexical_k_proj(lexical_scale).view(
+            k.shape[0], k.shape[2], self.num_kv_heads, self.head_dim
+        ).transpose(1, 2)
+        gate = torch.tanh(self.lexical_gate).view(1, self.num_kv_heads, 1, 1)
+        return q, k + gate.to(k.dtype) * lexical_key.to(k.dtype)

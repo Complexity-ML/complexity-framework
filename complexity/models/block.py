@@ -267,6 +267,7 @@ class TransformerBlock(nn.Module):
             "lexical_gqa",
             "lexical_bias_gqa",
             "lexical_key_gqa",
+            "projected_lexical_key_gqa",
             "lexical_wrv",
         }:
             attn_kwargs["token_ids"] = token_ids
@@ -280,6 +281,7 @@ class TransformerBlock(nn.Module):
             "lexical_gqa",
             "lexical_bias_gqa",
             "lexical_key_gqa",
+            "projected_lexical_key_gqa",
         }:
             attn_kwargs["lexical_scale"] = lexical_token_scale_values
         if mu_prev is not None:
