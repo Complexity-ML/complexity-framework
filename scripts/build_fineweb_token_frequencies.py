@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import torch
@@ -19,6 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument("--eval-stride", type=int, default=20)
     parser.add_argument("--log-every", type=int, default=1000)
+    parser.add_argument("--max-documents", type=int, default=None)
     return parser.parse_args()
 
 
@@ -51,6 +53,8 @@ def main() -> None:
             counts += torch.bincount(ids, minlength=vocab_size)
             tokens += int(ids.numel())
         documents += 1
+        if args.max_documents is not None and documents >= args.max_documents:
+            break
         if args.log_every > 0 and documents % args.log_every == 0:
             print(
                 f"documents={documents:,} tokens={tokens:,} "
@@ -80,3 +84,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    # datasets streaming over local parquet can leave teardown workers alive
+    # after the artifact is fully closed and flushed. This is a one-shot CLI;
+    # force process completion so supervisors observe the finished job.
+    os._exit(0)
