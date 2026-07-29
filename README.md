@@ -62,10 +62,10 @@ token-ID modulo routing.
 
 ### Matched 99.49M MPS summary
 
-The latest seed-42 pilot compares dense and token-routed FFNs under both GQA
-and MHA. Every run has 99,487,680 parameters, uses the same 1,024,000-token
-training budget, and evaluates on the same 5% tail. Routing statistics use the
-training partition only.
+The seed-42 selection pilot compares dense and token-routed FFNs under both
+GQA and MHA. Every run has 99,487,680 parameters, uses the same
+1,024,000-token training budget, and evaluates on the same 5% tail. Routing
+statistics use the training partition only.
 
 | Attention | FFN | Final evaluation NLL | Evaluation PPL | NLL vs matched dense |
 | --- | --- | ---: | ---: | ---: |
@@ -74,11 +74,12 @@ training partition only.
 | MHA | Dense SwiGLU | 7.586145 | 1970.70 | — |
 | MHA | **TR-MoE (TR-MHA)** | **7.536471** | **1875.20** | **-0.049674** |
 
-Both attention families show the same direction at this short budget. These
-are architecture pilots on one small corpus and one selection seed, not
-scaling or statistical claims. The GQA choice was subsequently confirmed with
-seed 43 below. Full protocol, throughput context, and machine-readable results
-are in [`RESULTS_100M_MPS.md`](RESULTS_100M_MPS.md) and
+Both attention families show the same direction at this short budget. The
+selected widths were subsequently frozen and paired with their dense controls
+under seed 43; the routed direction repeats for GQA and MHA. These remain
+architecture pilots on one small corpus and two seeds, not scaling or
+statistical claims. Full protocol, throughput context, and machine-readable
+results are in [`RESULTS_100M_MPS.md`](RESULTS_100M_MPS.md) and
 [`results/matched_gqa_mha_mps_100m.csv`](results/matched_gqa_mha_mps_100m.csv).
 
 ### TR-GQA
@@ -138,17 +139,19 @@ contracts. A planned large run is not presented as a completed result.
 
 ### TR-MHA
 
-A corrected matched MPS pair compares dense MHA with MHA + TR-MoE for
-1,024,000 training tokens with seed 42:
+Corrected matched MPS pairs compare dense MHA with MHA + TR-MoE for
+1,024,000 training tokens:
 
-| Architecture | Final evaluation NLL | Evaluation PPL |
-| --- | ---: | ---: |
-| Dense MHA | 7.586145 | 1970.70 |
-| **TR-MHA: MHA + shared TR-MoE** | **7.536471** | **1875.20** |
+| Seed | Architecture | Final evaluation NLL | Evaluation PPL | NLL delta |
+| ---: | --- | ---: | ---: | ---: |
+| 42 | Dense MHA | 7.586145 | 1970.70 | — |
+| 42 | **TR-MHA: MHA + shared TR-MoE** | **7.536471** | **1875.20** | **-0.049674** |
+| 43 | Dense MHA | 7.726971 | 2268.72 | — |
+| 43 | **TR-MHA: MHA + shared TR-MoE** | **7.541488** | **1884.63** | **-0.185483** |
 
-The NLL difference is -0.049674 in favor of TR-MHA. Routing statistics exclude
-the evaluation tail. This remains a short, single-seed pilot and requires an
-independent-seed confirmation. See
+The mean paired NLL difference is -0.117579 in favor of TR-MHA. Routing
+statistics exclude the evaluation tail. These remain short two-seed pilots;
+the variation between paired differences precludes a statistical claim. See
 [`RESULTS_100M_MPS.md`](RESULTS_100M_MPS.md). The separate routed-attention
 adapter experiments are documented in [`TR_MHA.md`](TR_MHA.md).
 

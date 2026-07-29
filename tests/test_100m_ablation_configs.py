@@ -363,3 +363,30 @@ def test_corrected_mha_pair_matches_gqa_pilot_protocol():
     )
     assert dense["mlp_type"] == "swiglu"
     assert routed["mlp_type"] == "token_routed"
+
+
+def test_mha_seed43_confirmation_pair_matches_protocol():
+    root = Path("configs/run_configs/experiments_100m")
+    dense = yaml.safe_load(
+        (root / "100m_params_mha_dense_seed43_mps.yaml").read_text()
+    )["run"]
+    routed = yaml.safe_load(
+        (
+            root
+            / "100m_params_mha_modulo_balanced_shared_1296_seed43_mps.yaml"
+        ).read_text()
+    )["run"]
+
+    for run in (dense, routed):
+        assert run["attention_type"] == "mha"
+        assert run["num_attention_heads"] == 8
+        assert run["num_key_value_heads"] == 8
+        assert run["steps"] * run["batch_size"] * run["seq_len"] == 1_024_000
+        assert run["seed"] == 43
+        assert run["save_steps"] == 0
+
+    assert dense["intermediate_size"] == (
+        routed["shared_intermediate_size"] + routed["intermediate_size"]
+    )
+    assert dense["mlp_type"] == "swiglu"
+    assert routed["mlp_type"] == "token_routed"

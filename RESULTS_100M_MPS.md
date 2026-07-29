@@ -13,7 +13,8 @@ perplexity are better.
 - 250 steps × batch size 4 × sequence length 1,024;
 - 1,024,000 training tokens;
 - AdamW, learning rate 3e-4, weight decay 0.1;
-- hidden size 384, 10 layers, seed 42;
+- hidden size 384 and 10 layers;
+- seed 42 for width selection, followed by paired seed-43 confirmations;
 - Apple MPS with PyTorch fallback kernels;
 - no intermediate checkpoints.
 
@@ -47,18 +48,23 @@ These are MPS fallback measurements, not CUDA deployment benchmarks. They show
 that the short-budget NLL gain is not a free throughput gain in the current
 local implementation.
 
-## GQA seed-43 confirmation
+## Seed-43 confirmations
 
-The routed-width-256 GQA configuration selected by the seed-42 sweep was rerun
-against its dense baseline with seed 43:
+The routed widths selected with seed 42 were frozen and rerun against their
+dense baselines with seed 43:
 
-| Architecture | Eval NLL | Eval PPL | NLL delta |
-| --- | ---: | ---: | ---: |
-| Dense GQA | 7.530082 | 1863.26 | — |
-| **TR-GQA** | **7.492290** | **1794.16** | **-0.037792** |
+| Attention | Architecture | Eval NLL | Eval PPL | NLL delta |
+| --- | --- | ---: | ---: | ---: |
+| GQA | Dense | 7.530082 | 1863.26 | — |
+| GQA | **TR-MoE** | **7.492290** | **1794.16** | **-0.037792** |
+| MHA | Dense | 7.726971 | 2268.72 | — |
+| MHA | **TR-MoE** | **7.541488** | **1884.63** | **-0.185483** |
 
-The direction therefore repeats for GQA on a second initialization. TR-MHA has
-not yet received the equivalent independent-seed confirmation.
+The routed direction repeats for both attention families on a second
+initialization. The mean paired NLL difference across the two seeds is
+-0.049156 for GQA and -0.117579 for MHA. With only two seeds, the large
+variation in the MHA differences is itself a reason not to claim statistical
+significance.
 
 ## Interpretation limits
 
@@ -69,8 +75,7 @@ generalization, scaling, or statistical significance.
 
 The next strongest tests are:
 
-1. confirm TR-MHA with a predeclared independent seed;
-2. add a third seed for both attention families;
-3. evaluate frozen checkpoints on a separate corpus;
-4. compare equal wall-clock and equal-compute budgets;
-5. repeat at a longer training-token budget.
+1. add a third seed for both attention families;
+2. evaluate frozen checkpoints on a separate corpus;
+3. compare equal wall-clock and equal-compute budgets;
+4. repeat at a longer training-token budget.
