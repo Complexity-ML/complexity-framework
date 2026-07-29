@@ -215,7 +215,7 @@ def main() -> None:
             f"have {free_bytes / 1e9:.1f} GB"
         )
 
-    tokenizer = Tokenizer.load(args.tokenizer)
+    tokenizer = Tokenizer.load(str(args.tokenizer))
     if tokenizer.vocab_size > np.iinfo(np.uint16).max:
         raise ValueError(
             f"Tokenizer vocabulary {tokenizer.vocab_size:,} does not fit uint16"
