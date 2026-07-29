@@ -7,6 +7,8 @@ compatibility, but registered modules are not required to use attention.
 Available sequence-mixer types:
 - gqa / grouped_query: Grouped Query Attention (Llama 2/3 style)
 - mha / multi_head: Standard Multi-Head Attention
+- tr_mha / token_routed_mha: full MHA with verified token-routed Q/V adapters
+- tr_mha_v2: baseline-preserving selected-only token-routed Q/V adapters
 - mqa / multi_query: Multi-Query Attention (single KV head)
 - causal_conv / lexical_object_conv: attention-free dilated causal convolution
 - causal_state_conv: attention-free causal convolution with persistent state
@@ -27,6 +29,8 @@ from .base import AttentionBase, AttentionConfig
 from .gqa import GroupedQueryAttention, MultiHeadAttention, MultiQueryAttention
 from .lexical_gqa import LexicalBiasGQA
 from .lexical_key_gqa import LexicalKeyGQA, ProjectedLexicalKeyGQA
+from .token_routed_mha import TokenRoutedMultiHeadAttention
+from .token_routed_mha_v2 import TokenRoutedMultiHeadAttentionV2
 from .lexical_wrv import LexicalWRVAttention
 from .routed_gqa import RoutedGQA
 from .i64_attention import I64Attention
@@ -43,6 +47,8 @@ __all__ = [
     "LexicalBiasGQA",
     "LexicalKeyGQA",
     "ProjectedLexicalKeyGQA",
+    "TokenRoutedMultiHeadAttention",
+    "TokenRoutedMultiHeadAttentionV2",
     "LexicalWRVAttention",
     "RoutedGQA",
     "I64Attention",

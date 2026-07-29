@@ -159,6 +159,28 @@ class TransformerBlock(nn.Module):
             lexical_key_gate_init=getattr(config, "lexical_key_gate_init", 0.05),
             vocab_size=config.vocab_size,
             layer_idx=layer_idx,
+            tr_mha_num_experts=getattr(config, "tr_mha_num_experts", 4),
+            tr_mha_adapter_rank=getattr(config, "tr_mha_adapter_rank", 8),
+            tr_mha_top_k=getattr(config, "tr_mha_top_k", 2),
+            tr_mha_adapter_gate_init=getattr(
+                config, "tr_mha_adapter_gate_init", 0.1
+            ),
+            tr_mha_id_primary_logit=getattr(
+                config, "tr_mha_id_primary_logit", 2.0
+            ),
+            tr_mha_id_secondary_logit=getattr(
+                config, "tr_mha_id_secondary_logit", 1.0
+            ),
+            tr_mha_id_other_logit=getattr(
+                config, "tr_mha_id_other_logit", -2.0
+            ),
+            tr_mha_verifier_gate_init=getattr(
+                config, "tr_mha_verifier_gate_init", 0.1
+            ),
+            tr_mha_verifier_temperature=getattr(
+                config, "tr_mha_verifier_temperature", 1.0
+            ),
+            tr_mha_targets=getattr(config, "tr_mha_targets", "qv"),
         )
         self.self_attn = ATTENTION_REGISTRY.build(config.attention_type, attn_config)
 
@@ -270,6 +292,10 @@ class TransformerBlock(nn.Module):
             "lexical_key_gqa",
             "projected_lexical_key_gqa",
             "lexical_wrv",
+            "tr_mha",
+            "token_routed_mha",
+            "tr_mha_v2",
+            "token_routed_mha_v2",
         }:
             attn_kwargs["token_ids"] = token_ids
         if self.config.attention_type in {

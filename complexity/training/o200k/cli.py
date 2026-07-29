@@ -65,6 +65,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--causal-delta-lexical-values", action="store_true")
     parser.add_argument("--causal-delta-lexical-forge", action="store_true")
     parser.add_argument("--causal-delta-occurrence-address", action="store_true")
+    parser.add_argument("--tr-mha-num-experts", type=int, default=4)
+    parser.add_argument("--tr-mha-adapter-rank", type=int, default=8)
+    parser.add_argument("--tr-mha-top-k", type=int, default=2)
+    parser.add_argument("--tr-mha-adapter-gate-init", type=float, default=0.1)
+    parser.add_argument("--tr-mha-id-primary-logit", type=float, default=2.0)
+    parser.add_argument("--tr-mha-id-secondary-logit", type=float, default=1.0)
+    parser.add_argument("--tr-mha-id-other-logit", type=float, default=-2.0)
+    parser.add_argument("--tr-mha-verifier-gate-init", type=float, default=0.1)
+    parser.add_argument("--tr-mha-verifier-temperature", type=float, default=1.0)
+    parser.add_argument(
+        "--tr-mha-targets",
+        choices=["q", "v", "qv"],
+        default="qv",
+        help="Attention projections receiving the routed residual.",
+    )
 
     parser.add_argument(
         "--lexical-attention-layer-indices",
@@ -177,9 +192,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--routing-strategy",
-        choices=["zipf", "modulo", "round_robin", "random", "lsh_hidden"],
+        choices=[
+            "zipf",
+            "modulo",
+            "modulo_balanced_secondary",
+            "round_robin",
+            "random",
+            "lsh_hidden",
+        ],
         default="zipf",
-        help="Token-Routed strategy: zipf/modulo/round_robin/random lexical routing, or lsh_hidden semantic routing.",
+        help=(
+            "Token-Routed strategy: zipf/modulo/"
+            "modulo_balanced_secondary/round_robin/random lexical routing, "
+            "or lsh_hidden semantic routing."
+        ),
     )
     parser.add_argument(
         "--lsh-bits",

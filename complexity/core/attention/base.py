@@ -53,6 +53,16 @@ class AttentionConfig:
     lexical_key_gate_init: float = 0.05
     vocab_size: Optional[int] = None
     layer_idx: int = 0
+    tr_mha_num_experts: int = 4
+    tr_mha_adapter_rank: int = 8
+    tr_mha_top_k: int = 2
+    tr_mha_adapter_gate_init: float = 0.1
+    tr_mha_id_primary_logit: float = 2.0
+    tr_mha_id_secondary_logit: float = 1.0
+    tr_mha_id_other_logit: float = -2.0
+    tr_mha_verifier_gate_init: float = 0.1
+    tr_mha_verifier_temperature: float = 1.0
+    tr_mha_targets: str = "qv"
 
     def __post_init__(self):
         if self.head_dim is None:
@@ -93,6 +103,20 @@ class AttentionConfig:
 
         if self.causal_context_gate_init < 0.0:
             raise ValueError("causal_context_gate_init must be non-negative")
+        if self.tr_mha_num_experts <= 0:
+            raise ValueError("tr_mha_num_experts must be positive")
+        if self.tr_mha_adapter_rank <= 0:
+            raise ValueError("tr_mha_adapter_rank must be positive")
+        if not 0 < self.tr_mha_top_k <= self.tr_mha_num_experts:
+            raise ValueError(
+                "tr_mha_top_k must be between 1 and tr_mha_num_experts"
+            )
+        if not 0.0 < self.tr_mha_verifier_gate_init < 1.0:
+            raise ValueError("tr_mha_verifier_gate_init must be in (0, 1)")
+        if self.tr_mha_verifier_temperature <= 0.0:
+            raise ValueError("tr_mha_verifier_temperature must be positive")
+        if self.tr_mha_targets not in {"q", "v", "qv"}:
+            raise ValueError("tr_mha_targets must be one of: q, v, qv")
 
 
 class AttentionBase(nn.Module, ABC):

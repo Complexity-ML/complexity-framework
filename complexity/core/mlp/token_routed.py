@@ -300,7 +300,11 @@ class TokenRoutedMLP(MLPBase):
                 e = min(range(num_experts), key=lambda i: expert_loads[i])
                 mapping[token_id] = e
                 expert_loads[e] += freqs[token_id].item()
-        elif strategy in {"zipf", "modulo"}:
+        elif strategy in {
+            "zipf",
+            "modulo",
+            "modulo_balanced_secondary",
+        }:
             # zipf without frequencies intentionally falls back to modulo.
             mapping = torch.arange(vocab_size, dtype=torch.long, device="cpu") % num_experts
         elif strategy == "round_robin":
@@ -351,8 +355,9 @@ class TokenRoutedMLP(MLPBase):
 
         For k>0 each token is assigned to an expert different from all earlier
         routes for that token. Zipf keeps frequency-balanced auxiliary routes;
-        routing controls preserve their own control strategy instead of leaking
-        Zipf-balanced auxiliaries into random/modulo/round-robin ablations.
+        routing controls preserve their own control strategy. The explicit
+        modulo_balanced_secondary strategy is the exception: it keeps the
+        modulo primary route and balances only auxiliary routes by frequency.
         """
 
         routes = torch.empty(top_k, vocab_size, dtype=torch.long, device="cpu")

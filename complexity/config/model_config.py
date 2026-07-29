@@ -72,6 +72,16 @@ class ModelConfig:
     causal_delta_lexical_forge: bool = False
     causal_delta_occurrence_address: bool = False
     lexical_attention_layer_indices: tuple[int, ...] = ()
+    tr_mha_num_experts: int = 4
+    tr_mha_adapter_rank: int = 8
+    tr_mha_top_k: int = 2
+    tr_mha_adapter_gate_init: float = 0.1
+    tr_mha_id_primary_logit: float = 2.0
+    tr_mha_id_secondary_logit: float = 1.0
+    tr_mha_id_other_logit: float = -2.0
+    tr_mha_verifier_gate_init: float = 0.1
+    tr_mha_verifier_temperature: float = 1.0
+    tr_mha_targets: str = "qv"
 
     # === Position Embeddings ===
     max_position_embeddings: int = 2048
@@ -86,7 +96,7 @@ class ModelConfig:
     # === MoE (Token-Routed) ===
     num_experts: int = 1  # 1 = standard MLP, >1 = MoE
     token_frequencies: Optional[torch.Tensor] = None  # Zipf-balanced routing
-    routing_strategy: str = "zipf"  # zipf, modulo, round_robin, random, lsh_hidden
+    routing_strategy: str = "zipf"  # zipf, modulo, modulo_balanced_secondary, round_robin, random, lsh_hidden
     lsh_routing: bool = False  # Route on a fixed random-hyperplane hash of h (semantic), not the token id
     lsh_bits: int = 0  # Number of hyperplanes (0 = ceil(log2(num_experts)))
     lsh_from_layer: int = 0  # LSH routing only for layers >= this index; earlier layers stay lexical
@@ -185,7 +195,13 @@ class ModelConfig:
         if self.num_key_value_heads is None:
             if self.attention_type == "mqa":
                 self.num_key_value_heads = 1
-            elif self.attention_type == "mha":
+            elif self.attention_type in {
+                "mha",
+                "tr_mha",
+                "token_routed_mha",
+                "tr_mha_v2",
+                "token_routed_mha_v2",
+            }:
                 self.num_key_value_heads = self.num_attention_heads
             else:
                 # GQA default: 1/4 of heads (like Llama 2)
@@ -218,6 +234,19 @@ class ModelConfig:
                 f"num_attention_heads ({self.num_attention_heads}) must be "
                 f"divisible by num_key_value_heads ({self.num_key_value_heads})"
             )
+        if (
+            self.attention_type in {
+                "tr_mha",
+                "token_routed_mha",
+                "tr_mha_v2",
+                "token_routed_mha_v2",
+            }
+            and self.num_key_value_heads != self.num_attention_heads
+        ):
+            raise ValueError(
+                "TR-MHA requires one K/V head per query head "
+                "(num_key_value_heads == num_attention_heads)"
+            )
         if not 0.0 <= self.attention_dropout < 1.0:
             raise ValueError("attention_dropout must be in [0, 1)")
         if not 0.0 < self.rope_fraction <= 1.0:
@@ -238,8 +267,18 @@ class ModelConfig:
             raise ValueError("top_k cannot exceed num_experts")
         if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
             raise ValueError("top_k_primary_weight must be in [0, 1]")
-        if self.routing_strategy not in {"zipf", "modulo", "round_robin", "random", "lsh_hidden"}:
-            raise ValueError("routing_strategy must be one of zipf, modulo, round_robin, random, lsh_hidden")
+        if self.routing_strategy not in {
+            "zipf",
+            "modulo",
+            "modulo_balanced_secondary",
+            "round_robin",
+            "random",
+            "lsh_hidden",
+        }:
+            raise ValueError(
+                "routing_strategy must be one of zipf, modulo, "
+                "modulo_balanced_secondary, round_robin, random, lsh_hidden"
+            )
         if self.lsh_threshold_mode not in {"batch_median", "zero"}:
             raise ValueError("lsh_threshold_mode must be 'batch_median' or 'zero'")
         if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
@@ -252,6 +291,20 @@ class ModelConfig:
             raise ValueError("micro_num_experts must be positive")
         if self.micro_expert_width <= 0:
             raise ValueError("micro_expert_width must be positive")
+        if self.tr_mha_num_experts <= 0:
+            raise ValueError("tr_mha_num_experts must be positive")
+        if self.tr_mha_adapter_rank <= 0:
+            raise ValueError("tr_mha_adapter_rank must be positive")
+        if not 0 < self.tr_mha_top_k <= self.tr_mha_num_experts:
+            raise ValueError(
+                "tr_mha_top_k must be between 1 and tr_mha_num_experts"
+            )
+        if not 0.0 < self.tr_mha_verifier_gate_init < 1.0:
+            raise ValueError("tr_mha_verifier_gate_init must be in (0, 1)")
+        if self.tr_mha_verifier_temperature <= 0.0:
+            raise ValueError("tr_mha_verifier_temperature must be positive")
+        if self.tr_mha_targets not in {"q", "v", "qv"}:
+            raise ValueError("tr_mha_targets must be one of: q, v, qv")
         if self.mu_min > self.mu_max:
             raise ValueError("mu_min must be <= mu_max")
         if self.mu_context_min > self.mu_context_max:
@@ -320,7 +373,15 @@ class ModelConfig:
         import dataclasses
         valid_keys = {f.name for f in dataclasses.fields(cls)}
         filtered = {k: v for k, v in data.items() if k in valid_keys}
-        if filtered.get("routing_strategy") not in {None, "zipf", "modulo", "round_robin", "random", "lsh_hidden"}:
+        if filtered.get("routing_strategy") not in {
+            None,
+            "zipf",
+            "modulo",
+            "modulo_balanced_secondary",
+            "round_robin",
+            "random",
+            "lsh_hidden",
+        }:
             filtered["routing_strategy"] = "zipf"
         return cls(**filtered)
 

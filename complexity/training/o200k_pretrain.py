@@ -122,14 +122,22 @@ def main():
         "liger" if args.loss_backend in {"auto", "liger"} and liger_loss_available else "chunked"
     )
     config = make_config(args)
-    if args.dataset == "tokens":
+    needs_zipf_frequencies = args.routing_strategy in {
+        "zipf",
+        "modulo_balanced_secondary",
+    }
+    if args.dataset == "tokens" and needs_zipf_frequencies:
         config.token_frequencies = token_shard_frequencies(args.tokens_path, config.vocab_size)
         if is_main:
             logger.info(
                 f"Zipf routing frequencies: {int(config.token_frequencies.sum().item()):,} mmap tokens, "
                 f"{int((config.token_frequencies > 0).sum().item()):,} vocab entries"
             )
-    elif args.dataset == "text" and not args.no_zipf_from_text:
+    elif (
+        args.dataset == "text"
+        and needs_zipf_frequencies
+        and not args.no_zipf_from_text
+    ):
         config.token_frequencies = text_token_frequencies(
             args.text_file,
             args.tokenizer,
@@ -165,7 +173,26 @@ def main():
         logger.info(f"Model: {params / 1e6:.1f}M params")
         for line in format_run_summary(run_config):
             logger.info(line)
-        if "lexical_object_gate" in active_controls.capabilities:
+        if "tr_mha_routing" in active_controls.capabilities:
+            version = (
+                "v2"
+                if "tr_mha_v2_routing" in active_controls.capabilities
+                else "v1"
+            )
+            logger.info(
+                f"Config: TR-MHA {version} with shared full QKV and "
+                "routed Q/V adapters, "
+                f"heads={args.num_attention_heads}/"
+                f"{args.num_key_value_heads}, "
+                f"hidden={args.hidden_size}, layers={args.num_hidden_layers}, "
+                f"inter={args.intermediate_size}, "
+                f"experts={args.tr_mha_num_experts}, "
+                f"rank={args.tr_mha_adapter_rank}, "
+                f"top_k={args.tr_mha_top_k}, "
+                f"targets={args.tr_mha_targets}, "
+                f"mlp={args.mlp_type}, grad_ckpt={args.grad_ckpt}"
+            )
+        elif "lexical_object_gate" in active_controls.capabilities:
             micro_gate = (
                 f"{active_controls.micro_gate:.4f}"
                 if active_controls.micro_gate is not None
@@ -184,7 +211,7 @@ def main():
                 f"micro_gate={micro_gate}, "
                 f"grad_ckpt={args.grad_ckpt}"
             )
-        else:
+        elif "topk_primary_weight" in active_controls.capabilities:
             logger.info(
                 "Config: Token-Routed residual, "
                 f"hidden={args.hidden_size}, layers={args.num_hidden_layers}, "
@@ -200,6 +227,14 @@ def main():
                 f"{args.routed_gate_init}->{args.routed_gate_final}), "
                 f"expert_diversity={args.expert_diversity_lambda} "
                 f"target={args.expert_diversity_target}"
+            )
+        else:
+            logger.info(
+                f"Config: dense {args.attention_type} + {args.mlp_type}, "
+                f"heads={args.num_attention_heads}/"
+                f"{args.num_key_value_heads}, "
+                f"hidden={args.hidden_size}, layers={args.num_hidden_layers}, "
+                f"inter={args.intermediate_size}, grad_ckpt={args.grad_ckpt}"
             )
         logger.info(
             "Loss: "
@@ -298,9 +333,26 @@ def main():
         csv_file.flush()
 
     model.train()
+    progress_description = (
+        "TR-MHA Q/V"
+        if args.attention_type in {
+            "tr_mha",
+            "token_routed_mha",
+            "tr_mha_v2",
+            "token_routed_mha_v2",
+        }
+        else profile["description"]
+    )
     pbar = (
-        tqdm(total=args.steps, initial=start_step, desc=profile["description"], unit="step", dynamic_ncols=True)
-        if is_main else None
+        tqdm(
+            total=args.steps,
+            initial=start_step,
+            desc=progress_description,
+            unit="step",
+            dynamic_ncols=True,
+        )
+        if is_main
+        else None
     )
     t_log = time.perf_counter()
     tokens_since_log = 0

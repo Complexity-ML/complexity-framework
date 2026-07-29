@@ -118,22 +118,11 @@ class GroupedQueryAttention(AttentionBase):
                 - past_key_value: Updated (key, value) cache if use_cache=True, else None.
         """
         batch_size, seq_len, _ = hidden_states.shape
-
-        k_dim = self.num_kv_heads * self.head_dim
-        q_dim = self.num_heads * self.head_dim
-        v_dim = self.num_kv_heads * self.head_dim
-        w_kqv = torch.cat([self.k_proj.weight, self.q_proj.weight, self.v_proj.weight], dim=0)
-        kqv = F.linear(hidden_states, w_kqv)
-        k, q, v = kqv.split([k_dim, q_dim, v_dim], dim=-1)
-        if self.use_mu_guidance and mu_prev is not None:
-            if mu_prev.shape != hidden_states.shape:
-                raise ValueError(
-                    "mu_prev must match hidden_states shape "
-                    f"{tuple(hidden_states.shape)}, got {tuple(mu_prev.shape)}"
-                )
-            k = k + self.mu_to_k(mu_prev)
-            q = q + self.mu_to_q(mu_prev)
-            v = v + self.mu_to_v(mu_prev)
+        k, q, v = self._project_kqv(
+            hidden_states,
+            mu_prev=mu_prev,
+            token_ids=kwargs.get("token_ids"),
+        )
 
         # Reshape to [batch, heads, seq, head_dim]
         q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
@@ -187,6 +176,40 @@ class GroupedQueryAttention(AttentionBase):
         attn_output = self.o_proj(attn_output)
 
         return attn_output, new_past_key_value
+
+    def _project_kqv(
+        self,
+        hidden_states: torch.Tensor,
+        *,
+        mu_prev: Optional[torch.Tensor] = None,
+        token_ids: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Project K/Q/V before head shaping.
+
+        Subclasses can add residual projection paths while reusing the exact
+        RoPE, cache, masking and SDPA implementation.
+        """
+
+        del token_ids
+        k_dim = self.num_kv_heads * self.head_dim
+        q_dim = self.num_heads * self.head_dim
+        v_dim = self.num_kv_heads * self.head_dim
+        w_kqv = torch.cat(
+            [self.k_proj.weight, self.q_proj.weight, self.v_proj.weight],
+            dim=0,
+        )
+        kqv = F.linear(hidden_states, w_kqv)
+        k, q, v = kqv.split([k_dim, q_dim, v_dim], dim=-1)
+        if self.use_mu_guidance and mu_prev is not None:
+            if mu_prev.shape != hidden_states.shape:
+                raise ValueError(
+                    "mu_prev must match hidden_states shape "
+                    f"{tuple(hidden_states.shape)}, got {tuple(mu_prev.shape)}"
+                )
+            k = k + self.mu_to_k(mu_prev)
+            q = q + self.mu_to_q(mu_prev)
+            v = v + self.mu_to_v(mu_prev)
+        return k, q, v
 
     def _modify_qk(
         self,

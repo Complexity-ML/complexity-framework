@@ -97,6 +97,28 @@ def make_config(args) -> ModelConfig:
         causal_delta_occurrence_address=bool(
             getattr(args, "causal_delta_occurrence_address", False)
         ),
+        tr_mha_num_experts=getattr(args, "tr_mha_num_experts", 4),
+        tr_mha_adapter_rank=getattr(args, "tr_mha_adapter_rank", 8),
+        tr_mha_top_k=getattr(args, "tr_mha_top_k", 2),
+        tr_mha_adapter_gate_init=getattr(
+            args, "tr_mha_adapter_gate_init", 0.1
+        ),
+        tr_mha_id_primary_logit=getattr(
+            args, "tr_mha_id_primary_logit", 2.0
+        ),
+        tr_mha_id_secondary_logit=getattr(
+            args, "tr_mha_id_secondary_logit", 1.0
+        ),
+        tr_mha_id_other_logit=getattr(
+            args, "tr_mha_id_other_logit", -2.0
+        ),
+        tr_mha_verifier_gate_init=getattr(
+            args, "tr_mha_verifier_gate_init", 0.1
+        ),
+        tr_mha_verifier_temperature=getattr(
+            args, "tr_mha_verifier_temperature", 1.0
+        ),
+        tr_mha_targets=getattr(args, "tr_mha_targets", "qv"),
 
         lexical_attention_layer_indices=tuple(
             getattr(args, "lexical_attention_layer_indices", ())

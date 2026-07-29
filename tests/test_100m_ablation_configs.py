@@ -134,6 +134,35 @@ def test_topk_auxiliary_routes_preserve_control_strategy():
     assert torch.all(random_a[0] != random_a[1])
 
 
+def test_modulo_primary_balanced_secondary_is_distinct_and_balanced():
+    from complexity.core.mlp.base import MLPConfig
+    from complexity.core.mlp.token_routed import TokenRoutedMLP
+
+    freqs = torch.tensor(
+        [100.0, 90.0, 80.0, 70.0, 40.0, 30.0, 20.0, 10.0]
+    )
+    mlp = TokenRoutedMLP(
+        MLPConfig(
+            hidden_size=8,
+            intermediate_size=16,
+            num_experts=4,
+            vocab_size=8,
+            routing_strategy="modulo_balanced_secondary",
+            token_frequencies=freqs,
+            top_k=2,
+            shared_expert=False,
+        )
+    )
+    routes = mlp.topk_token_to_expert.cpu()
+
+    assert torch.all(routes[0] != routes[1])
+    secondary_load = torch.zeros(4)
+    secondary_load.scatter_add_(0, routes[1], freqs)
+    assert float(secondary_load.max() - secondary_load.min()) <= float(
+        freqs.max()
+    )
+
+
 def test_model_config_and_o200k_parser_support_ablation_switches():
     from complexity.config import ModelConfig
     from complexity.training.o200k_pretrain import build_parser, make_config
@@ -190,3 +219,22 @@ def test_seven_100m_ablation_entrypoints_reference_configs():
         script = (root / f"train_{name}.sh").read_text()
         assert "scripts/train_100m_o200k_tr_local.py" in script
         assert f"configs/run_configs/ablations_100m/{name}.yaml" in script
+
+
+def test_best_mha_balanced_shared_pilot_keeps_the_matched_parameter_width():
+    path = Path(
+        "configs/run_configs/experiments_100m/"
+        "100m_params_mha_modulo_balanced_shared_1296_mps.yaml"
+    )
+    run = yaml.safe_load(path.read_text())["run"]
+
+    assert run["attention_type"] == "mha"
+    assert run["num_attention_heads"] == run["num_key_value_heads"] == 8
+    assert run["routing_strategy"] == "modulo_balanced_secondary"
+    assert run["top_k"] == 2
+    assert run["top_k_primary_weight"] == 0.5
+    assert run["top_k_primary_weight_final"] == 0.5
+    assert run["shared_intermediate_size"] == 1296
+    assert run["intermediate_size"] == 160
+    assert run["shared_intermediate_size"] + run["intermediate_size"] == 1456
+    assert run["steps"] * run["batch_size"] * run["seq_len"] == 1_024_000
