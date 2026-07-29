@@ -1,11 +1,9 @@
 """
 Inference optimization module for framework-complexity.
 
-Provides:
-- KV-Cache for efficient autoregressive generation
-- Speculative decoding for faster inference
-- Continuous batching for high throughput
-- Tensor parallelism for inference
+Provides low-level inference utilities plus external serving clients.
+Production text generation is delegated to vLLM/SGLang OpenAI-compatible
+servers; Complexity's PyTorch model layer does not own a native generate loop.
 
 Usage:
     from complexity.inference import (
@@ -15,9 +13,9 @@ Usage:
         InferenceEngine,
     )
 
-    # Simple inference with KV cache
-    engine = InferenceEngine(model)
-    output = engine.generate(input_ids, max_tokens=100)
+    # Production generation through vLLM/SGLang
+    backend = create_external_backend("vllm", base_url="http://localhost:8000", model="my-model")
+    output = backend.complete("Hello", ExternalGenerationConfig(max_tokens=100))
 
     # Speculative decoding (2-4x faster)
     decoder = SpeculativeDecoder(target_model, draft_model)
@@ -52,6 +50,35 @@ from .engine import (
     GenerationConfig,
 )
 
+from .external import (
+    ExternalBackendName,
+    ExternalGenerationConfig,
+    OpenAICompatibleBackend,
+    create_external_backend,
+)
+
+from .shared_online_rl import (
+    SharedOnlineRLLoop,
+    SharedOnlineRLConfig,
+    SharedRLEvent,
+)
+
+from .mps_online_rl_engine import (
+    MPSOnlineRLEngine,
+    MPSOnlineRLEngineConfig,
+)
+
+from .tool_rewards import (
+    VerifiedToolEpisode,
+    build_calculator_episode,
+    build_datetime_episode,
+    build_verified_tool_episode,
+    extract_arithmetic_expression,
+    extract_datetime_hint,
+    safe_calculator,
+    safe_datetime,
+)
+
 __all__ = [
     # KV Cache
     "KVCache",
@@ -68,4 +95,22 @@ __all__ = [
     "InferenceEngine",
     "InferenceConfig",
     "GenerationConfig",
+    "ExternalBackendName",
+    "ExternalGenerationConfig",
+    "OpenAICompatibleBackend",
+    "create_external_backend",
+    # Shared online RL
+    "SharedOnlineRLLoop",
+    "SharedOnlineRLConfig",
+    "SharedRLEvent",
+    "MPSOnlineRLEngine",
+    "MPSOnlineRLEngineConfig",
+    "VerifiedToolEpisode",
+    "build_calculator_episode",
+    "build_datetime_episode",
+    "build_verified_tool_episode",
+    "extract_arithmetic_expression",
+    "extract_datetime_hint",
+    "safe_calculator",
+    "safe_datetime",
 ]

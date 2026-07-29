@@ -17,8 +17,7 @@ Usage:
     outputs = model(input_ids)
     logits = outputs["logits"]
 
-    # Generation
-    output_ids = model.generate(input_ids, max_new_tokens=100)
+    # Generation/serving is delegated to vLLM or SGLang, not model.generate().
 """
 
 from .block import TransformerBlock

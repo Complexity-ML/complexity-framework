@@ -9,43 +9,21 @@ Supports:
 - **Architectures**: Llama/GPT-style decoders, Token-Routed MLPs, dense SwiGLU baselines
 - **Attention**: Multi-Head, GQA, MQA, SDPA/Flash-compatible attention
 - **Training**: DDP/FSDP utilities, mixed precision, checkpointed long runs
-- **Inference**: KV Cache, Speculative Decoding, Continuous Batching
+- **Inference**: checkpoint export + vLLM/SGLang serving integration
 - **Quantization**: INT8, INT4, GPTQ, AWQ, GGUF export
 - **Tokenization**: local BPE tokenizers and tiktoken/o200k-compatible tokenizers
 
 === EASY API (Recommended for beginners) ===
 
-    from complexity.easy import load_model, chat, generate
+    from complexity import ComplexityModel, ModelConfig
 
-    # Load model (one line!)
-    model = load_model("complexity-7b")
-
-    # Chat
-    response = chat(model, "What is machine learning?")
-    print(response.content)
-
-    # Chat with reasoning (step-by-step)
-    response = chat(model, "Solve: 2x + 5 = 15", reasoning=True)
-    for step in response.steps:
-        print(f"- {step}")
-    print(f"Answer: {response.conclusion}")
-
-    # Generate text
-    text = generate(model, "The future of AI is", max_tokens=100)
+    # Build/train/export PyTorch models here; serve generated text via vLLM/SGLang.
+    model = ComplexityModel(ModelConfig())
 
 === CLI Usage ===
 
-    # Chat
-    complexity chat "Hello, how are you?"
-
-    # Chat with reasoning
-    complexity chat "Solve 15*23" --reasoning
-
-    # Interactive mode
-    complexity interactive
-
-    # Run demo
-    complexity demo
+    # Generate through a running vLLM/SGLang OpenAI-compatible server
+    complexity inference generate my-model --backend vllm --base-url http://localhost:8000 --prompt "Hello"
 
 === Advanced API ===
 
@@ -69,8 +47,7 @@ Quick Start:
     outputs = model(input_ids)
     logits = outputs["logits"]
 
-    # Generation
-    output_ids = model.generate(input_ids, max_new_tokens=100)
+    # Generation is intentionally not a native model method; use vLLM/SGLang.
 
 Training:
     from complexity.training import Trainer, TrainingConfig
@@ -81,10 +58,10 @@ Training:
     trainer.train()
 
 Inference:
-    from complexity.inference import InferenceEngine, GenerationConfig
+    from complexity.inference import create_external_backend, ExternalGenerationConfig
 
-    engine = InferenceEngine(model)
-    output = engine.generate(input_ids, GenerationConfig(max_new_tokens=100))
+    backend = create_external_backend("vllm", base_url="http://localhost:8000", model="my-model")
+    output = backend.complete("Hello", ExternalGenerationConfig(max_tokens=100))
 
 Tokenization:
     from complexity.data import ComplexityTokenizer, ComplexityTokens

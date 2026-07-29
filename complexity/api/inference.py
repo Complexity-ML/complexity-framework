@@ -5,20 +5,13 @@ Inference API - Génération facile.
 Usage:
     from complexity.api import Generate, GenerationConfig
 
-    # Simple
-    text = model.generate("Hello", max_tokens=100)
-
-    # Avec config
-    config = GenerationConfig(temperature=0.7, top_p=0.9)
-    text = model.generate("Hello", config=config)
+    # Production generation must use vLLM/SGLang OpenAI-compatible serving.
 
     # Streaming
     for token in Generate.stream(model, "Hello", max_tokens=100):
         print(token, end="")
 
-    # Engine avancé
-    engine = Generate.engine(model, cache_type="paged")
-    result = engine.generate(input_ids, max_tokens=100)
+    # The PyTorch framework layer does not own a native generate loop.
 """
 
 from __future__ import annotations
@@ -108,19 +101,7 @@ class Generate:
     API de génération flexible.
 
     Usage:
-        # Via model (recommandé)
-        text = model.generate("Hello", max_tokens=100, temperature=0.7)
-
-        # Via Generate class
-        text = Generate.text(model, "Hello", max_tokens=100)
-        tokens = Generate.tokens(model, input_ids, max_tokens=100)
-
-        # Streaming
-        for chunk in Generate.stream(model, "Hello", max_tokens=100):
-            print(chunk, end="")
-
-        # Engine pour usage avancé
-        engine = Generate.engine(model, cache_type="paged")
+        # Deprecated compatibility wrapper. Use vLLM/SGLang instead.
     """
 
     @classmethod
@@ -196,35 +177,10 @@ class Generate:
         Returns:
             Generated token IDs
         """
-        # Build config
-        if config:
-            for k, v in kwargs.items():
-                if hasattr(config, k):
-                    setattr(config, k, v)
-        else:
-            config = GenerationConfig(**kwargs)
-
-        # Get internal model if wrapped
-        internal_model = getattr(model, '_model', model)
-        internal_model = getattr(internal_model, 'module', internal_model)
-
-        # Use model's generate if available
-        if hasattr(internal_model, 'generate'):
-            internal_model.eval()
-            with torch.no_grad():
-                return internal_model.generate(
-                    input_ids,
-                    max_new_tokens=config.max_tokens,
-                    temperature=config.temperature,
-                    top_k=config.top_k,
-                    top_p=config.top_p,
-                )
-
-        # Otherwise use engine
-        engine = cls.engine(model)
-        internal_config = config.to_internal()
-        result = engine.generate(input_ids, internal_config)
-        return result["sequences"]
+        raise RuntimeError(
+            "Generate.tokens is disabled: generation must run through vLLM or "
+            "SGLang, not Complexity's PyTorch layer."
+        )
 
     @classmethod
     def stream(
@@ -307,18 +263,10 @@ class Generate:
         Returns:
             InferenceEngine configuré
         """
-        # Get internal model
-        internal_model = getattr(model, '_model', model)
-        internal_model = getattr(internal_model, 'module', internal_model)
-
-        config = InferenceConfig(
-            cache_type=cache_type,
-            use_speculative=use_speculative,
-            draft_model=draft_model,
-            **{k: v for k, v in kwargs.items() if hasattr(InferenceConfig, k)}
+        raise RuntimeError(
+            "Generate.engine is disabled for native text generation: use vLLM "
+            "or SGLang OpenAI-compatible serving."
         )
-
-        return InferenceEngine(internal_model, config)
 
     @classmethod
     def chat(

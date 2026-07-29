@@ -89,6 +89,9 @@ dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
 ]
+tools = [
+    "mcp>=1.0.0; python_version >= '3.10'",
+]
 
 [project.scripts]
 complexity = "complexity.cli.app:main"

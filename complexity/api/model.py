@@ -148,7 +148,7 @@ class Model:
             result.to(device)
         return result
 
-    # ==================== Forward / Generate ====================
+    # ==================== Forward / External Serving Boundary ====================
 
     def forward(self, input_ids: torch.Tensor, **kwargs) -> Dict[str, torch.Tensor]:
         """Forward. kwargs passés au modèle."""
@@ -159,45 +159,21 @@ class Model:
 
     def generate(self, input_ids, max_tokens: int = 100, **kwargs):
         """
-        Génère. input_ids = tensor, list, ou str (si tokenizer).
-        kwargs override defaults (temperature, top_p, top_k, ...).
+        Disabled by architecture contract.
+
+        Complexity's Python/PyTorch layer builds, trains, and exports models;
+        generation/serving must run through vLLM or SGLang.
         """
-        return_text = False
-
-        if isinstance(input_ids, str):
-            if not self._tokenizer:
-                raise ValueError("Tokenizer required for text input")
-            text = input_ids
-            input_ids = torch.tensor([self._tokenizer.encode(text)], dtype=torch.long)
-            return_text = True
-        elif isinstance(input_ids, list):
-            input_ids = torch.tensor([input_ids], dtype=torch.long)
-
-        input_ids = input_ids.to(self._device)
-
-        self._model.eval()
-        with torch.no_grad():
-            out = self._model.generate(input_ids, max_new_tokens=max_tokens, **kwargs)
-
-        if return_text and self._tokenizer:
-            new_tokens = out[0, input_ids.shape[1]:]
-            return self._tokenizer.decode(new_tokens.tolist())
-        return out
+        raise RuntimeError(
+            "Model.generate is disabled: use a vLLM or SGLang serving backend "
+            "for generation."
+        )
 
     def chat(self, messages: List[Dict], max_tokens: int = 500, **kwargs) -> Dict[str, Any]:
-        """Chat. kwargs override defaults."""
-        if not self._tokenizer:
-            raise ValueError("Tokenizer required")
-
-        tokens = self._tokenizer.encode_chat(messages)
-        input_ids = torch.tensor([tokens], dtype=torch.long).to(self._device)
-
-        self._model.eval()
-        with torch.no_grad():
-            out = self._model.generate(input_ids, max_new_tokens=max_tokens, **kwargs)
-
-        new_tokens = out[0, input_ids.shape[1]:]
-        return {"role": "assistant", "content": self._tokenizer.decode(new_tokens.tolist())}
+        """Disabled: chat generation must run through vLLM or SGLang."""
+        raise RuntimeError(
+            "Model.chat is disabled: use a vLLM or SGLang serving backend for chat."
+        )
 
     # ==================== Utils ====================
 

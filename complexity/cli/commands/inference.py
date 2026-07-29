@@ -13,25 +13,27 @@ inference = typer.Typer(name="inference", help="Inference and generation command
 
 @inference.command("generate")
 def generate(
-    model_path: Path = typer.Argument(..., help="Path to model checkpoint"),
+    model: str = typer.Argument(..., help="Model name/id served by vLLM or SGLang"),
     prompt: str = typer.Option(None, "--prompt", "-p", help="Text prompt"),
     prompt_file: Optional[Path] = typer.Option(None, "--file", "-f", help="File containing prompt"),
+    backend: str = typer.Option("vllm", "--backend", help="Serving backend: vllm or sglang"),
+    base_url: str = typer.Option("http://localhost:8000", "--base-url", help="OpenAI-compatible server URL"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", help="Bearer token for the serving endpoint"),
     max_tokens: int = typer.Option(256, "--max-tokens", "-m", help="Maximum tokens to generate"),
     temperature: float = typer.Option(0.7, "--temperature", "-t", help="Sampling temperature"),
     top_p: float = typer.Option(0.9, "--top-p", help="Top-p sampling"),
-    top_k: int = typer.Option(50, "--top-k", help="Top-k sampling"),
-    repetition_penalty: float = typer.Option(1.1, "--rep-penalty", help="Repetition penalty"),
-    stream: bool = typer.Option(True, "--stream/--no-stream", help="Stream output"),
-    device: str = typer.Option("cuda", "--device", "-d", help="Device: cuda, cpu, mps"),
-    quantize: Optional[str] = typer.Option(None, "--quantize", "-q", help="Quantization: int8, int4, awq"),
+    top_k: Optional[int] = typer.Option(None, "--top-k", help="Top-k sampling if supported by backend"),
+    timeout: float = typer.Option(60.0, "--timeout", help="Request timeout in seconds"),
 ):
     """
-    Generate text from a prompt.
+    Generate text through vLLM or SGLang.
+
+    Complexity does not run native PyTorch generation in-process; start a
+    vLLM/SGLang OpenAI-compatible server first, then point this command to it.
 
     Examples:
-        complexity inference generate model.pt --prompt "Hello, world"
-        complexity inference generate model.pt -f prompt.txt --max-tokens 512
-        complexity inference generate model.pt -p "Write code" --quantize int8
+        complexity inference generate my-model --backend vllm --base-url http://localhost:8000 --prompt "Hello"
+        complexity inference generate my-model --backend sglang --base-url http://localhost:30000 -f prompt.txt
     """
     if prompt is None and prompt_file is None:
         console.print(error("Provide --prompt or --file"))
@@ -44,39 +46,32 @@ def generate(
         prompt = prompt_file.read_text()
 
     try:
-        with spinner("Loading model..."):
-            from complexity.inference import InferenceEngine, GenerationConfig
-            from complexity.quantization import quantize_model
+        if backend not in ("vllm", "sglang"):
+            console.print(error("--backend must be 'vllm' or 'sglang'"))
+            raise typer.Exit(1)
 
-            engine = InferenceEngine.from_checkpoint(
-                model_path,
-                device=device,
-            )
+        from complexity.inference import ExternalGenerationConfig, create_external_backend
 
-            if quantize:
-                engine.model = quantize_model(engine.model, method=quantize)
-
-        console.print(success(f"Model loaded on {device}"))
-
-        gen_config = GenerationConfig(
-            max_new_tokens=max_tokens,
+        client = create_external_backend(
+            backend,
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            timeout=timeout,
+        )
+        gen_config = ExternalGenerationConfig(
+            max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
-            repetition_penalty=repetition_penalty,
         )
 
         console.print(f"\n[bold cyan]Prompt:[/bold cyan] {prompt[:100]}{'...' if len(prompt) > 100 else ''}\n")
-        console.print("[bold green]Generation:[/bold green]")
+        console.print(f"[bold green]Generation via {backend}:[/bold green]")
 
-        if stream:
-            for token in engine.generate_stream(prompt, gen_config):
-                console.print(token, end="")
-            console.print()
-        else:
-            with spinner("Generating..."):
-                output = engine.generate(prompt, gen_config)
-            console.print(output)
+        with spinner(f"Calling {backend} at {base_url}..."):
+            output = client.complete(prompt, gen_config)
+        console.print(output)
 
     except ImportError as e:
         console.print(error(f"Missing dependency: {e}"))
