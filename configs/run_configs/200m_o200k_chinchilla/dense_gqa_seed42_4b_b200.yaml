@@ -7,8 +7,8 @@ run:
   tokenizer: ./tokenizer-o200k
   eval_ratio: 0.0
 
-  steps: 7629
-  batch_size: 64
+  steps: 15258
+  batch_size: 32
   seq_len: 2048
   hidden_size: 512
   num_hidden_layers: 20
