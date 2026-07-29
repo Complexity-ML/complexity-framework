@@ -6,6 +6,13 @@ DATA_ROOT="${DATA_ROOT:-/workspace/data/fineweb_edu_o200k_4b}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-/workspace/artifacts/complexity-200m-o200k}"
 NPROC="${NPROC:-4}"
 REVISION="${FINEWEB_REVISION:-87f09149ef4734204d70ed1d046ddc9ca3f2b8f9}"
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+  if [[ -x /venv/main/bin/python ]]; then
+    PYTHON_BIN=/venv/main/bin/python
+  else
+    PYTHON_BIN=python3
+  fi
+fi
 
 TRAIN_TOKENS=3999793153
 EVAL_TOKENS=16777217
@@ -16,7 +23,7 @@ mkdir -p "$ARTIFACT_ROOT/logs" "$ARTIFACT_ROOT/checkpoints"
 cd "$REPO_ROOT"
 
 prepare_dataset() {
-  python3 scripts/prepare_fineweb_o200k_shards.py \
+  "$PYTHON_BIN" scripts/prepare_fineweb_o200k_shards.py \
     --output-root "$DATA_ROOT" \
     --tokenizer "$REPO_ROOT/tokenizer-o200k" \
     --revision "$REVISION" \
@@ -25,12 +32,12 @@ prepare_dataset() {
 }
 
 verify_dataset() {
-  python3 scripts/verify_token_shards.py "$DATA_ROOT"
+  "$PYTHON_BIN" scripts/verify_token_shards.py "$DATA_ROOT"
 }
 
 run_dense() {
   verify_dataset
-  python3 -m torch.distributed.run --standalone --nproc_per_node="$NPROC" \
+  "$PYTHON_BIN" -m torch.distributed.run --standalone --nproc_per_node="$NPROC" \
     -m complexity.training.o200k_pretrain \
     --config "$DENSE_CONFIG" \
     --tokens-path "$DATA_ROOT/train" \
@@ -41,7 +48,7 @@ run_dense() {
 
 run_tr() {
   verify_dataset
-  python3 -m torch.distributed.run --standalone --nproc_per_node="$NPROC" \
+  "$PYTHON_BIN" -m torch.distributed.run --standalone --nproc_per_node="$NPROC" \
     -m complexity.training.o200k_pretrain \
     --config "$TR_CONFIG" \
     --tokens-path "$DATA_ROOT/train" \
@@ -52,7 +59,7 @@ run_tr() {
 
 smoke_dense() {
   verify_dataset
-  python3 -m torch.distributed.run --standalone --nproc_per_node="$NPROC" \
+  "$PYTHON_BIN" -m torch.distributed.run --standalone --nproc_per_node="$NPROC" \
     -m complexity.training.o200k_pretrain \
     --config "$DENSE_CONFIG" \
     --tokens-path "$DATA_ROOT/train" \
@@ -70,7 +77,7 @@ collect_run() {
   local run_name="$1"
   local checkpoint_name="$2"
   local log_name="$3"
-  python3 scripts/collect_200m_run_artifacts.py \
+  "$PYTHON_BIN" scripts/collect_200m_run_artifacts.py \
     --run-name "$run_name" \
     --checkpoint-root "$ARTIFACT_ROOT/checkpoints/$checkpoint_name/latest" \
     --run-dir "$REPO_ROOT/runs/$run_name" \
