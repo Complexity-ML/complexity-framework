@@ -1,5 +1,0 @@
-\section{Conclusion}
-
-Nous évaluons W/R/V contextuel avec huit têtes de lecture, deux têtes partagées d'écriture/valeur, RMSNorm par tête sur R/W, RoPE et SDPA causal. Sur six runs H200 appariés, W/R/V obtient une loss inférieure à GQA sur les trois seeds : $4,684432\pm0,021137$ contre $4,703035\pm0,017657$. Son débit moyen est de 121~448 contre 125~021 tokens/s, soit une pénalité de 2,86\%.
-
-Le résultat est encourageant mais étroit. Trois paires n'établissent pas la significativité, l'intervalle à 95\% contient zéro, et l'expérience n'isole pas RMSNorm de la paramétrisation globale. La contribution est une comparaison complète fondée sur les artefacts---configs, CSV, checkpoints, commits, shard et checksums---qui transforme un chemin historique en hypothèse reproductible pour une évaluation à plus grande échelle.

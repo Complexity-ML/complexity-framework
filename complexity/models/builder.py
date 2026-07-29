@@ -9,7 +9,6 @@ import json
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataclasses import replace
 from torch.utils.checkpoint import checkpoint as activation_checkpoint
 from typing import Optional, Tuple, List, Dict, Any, Union
 from pathlib import Path
@@ -86,43 +85,18 @@ class ComplexityModel(nn.Module):
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
 
         # Transformer layers
-        lexical_attention_layers = set(
-            getattr(config, "lexical_attention_layer_indices", ())
-        )
         context_layers = {0, config.num_hidden_layers // 2}
-        invalid_layers = {
-            index
-            for index in lexical_attention_layers
-            if index < 0 or index >= config.num_hidden_layers
-        }
-        if invalid_layers:
-            raise ValueError(
-                "lexical attention layer indices are out of range: "
-                f"{sorted(invalid_layers)}"
-            )
-        overlap = lexical_attention_layers & context_layers
-        if overlap and config.attention_type == "causal_fast_weight_conv":
-            raise ValueError(
-                "lexical attention must preserve WVR context layers "
-                f"{sorted(context_layers)}; overlap={sorted(overlap)}"
-            )
         self.layers = nn.ModuleList(
             [
-                TransformerBlock(
-                    replace(config, attention_type="lexical_wrv")
-                    if index in lexical_attention_layers
-                    else config,
-                    layer_idx=index,
-                )
+                TransformerBlock(config, layer_idx=index)
                 for index in range(config.num_hidden_layers)
             ]
         )
         if config.attention_type == "causal_fast_weight_conv":
             shared_context = getattr(self.layers[0].self_attn, "shared_context")
             for index, layer in enumerate(self.layers):
-                if index not in lexical_attention_layers:
-                    setattr(layer.self_attn, "shared_context", shared_context)
-                    setattr(layer.self_attn, "context_enabled", index in context_layers)
+                setattr(layer.self_attn, "shared_context", shared_context)
+                setattr(layer.self_attn, "context_enabled", index in context_layers)
         lexical_object_types = {
             "lexical_modulated",
             "lexical_object",
@@ -455,12 +429,6 @@ class ComplexityModel(nn.Module):
             if hasattr(self, "lexical_zipf_weights")
             else None
         )
-        lexical_base_writes = (
-            self.layers[0].self_attn.lexical_base_writes(input_ids)
-            if self.config.attention_type == "lexical_wrv"
-            and not getattr(self.config, "disable_lexical_wrv_residual", False)
-            else None
-        )
         for i, layer in enumerate(self.layers):
             past_kv = past_key_values[i] if past_key_values is not None else None
 
@@ -476,7 +444,6 @@ class ComplexityModel(nn.Module):
                     mu_prev,
                     None,  # sort_idx (computed internally by token_routed)
                     lexical_token_scale_values,
-                    lexical_base_writes,
                     lexical_zipf_values,
                     use_reentrant=False,
                 )
@@ -489,7 +456,6 @@ class ComplexityModel(nn.Module):
                     token_ids=input_ids,
                     mu_prev=mu_prev,
                     lexical_token_scale_values=lexical_token_scale_values,
-                    lexical_base_writes=lexical_base_writes,
                     lexical_zipf_values=lexical_zipf_values,
                 )
 

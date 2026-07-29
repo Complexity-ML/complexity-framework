@@ -43,10 +43,6 @@ class AttentionConfig:
     causal_delta_occurrence_address: bool = False
 
     lexical_object_rank: int = 16
-    disable_lexical_wrv_residual: bool = False
-    disable_lexical_wrv_norms: bool = False
-    lexical_wrv_hybrid: bool = False
-    lexical_wrv_gate_init: float = 0.0
     lexical_gqa_rank: int = 16
     lexical_gqa_gate_init: float = 0.0
     lexical_gqa_use_token_code: bool = True

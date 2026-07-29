@@ -1,5 +1,0 @@
-\section{Conclusion}
-
-We evaluated contextual W/R/V attention with eight read heads, two shared write/value heads, per-head R/W RMS normalization, RoPE, and causal SDPA. In six matched H200 runs, W/R/V achieved lower held-out loss than GQA on all three paired seeds: $4.684432\pm0.021137$ versus $4.703035\pm0.017657$. Its mean training throughput was 121,448 versus 125,021 tokens/s, a 2.86\% penalty.
-
-The result is encouraging but deliberately narrow. Three pairs do not establish significance, the 95\% interval includes zero, and the experiment does not isolate normalization from the broader parameterization. The contribution is a complete artifact-backed comparison---configs, CSVs, checkpoints, source commits, dataset shard, and checksums---that turns a historical architecture path into a reproducible hypothesis for larger-scale evaluation.

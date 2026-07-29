@@ -85,22 +85,6 @@ This is a short, single-seed pilot. It validates the implementation and
 motivates replication; it does not establish scaling or statistical
 significance. See [`TR_MHA.md`](TR_MHA.md).
 
-### Contextual W/R/V control
-
-W/R/V is a distinct attention experiment, not a replacement name for TR-MoE.
-Six approximately 98.2M-parameter H200 runs use matched settings and seeds
-42--44:
-
-| Architecture | Held-out NLL, mean ± sample SD | Mean training throughput |
-| --- | ---: | ---: |
-| GQA | 4.703035 ± 0.017657 | 125,021 tok/s |
-| Contextual W/R/V | **4.684432 ± 0.021137** | 121,448 tok/s |
-
-The mean paired difference is -0.018604 NLL. Its 95% t interval
-[-0.0541, 0.0169] includes zero, so the result is reported as a consistent
-small-scale observation rather than statistical significance. Raw evidence is
-under [`paper/tmlr`](paper/tmlr).
-
 ## Installation
 
 PyTorch is intentionally not a package dependency because its wheel must match
@@ -227,7 +211,6 @@ complexity/                  model, training, inference, MCP, and RL code
 complexity_cuda/             optional CUDA/Triton kernels
 configs/run_configs/         explicit experiment and cluster configurations
 tests/                       architecture and integration tests
-paper/tmlr/                  controlled W/R/V evidence package
 scripts/                     training, conversion, evaluation, and audit tools
 spaces/                      Hugging Face Space wrappers
 spikes/                      isolated research prototypes

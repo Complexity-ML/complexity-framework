@@ -143,14 +143,6 @@ class TransformerBlock(nn.Module):
             ),
 
             lexical_object_rank=config.lexical_object_rank,
-            disable_lexical_wrv_residual=getattr(
-                config, "disable_lexical_wrv_residual", False
-            ),
-            disable_lexical_wrv_norms=getattr(
-                config, "disable_lexical_wrv_norms", False
-            ),
-            lexical_wrv_hybrid=getattr(config, "lexical_wrv_hybrid", False),
-            lexical_wrv_gate_init=getattr(config, "lexical_wrv_gate_init", 0.0),
             lexical_gqa_rank=getattr(config, "lexical_gqa_rank", 16),
             lexical_gqa_gate_init=getattr(config, "lexical_gqa_gate_init", 0.0),
             lexical_gqa_use_token_code=getattr(
@@ -253,7 +245,6 @@ class TransformerBlock(nn.Module):
         mu_prev: Optional[torch.Tensor] = None,
         sort_idx: Optional[torch.Tensor] = None,
         lexical_token_scale_values: Optional[torch.Tensor] = None,
-        lexical_base_writes: Optional[torch.Tensor] = None,
         lexical_zipf_values: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[Any], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
@@ -291,19 +282,14 @@ class TransformerBlock(nn.Module):
             "lexical_bias_gqa",
             "lexical_key_gqa",
             "projected_lexical_key_gqa",
-            "lexical_wrv",
             "tr_mha",
             "token_routed_mha",
             "tr_mha_v2",
             "token_routed_mha_v2",
         }:
             attn_kwargs["token_ids"] = token_ids
-        if self.config.attention_type in {
-            "causal_fast_weight_conv",
-            "lexical_wrv",
-        }:
+        if self.config.attention_type == "causal_fast_weight_conv":
             attn_kwargs["lexical_token_scale_values"] = lexical_token_scale_values
-            attn_kwargs["lexical_base_writes"] = lexical_base_writes
         elif self.config.attention_type in {
             "lexical_gqa",
             "lexical_bias_gqa",

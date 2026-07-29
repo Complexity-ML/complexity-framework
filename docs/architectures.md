@@ -93,7 +93,6 @@ See [`../TR_MHA.md`](../TR_MHA.md).
 | Registry value | Status | Description |
 | --- | --- | --- |
 | `gqa`, `mha`, `mqa` | baseline | Standard causal attention variants |
-| `lexical_wrv` | controlled experiment | Grouped reads with shared writes/values |
 | `lexical_gqa`, `lexical_key_gqa` | experiment | Lexical residuals around GQA |
 | `causal_conv`, `causal_state_conv` | experiment | Attention-free causal convolution |
 | `causal_fast_weight_conv` | experiment | Fixed-state fast-weight convolution |

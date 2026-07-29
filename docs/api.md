@@ -153,7 +153,7 @@ Principal attention keys:
 ```text
 gqa, mha, mqa
 tr_mha, tr_mha_v2
-lexical_wrv, lexical_gqa, lexical_key_gqa
+lexical_gqa, lexical_key_gqa
 causal_conv, causal_state_conv, causal_fast_weight_conv
 ```
 

@@ -1,7 +1,0 @@
-\section{Travaux connexes}
-
-Les Transformers utilisent une compétition contextuelle query--key et une agrégation de valeurs \citep{vaswani2017attention}. GQA partage les têtes key/value entre groupes de queries afin de réduire mémoire et bande passante \citep{ainslie2023gqa}. L'opération centrale W/R/V appartient à cette famille : les lectures jouent le rôle des queries, les écritures partagées celui des keys, et les valeurs restent contextuelles. Nous ne prétendons donc pas qu'un changement de vocabulaire crée un nouvel opérateur. Nous évaluons la paramétrisation R/W/V réalisée et ses choix de normalisation sous un protocole apparié.
-
-Le modèle final emploie aussi des composants établis : RoPE \citep{su2021roformer}, une normalisation par tête de R/W proche de query--key normalization \citep{henry2020qknorm}, et des kernels d'attention exacte sensibles aux entrées/sorties \citep{dao2022flashattention}. La question empirique porte sur cette combinaison concrète sous un budget de petit modèle.
-
-RWKV, RetNet et Mamba développent des alternatives récurrentes ou à espace d'état au traitement linéaire de séquence \citep{peng2023rwkv,sun2023retnet,gu2023mamba}. Nos ablations WVR à état fixe leur sont plus proches par motivation que le modèle W/R/V final, mais utilisent une matrice associative unique distincte et sont moins performantes dans nos contrôles. Le modèle final abandonne l'état fixe et conserve des caches W/V groupés ; il ne doit pas être présenté comme concurrent à état linéaire de ces méthodes.

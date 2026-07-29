@@ -81,12 +81,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Attention projections receiving the routed residual.",
     )
 
-    parser.add_argument(
-        "--lexical-attention-layer-indices",
-        type=int,
-        nargs="*",
-        default=(),
-    )
     parser.add_argument("--intermediate-size", type=int, default=None)
     parser.add_argument("--shared-intermediate-size", type=int, default=None)
     parser.add_argument(
@@ -234,30 +228,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--lexical-object-rank", type=int, default=16)
     parser.add_argument("--lexical-object-gate-init", type=float, default=0.1)
-    parser.add_argument(
-        "--disable-lexical-wrv-residual",
-        action="store_true",
-        help="Keep W/R/V lexical attention gates fixed at zero.",
-    )
-    parser.add_argument(
-        "--disable-lexical-wrv-norms",
-        action="store_true",
-        help="Bypass and freeze W/R/V per-head read/write RMSNorm.",
-    )
-    parser.add_argument(
-        "--lexical-wrv-hybrid",
-        action="store_true",
-        help=(
-            "Inject the same lexical address into grouped reads and writes; "
-            "values remain contextual."
-        ),
-    )
-    parser.add_argument(
-        "--lexical-wrv-gate-init",
-        type=float,
-        default=0.0,
-        help="Initial shared lexical R/W gate before tanh (0 keeps legacy behavior).",
-    )
     parser.add_argument(
         "--lexical-gqa-rank",
         type=int,

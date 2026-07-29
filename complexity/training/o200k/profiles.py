@@ -120,9 +120,6 @@ def make_config(args) -> ModelConfig:
         ),
         tr_mha_targets=getattr(args, "tr_mha_targets", "qv"),
 
-        lexical_attention_layer_indices=tuple(
-            getattr(args, "lexical_attention_layer_indices", ())
-        ),
         mlp_type=getattr(args, "mlp_type", None) or "token_routed",
         num_experts=4,
         shared_expert=bool(getattr(args, "shared_expert", True)),
@@ -144,14 +141,6 @@ def make_config(args) -> ModelConfig:
         lsh_threshold_mode=getattr(args, "lsh_threshold_mode", "zero"),
         lexical_object_rank=getattr(args, "lexical_object_rank", 16),
         lexical_object_gate_init=getattr(args, "lexical_object_gate_init", 0.1),
-        disable_lexical_wrv_residual=bool(
-            getattr(args, "disable_lexical_wrv_residual", False)
-        ),
-        disable_lexical_wrv_norms=bool(
-            getattr(args, "disable_lexical_wrv_norms", False)
-        ),
-        lexical_wrv_hybrid=bool(getattr(args, "lexical_wrv_hybrid", False)),
-        lexical_wrv_gate_init=float(getattr(args, "lexical_wrv_gate_init", 0.0)),
         lexical_gqa_rank=int(getattr(args, "lexical_gqa_rank", 16)),
         lexical_gqa_gate_init=float(getattr(args, "lexical_gqa_gate_init", 0.0)),
         lexical_gqa_use_token_code=bool(

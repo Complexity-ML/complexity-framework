@@ -71,7 +71,6 @@ class ModelConfig:
     causal_delta_lexical_values: bool = False
     causal_delta_lexical_forge: bool = False
     causal_delta_occurrence_address: bool = False
-    lexical_attention_layer_indices: tuple[int, ...] = ()
     tr_mha_num_experts: int = 4
     tr_mha_adapter_rank: int = 8
     tr_mha_top_k: int = 2
@@ -121,10 +120,6 @@ class ModelConfig:
     micro_num_experts: int = 4
     micro_expert_width: int = 16
     micro_expert_gate_init: float = 0.1
-    disable_lexical_wrv_residual: bool = False
-    disable_lexical_wrv_norms: bool = False
-    lexical_wrv_hybrid: bool = False
-    lexical_wrv_gate_init: float = 0.0
     lexical_gqa_rank: int = 16
     lexical_gqa_gate_init: float = 0.0
     lexical_gqa_use_token_code: bool = True
