@@ -30,7 +30,7 @@ verify_dataset() {
 
 run_dense() {
   verify_dataset
-  torchrun --standalone --nproc_per_node="$NPROC" \
+  python3 -m torch.distributed.run --standalone --nproc_per_node="$NPROC" \
     -m complexity.training.o200k_pretrain \
     --config "$DENSE_CONFIG" \
     --tokens-path "$DATA_ROOT/train" \
@@ -41,7 +41,7 @@ run_dense() {
 
 run_tr() {
   verify_dataset
-  torchrun --standalone --nproc_per_node="$NPROC" \
+  python3 -m torch.distributed.run --standalone --nproc_per_node="$NPROC" \
     -m complexity.training.o200k_pretrain \
     --config "$TR_CONFIG" \
     --tokens-path "$DATA_ROOT/train" \
@@ -52,7 +52,7 @@ run_tr() {
 
 smoke_dense() {
   verify_dataset
-  torchrun --standalone --nproc_per_node="$NPROC" \
+  python3 -m torch.distributed.run --standalone --nproc_per_node="$NPROC" \
     -m complexity.training.o200k_pretrain \
     --config "$DENSE_CONFIG" \
     --tokens-path "$DATA_ROOT/train" \
