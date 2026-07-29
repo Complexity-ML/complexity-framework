@@ -7,6 +7,10 @@ This page documents the attention registry values `tr_mha` and `tr_mha_v2`.
 > components below are a separate experimental branch that routes low-rank
 > residual adapters inside MHA.
 
+The matched result for the complete MHA + TR-MoE architecture is reported in
+[`RESULTS_100M_MPS.md`](RESULTS_100M_MPS.md). It must not be attributed to the
+attention-adapter prototypes documented on this page.
+
 ## Shared MHA path
 
 Both adapter variants preserve standard full MHA:

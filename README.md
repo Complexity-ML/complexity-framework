@@ -60,6 +60,27 @@ token-ID modulo routing.
 
 ## Research paths and evidence
 
+### Matched 99.49M MPS summary
+
+The latest seed-42 pilot compares dense and token-routed FFNs under both GQA
+and MHA. Every run has 99,487,680 parameters, uses the same 1,024,000-token
+training budget, and evaluates on the same 5% tail. Routing statistics use the
+training partition only.
+
+| Attention | FFN | Final evaluation NLL | Evaluation PPL | NLL vs matched dense |
+| --- | --- | ---: | ---: | ---: |
+| GQA | Dense SwiGLU | 7.596686 | 1991.58 | — |
+| GQA | **TR-MoE (TR-GQA)** | **7.536167** | **1874.63** | **-0.060519** |
+| MHA | Dense SwiGLU | 7.586145 | 1970.70 | — |
+| MHA | **TR-MoE (TR-MHA)** | **7.536471** | **1875.20** | **-0.049674** |
+
+Both attention families show the same direction at this short budget. These
+are architecture pilots on one small corpus and one selection seed, not
+scaling or statistical claims. The GQA choice was subsequently confirmed with
+seed 43 below. Full protocol, throughput context, and machine-readable results
+are in [`RESULTS_100M_MPS.md`](RESULTS_100M_MPS.md) and
+[`results/matched_gqa_mha_mps_100m.csv`](results/matched_gqa_mha_mps_100m.csv).
+
 ### TR-GQA
 
 TR-GQA is the default o200k pretraining path. Tracked profiles cover
@@ -117,18 +138,19 @@ contracts. A planned large run is not presented as a completed result.
 
 ### TR-MHA
 
-A matched 99,487,680-parameter MPS pilot compares GQA, dense MHA, and
-MHA + TR-MoE for 1,024,000 training tokens with seed 42:
+A corrected matched MPS pair compares dense MHA with MHA + TR-MoE for
+1,024,000 training tokens with seed 42:
 
 | Architecture | Final evaluation NLL | Evaluation PPL |
 | --- | ---: | ---: |
-| Dense GQA | 7.359221 | 1570.61 |
-| Dense MHA | 7.369812 | 1587.34 |
-| **TR-MHA: MHA + shared TR-MoE** | **7.321415** | **1512.34** |
+| Dense MHA | 7.586145 | 1970.70 |
+| **TR-MHA: MHA + shared TR-MoE** | **7.536471** | **1875.20** |
 
-This is a short, single-seed pilot. It validates the implementation and
-motivates replication; it does not establish scaling or statistical
-significance. See [`TR_MHA.md`](TR_MHA.md).
+The NLL difference is -0.049674 in favor of TR-MHA. Routing statistics exclude
+the evaluation tail. This remains a short, single-seed pilot and requires an
+independent-seed confirmation. See
+[`RESULTS_100M_MPS.md`](RESULTS_100M_MPS.md). The separate routed-attention
+adapter experiments are documented in [`TR_MHA.md`](TR_MHA.md).
 
 ## Installation
 

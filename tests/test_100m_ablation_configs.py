@@ -265,6 +265,7 @@ def test_gqa_balanced_shared_pilots_match_dense_width_and_protocol(routed_width)
 def test_launcher_reports_the_real_tr_gqa_controls_only():
     from complexity.training.o200k_pretrain import (
         architecture_label,
+        requires_routing_frequencies,
         token_routed_config_summary,
     )
 
@@ -296,6 +297,18 @@ def test_launcher_reports_the_real_tr_gqa_controls_only():
     assert "Zipf" not in summary
     assert "lsh_threshold" not in summary
     assert "gates" not in summary
+    assert requires_routing_frequencies(
+        SimpleNamespace(
+            mlp_type="token_routed",
+            routing_strategy="modulo_balanced_secondary",
+        )
+    )
+    assert not requires_routing_frequencies(
+        SimpleNamespace(
+            mlp_type="swiglu",
+            routing_strategy="modulo_balanced_secondary",
+        )
+    )
 
 
 def test_gqa_seed43_confirmation_pair_matches_protocol():
@@ -316,6 +329,33 @@ def test_gqa_seed43_confirmation_pair_matches_protocol():
         assert run["num_key_value_heads"] == 2
         assert run["steps"] * run["batch_size"] * run["seq_len"] == 1_024_000
         assert run["seed"] == 43
+        assert run["save_steps"] == 0
+
+    assert dense["intermediate_size"] == (
+        routed["shared_intermediate_size"] + routed["intermediate_size"]
+    )
+    assert dense["mlp_type"] == "swiglu"
+    assert routed["mlp_type"] == "token_routed"
+
+
+def test_corrected_mha_pair_matches_gqa_pilot_protocol():
+    root = Path("configs/run_configs/experiments_100m")
+    dense = yaml.safe_load(
+        (root / "100m_params_mha_dense_confirm_mps.yaml").read_text()
+    )["run"]
+    routed = yaml.safe_load(
+        (
+            root
+            / "100m_params_mha_modulo_balanced_shared_1296_confirm_mps.yaml"
+        ).read_text()
+    )["run"]
+
+    for run in (dense, routed):
+        assert run["attention_type"] == "mha"
+        assert run["num_attention_heads"] == 8
+        assert run["num_key_value_heads"] == 8
+        assert run["steps"] * run["batch_size"] * run["seq_len"] == 1_024_000
+        assert run["seed"] == 42
         assert run["save_steps"] == 0
 
     assert dense["intermediate_size"] == (

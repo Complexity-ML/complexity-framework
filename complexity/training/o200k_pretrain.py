@@ -133,6 +133,15 @@ def token_routed_config_summary(args) -> str:
     return ", ".join(parts)
 
 
+def requires_routing_frequencies(args) -> bool:
+    """Return whether the realized MLP consumes a frequency-built route table."""
+
+    return (
+        args.mlp_type == "token_routed"
+        and args.routing_strategy in {"zipf", "modulo_balanced_secondary"}
+    )
+
+
 def main():
     parser = build_parser()
     args = parse_args_with_yaml_config(parser)
@@ -170,10 +179,7 @@ def main():
         "liger" if args.loss_backend in {"auto", "liger"} and liger_loss_available else "chunked"
     )
     config = make_config(args)
-    needs_routing_frequencies = args.routing_strategy in {
-        "zipf",
-        "modulo_balanced_secondary",
-    }
+    needs_routing_frequencies = requires_routing_frequencies(args)
     if args.dataset == "tokens" and needs_routing_frequencies:
         config.token_frequencies = token_shard_frequencies(
             args.tokens_path,
