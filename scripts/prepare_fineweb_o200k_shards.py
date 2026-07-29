@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -61,7 +61,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=200,
         help="Every Nth source document is reserved for evaluation.",
     )
-    parser.add_argument("--document-batch-size", type=int, default=256)
+    parser.add_argument("--document-batch-size", type=int, default=1024)
+    parser.add_argument(
+        "--tokenizer-threads",
+        type=int,
+        default=min(96, os.cpu_count() or 8),
+        help="CPU threads used by tiktoken for each document batch.",
+    )
     parser.add_argument("--force", action="store_true")
     return parser
 
@@ -201,7 +207,12 @@ class TokenWriter:
         self.partial_path.unlink(missing_ok=True)
 
 
-def encode_batch(tokenizer: Tokenizer, texts: list[str]) -> list[list[int]]:
+def encode_batch(
+    tokenizer: Tokenizer,
+    texts: list[str],
+    *,
+    num_threads: Optional[int] = None,
+) -> list[list[int]]:
     backend = getattr(tokenizer, "_tokenizer", None)
     tiktoken_encoding = getattr(backend, "encoding", None)
     if tiktoken_encoding is not None and hasattr(
@@ -209,7 +220,7 @@ def encode_batch(tokenizer: Tokenizer, texts: list[str]) -> list[list[int]]:
     ):
         return tiktoken_encoding.encode_ordinary_batch(
             texts,
-            num_threads=min(32, os.cpu_count() or 8),
+            num_threads=num_threads or min(96, os.cpu_count() or 8),
         )
     if backend is not None and hasattr(backend, "encode_batch"):
         encoded = backend.encode_batch(texts, add_special_tokens=False)
@@ -228,6 +239,8 @@ def main() -> None:
         raise ValueError("eval-stride must be at least two")
     if args.document_batch_size <= 0:
         raise ValueError("document-batch-size must be positive")
+    if args.tokenizer_threads <= 0:
+        raise ValueError("tokenizer-threads must be positive")
 
     output_root = args.output_root.resolve()
     if output_root.exists():
@@ -266,6 +279,11 @@ def main() -> None:
     eos_id = tokenizer.eos_token_id
     if eos_id is None:
         raise ValueError("Tokenizer must expose an EOS token")
+    print(
+        f"tokenization workers={args.tokenizer_threads} "
+        f"document_batch_size={args.document_batch_size}",
+        flush=True,
+    )
 
     api = HfApi()
     files = sorted(
@@ -334,7 +352,11 @@ def main() -> None:
                 columns=["text"],
             ):
                 texts = [str(text or "") for text in record_batch.column(0).to_pylist()]
-                encoded_documents = encode_batch(tokenizer, texts)
+                encoded_documents = encode_batch(
+                    tokenizer,
+                    texts,
+                    num_threads=args.tokenizer_threads,
+                )
                 file_documents += len(texts)
                 for text, token_ids in zip(texts, encoded_documents):
                     document_index = source_documents
