@@ -85,6 +85,54 @@ def infer_vocab_size(args) -> int:
     return vocab_size
 
 
+def architecture_label(args, active_controls) -> str:
+    """Return the architecture actually instantiated, not the profile default."""
+
+    if "tr_mha_routing" in active_controls.capabilities:
+        return "TR-MHA attention"
+    if "lexical_object_gate" in active_controls.capabilities:
+        return f"Lexical {str(args.attention_type).upper()}"
+    if "topk_primary_weight" in active_controls.capabilities:
+        return f"TR-{str(args.attention_type).upper()}"
+    return f"Dense {str(args.attention_type).upper()}"
+
+
+def token_routed_config_summary(args) -> str:
+    """Format only controls that are active for this Token-Routed run."""
+
+    expert_width = args.intermediate_size // 4
+    parts = [
+        f"Config: TR-{str(args.attention_type).upper()}",
+        f"heads={args.num_attention_heads}/{args.num_key_value_heads}",
+        f"hidden={args.hidden_size}",
+        f"layers={args.num_hidden_layers}",
+        f"shared_width={args.shared_intermediate_size}",
+        f"routed_width={args.intermediate_size}",
+        f"expert_width={expert_width}",
+        "experts=4",
+        f"route={args.routing_strategy}",
+        f"top_k={args.top_k}",
+        f"route_weights={args.top_k_primary_weight:.2f}/"
+        f"{1.0 - args.top_k_primary_weight:.2f}",
+        f"grad_ckpt={args.grad_ckpt}",
+    ]
+    if args.top_k_primary_weight_final != args.top_k_primary_weight:
+        parts.append(f"primary_weight_final={args.top_k_primary_weight_final:.2f}")
+    if args.routing_strategy == "lsh_hidden":
+        parts.append(f"lsh_threshold={args.lsh_threshold_mode}")
+    if args.learn_shared_routed_gates:
+        parts.append(
+            "learned_gates="
+            f"{args.shared_gate_init}/{args.routed_gate_init}"
+        )
+    if args.expert_diversity_lambda > 0.0:
+        parts.append(
+            f"expert_diversity={args.expert_diversity_lambda:g}"
+            f"({args.expert_diversity_target})"
+        )
+    return ", ".join(parts)
+
+
 def main():
     parser = build_parser()
     args = parse_args_with_yaml_config(parser)
@@ -122,20 +170,22 @@ def main():
         "liger" if args.loss_backend in {"auto", "liger"} and liger_loss_available else "chunked"
     )
     config = make_config(args)
-    needs_zipf_frequencies = args.routing_strategy in {
+    needs_routing_frequencies = args.routing_strategy in {
         "zipf",
         "modulo_balanced_secondary",
     }
-    if args.dataset == "tokens" and needs_zipf_frequencies:
+    if args.dataset == "tokens" and needs_routing_frequencies:
         config.token_frequencies = token_shard_frequencies(args.tokens_path, config.vocab_size)
         if is_main:
             logger.info(
-                f"Zipf routing frequencies: {int(config.token_frequencies.sum().item()):,} mmap tokens, "
-                f"{int((config.token_frequencies > 0).sum().item()):,} vocab entries"
+                f"Routing frequency table ({args.routing_strategy}): "
+                f"{int(config.token_frequencies.sum().item()):,} mmap tokens, "
+                f"{int((config.token_frequencies > 0).sum().item()):,} "
+                "observed vocabulary entries"
             )
     elif (
         args.dataset == "text"
-        and needs_zipf_frequencies
+        and needs_routing_frequencies
         and not args.no_zipf_from_text
     ):
         config.token_frequencies = text_token_frequencies(
@@ -212,22 +262,7 @@ def main():
                 f"grad_ckpt={args.grad_ckpt}"
             )
         elif "topk_primary_weight" in active_controls.capabilities:
-            logger.info(
-                "Config: Token-Routed residual, "
-                f"hidden={args.hidden_size}, layers={args.num_hidden_layers}, "
-                f"GQA={args.num_attention_heads}/{args.num_key_value_heads}, "
-                f"inter={args.intermediate_size}, shared_inter={args.shared_intermediate_size}, "
-                f"shared_chunk={args.shared_expert_chunk_tokens}, "
-                f"grad_ckpt={args.grad_ckpt}, experts=4, top_k={args.top_k}, "
-                f"primary_w={args.top_k_primary_weight}, "
-                f"primary_w_final={args.top_k_primary_weight_final}, "
-                f"lsh_threshold={getattr(args, 'lsh_threshold_mode', 'zero')}, "
-                f"learn_gates={args.learn_shared_routed_gates}, "
-                f"gates=({args.shared_gate_init}->{args.shared_gate_final},"
-                f"{args.routed_gate_init}->{args.routed_gate_final}), "
-                f"expert_diversity={args.expert_diversity_lambda} "
-                f"target={args.expert_diversity_target}"
-            )
+            logger.info(token_routed_config_summary(args))
         else:
             logger.info(
                 f"Config: dense {args.attention_type} + {args.mlp_type}, "
@@ -345,16 +380,7 @@ def main():
         csv_file.flush()
 
     model.train()
-    progress_description = (
-        "TR-MHA Q/V"
-        if args.attention_type in {
-            "tr_mha",
-            "token_routed_mha",
-            "tr_mha_v2",
-            "token_routed_mha_v2",
-        }
-        else profile["description"]
-    )
+    progress_description = architecture_label(args, active_controls)
     pbar = (
         tqdm(
             total=args.steps,

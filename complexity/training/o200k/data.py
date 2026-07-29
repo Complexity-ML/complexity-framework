@@ -136,8 +136,8 @@ def text_token_frequencies(path: str, tokenizer_path: str, vocab_size: int) -> t
     if ids.numel() > 0:
         freqs.scatter_add_(0, ids, torch.ones_like(ids, dtype=torch.float32))
     logger.info(
-        f"Zipf routing frequencies: {int(freqs.sum().item()):,} tokens, "
-        f"{int((freqs > 0).sum().item()):,} vocab entries"
+        f"Routing frequency table: {int(freqs.sum().item()):,} tokens, "
+        f"{int((freqs > 0).sum().item()):,} observed vocabulary entries"
     )
     return freqs
 

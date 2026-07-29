@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -238,3 +239,60 @@ def test_best_mha_balanced_shared_pilot_keeps_the_matched_parameter_width():
     assert run["intermediate_size"] == 160
     assert run["shared_intermediate_size"] + run["intermediate_size"] == 1456
     assert run["steps"] * run["batch_size"] * run["seq_len"] == 1_024_000
+
+
+@pytest.mark.parametrize("routed_width", [64, 128, 160, 256])
+def test_gqa_balanced_shared_pilots_match_dense_width_and_protocol(routed_width):
+    path = Path(
+        "configs/run_configs/experiments_100m/"
+        f"100m_params_gqa_modulo_balanced_shared_{routed_width}_mps.yaml"
+    )
+    run = yaml.safe_load(path.read_text())["run"]
+
+    assert run["attention_type"] == "gqa"
+    assert run["num_attention_heads"] == 8
+    assert run["num_key_value_heads"] == 2
+    assert run["routing_strategy"] == "modulo_balanced_secondary"
+    assert run["top_k"] == 2
+    assert run["top_k_primary_weight"] == 0.5
+    assert run["top_k_primary_weight_final"] == 0.5
+    assert run["learn_shared_routed_gates"] is False
+    assert run["shared_intermediate_size"] + run["intermediate_size"] == 1648
+    assert run["steps"] * run["batch_size"] * run["seq_len"] == 1_024_000
+    assert run["seed"] == 42
+
+
+def test_launcher_reports_the_real_tr_gqa_controls_only():
+    from complexity.training.o200k_pretrain import (
+        architecture_label,
+        token_routed_config_summary,
+    )
+
+    args = SimpleNamespace(
+        attention_type="gqa",
+        num_attention_heads=8,
+        num_key_value_heads=2,
+        hidden_size=384,
+        num_hidden_layers=10,
+        shared_intermediate_size=1520,
+        intermediate_size=128,
+        routing_strategy="modulo_balanced_secondary",
+        top_k=2,
+        top_k_primary_weight=0.5,
+        top_k_primary_weight_final=0.5,
+        grad_ckpt=False,
+        learn_shared_routed_gates=False,
+        expert_diversity_lambda=0.0,
+        expert_diversity_target="down",
+    )
+    controls = SimpleNamespace(capabilities={"topk_primary_weight"})
+
+    summary = token_routed_config_summary(args)
+
+    assert architecture_label(args, controls) == "TR-GQA"
+    assert "route=modulo_balanced_secondary" in summary
+    assert "shared_width=1520" in summary
+    assert "expert_width=32" in summary
+    assert "Zipf" not in summary
+    assert "lsh_threshold" not in summary
+    assert "gates" not in summary
