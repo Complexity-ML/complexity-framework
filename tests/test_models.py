@@ -48,7 +48,7 @@ class TestComplexityModel:
         assert out["logits"].shape == (2, 16, 1000)
 
     def test_generate(self):
-        """Test generation."""
+        """Generation is delegated to an external serving runtime."""
         from complexity.models import ComplexityModel
         from complexity.config import ModelConfig
 
@@ -63,10 +63,8 @@ class TestComplexityModel:
         model = ComplexityModel(config)
 
         prompt = torch.randint(0, 1000, (1, 8))
-        generated = model.generate(prompt, max_new_tokens=5, do_sample=False)
-
-        assert generated.shape[0] == 1
-        assert generated.shape[1] == 8 + 5  # prompt + generated
+        with pytest.raises(RuntimeError, match="use vLLM or SGLang"):
+            model.generate(prompt, max_new_tokens=5, do_sample=False)
 
     def test_with_mu_guidance(self):
         """Test model with Mu-Guidance enabled."""
