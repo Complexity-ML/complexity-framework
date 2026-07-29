@@ -199,7 +199,7 @@ def main():
                 else "disabled"
             )
             logger.info(
-                "Config: attention-free lexical residual, "
+                "Config: lexical routing with configurable attention, "
                 f"mixer={args.attention_type}, hidden={args.hidden_size}, "
                 f"layers={args.num_hidden_layers}, inter={args.intermediate_size}, "
                 f"conv_kernel={args.causal_conv_kernel_size}, "
@@ -286,6 +286,13 @@ def main():
     if is_main:
         if args.optimizer == "muon_tr":
             logger.info(
+                "Optimizer: "
+                f"muon_tr, muon_lr={args.muon_lr:.2e}, adam_lr={args.lr:.2e}, "
+                f"weight_decay={args.weight_decay}, expert_weight_decay={args.expert_weight_decay}, "
+                f"shared_weight_decay={args.shared_weight_decay}, muon_scope={args.muon_scope}, "
+                f"expert_lr_scale={args.expert_lr_scale}, shared_lr_scale={args.shared_lr_scale}"
+            )
+            logger.info(
                 "MuonTR params: "
                 f"expert={optimizer_stats['muon_expert_params'] / 1e6:.1f}M, "
                 f"shared={optimizer_stats['muon_shared_params'] / 1e6:.1f}M, "
@@ -293,6 +300,11 @@ def main():
                 f"adamw={optimizer_stats['adamw_params'] / 1e6:.1f}M"
             )
         else:
+            logger.info(
+                "Optimizer: "
+                f"adamw, lr={args.lr:.2e}, weight_decay={args.weight_decay}, "
+                f"betas=(0.9,0.95), impl={optimizer_stats.get('adamw_impl', 'default')}"
+            )
             logger.info(
                 f"AdamW params: {optimizer_stats['adamw_params'] / 1e6:.1f}M "
                 f"impl={optimizer_stats.get('adamw_impl', 'default')}"

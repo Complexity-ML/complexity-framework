@@ -1,0 +1,142 @@
+{
+  "0": {
+    "lsh": false,
+    "expert_share": [
+      0.24755859375,
+      0.2451171875,
+      0.255859375,
+      0.25146484375
+    ],
+    "routing_entropy": 0.9999045118857534,
+    "same_token_varied_ratio": 0.0,
+    "same_token_eligible": 124,
+    "same_token_cond_entropy": 0.0,
+    "mean_offdiag_cka": 0.05183822475373745
+  },
+  "1": {
+    "lsh": false,
+    "expert_share": [
+      0.24755859375,
+      0.2451171875,
+      0.25146484375,
+      0.255859375
+    ],
+    "routing_entropy": 0.9999045118857534,
+    "same_token_varied_ratio": 0.0,
+    "same_token_eligible": 124,
+    "same_token_cond_entropy": 0.0,
+    "mean_offdiag_cka": 0.16241727893551192
+  },
+  "2": {
+    "lsh": true,
+    "expert_share": [
+      0.2060546875,
+      0.22802734375,
+      0.24560546875,
+      0.3203125
+    ],
+    "routing_entropy": 0.9897442180711701,
+    "same_token_varied_ratio": 0.5806451612903226,
+    "same_token_eligible": 124,
+    "same_token_cond_entropy": 0.2919328728183079,
+    "mean_offdiag_cka": 0.19960682839155197
+  },
+  "3": {
+    "lsh": true,
+    "expert_share": [
+      0.263671875,
+      0.2646484375,
+      0.24853515625,
+      0.22314453125
+    ],
+    "routing_entropy": 0.9983484290196988,
+    "same_token_varied_ratio": 0.5,
+    "same_token_eligible": 124,
+    "same_token_cond_entropy": 0.278268606418941,
+    "mean_offdiag_cka": 0.19362109899520874
+  },
+  "4": {
+    "lsh": true,
+    "expert_share": [
+      0.35205078125,
+      0.2802734375,
+      0.2041015625,
+      0.16357421875
+    ],
+    "routing_entropy": 0.9698759124475325,
+    "same_token_varied_ratio": 0.7661290322580645,
+    "same_token_eligible": 124,
+    "same_token_cond_entropy": 0.42058043557749764,
+    "mean_offdiag_cka": 0.13227847404778004
+  },
+  "5": {
+    "lsh": true,
+    "expert_share": [
+      0.185546875,
+      0.24755859375,
+      0.25146484375,
+      0.3154296875
+    ],
+    "routing_entropy": 0.9877026604675102,
+    "same_token_varied_ratio": 0.7741935483870968,
+    "same_token_eligible": 124,
+    "same_token_cond_entropy": 0.4487720619584454,
+    "mean_offdiag_cka": 0.20741639037926993
+  },
+  "6": {
+    "lsh": true,
+    "expert_share": [
+      0.19482421875,
+      0.37939453125,
+      0.171875,
+      0.25390625
+    ],
+    "routing_entropy": 0.9645056580369552,
+    "same_token_varied_ratio": 0.8225806451612904,
+    "same_token_eligible": 124,
+    "same_token_cond_entropy": 0.4778283148121583,
+    "mean_offdiag_cka": 0.14546012009183565
+  },
+  "7": {
+    "lsh": true,
+    "expert_share": [
+      0.1865234375,
+      0.3134765625,
+      0.2138671875,
+      0.2861328125
+    ],
+    "routing_entropy": 0.9844653828518248,
+    "same_token_varied_ratio": 0.7903225806451613,
+    "same_token_eligible": 124,
+    "same_token_cond_entropy": 0.46615729264333694,
+    "mean_offdiag_cka": 0.20485536257425943
+  },
+  "8": {
+    "lsh": true,
+    "expert_share": [
+      0.197265625,
+      0.248046875,
+      0.27734375,
+      0.27734375
+    ],
+    "routing_entropy": 0.9935834991041738,
+    "same_token_varied_ratio": 0.8306451612903226,
+    "same_token_eligible": 124,
+    "same_token_cond_entropy": 0.5121756225890862,
+    "mean_offdiag_cka": 0.15289379532138506
+  },
+  "9": {
+    "lsh": true,
+    "expert_share": [
+      0.26953125,
+      0.34814453125,
+      0.17626953125,
+      0.2060546875
+    ],
+    "routing_entropy": 0.9753772786970843,
+    "same_token_varied_ratio": 0.782258064516129,
+    "same_token_eligible": 124,
+    "same_token_cond_entropy": 0.46869147451138576,
+    "mean_offdiag_cka": 0.24492697417736053
+  }
+}

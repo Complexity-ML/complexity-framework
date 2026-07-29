@@ -1,0 +1,3567 @@
+{
+  "checkpoint": "checkpoints/semantic_lsh_fwe500k_100m_65k/step_065000/checkpoint.pt",
+  "probe_text": "data/local/fineweb_sample.txt",
+  "semantic_layers": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "note": "Heuristic audit on decoded contexts routed by primary semantic LSH expert. Categories are interpretable probes, not learned labels.",
+  "aggregate_by_expert": {
+    "0": {
+      "tokens": 18748,
+      "top_categories": [
+        [
+          "proper_entities",
+          1651
+        ],
+        [
+          "math_numbers",
+          570
+        ],
+        [
+          "narrative_social",
+          262
+        ],
+        [
+          "list_structure",
+          157
+        ],
+        [
+          "dialogue_quotes",
+          67
+        ],
+        [
+          "code_markup",
+          17
+        ],
+        [
+          "academic_factual",
+          3
+        ],
+        [
+          "web_refs",
+          0
+        ]
+      ],
+      "examples": [
+        {
+          "global_pos": 1,
+          "token_id": 43203,
+          "token": " Independent",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of"
+        },
+        {
+          "global_pos": 3,
+          "token_id": 198,
+          "token": "\\n",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and"
+        },
+        {
+          "global_pos": 4,
+          "token_id": 2653,
+          "token": "For",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the"
+        },
+        {
+          "global_pos": 2,
+          "token_id": 23919,
+          "token": " Jane",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought"
+        },
+        {
+          "global_pos": 13,
+          "token_id": 23919,
+          "token": " Jane",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr"
+        },
+        {
+          "global_pos": 14,
+          "token_id": 147000,
+          "token": " Austen",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr."
+        },
+        {
+          "global_pos": 2,
+          "token_id": 23919,
+          "token": " Jane",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought"
+        },
+        {
+          "global_pos": 3,
+          "token_id": 198,
+          "token": "\\n",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and"
+        },
+        {
+          "global_pos": 10,
+          "token_id": 326,
+          "token": " and",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s"
+        },
+        {
+          "global_pos": 2,
+          "token_id": 23919,
+          "token": " Jane",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought"
+        }
+      ]
+    },
+    "1": {
+      "tokens": 22743,
+      "top_categories": [
+        [
+          "proper_entities",
+          1646
+        ],
+        [
+          "math_numbers",
+          474
+        ],
+        [
+          "narrative_social",
+          267
+        ],
+        [
+          "list_structure",
+          155
+        ],
+        [
+          "dialogue_quotes",
+          64
+        ],
+        [
+          "code_markup",
+          8
+        ],
+        [
+          "web_refs",
+          0
+        ],
+        [
+          "academic_factual",
+          0
+        ]
+      ],
+      "examples": [
+        {
+          "global_pos": 6,
+          "token_id": 290,
+          "token": " the",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to"
+        },
+        {
+          "global_pos": 9,
+          "token_id": 30327,
+          "token": " romance",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth"
+        },
+        {
+          "global_pos": 11,
+          "token_id": 61882,
+          "token": " scandal",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal"
+        },
+        {
+          "global_pos": 3,
+          "token_id": 198,
+          "token": "\\n",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and"
+        },
+        {
+          "global_pos": 12,
+          "token_id": 306,
+          "token": " in",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of"
+        },
+        {
+          "global_pos": 17,
+          "token_id": 11,
+          "token": ",",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of"
+        },
+        {
+          "global_pos": 0,
+          "token_id": 976,
+          "token": "The",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence"
+        },
+        {
+          "global_pos": 4,
+          "token_id": 2653,
+          "token": "For",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the"
+        },
+        {
+          "global_pos": 6,
+          "token_id": 290,
+          "token": " the",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to"
+        },
+        {
+          "global_pos": 37,
+          "token_id": 123185,
+          "token": "Elizabeth",
+          "context": "romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while"
+        }
+      ]
+    },
+    "2": {
+      "tokens": 19037,
+      "top_categories": [
+        [
+          "proper_entities",
+          1607
+        ],
+        [
+          "math_numbers",
+          532
+        ],
+        [
+          "narrative_social",
+          270
+        ],
+        [
+          "list_structure",
+          136
+        ],
+        [
+          "dialogue_quotes",
+          75
+        ],
+        [
+          "code_markup",
+          9
+        ],
+        [
+          "academic_factual",
+          2
+        ],
+        [
+          "web_refs",
+          0
+        ]
+      ],
+      "examples": [
+        {
+          "global_pos": 2,
+          "token_id": 23919,
+          "token": " Jane",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought"
+        },
+        {
+          "global_pos": 13,
+          "token_id": 23919,
+          "token": " Jane",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr"
+        },
+        {
+          "global_pos": 18,
+          "token_id": 1412,
+          "token": " what",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage"
+        },
+        {
+          "global_pos": 4,
+          "token_id": 2653,
+          "token": "For",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the"
+        },
+        {
+          "global_pos": 5,
+          "token_id": 722,
+          "token": " all",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom"
+        },
+        {
+          "global_pos": 6,
+          "token_id": 290,
+          "token": " the",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to"
+        },
+        {
+          "global_pos": 15,
+          "token_id": 802,
+          "token": "’s",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins"
+        },
+        {
+          "global_pos": 21,
+          "token_id": 2715,
+          "token": " really",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence"
+        },
+        {
+          "global_pos": 29,
+          "token_id": 328,
+          "token": " of",
+          "context": "Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day"
+        },
+        {
+          "global_pos": 0,
+          "token_id": 976,
+          "token": "The",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence"
+        }
+      ]
+    },
+    "3": {
+      "tokens": 21392,
+      "top_categories": [
+        [
+          "proper_entities",
+          1610
+        ],
+        [
+          "math_numbers",
+          517
+        ],
+        [
+          "narrative_social",
+          253
+        ],
+        [
+          "list_structure",
+          157
+        ],
+        [
+          "dialogue_quotes",
+          62
+        ],
+        [
+          "code_markup",
+          10
+        ],
+        [
+          "academic_factual",
+          1
+        ],
+        [
+          "web_refs",
+          0
+        ]
+      ],
+      "examples": [
+        {
+          "global_pos": 0,
+          "token_id": 976,
+          "token": "The",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence"
+        },
+        {
+          "global_pos": 5,
+          "token_id": 722,
+          "token": " all",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom"
+        },
+        {
+          "global_pos": 7,
+          "token_id": 3047,
+          "token": " love",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose"
+        },
+        {
+          "global_pos": 0,
+          "token_id": 976,
+          "token": "The",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence"
+        },
+        {
+          "global_pos": 1,
+          "token_id": 43203,
+          "token": " Independent",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of"
+        },
+        {
+          "global_pos": 9,
+          "token_id": 30327,
+          "token": " romance",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth"
+        },
+        {
+          "global_pos": 1,
+          "token_id": 43203,
+          "token": " Independent",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of"
+        },
+        {
+          "global_pos": 5,
+          "token_id": 722,
+          "token": " all",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom"
+        },
+        {
+          "global_pos": 16,
+          "token_id": 7187,
+          "token": " books",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer"
+        },
+        {
+          "global_pos": 1,
+          "token_id": 43203,
+          "token": " Independent",
+          "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of"
+        }
+      ]
+    }
+  },
+  "by_layer": {
+    "2": {
+      "0": {
+        "share": 0.2015625,
+        "unique_token_count": 689,
+        "top_categories": [
+          [
+            "proper_entities",
+            225
+          ],
+          [
+            "math_numbers",
+            72
+          ],
+          [
+            "narrative_social",
+            36
+          ],
+          [
+            "list_structure",
+            17
+          ],
+          [
+            "dialogue_quotes",
+            6
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 12,
+            "text": "-"
+          },
+          {
+            "id": 395,
+            "text": " for"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 220,
+            "text": " "
+          },
+          {
+            "id": 558,
+            "text": ".\\n"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 1,
+            "token_id": 43203,
+            "token": " Independent",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of"
+          },
+          {
+            "global_pos": 3,
+            "token_id": 198,
+            "token": "\\n",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and"
+          },
+          {
+            "global_pos": 4,
+            "token_id": 2653,
+            "token": "For",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the"
+          },
+          {
+            "global_pos": 8,
+            "token_id": 11,
+            "token": ",",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose."
+          },
+          {
+            "global_pos": 10,
+            "token_id": 326,
+            "token": " and",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s"
+          },
+          {
+            "global_pos": 16,
+            "token_id": 7187,
+            "token": " books",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer"
+          }
+        ]
+      },
+      "1": {
+        "share": 0.2318359375,
+        "unique_token_count": 961,
+        "top_categories": [
+          [
+            "proper_entities",
+            216
+          ],
+          [
+            "math_numbers",
+            60
+          ],
+          [
+            "narrative_social",
+            36
+          ],
+          [
+            "list_structure",
+            16
+          ],
+          [
+            "dialogue_quotes",
+            6
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 261,
+            "text": " a"
+          },
+          {
+            "id": 220,
+            "text": " "
+          },
+          {
+            "id": 472,
+            "text": " as"
+          },
+          {
+            "id": 382,
+            "text": " is"
+          },
+          {
+            "id": 558,
+            "text": ".\\n"
+          },
+          {
+            "id": 656,
+            "text": " by"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 6,
+            "token_id": 290,
+            "token": " the",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to"
+          },
+          {
+            "global_pos": 9,
+            "token_id": 30327,
+            "token": " romance",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth"
+          },
+          {
+            "global_pos": 11,
+            "token_id": 61882,
+            "token": " scandal",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal"
+          },
+          {
+            "global_pos": 15,
+            "token_id": 802,
+            "token": "’s",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins"
+          },
+          {
+            "global_pos": 19,
+            "token_id": 1023,
+            "token": " they",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed"
+          },
+          {
+            "global_pos": 20,
+            "token_id": 553,
+            "token": " are",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an"
+          }
+        ]
+      },
+      "2": {
+        "share": 0.24013671875,
+        "unique_token_count": 1092,
+        "top_categories": [
+          [
+            "proper_entities",
+            197
+          ],
+          [
+            "math_numbers",
+            64
+          ],
+          [
+            "narrative_social",
+            30
+          ],
+          [
+            "list_structure",
+            22
+          ],
+          [
+            "dialogue_quotes",
+            14
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 350,
+            "text": " ("
+          },
+          {
+            "id": 198,
+            "text": "\\n"
+          },
+          {
+            "id": 481,
+            "text": " you"
+          },
+          {
+            "id": 480,
+            "text": " it"
+          },
+          {
+            "id": 16,
+            "text": "1"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 2,
+            "token_id": 23919,
+            "token": " Jane",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought"
+          },
+          {
+            "global_pos": 13,
+            "token_id": 23919,
+            "token": " Jane",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr"
+          },
+          {
+            "global_pos": 18,
+            "token_id": 1412,
+            "token": " what",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage"
+          },
+          {
+            "global_pos": 21,
+            "token_id": 2715,
+            "token": " really",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence"
+          },
+          {
+            "global_pos": 34,
+            "token_id": 316,
+            "token": " to",
+            "context": "the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr"
+          },
+          {
+            "global_pos": 69,
+            "token_id": 14414,
+            "token": " showed",
+            "context": "Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by anger showed a level of independence that left him shocked and stunned. The freedom she exhibited in finally accepting him in direct defiance of Lady Catherine and knowing"
+          }
+        ]
+      },
+      "3": {
+        "share": 0.32646484375,
+        "unique_token_count": 1512,
+        "top_categories": [
+          [
+            "proper_entities",
+            170
+          ],
+          [
+            "math_numbers",
+            44
+          ],
+          [
+            "narrative_social",
+            30
+          ],
+          [
+            "list_structure",
+            19
+          ],
+          [
+            "dialogue_quotes",
+            14
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 306,
+            "text": " in"
+          },
+          {
+            "id": 261,
+            "text": " a"
+          },
+          {
+            "id": 484,
+            "text": " that"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 402,
+            "text": " on"
+          },
+          {
+            "id": 382,
+            "text": " is"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 0,
+            "token_id": 976,
+            "token": "The",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence"
+          },
+          {
+            "global_pos": 5,
+            "token_id": 722,
+            "token": " all",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom"
+          },
+          {
+            "global_pos": 7,
+            "token_id": 3047,
+            "token": " love",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose"
+          },
+          {
+            "global_pos": 12,
+            "token_id": 306,
+            "token": " in",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of"
+          },
+          {
+            "global_pos": 14,
+            "token_id": 147000,
+            "token": " Austen",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr."
+          },
+          {
+            "global_pos": 22,
+            "token_id": 1078,
+            "token": " about",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom"
+          }
+        ]
+      }
+    },
+    "3": {
+      "0": {
+        "share": 0.2689453125,
+        "unique_token_count": 1009,
+        "top_categories": [
+          [
+            "proper_entities",
+            230
+          ],
+          [
+            "math_numbers",
+            77
+          ],
+          [
+            "narrative_social",
+            33
+          ],
+          [
+            "list_structure",
+            20
+          ],
+          [
+            "dialogue_quotes",
+            9
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 220,
+            "text": " "
+          },
+          {
+            "id": 382,
+            "text": " is"
+          },
+          {
+            "id": 306,
+            "text": " in"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 2,
+            "token_id": 23919,
+            "token": " Jane",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought"
+          },
+          {
+            "global_pos": 13,
+            "token_id": 23919,
+            "token": " Jane",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr"
+          },
+          {
+            "global_pos": 14,
+            "token_id": 147000,
+            "token": " Austen",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr."
+          },
+          {
+            "global_pos": 16,
+            "token_id": 7187,
+            "token": " books",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer"
+          },
+          {
+            "global_pos": 20,
+            "token_id": 553,
+            "token": " are",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an"
+          },
+          {
+            "global_pos": 23,
+            "token_id": 382,
+            "token": " is",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen"
+          }
+        ]
+      },
+      "1": {
+        "share": 0.23544921875,
+        "unique_token_count": 983,
+        "top_categories": [
+          [
+            "proper_entities",
+            211
+          ],
+          [
+            "math_numbers",
+            40
+          ],
+          [
+            "narrative_social",
+            30
+          ],
+          [
+            "list_structure",
+            23
+          ],
+          [
+            "dialogue_quotes",
+            13
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 558,
+            "text": ".\\n"
+          },
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 306,
+            "text": " in"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 198,
+            "text": "\\n"
+          },
+          {
+            "id": 382,
+            "text": " is"
+          },
+          {
+            "id": 290,
+            "text": " the"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 3,
+            "token_id": 198,
+            "token": "\\n",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and"
+          },
+          {
+            "global_pos": 12,
+            "token_id": 306,
+            "token": " in",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of"
+          },
+          {
+            "global_pos": 17,
+            "token_id": 11,
+            "token": ",",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of"
+          },
+          {
+            "global_pos": 22,
+            "token_id": 1078,
+            "token": " about",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom"
+          },
+          {
+            "global_pos": 27,
+            "token_id": 13,
+            "token": ".",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of"
+          },
+          {
+            "global_pos": 44,
+            "token_id": 2961,
+            "token": " offer",
+            "context": "books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by anger showed a level of"
+          }
+        ]
+      },
+      "2": {
+        "share": 0.27353515625,
+        "unique_token_count": 1206,
+        "top_categories": [
+          [
+            "proper_entities",
+            214
+          ],
+          [
+            "math_numbers",
+            56
+          ],
+          [
+            "narrative_social",
+            29
+          ],
+          [
+            "list_structure",
+            14
+          ],
+          [
+            "dialogue_quotes",
+            6
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 261,
+            "text": " a"
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 12,
+            "text": "-"
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 484,
+            "text": " that"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 4,
+            "token_id": 2653,
+            "token": "For",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the"
+          },
+          {
+            "global_pos": 5,
+            "token_id": 722,
+            "token": " all",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom"
+          },
+          {
+            "global_pos": 6,
+            "token_id": 290,
+            "token": " the",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to"
+          },
+          {
+            "global_pos": 7,
+            "token_id": 3047,
+            "token": " love",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose"
+          },
+          {
+            "global_pos": 8,
+            "token_id": 11,
+            "token": ",",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose."
+          },
+          {
+            "global_pos": 10,
+            "token_id": 326,
+            "token": " and",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s"
+          }
+        ]
+      },
+      "3": {
+        "share": 0.2220703125,
+        "unique_token_count": 1071,
+        "top_categories": [
+          [
+            "proper_entities",
+            194
+          ],
+          [
+            "math_numbers",
+            45
+          ],
+          [
+            "narrative_social",
+            38
+          ],
+          [
+            "list_structure",
+            17
+          ],
+          [
+            "dialogue_quotes",
+            11
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 656,
+            "text": " by"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 472,
+            "text": " as"
+          },
+          {
+            "id": 976,
+            "text": "The"
+          },
+          {
+            "id": 623,
+            "text": " The"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 0,
+            "token_id": 976,
+            "token": "The",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence"
+          },
+          {
+            "global_pos": 1,
+            "token_id": 43203,
+            "token": " Independent",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of"
+          },
+          {
+            "global_pos": 9,
+            "token_id": 30327,
+            "token": " romance",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth"
+          },
+          {
+            "global_pos": 11,
+            "token_id": 61882,
+            "token": " scandal",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal"
+          },
+          {
+            "global_pos": 15,
+            "token_id": 802,
+            "token": "’s",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins"
+          },
+          {
+            "global_pos": 18,
+            "token_id": 1412,
+            "token": " what",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage"
+          }
+        ]
+      }
+    },
+    "4": {
+      "0": {
+        "share": 0.3546875,
+        "unique_token_count": 1427,
+        "top_categories": [
+          [
+            "proper_entities",
+            205
+          ],
+          [
+            "math_numbers",
+            86
+          ],
+          [
+            "narrative_social",
+            30
+          ],
+          [
+            "list_structure",
+            24
+          ],
+          [
+            "dialogue_quotes",
+            8
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 261,
+            "text": " a"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 220,
+            "text": " "
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 2,
+            "token_id": 23919,
+            "token": " Jane",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought"
+          },
+          {
+            "global_pos": 3,
+            "token_id": 198,
+            "token": "\\n",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and"
+          },
+          {
+            "global_pos": 10,
+            "token_id": 326,
+            "token": " and",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s"
+          },
+          {
+            "global_pos": 13,
+            "token_id": 23919,
+            "token": " Jane",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr"
+          },
+          {
+            "global_pos": 25,
+            "token_id": 326,
+            "token": " and",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroin"
+          },
+          {
+            "global_pos": 27,
+            "token_id": 13,
+            "token": ".",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of"
+          }
+        ]
+      },
+      "1": {
+        "share": 0.2759765625,
+        "unique_token_count": 1250,
+        "top_categories": [
+          [
+            "proper_entities",
+            181
+          ],
+          [
+            "math_numbers",
+            66
+          ],
+          [
+            "narrative_social",
+            35
+          ],
+          [
+            "list_structure",
+            16
+          ],
+          [
+            "dialogue_quotes",
+            8
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 306,
+            "text": " in"
+          },
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 484,
+            "text": " that"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 382,
+            "text": " is"
+          },
+          {
+            "id": 472,
+            "text": " as"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 0,
+            "token_id": 976,
+            "token": "The",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence"
+          },
+          {
+            "global_pos": 4,
+            "token_id": 2653,
+            "token": "For",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the"
+          },
+          {
+            "global_pos": 6,
+            "token_id": 290,
+            "token": " the",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to"
+          },
+          {
+            "global_pos": 7,
+            "token_id": 3047,
+            "token": " love",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose"
+          },
+          {
+            "global_pos": 8,
+            "token_id": 11,
+            "token": ",",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose."
+          },
+          {
+            "global_pos": 9,
+            "token_id": 30327,
+            "token": " romance",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth"
+          }
+        ]
+      },
+      "2": {
+        "share": 0.22060546875,
+        "unique_token_count": 1062,
+        "top_categories": [
+          [
+            "proper_entities",
+            206
+          ],
+          [
+            "math_numbers",
+            58
+          ],
+          [
+            "narrative_social",
+            34
+          ],
+          [
+            "list_structure",
+            20
+          ],
+          [
+            "dialogue_quotes",
+            10
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 12,
+            "text": "-"
+          },
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 220,
+            "text": " "
+          },
+          {
+            "id": 198,
+            "text": "\\n"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 15,
+            "token_id": 802,
+            "token": "’s",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins"
+          },
+          {
+            "global_pos": 21,
+            "token_id": 2715,
+            "token": " really",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence"
+          },
+          {
+            "global_pos": 29,
+            "token_id": 328,
+            "token": " of",
+            "context": "Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day"
+          },
+          {
+            "global_pos": 30,
+            "token_id": 4525,
+            "token": " thought",
+            "context": "Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day."
+          },
+          {
+            "global_pos": 31,
+            "token_id": 326,
+            "token": " and",
+            "context": "For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her"
+          },
+          {
+            "global_pos": 35,
+            "token_id": 5655,
+            "token": " choose",
+            "context": "love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr."
+          }
+        ]
+      },
+      "3": {
+        "share": 0.14873046875,
+        "unique_token_count": 750,
+        "top_categories": [
+          [
+            "proper_entities",
+            223
+          ],
+          [
+            "math_numbers",
+            56
+          ],
+          [
+            "narrative_social",
+            34
+          ],
+          [
+            "list_structure",
+            21
+          ],
+          [
+            "dialogue_quotes",
+            3
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 350,
+            "text": " ("
+          },
+          {
+            "id": 553,
+            "text": " are"
+          },
+          {
+            "id": 382,
+            "text": " is"
+          },
+          {
+            "id": 395,
+            "text": " for"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 558,
+            "text": ".\\n"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 1,
+            "token_id": 43203,
+            "token": " Independent",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of"
+          },
+          {
+            "global_pos": 5,
+            "token_id": 722,
+            "token": " all",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom"
+          },
+          {
+            "global_pos": 16,
+            "token_id": 7187,
+            "token": " books",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer"
+          },
+          {
+            "global_pos": 18,
+            "token_id": 1412,
+            "token": " what",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage"
+          },
+          {
+            "global_pos": 19,
+            "token_id": 1023,
+            "token": " they",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed"
+          },
+          {
+            "global_pos": 20,
+            "token_id": 553,
+            "token": " are",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an"
+          }
+        ]
+      }
+    },
+    "5": {
+      "0": {
+        "share": 0.21064453125,
+        "unique_token_count": 771,
+        "top_categories": [
+          [
+            "proper_entities",
+            211
+          ],
+          [
+            "math_numbers",
+            87
+          ],
+          [
+            "narrative_social",
+            35
+          ],
+          [
+            "list_structure",
+            23
+          ],
+          [
+            "dialogue_quotes",
+            5
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 261,
+            "text": " a"
+          },
+          {
+            "id": 395,
+            "text": " for"
+          },
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 382,
+            "text": " is"
+          },
+          {
+            "id": 11,
+            "text": ","
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 2,
+            "token_id": 23919,
+            "token": " Jane",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought"
+          },
+          {
+            "global_pos": 4,
+            "token_id": 2653,
+            "token": "For",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the"
+          },
+          {
+            "global_pos": 5,
+            "token_id": 722,
+            "token": " all",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom"
+          },
+          {
+            "global_pos": 9,
+            "token_id": 30327,
+            "token": " romance",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth"
+          },
+          {
+            "global_pos": 23,
+            "token_id": 382,
+            "token": " is",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen"
+          },
+          {
+            "global_pos": 24,
+            "token_id": 19165,
+            "token": " freedom",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in"
+          }
+        ]
+      },
+      "1": {
+        "share": 0.2400390625,
+        "unique_token_count": 1387,
+        "top_categories": [
+          [
+            "proper_entities",
+            226
+          ],
+          [
+            "math_numbers",
+            61
+          ],
+          [
+            "list_structure",
+            27
+          ],
+          [
+            "narrative_social",
+            17
+          ],
+          [
+            "dialogue_quotes",
+            5
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 261,
+            "text": " a"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 350,
+            "text": " ("
+          },
+          {
+            "id": 220,
+            "text": " "
+          },
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 382,
+            "text": " is"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 37,
+            "token_id": 123185,
+            "token": "Elizabeth",
+            "context": "romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while"
+          },
+          {
+            "global_pos": 39,
+            "token_id": 106291,
+            "token": " refusal",
+            "context": "scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by"
+          },
+          {
+            "global_pos": 46,
+            "token_id": 17328,
+            "token": " marriage",
+            "context": "what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by anger showed a level of independence that"
+          },
+          {
+            "global_pos": 48,
+            "token_id": 448,
+            "token": " an",
+            "context": "are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by anger showed a level of independence that left him"
+          },
+          {
+            "global_pos": 50,
+            "token_id": 99974,
+            "token": " seldom",
+            "context": "about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by anger showed a level of independence that left him shocked and"
+          },
+          {
+            "global_pos": 64,
+            "token_id": 188305,
+            "token": " Darcy",
+            "context": ". Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by anger showed a level of independence that left him shocked and stunned. The freedom she exhibited in finally accepting him in direct defiance"
+          }
+        ]
+      },
+      "2": {
+        "share": 0.252734375,
+        "unique_token_count": 925,
+        "top_categories": [
+          [
+            "proper_entities",
+            222
+          ],
+          [
+            "math_numbers",
+            62
+          ],
+          [
+            "narrative_social",
+            48
+          ],
+          [
+            "list_structure",
+            18
+          ],
+          [
+            "dialogue_quotes",
+            7
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 306,
+            "text": " in"
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 558,
+            "text": ".\\n"
+          },
+          {
+            "id": 484,
+            "text": " that"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 0,
+            "token_id": 976,
+            "token": "The",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence"
+          },
+          {
+            "global_pos": 6,
+            "token_id": 290,
+            "token": " the",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to"
+          },
+          {
+            "global_pos": 7,
+            "token_id": 3047,
+            "token": " love",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose"
+          },
+          {
+            "global_pos": 8,
+            "token_id": 11,
+            "token": ",",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose."
+          },
+          {
+            "global_pos": 10,
+            "token_id": 326,
+            "token": " and",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s"
+          },
+          {
+            "global_pos": 11,
+            "token_id": 61882,
+            "token": " scandal",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal"
+          }
+        ]
+      },
+      "3": {
+        "share": 0.29658203125,
+        "unique_token_count": 1511,
+        "top_categories": [
+          [
+            "proper_entities",
+            211
+          ],
+          [
+            "math_numbers",
+            70
+          ],
+          [
+            "narrative_social",
+            26
+          ],
+          [
+            "list_structure",
+            21
+          ],
+          [
+            "dialogue_quotes",
+            6
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 558,
+            "text": ".\\n"
+          },
+          {
+            "id": 220,
+            "text": " "
+          },
+          {
+            "id": 198,
+            "text": "\\n"
+          },
+          {
+            "id": 306,
+            "text": " in"
+          },
+          {
+            "id": 503,
+            "text": " or"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 1,
+            "token_id": 43203,
+            "token": " Independent",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of"
+          },
+          {
+            "global_pos": 3,
+            "token_id": 198,
+            "token": "\\n",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and"
+          },
+          {
+            "global_pos": 14,
+            "token_id": 147000,
+            "token": " Austen",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr."
+          },
+          {
+            "global_pos": 16,
+            "token_id": 7187,
+            "token": " books",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer"
+          },
+          {
+            "global_pos": 28,
+            "token_id": 71273,
+            "token": " Independence",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the"
+          },
+          {
+            "global_pos": 30,
+            "token_id": 4525,
+            "token": " thought",
+            "context": "Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day."
+          }
+        ]
+      }
+    },
+    "6": {
+      "0": {
+        "share": 0.22314453125,
+        "unique_token_count": 778,
+        "top_categories": [
+          [
+            "proper_entities",
+            205
+          ],
+          [
+            "math_numbers",
+            51
+          ],
+          [
+            "narrative_social",
+            31
+          ],
+          [
+            "list_structure",
+            14
+          ],
+          [
+            "dialogue_quotes",
+            9
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 261,
+            "text": " a"
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 480,
+            "text": " it"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 17,
+            "token_id": 11,
+            "token": ",",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of"
+          },
+          {
+            "global_pos": 20,
+            "token_id": 553,
+            "token": " are",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an"
+          },
+          {
+            "global_pos": 21,
+            "token_id": 2715,
+            "token": " really",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence"
+          },
+          {
+            "global_pos": 22,
+            "token_id": 1078,
+            "token": " about",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom"
+          },
+          {
+            "global_pos": 23,
+            "token_id": 382,
+            "token": " is",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen"
+          },
+          {
+            "global_pos": 25,
+            "token_id": 326,
+            "token": " and",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroin"
+          }
+        ]
+      },
+      "1": {
+        "share": 0.3455078125,
+        "unique_token_count": 1398,
+        "top_categories": [
+          [
+            "proper_entities",
+            195
+          ],
+          [
+            "narrative_social",
+            43
+          ],
+          [
+            "math_numbers",
+            17
+          ],
+          [
+            "list_structure",
+            10
+          ],
+          [
+            "dialogue_quotes",
+            8
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 306,
+            "text": " in"
+          },
+          {
+            "id": 382,
+            "text": " is"
+          },
+          {
+            "id": 558,
+            "text": ".\\n"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 1,
+            "token_id": 43203,
+            "token": " Independent",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of"
+          },
+          {
+            "global_pos": 2,
+            "token_id": 23919,
+            "token": " Jane",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought"
+          },
+          {
+            "global_pos": 3,
+            "token_id": 198,
+            "token": "\\n",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and"
+          },
+          {
+            "global_pos": 4,
+            "token_id": 2653,
+            "token": "For",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the"
+          },
+          {
+            "global_pos": 5,
+            "token_id": 722,
+            "token": " all",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom"
+          },
+          {
+            "global_pos": 6,
+            "token_id": 290,
+            "token": " the",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to"
+          }
+        ]
+      },
+      "2": {
+        "share": 0.171875,
+        "unique_token_count": 935,
+        "top_categories": [
+          [
+            "proper_entities",
+            151
+          ],
+          [
+            "math_numbers",
+            57
+          ],
+          [
+            "narrative_social",
+            27
+          ],
+          [
+            "list_structure",
+            11
+          ],
+          [
+            "dialogue_quotes",
+            8
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 1118,
+            "text": " which"
+          },
+          {
+            "id": 472,
+            "text": " as"
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 261,
+            "text": " a"
+          },
+          {
+            "id": 220,
+            "text": " "
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 0,
+            "token_id": 976,
+            "token": "The",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence"
+          },
+          {
+            "global_pos": 18,
+            "token_id": 1412,
+            "token": " what",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage"
+          },
+          {
+            "global_pos": 26,
+            "token_id": 43061,
+            "token": " independence",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines"
+          },
+          {
+            "global_pos": 57,
+            "token_id": 2163,
+            "token": " day",
+            "context": "of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by anger showed a level of independence that left him shocked and stunned. The freedom she exhibited in"
+          },
+          {
+            "global_pos": 69,
+            "token_id": 14414,
+            "token": " showed",
+            "context": "Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by anger showed a level of independence that left him shocked and stunned. The freedom she exhibited in finally accepting him in direct defiance of Lady Catherine and knowing"
+          },
+          {
+            "global_pos": 74,
+            "token_id": 484,
+            "token": " that",
+            "context": "marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by anger showed a level of independence that left him shocked and stunned. The freedom she exhibited in finally accepting him in direct defiance of Lady Catherine and knowing her father would disapprove"
+          }
+        ]
+      },
+      "3": {
+        "share": 0.25947265625,
+        "unique_token_count": 1557,
+        "top_categories": [
+          [
+            "proper_entities",
+            219
+          ],
+          [
+            "math_numbers",
+            83
+          ],
+          [
+            "narrative_social",
+            30
+          ],
+          [
+            "list_structure",
+            25
+          ],
+          [
+            "dialogue_quotes",
+            6
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 220,
+            "text": " "
+          },
+          {
+            "id": 558,
+            "text": ".\\n"
+          },
+          {
+            "id": 484,
+            "text": " that"
+          },
+          {
+            "id": 591,
+            "text": " from"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 7,
+            "token_id": 3047,
+            "token": " love",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose"
+          },
+          {
+            "global_pos": 8,
+            "token_id": 11,
+            "token": ",",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose."
+          },
+          {
+            "global_pos": 9,
+            "token_id": 30327,
+            "token": " romance",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth"
+          },
+          {
+            "global_pos": 11,
+            "token_id": 61882,
+            "token": " scandal",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal"
+          },
+          {
+            "global_pos": 24,
+            "token_id": 19165,
+            "token": " freedom",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in"
+          },
+          {
+            "global_pos": 33,
+            "token_id": 19165,
+            "token": " freedom",
+            "context": "all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of"
+          }
+        ]
+      }
+    },
+    "7": {
+      "0": {
+        "share": 0.18876953125,
+        "unique_token_count": 956,
+        "top_categories": [
+          [
+            "proper_entities",
+            207
+          ],
+          [
+            "math_numbers",
+            109
+          ],
+          [
+            "narrative_social",
+            37
+          ],
+          [
+            "list_structure",
+            20
+          ],
+          [
+            "dialogue_quotes",
+            8
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 382,
+            "text": " is"
+          },
+          {
+            "id": 553,
+            "text": " are"
+          },
+          {
+            "id": 484,
+            "text": " that"
+          },
+          {
+            "id": 306,
+            "text": " in"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 7,
+            "token_id": 3047,
+            "token": " love",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose"
+          },
+          {
+            "global_pos": 9,
+            "token_id": 30327,
+            "token": " romance",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth"
+          },
+          {
+            "global_pos": 11,
+            "token_id": 61882,
+            "token": " scandal",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal"
+          },
+          {
+            "global_pos": 14,
+            "token_id": 147000,
+            "token": " Austen",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr."
+          },
+          {
+            "global_pos": 17,
+            "token_id": 11,
+            "token": ",",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of"
+          },
+          {
+            "global_pos": 18,
+            "token_id": 1412,
+            "token": " what",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage"
+          }
+        ]
+      },
+      "1": {
+        "share": 0.30166015625,
+        "unique_token_count": 1567,
+        "top_categories": [
+          [
+            "proper_entities",
+            181
+          ],
+          [
+            "math_numbers",
+            73
+          ],
+          [
+            "narrative_social",
+            31
+          ],
+          [
+            "list_structure",
+            23
+          ],
+          [
+            "dialogue_quotes",
+            11
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 261,
+            "text": " a"
+          },
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 382,
+            "text": " is"
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 198,
+            "text": "\\n"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 3,
+            "token_id": 198,
+            "token": "\\n",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and"
+          },
+          {
+            "global_pos": 8,
+            "token_id": 11,
+            "token": ",",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose."
+          },
+          {
+            "global_pos": 24,
+            "token_id": 19165,
+            "token": " freedom",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in"
+          },
+          {
+            "global_pos": 28,
+            "token_id": 71273,
+            "token": " Independence",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the"
+          },
+          {
+            "global_pos": 30,
+            "token_id": 4525,
+            "token": " thought",
+            "context": "Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day."
+          },
+          {
+            "global_pos": 33,
+            "token_id": 19165,
+            "token": " freedom",
+            "context": "all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of"
+          }
+        ]
+      },
+      "2": {
+        "share": 0.23427734375,
+        "unique_token_count": 958,
+        "top_categories": [
+          [
+            "proper_entities",
+            241
+          ],
+          [
+            "math_numbers",
+            86
+          ],
+          [
+            "narrative_social",
+            33
+          ],
+          [
+            "list_structure",
+            19
+          ],
+          [
+            "dialogue_quotes",
+            8
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 558,
+            "text": ".\\n"
+          },
+          {
+            "id": 306,
+            "text": " in"
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 395,
+            "text": " for"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 0,
+            "token_id": 976,
+            "token": "The",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence"
+          },
+          {
+            "global_pos": 4,
+            "token_id": 2653,
+            "token": "For",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the"
+          },
+          {
+            "global_pos": 5,
+            "token_id": 722,
+            "token": " all",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom"
+          },
+          {
+            "global_pos": 6,
+            "token_id": 290,
+            "token": " the",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to"
+          },
+          {
+            "global_pos": 10,
+            "token_id": 326,
+            "token": " and",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s"
+          },
+          {
+            "global_pos": 12,
+            "token_id": 306,
+            "token": " in",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of"
+          }
+        ]
+      },
+      "3": {
+        "share": 0.27529296875,
+        "unique_token_count": 1163,
+        "top_categories": [
+          [
+            "proper_entities",
+            189
+          ],
+          [
+            "math_numbers",
+            66
+          ],
+          [
+            "narrative_social",
+            25
+          ],
+          [
+            "list_structure",
+            23
+          ],
+          [
+            "dialogue_quotes",
+            9
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 261,
+            "text": " a"
+          },
+          {
+            "id": 220,
+            "text": " "
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 306,
+            "text": " in"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 1,
+            "token_id": 43203,
+            "token": " Independent",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of"
+          },
+          {
+            "global_pos": 2,
+            "token_id": 23919,
+            "token": " Jane",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought"
+          },
+          {
+            "global_pos": 27,
+            "token_id": 13,
+            "token": ".",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of"
+          },
+          {
+            "global_pos": 31,
+            "token_id": 326,
+            "token": " and",
+            "context": "For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her"
+          },
+          {
+            "global_pos": 39,
+            "token_id": 106291,
+            "token": " refusal",
+            "context": "scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by"
+          },
+          {
+            "global_pos": 40,
+            "token_id": 328,
+            "token": " of",
+            "context": "in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by anger"
+          }
+        ]
+      }
+    },
+    "8": {
+      "0": {
+        "share": 0.1404296875,
+        "unique_token_count": 675,
+        "top_categories": [
+          [
+            "proper_entities",
+            192
+          ],
+          [
+            "math_numbers",
+            52
+          ],
+          [
+            "narrative_social",
+            29
+          ],
+          [
+            "list_structure",
+            20
+          ],
+          [
+            "dialogue_quotes",
+            11
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 382,
+            "text": " is"
+          },
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 665,
+            "text": " can"
+          },
+          {
+            "id": 261,
+            "text": " a"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 2,
+            "token_id": 23919,
+            "token": " Jane",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought"
+          },
+          {
+            "global_pos": 3,
+            "token_id": 198,
+            "token": "\\n",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and"
+          },
+          {
+            "global_pos": 10,
+            "token_id": 326,
+            "token": " and",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s"
+          },
+          {
+            "global_pos": 43,
+            "token_id": 53696,
+            "token": " Collins",
+            "context": "’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by anger showed a level"
+          },
+          {
+            "global_pos": 94,
+            "token_id": 28181,
+            "token": " Lady",
+            "context": "triggered by anger showed a level of independence that left him shocked and stunned. The freedom she exhibited in finally accepting him in direct defiance of Lady Catherine and knowing her father would disapprove was unusual even for Austen. In her last book Anne Elliot is persuaded to refuse Captain Wentworth at"
+          },
+          {
+            "global_pos": 104,
+            "token_id": 30529,
+            "token": " unusual",
+            "context": "him shocked and stunned. The freedom she exhibited in finally accepting him in direct defiance of Lady Catherine and knowing her father would disapprove was unusual even for Austen. In her last book Anne Elliot is persuaded to refuse Captain Wentworth at Lady Russel’s insistence. Although Jane played"
+          }
+        ]
+      },
+      "1": {
+        "share": 0.26376953125,
+        "unique_token_count": 1379,
+        "top_categories": [
+          [
+            "proper_entities",
+            214
+          ],
+          [
+            "math_numbers",
+            74
+          ],
+          [
+            "narrative_social",
+            30
+          ],
+          [
+            "list_structure",
+            22
+          ],
+          [
+            "dialogue_quotes",
+            6
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 382,
+            "text": " is"
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 553,
+            "text": " are"
+          },
+          {
+            "id": 472,
+            "text": " as"
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 261,
+            "text": " a"
+          },
+          {
+            "id": 13,
+            "text": "."
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 16,
+            "token_id": 7187,
+            "token": " books",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer"
+          },
+          {
+            "global_pos": 20,
+            "token_id": 553,
+            "token": " are",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an"
+          },
+          {
+            "global_pos": 21,
+            "token_id": 2715,
+            "token": " really",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence"
+          },
+          {
+            "global_pos": 22,
+            "token_id": 1078,
+            "token": " about",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom"
+          },
+          {
+            "global_pos": 23,
+            "token_id": 382,
+            "token": " is",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen"
+          },
+          {
+            "global_pos": 24,
+            "token_id": 19165,
+            "token": " freedom",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in"
+          }
+        ]
+      },
+      "2": {
+        "share": 0.283203125,
+        "unique_token_count": 1100,
+        "top_categories": [
+          [
+            "proper_entities",
+            210
+          ],
+          [
+            "math_numbers",
+            68
+          ],
+          [
+            "narrative_social",
+            40
+          ],
+          [
+            "list_structure",
+            13
+          ],
+          [
+            "dialogue_quotes",
+            9
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 306,
+            "text": " in"
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 261,
+            "text": " a"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 0,
+            "token_id": 976,
+            "token": "The",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence"
+          },
+          {
+            "global_pos": 1,
+            "token_id": 43203,
+            "token": " Independent",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of"
+          },
+          {
+            "global_pos": 5,
+            "token_id": 722,
+            "token": " all",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom"
+          },
+          {
+            "global_pos": 6,
+            "token_id": 290,
+            "token": " the",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to"
+          },
+          {
+            "global_pos": 7,
+            "token_id": 3047,
+            "token": " love",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose"
+          },
+          {
+            "global_pos": 8,
+            "token_id": 11,
+            "token": ",",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose."
+          }
+        ]
+      },
+      "3": {
+        "share": 0.31259765625,
+        "unique_token_count": 1549,
+        "top_categories": [
+          [
+            "proper_entities",
+            195
+          ],
+          [
+            "math_numbers",
+            38
+          ],
+          [
+            "narrative_social",
+            35
+          ],
+          [
+            "list_structure",
+            10
+          ],
+          [
+            "dialogue_quotes",
+            9
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 558,
+            "text": ".\\n"
+          },
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 261,
+            "text": " a"
+          },
+          {
+            "id": 220,
+            "text": " "
+          },
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 484,
+            "text": " that"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 4,
+            "token_id": 2653,
+            "token": "For",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the"
+          },
+          {
+            "global_pos": 9,
+            "token_id": 30327,
+            "token": " romance",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth"
+          },
+          {
+            "global_pos": 11,
+            "token_id": 61882,
+            "token": " scandal",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal"
+          },
+          {
+            "global_pos": 14,
+            "token_id": 147000,
+            "token": " Austen",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr."
+          },
+          {
+            "global_pos": 17,
+            "token_id": 11,
+            "token": ",",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of"
+          },
+          {
+            "global_pos": 18,
+            "token_id": 1412,
+            "token": " what",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage"
+          }
+        ]
+      }
+    },
+    "9": {
+      "0": {
+        "share": 0.24267578125,
+        "unique_token_count": 1063,
+        "top_categories": [
+          [
+            "proper_entities",
+            176
+          ],
+          [
+            "math_numbers",
+            36
+          ],
+          [
+            "narrative_social",
+            31
+          ],
+          [
+            "list_structure",
+            19
+          ],
+          [
+            "dialogue_quotes",
+            11
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 220,
+            "text": " "
+          },
+          {
+            "id": 261,
+            "text": " a"
+          },
+          {
+            "id": 382,
+            "text": " is"
+          },
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 12,
+            "text": "-"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 3,
+            "token_id": 198,
+            "token": "\\n",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and"
+          },
+          {
+            "global_pos": 4,
+            "token_id": 2653,
+            "token": "For",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the"
+          },
+          {
+            "global_pos": 24,
+            "token_id": 19165,
+            "token": " freedom",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in"
+          },
+          {
+            "global_pos": 26,
+            "token_id": 43061,
+            "token": " independence",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines"
+          },
+          {
+            "global_pos": 28,
+            "token_id": 71273,
+            "token": " Independence",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the"
+          },
+          {
+            "global_pos": 30,
+            "token_id": 4525,
+            "token": " thought",
+            "context": "Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day."
+          }
+        ]
+      },
+      "1": {
+        "share": 0.3267578125,
+        "unique_token_count": 1551,
+        "top_categories": [
+          [
+            "proper_entities",
+            222
+          ],
+          [
+            "math_numbers",
+            83
+          ],
+          [
+            "narrative_social",
+            45
+          ],
+          [
+            "list_structure",
+            18
+          ],
+          [
+            "dialogue_quotes",
+            7
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 306,
+            "text": " in"
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 261,
+            "text": " a"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 7,
+            "token_id": 3047,
+            "token": " love",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose"
+          },
+          {
+            "global_pos": 8,
+            "token_id": 11,
+            "token": ",",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose."
+          },
+          {
+            "global_pos": 9,
+            "token_id": 30327,
+            "token": " romance",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth"
+          },
+          {
+            "global_pos": 11,
+            "token_id": 61882,
+            "token": " scandal",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal"
+          },
+          {
+            "global_pos": 12,
+            "token_id": 306,
+            "token": " in",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of"
+          },
+          {
+            "global_pos": 13,
+            "token_id": 23919,
+            "token": " Jane",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr"
+          }
+        ]
+      },
+      "2": {
+        "share": 0.18271484375,
+        "unique_token_count": 857,
+        "top_categories": [
+          [
+            "proper_entities",
+            166
+          ],
+          [
+            "math_numbers",
+            81
+          ],
+          [
+            "narrative_social",
+            29
+          ],
+          [
+            "list_structure",
+            19
+          ],
+          [
+            "dialogue_quotes",
+            13
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 558,
+            "text": ".\\n"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 261,
+            "text": " a"
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 198,
+            "text": "\\n"
+          },
+          {
+            "id": 484,
+            "text": " that"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 5,
+            "token_id": 722,
+            "token": " all",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom"
+          },
+          {
+            "global_pos": 34,
+            "token_id": 316,
+            "token": " to",
+            "context": "the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr"
+          },
+          {
+            "global_pos": 36,
+            "token_id": 558,
+            "token": ".\\n",
+            "context": ", romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy"
+          },
+          {
+            "global_pos": 48,
+            "token_id": 448,
+            "token": " an",
+            "context": "are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by anger showed a level of independence that left him"
+          },
+          {
+            "global_pos": 64,
+            "token_id": 188305,
+            "token": " Darcy",
+            "context": ". Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by anger showed a level of independence that left him shocked and stunned. The freedom she exhibited in finally accepting him in direct defiance"
+          },
+          {
+            "global_pos": 68,
+            "token_id": 32129,
+            "token": " anger",
+            "context": "of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal of Mr. Darcy while triggered by anger showed a level of independence that left him shocked and stunned. The freedom she exhibited in finally accepting him in direct defiance of Lady Catherine and"
+          }
+        ]
+      },
+      "3": {
+        "share": 0.2478515625,
+        "unique_token_count": 1276,
+        "top_categories": [
+          [
+            "proper_entities",
+            209
+          ],
+          [
+            "math_numbers",
+            115
+          ],
+          [
+            "narrative_social",
+            35
+          ],
+          [
+            "list_structure",
+            21
+          ],
+          [
+            "dialogue_quotes",
+            4
+          ]
+        ],
+        "top_tokens": [
+          {
+            "id": 328,
+            "text": " of"
+          },
+          {
+            "id": 290,
+            "text": " the"
+          },
+          {
+            "id": 13,
+            "text": "."
+          },
+          {
+            "id": 326,
+            "text": " and"
+          },
+          {
+            "id": 306,
+            "text": " in"
+          },
+          {
+            "id": 316,
+            "text": " to"
+          },
+          {
+            "id": 11,
+            "text": ","
+          },
+          {
+            "id": 395,
+            "text": " for"
+          }
+        ],
+        "examples": [
+          {
+            "global_pos": 0,
+            "token_id": 976,
+            "token": "The",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence"
+          },
+          {
+            "global_pos": 1,
+            "token_id": 43203,
+            "token": " Independent",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of"
+          },
+          {
+            "global_pos": 2,
+            "token_id": 23919,
+            "token": " Jane",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought"
+          },
+          {
+            "global_pos": 6,
+            "token_id": 290,
+            "token": " the",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to"
+          },
+          {
+            "global_pos": 10,
+            "token_id": 326,
+            "token": " and",
+            "context": "The Independent Jane For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s"
+          },
+          {
+            "global_pos": 32,
+            "token_id": 290,
+            "token": " the",
+            "context": "For all the love, romance and scandal in Jane Austen’s books, what they are really about is freedom and independence. Independence of thought and the freedom to choose. Elizabeth’s refusal of Mr. Collins offer of marriage showed an independence seldom seen in heroines of the day. Her refusal"
+          }
+        ]
+      }
+    }
+  }
+}
