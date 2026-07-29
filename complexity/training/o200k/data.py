@@ -206,7 +206,7 @@ def split_tokens(tokens: list[int], eval_ratio: float) -> tuple[list[int], list[
     return tokens[:-n_eval], tokens[-n_eval:]
 
 
-def build_loaders(args, config, rank: int, world_size: int):
+def build_loaders(args, config, rank: int, world_size: int, *, start_step: int = 0):
     if args.dataset == "fineweb":
         tokenizer = Tokenizer.load(args.tokenizer)
         if rank == 0:
@@ -224,27 +224,61 @@ def build_loaders(args, config, rank: int, world_size: int):
             raise ValueError("--tokens-path is required when --dataset tokens")
         if rank == 0:
             logger.info(f"Dataset: token shard mmap ({args.tokens_path})")
+        eval_tokens_path = getattr(args, "eval_tokens_path", None)
+        separate_eval = bool(eval_tokens_path)
+        start_sequence = int(start_step) * int(args.batch_size) * int(world_size)
         train_ds = TokenShardDataset(
             args.tokens_path,
             args.seq_len,
             rank=rank,
             world_size=world_size,
             seed=args.seed,
-            split="train",
-            eval_ratio=args.eval_ratio,
+            split="all" if separate_eval else "train",
+            eval_ratio=0.0 if separate_eval else args.eval_ratio,
+            order=getattr(args, "token_order", "random"),
+            start_sequence=start_sequence,
         )
         eval_ds = (
             TokenShardDataset(
-                args.tokens_path,
+                eval_tokens_path or args.tokens_path,
                 args.seq_len,
                 rank=rank,
                 world_size=world_size,
                 seed=args.seed + 10_000,
-                split="eval",
-                eval_ratio=args.eval_ratio,
+                split="all" if separate_eval else "eval",
+                eval_ratio=0.0 if separate_eval else args.eval_ratio,
+                order="sequential" if separate_eval else "random",
             )
             if args.eval_steps > 0 else None
         )
+        if rank == 0 and separate_eval:
+            logger.info(f"Evaluation: disjoint token shard mmap ({eval_tokens_path})")
+        if getattr(args, "token_order", "random") == "sequential":
+            if int(args.num_workers) != 0:
+                raise ValueError(
+                    "Exact sequential token order currently requires --num-workers 0"
+                )
+            available_sequences = (train_ds.end - train_ds.start - 1) // int(args.seq_len)
+            required_sequences = int(args.steps) * int(args.batch_size) * int(world_size)
+            if available_sequences < required_sequences:
+                raise ValueError(
+                    "Sequential training shard is too small: "
+                    f"{available_sequences:,} sequences available, "
+                    f"{required_sequences:,} required for the full run"
+                )
+            if eval_ds is not None and separate_eval:
+                available_eval_sequences = (
+                    eval_ds.end - eval_ds.start - 1
+                ) // int(args.seq_len)
+                required_eval_sequences = (
+                    int(args.eval_batches) * int(args.batch_size) * int(world_size)
+                )
+                if available_eval_sequences < required_eval_sequences:
+                    raise ValueError(
+                        "Evaluation shard is too small: "
+                        f"{available_eval_sequences:,} sequences available, "
+                        f"{required_eval_sequences:,} required per evaluation"
+                    )
     elif args.dataset == "text":
         if not args.text_file:
             raise ValueError("--text-file is required when --dataset text")

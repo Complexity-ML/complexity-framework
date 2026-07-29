@@ -1,0 +1,55 @@
+run:
+  profile: 200m_32k
+  dataset: tokens
+  tokens_path: data/fineweb_edu_32k_4b/train
+  eval_tokens_path: data/fineweb_edu_32k_4b/eval
+  token_order: sequential
+  tokenizer: ./tokenizer
+  eval_ratio: 0.0
+
+  steps: 7629
+  batch_size: 64
+  seq_len: 2048
+  hidden_size: 768
+  num_hidden_layers: 20
+  num_attention_heads: 12
+  num_key_value_heads: 3
+  attention_type: gqa
+  intermediate_size: 256
+  shared_intermediate_size: 2912
+  mlp_type: token_routed
+  shared_expert: true
+  shared_expert_chunk_tokens: 32768
+  routing_strategy: modulo_balanced_secondary
+  top_k: 2
+  top_k_primary_weight: 0.5
+  top_k_primary_weight_final: 0.5
+  learn_shared_routed_gates: false
+  expert_diversity_lambda: 0.0
+
+  optimizer: adamw
+  lr: 0.0003
+  weight_decay: 0.1
+  max_grad_norm: 1.0
+  label_smoothing: 0.0
+  z_loss: 0.0
+
+  bf16: true
+  grad_ckpt: false
+  loss_backend: auto
+  loss_chunk_tokens: 2048
+  loss_checkpoint_chunks: false
+  use_custom_kernels: auto
+  cggr: auto
+  compile: false
+
+  log_steps: 10
+  eval_steps: 250
+  eval_batches: 32
+  num_workers: 0
+  empty_cache_every: 0
+  save_steps: 1000
+  save_total_limit: 2
+  seed: 42
+  run_name: tr-gqa-fixed-id-200m-32k-4b-s42
+  save_dir: checkpoints/tr-gqa-fixed-id-200m-32k-4b-s42

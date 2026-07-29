@@ -140,12 +140,20 @@ def test_profile_param_counts_are_stable():
         "moe_telemetry": False,
     }
 
-    expected = {"50m": 51.9, "100m": 99.7, "300m": 300.8, "1b": 1030.8, "8b": 8201.5}
+    expected = {
+        "50m": (200019, 51.9),
+        "100m": (200019, 99.7),
+        "200m_32k": (32000, 200.1),
+        "300m": (200019, 300.8),
+        "1b": (200019, 1030.8),
+        "8b": (200019, 8201.5),
+    }
     for name, profile in PROFILES.items():
-        args = SimpleNamespace(**common, **profile)
+        vocab_size, expected_millions = expected[name]
+        args = SimpleNamespace(**{**common, "vocab_size": vocab_size}, **profile)
         with torch.device("meta"):
             model = ComplexityModel(make_config(args))
-        assert model.num_parameters() / 1e6 == pytest.approx(expected[name], abs=0.1)
+        assert model.num_parameters() / 1e6 == pytest.approx(expected_millions, abs=0.1)
 
 
 def test_random_dataset_infers_vocab_from_tokenizer(monkeypatch):

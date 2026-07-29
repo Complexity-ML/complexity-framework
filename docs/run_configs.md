@@ -79,9 +79,14 @@ The parser accepts only these values. Older documentation mentioning
 
 ## Profiles
 
-The local runner defines `50m`, `100m`, `300m`, `1b`, and `8b` profiles.
+The local runner defines `50m`, `100m`, `200m_32k`, `300m`, `1b`, and `8b`
+profiles.
 Profile names are approximate. The realized parameter count depends on
 vocabulary size and explicit overrides and is recorded at launch.
+
+The matched 200,082,688-parameter Dense/TR protocol, frozen 4B-token dataset
+preparation, B200 launcher, artifact export, and server teardown checklist are
+documented in [the 200M B200 runbook](200m-32k-b200-runbook.md).
 
 ## Experimental configurations
 
@@ -116,8 +121,8 @@ At first launch, the runner writes:
 runs/<run-name>/run_config.json
 ```
 
-On resume it rejects differences in training-critical arguments and
-`ModelConfig`. Operational fields such as logging cadence, evaluation cadence,
-save cadence, and output names may change.
+On resume it rejects differences in training-critical arguments,
+`ModelConfig`, and frozen token-shard identities. Operational fields such as
+logging cadence, evaluation cadence, save cadence, and output names may change.
 
 Use `--force-resume` only when the mismatch is understood and documented.

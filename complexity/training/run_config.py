@@ -10,7 +10,6 @@ from typing import Any
 
 import yaml
 
-
 RUN_CONFIG_FILE = "run_config.json"
 
 VOLATILE_RESUME_KEYS = {
@@ -89,7 +88,7 @@ def args_to_run_config(
     args_dict = vars(args).copy()
     tokens_per_step = int(args_dict["batch_size"]) * int(args_dict["seq_len"]) * int(world_size)
     total_tokens = tokens_per_step * int(args_dict["steps"])
-    return {
+    run_config = {
         "schema_version": 1,
         "git_commit": current_git_commit(),
         "params": params,
@@ -99,6 +98,33 @@ def args_to_run_config(
         "args": args_dict,
         "model_config": model_config,
         "backend": backend or {},
+    }
+    if args_dict.get("dataset") == "tokens":
+        run_config["dataset_shards"] = {
+            "train": token_shard_fingerprint(args_dict.get("tokens_path")),
+            "eval": token_shard_fingerprint(args_dict.get("eval_tokens_path")),
+        }
+    return run_config
+
+
+def token_shard_fingerprint(path: str | None) -> dict[str, Any] | None:
+    """Capture immutable token-shard identity in each run manifest."""
+
+    if not path:
+        return None
+    index_path = Path(path) / "tokens.idx.json"
+    with index_path.open("r", encoding="utf-8") as f:
+        metadata = json.load(f)
+    return {
+        "path": str(Path(path).resolve()),
+        "sha256": metadata.get("sha256"),
+        "num_tokens": metadata.get("num_tokens"),
+        "dtype": metadata.get("dtype"),
+        "vocab_size": metadata.get("vocab_size"),
+        "tokenizer_sha256": metadata.get("tokenizer_sha256"),
+        "source_repo": metadata.get("source_repo"),
+        "source_revision": metadata.get("source_revision"),
+        "partition": metadata.get("partition"),
     }
 
 
@@ -154,6 +180,14 @@ def compare_run_configs(previous: dict[str, Any], current: dict[str, Any]) -> li
 
     if previous.get("model_config") != current.get("model_config"):
         mismatches.append(("model_config", previous.get("model_config"), current.get("model_config")))
+    if previous.get("dataset_shards") != current.get("dataset_shards"):
+        mismatches.append(
+            (
+                "dataset_shards",
+                previous.get("dataset_shards"),
+                current.get("dataset_shards"),
+            )
+        )
     return mismatches
 
 
@@ -191,6 +225,14 @@ def format_run_summary(run_config: dict[str, Any]) -> list[str]:
             f"flash={backend.get('flash_attention')} "
             f"custom_triton={backend.get('custom_triton')}"
         )
+    dataset_shards = run_config.get("dataset_shards") or {}
+    for partition in ("train", "eval"):
+        shard = dataset_shards.get(partition)
+        if shard:
+            lines.append(
+                f"Shard[{partition}]: tokens={int(shard['num_tokens']):,} "
+                f"sha256={shard['sha256']} revision={shard.get('source_revision')}"
+            )
     return lines
 
 

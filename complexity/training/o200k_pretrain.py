@@ -29,29 +29,30 @@ from complexity.core.losses import (
     has_liger_fused_linear_ce,
 )
 from complexity.models import ComplexityModel
+from complexity.tokenizer import Tokenizer
+from complexity.training.moe_telemetry import global_expert_shares, global_tr_diagnostics
 from complexity.training.o200k import (
     PROFILES,
     apply_shared_routed_gates,
     apply_topk_primary_weight,
     batch_expert_counts,
-    build_parser,
     build_loaders,
     build_optimizer,
+    build_parser,
     evaluate,
     expert_diversity_loss,
-    learned_router_aux_loss,
     init_distributed,
+    learned_router_aux_loss,
     load_checkpoint,
     make_config,
     reduce_average_tensor,
     runtime_controls,
-    scheduled_value,
     save_checkpoint,
     scheduled_topk_primary_weight,
+    scheduled_value,
     text_token_frequencies,
     token_shard_frequencies,
 )
-from complexity.training.moe_telemetry import global_expert_shares, global_tr_diagnostics
 from complexity.training.run_config import (
     args_to_run_config,
     format_run_summary,
@@ -60,9 +61,9 @@ from complexity.training.run_config import (
 )
 from complexity.utils import autocast, autocast_dtype, empty_cache, synchronize
 from complexity.utils.device import backend_metadata, configure_torch_acceleration
-from complexity.utils.local_checkpoint import resolve_checkpoint_path
-from complexity.tokenizer import Tokenizer
-
+from complexity.utils.local_checkpoint import (
+    resolve_checkpoint_path as resolve_checkpoint_path,
+)
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -187,7 +188,7 @@ def main():
         config.token_frequencies = token_shard_frequencies(
             args.tokens_path,
             config.vocab_size,
-            eval_ratio=args.eval_ratio,
+            eval_ratio=0.0 if args.eval_tokens_path else args.eval_ratio,
             seq_len=args.seq_len,
         )
         if is_main:
@@ -341,7 +342,6 @@ def main():
         model = torch.compile(model, mode=args.compile_mode, dynamic=False)
 
     amp_dtype = autocast_dtype(device) if args.bf16 else None
-    train_loader, eval_loader = build_loaders(args, config, rank, world_size)
 
     optimizer, optimizer_stats = build_optimizer(args, raw_model)
     if is_main:
@@ -386,6 +386,13 @@ def main():
         start_step = load_checkpoint(args.resume, raw_model, optimizer, scheduler, device, is_main)
     if distributed:
         dist.barrier()
+    train_loader, eval_loader = build_loaders(
+        args,
+        config,
+        rank,
+        world_size,
+        start_step=start_step,
+    )
 
     csv_path = run_dir / "metrics.csv"
     csv_file = None

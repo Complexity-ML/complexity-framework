@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from complexity.config import ModelConfig
 
-
 PROFILES = {
     "50m": {
         "hidden_size": 224,
@@ -27,6 +26,17 @@ PROFILES = {
         "run_name": "100m-o200k-tr-local",
         "save_dir": "checkpoints/100m-o200k-tr-local",
         "description": "100M o200k TR",
+    },
+    "200m_32k": {
+        "hidden_size": 768,
+        "num_hidden_layers": 20,
+        "num_attention_heads": 12,
+        "num_key_value_heads": 3,
+        "intermediate_size": 256,
+        "shared_intermediate_size": 2912,
+        "run_name": "200m-32k-tr-local",
+        "save_dir": "checkpoints/200m-32k-tr-local",
+        "description": "200M 32k-vocabulary matched Dense/TR-GQA profile",
     },
     "300m": {
         "hidden_size": 896,

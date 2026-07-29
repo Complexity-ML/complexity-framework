@@ -23,7 +23,6 @@ import numpy as np
 import torch
 from torch.utils.data import IterableDataset
 
-
 TOKEN_BIN = "tokens.bin"
 TOKEN_INDEX = "tokens.idx.json"
 
@@ -248,7 +247,14 @@ def token_shard_frequencies(
 
 
 class TokenShardDataset(IterableDataset):
-    """Infinite dataset of fixed-length LM chunks from a memmapped token shard."""
+    """Dataset of fixed-length LM chunks from a memmapped token shard.
+
+    ``order="random"`` preserves the exploratory sampling behavior used by
+    local pilots. ``order="sequential"`` assigns non-overlapping global
+    sequence indices across DDP ranks/workers. The latter makes a large-scale
+    run consume a frozen corpus exactly once and supports exact resume through
+    ``start_sequence``.
+    """
 
     def __init__(
         self,
@@ -260,6 +266,8 @@ class TokenShardDataset(IterableDataset):
         seed: int = 42,
         split: str = "train",
         eval_ratio: float = 0.001,
+        order: str = "random",
+        start_sequence: int = 0,
     ):
         self.path = str(path)
         self.seq_len = int(seq_len)
@@ -268,6 +276,12 @@ class TokenShardDataset(IterableDataset):
         self.seed = int(seed)
         self.split = split
         self.eval_ratio = float(eval_ratio)
+        self.order = str(order)
+        self.start_sequence = int(start_sequence)
+        if self.order not in {"random", "sequential"}:
+            raise ValueError("order must be one of: random, sequential")
+        if self.start_sequence < 0:
+            raise ValueError("start_sequence must be non-negative")
 
         tokens, metadata = load_token_shard(path)
         self.num_tokens = int(tokens.shape[0])
@@ -275,16 +289,28 @@ class TokenShardDataset(IterableDataset):
         if self.num_tokens < self.seq_len + 2:
             raise ValueError(f"Need at least {self.seq_len + 2} tokens, got {self.num_tokens}")
 
-        eval_tokens = max(self.seq_len + 1, int(self.num_tokens * self.eval_ratio))
-        eval_tokens = min(eval_tokens, max(self.seq_len + 1, self.num_tokens // 10))
-        if split == "train":
+        if split == "all":
             self.start = 0
-            self.end = self.num_tokens - eval_tokens
+            self.end = self.num_tokens
+        elif split == "train":
+            if self.eval_ratio <= 0.0:
+                self.start = 0
+                self.end = self.num_tokens
+                eval_tokens = 0
+            else:
+                eval_tokens = max(self.seq_len + 1, int(self.num_tokens * self.eval_ratio))
+                eval_tokens = min(eval_tokens, max(self.seq_len + 1, self.num_tokens // 10))
+                self.start = 0
+                self.end = self.num_tokens - eval_tokens
         elif split in {"eval", "val", "validation"}:
+            if self.eval_ratio <= 0.0:
+                raise ValueError("eval_ratio must be positive when split is eval")
+            eval_tokens = max(self.seq_len + 1, int(self.num_tokens * self.eval_ratio))
+            eval_tokens = min(eval_tokens, max(self.seq_len + 1, self.num_tokens // 10))
             self.start = self.num_tokens - eval_tokens
             self.end = self.num_tokens
         else:
-            raise ValueError("split must be one of: train, eval, val, validation")
+            raise ValueError("split must be one of: all, train, eval, val, validation")
         if self.end - self.start < self.seq_len + 1:
             raise ValueError(f"Token shard split {split!r} is too small for seq_len={self.seq_len}")
 
@@ -295,6 +321,18 @@ class TokenShardDataset(IterableDataset):
         num_workers = 1 if worker is None else worker.num_workers
         stream_id = self.rank * num_workers + worker_id
         stream_count = max(1, self.world_size * num_workers)
+
+        if self.order == "sequential":
+            sequence_index = self.start_sequence + stream_id
+            while True:
+                pos = self.start + sequence_index * self.seq_len
+                if pos + self.seq_len >= self.end:
+                    return
+                chunk = np.asarray(tokens[pos:pos + self.seq_len + 1], dtype=np.int64)
+                ids = torch.from_numpy(chunk.copy()).long()
+                yield {"input_ids": ids[:-1], "labels": ids[1:]}
+                sequence_index += stream_count
+
         gen = torch.Generator().manual_seed(self.seed + 1_000_003 * stream_id)
 
         high = self.end - self.seq_len - 1

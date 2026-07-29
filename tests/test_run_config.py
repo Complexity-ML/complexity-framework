@@ -116,3 +116,15 @@ def test_run_config_summary_includes_backend():
 
     assert any("Backend: rocm" in line for line in summary)
     assert any("rocBLAS/hipBLASLt" in line for line in summary)
+
+
+def test_resume_guard_rejects_changed_token_shard(tmp_path):
+    from complexity.data.token_shards import write_token_shard
+    from complexity.training.run_config import token_shard_fingerprint
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    write_token_shard(first, range(32), vocab_size=128, tokenizer="test")
+    write_token_shard(second, range(1, 33), vocab_size=128, tokenizer="test")
+
+    assert token_shard_fingerprint(first)["sha256"] != token_shard_fingerprint(second)["sha256"]

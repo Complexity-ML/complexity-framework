@@ -18,6 +18,25 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Directory containing tokens.bin + tokens.idx.json for --dataset tokens.",
     )
+    parser.add_argument(
+        "--eval-tokens-path",
+        type=str,
+        default=None,
+        help=(
+            "Optional disjoint evaluation token shard. When set, the training "
+            "shard is consumed in full and --eval-ratio is ignored."
+        ),
+    )
+    parser.add_argument(
+        "--token-order",
+        choices=["random", "sequential"],
+        default="random",
+        help=(
+            "Sampling order for token shards. sequential gives each DDP "
+            "rank/worker non-overlapping contiguous LM sequences and supports "
+            "exact resume."
+        ),
+    )
     parser.add_argument("--tokenizer", type=str, default="./tokenizer-o200k")
     parser.add_argument("--vocab-size", type=int, default=None)
     parser.add_argument("--steps", type=int, default=100)
