@@ -67,7 +67,7 @@ run:
   save_total_limit: 5
 
   loss_chunk_tokens: 1024
-  routing_strategy: zipf
+  routing_strategy: modulo_cyclic
   top_k: 2
   top_k_primary_weight: 0.5
   static_expert_capacity: false

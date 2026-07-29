@@ -361,10 +361,16 @@ def test_launcher_reports_the_real_tr_gqa_controls_only():
     assert "Zipf" not in summary
     assert "lsh_threshold" not in summary
     assert "gates" not in summary
-    assert requires_routing_frequencies(
+    assert not requires_routing_frequencies(
         SimpleNamespace(
             mlp_type="token_routed",
             routing_strategy="modulo_balanced_secondary",
+        )
+    )
+    assert not requires_routing_frequencies(
+        SimpleNamespace(
+            mlp_type="token_routed",
+            routing_strategy="modulo_cyclic",
         )
     )
     assert not requires_routing_frequencies(

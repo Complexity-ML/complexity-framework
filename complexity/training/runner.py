@@ -8,7 +8,7 @@ with a single class that handles:
 - distributed init + CUDA backend flags
 - tokenizer load + vocab sync
 - model construction from a user `make_config` factory
-- Zipf token-frequency pre-pass (if num_experts > 1)
+- fixed token-ID routing with no corpus-frequency pre-pass
 - dataset (FineWebStreamingDataset by default; override `build_dataset`)
 - TrainingConfig + Trainer wiring
 - compute_loss (fused Liger CE by default)
@@ -48,7 +48,6 @@ import math
 import os
 import signal
 import time
-from itertools import islice
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 
@@ -213,7 +212,7 @@ class TrainRunner:
                        choices=["adamw", "adamw_mup", "muon", "muon_tr", "adam_tr"],
                        help="Overrides the script's default optimizer (e.g. adam_tr for MoE ablations)")
         p.add_argument("--top-k", type=int, default=None,
-                       help="Token-Routed top-K deterministic (overrides config.top_k). K=1 classic Zipf, K>1 activates K experts/token with primary weighted 0.95.")
+                       help="Token-Routed deterministic top-K (overrides config.top_k).")
         p.add_argument("--use-custom-kernels", type=str, default="auto",
                        choices=["auto", "true", "false"],
                        help="Custom Triton/CUDA kernels. auto enables NVIDIA CUDA, disables ROCm by default.")
@@ -228,21 +227,6 @@ class TrainRunner:
                 f"Train one first or point --tokenizer to an existing HF directory."
             )
         return PreTrainedTokenizerFast.from_pretrained(path)
-
-    def _compute_zipf_frequencies(self, tokenizer, vocab_size: int) -> torch.Tensor:
-        """One-pass token frequency count for Zipf-balanced routing init."""
-        logger.info("Computing token frequencies for Zipf-balanced routing...")
-        freq_dataset = FineWebStreamingDataset(
-            tokenizer=tokenizer, seq_len=512, rank=0, world_size=1,
-        )
-        freq_loader = DataLoader(freq_dataset, batch_size=64, num_workers=2)
-        freqs = torch.zeros(vocab_size, dtype=torch.float32)
-        for batch in islice(freq_loader, 1000):
-            ids = batch["input_ids"].flatten()
-            ids = ids[ids < vocab_size]
-            freqs.scatter_add_(0, ids, torch.ones_like(ids, dtype=torch.float32))
-        logger.info(f"  {freqs.sum():.0f} tokens sampled")
-        return freqs
 
     def run(self) -> None:
         args = self._build_parser().parse_args()
@@ -280,11 +264,6 @@ class TrainRunner:
         if args.top_k is not None:
             config.top_k = args.top_k
         config.use_custom_kernels = custom_kernel_policy
-
-        if config.num_experts > 1 and is_main:
-            config.token_frequencies = self._compute_zipf_frequencies(
-                tokenizer, config.vocab_size,
-            )
 
         model = ComplexityModel(config)
         if args.gradient_checkpointing:

@@ -20,7 +20,9 @@ run:
   mlp_type: token_routed
   shared_expert: true
   shared_expert_chunk_tokens: 32768
-  routing_strategy: modulo_balanced_secondary
+  # TMLR-faithful fixed lookup: primary token_id % E, then cyclic successor.
+  # No corpus-frequency table is read or constructed.
+  routing_strategy: modulo_cyclic
   top_k: 2
   top_k_primary_weight: 0.5
   top_k_primary_weight_final: 0.5

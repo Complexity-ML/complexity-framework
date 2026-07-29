@@ -49,14 +49,16 @@ They must not be confused with the main **TR-MHA = MHA + TR-MoE** pairing.
 - four narrow routed experts by default;
 - deterministic per-layer token-to-expert tables;
 - top-k routes without a learned router or auxiliary balancing loss;
-- `zipf`, `modulo`, `modulo_balanced_secondary`, `round_robin`, `random`,
-  and experimental `lsh_hidden` routing;
+- explicit `modulo_cyclic` routing with no corpus counts;
+- `zipf`, `round_robin`, `random`, and experimental `lsh_hidden` are retained
+  only as research controls;
 - a universal PyTorch dispatch path and an optional CUDA/Triton CGGR path;
 - optional routing and shared/routed RMS telemetry.
 
-Frequency-balanced routing is approximate and depends on the supplied tokenizer
-frequency artifact. Without frequencies, `zipf` deliberately falls back to
-token-ID modulo routing.
+The legacy names `modulo` and `modulo_balanced_secondary` remain accepted only
+for historical ablation configurations. New TR-GQA and TR-MHA runs use
+`modulo_cyclic`, so the canonical architecture has no dataset-frequency
+pre-pass or frequency-dependent routing table.
 
 ## Research paths and evidence
 
@@ -209,7 +211,7 @@ tr_gqa = ModelConfig(
     intermediate_size=128,
     shared_expert=True,
     shared_intermediate_size=1536,
-    routing_strategy="zipf",
+    routing_strategy="modulo_cyclic",
     top_k=2,
     top_k_primary_weight=0.5,
 )

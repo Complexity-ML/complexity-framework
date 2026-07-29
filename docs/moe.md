@@ -24,7 +24,7 @@ mlp = TokenRoutedMLP(
         vocab_size=32_000,
         num_experts=4,
         shared_expert=True,
-        routing_strategy="modulo_balanced_secondary",
+        routing_strategy="modulo_cyclic",
         top_k=2,
         top_k_primary_weight=0.5,
     )

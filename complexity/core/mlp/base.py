@@ -24,8 +24,9 @@ class MLPConfig:
     num_experts: int = 1  # 1 = standard MLP, >1 = MoE
     vocab_size: int = 100000  # For token-routed MoE
     hash_routing: str = ""  # "" = modulo (token_id % E), "learned" = learned projection router
-    routing_strategy: str = "zipf"  # zipf, modulo, modulo_balanced_secondary, round_robin, random, lsh_hidden
-    token_frequencies: Optional[torch.Tensor] = None  # [vocab_size] token counts for frequency-balanced routing
+    routing_strategy: str = "modulo_cyclic"
+    # Present only so the standalone historical ablations can be replayed.
+    token_frequencies: Optional[torch.Tensor] = None
     # Semantic LSH routing: route on a fixed random-hyperplane hash of the
     # hidden state (post-attention) instead of the token id. Deterministic, no
     # learned gate; the expert choice now depends on the contextual/semantic
@@ -40,7 +41,7 @@ class MLPConfig:
     use_shared_routed_gates: bool = False  # Learn scalar gates for shared vs routed expert outputs.
     shared_gate_init: float = 1.0  # Initial shared expert output multiplier.
     routed_gate_init: float = 1.0  # Initial routed expert output multiplier.
-    top_k: int = 1  # Token-Routed top-K deterministic: each token activates K Zipf-balanced expert routes.
+    top_k: int = 1  # Token-Routed top-K deterministic: each token activates K fixed expert routes.
     top_k_primary_weight: Optional[float] = None  # K>1 primary expert blend weight; None keeps the default 0.95.
     layer_idx: int = 0  # Layer index propagated from the block; used for the built-in per-layer routing permutation.
     static_expert_capacity: bool = False  # Fixed capacity for torch.export / pipeline tracing.
@@ -74,14 +75,16 @@ class MLPConfig:
         if self.routing_strategy not in {
             "zipf",
             "modulo",
+            "modulo_cyclic",
             "modulo_balanced_secondary",
             "round_robin",
             "random",
             "lsh_hidden",
         }:
             raise ValueError(
-                "routing_strategy must be one of zipf, modulo, "
-                "modulo_balanced_secondary, round_robin, random, lsh_hidden"
+                "routing_strategy must be one of modulo_cyclic, zipf, "
+                "round_robin, random, lsh_hidden "
+                "(legacy aliases: modulo, modulo_balanced_secondary)"
             )
         if self.lsh_threshold_mode not in {"batch_median", "zero"}:
             raise ValueError("lsh_threshold_mode must be 'batch_median' or 'zero'")

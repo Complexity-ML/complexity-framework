@@ -50,7 +50,7 @@ cf-o200k-pretrain \
   --steps 1000 \
   --batch-size 8 \
   --seq-len 2048 \
-  --routing-strategy zipf \
+  --routing-strategy modulo_cyclic \
   --top-k 2 \
   --top-k-primary-weight 0.5 \
   --bf16 \
@@ -72,7 +72,7 @@ cf-o200k-pretrain \
   --tokenizer ./tokenizer-o200k \
   --attention-type mha \
   --num-key-value-heads 8 \
-  --routing-strategy modulo_balanced_secondary \
+  --routing-strategy modulo_cyclic \
   --top-k 2 \
   --top-k-primary-weight 0.5 \
   --steps 250 \
@@ -96,8 +96,9 @@ configs/run_configs/experiments_100m/
 | `tokens` | `--tokens-path` | memory-mapped pretokenized data |
 | `fineweb` | dataset stream | may require network and dataset dependencies |
 
-For `text` and `tokens`, the runner can derive token-frequency counts used by
-`zipf` and `modulo_balanced_secondary`.
+Canonical `text` and `tokens` runs do not scan the corpus to build routing
+tables. Frequency-derived routes are retained only in the standalone TMLR
+supplement for ablation replay.
 
 ## Loss backends
 

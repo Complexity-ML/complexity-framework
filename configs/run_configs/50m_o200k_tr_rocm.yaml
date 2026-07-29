@@ -15,7 +15,7 @@ run:
   save_steps: 5000
   save_total_limit: 3
   loss_chunk_tokens: 1024
-  routing_strategy: zipf
+  routing_strategy: modulo_cyclic
   top_k: 2
   top_k_primary_weight: 0.5
   use_custom_kernels: auto

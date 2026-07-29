@@ -68,7 +68,7 @@ def main() -> None:
         "tie_word_embeddings": c.get("tie_word_embeddings", True),
         "top_k": c.get("top_k", 2),
         "top_k_primary_weight": float(pw),
-        "routing_strategy": c.get("routing_strategy", "zipf"),
+        "routing_strategy": c.get("routing_strategy", "modulo_cyclic"),
         "lsh_routing": bool(c.get("lsh_routing", False)),
         "lsh_bits": int(c.get("lsh_bits", 0)),
         "lsh_from_layer": int(c.get("lsh_from_layer", 0)),

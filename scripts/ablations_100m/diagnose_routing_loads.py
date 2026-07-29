@@ -23,8 +23,8 @@ def main() -> None:
     tokens = tokenizer.encode(text)
     ids = torch.tensor(tokens, dtype=torch.long)
     ids = ids[(ids >= 0) & (ids < VOCAB_SIZE)]
-    freqs = torch.zeros(VOCAB_SIZE, dtype=torch.float32)
-    freqs.scatter_add_(0, ids, torch.ones_like(ids, dtype=torch.float32))
+    freqs = torch.zeros(VOCAB_SIZE, dtype=torch.int64)
+    freqs.add_(torch.bincount(ids, minlength=VOCAB_SIZE))
     seen = freqs > 0
 
     print(f"sample_tokens={int(freqs.sum().item())} seen_types={int(seen.sum().item())} vocab={VOCAB_SIZE}")

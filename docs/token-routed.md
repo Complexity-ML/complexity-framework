@@ -25,29 +25,23 @@ current contextual hidden state.
 
 ## Route construction
 
-### `zipf`
-
-When `token_frequencies` is supplied, tokens are sorted by descending
-frequency and greedily assigned to the currently lightest expert. This aims to
-balance expected frequency mass.
-
-When no frequency tensor is supplied, `zipf` intentionally falls back to
-token-ID modulo routing. The framework does not infer corpus frequencies.
-
-### `modulo`
+### `modulo_cyclic`
 
 The primary route starts from `token_id % num_experts`, followed by a
 deterministic layer-specific permutation. Auxiliary routes advance cyclically.
+This route never reads corpus frequencies. `modulo` is its legacy alias.
 
-### `modulo_balanced_secondary`
+### Historical frequency-aware controls
 
-The primary route is modulo-based. Secondary routes are built greedily from
-the frequency artifact while excluding experts already selected for that token.
-This is the route used in the short matched TR-MHA pilot.
+The standalone TMLR supplement retains `zipf` and
+`modulo_balanced_secondary` solely to reproduce reported controls. They are
+not part of the canonical TR-GQA or TR-MHA path. New runs use
+`modulo_cyclic` and do not scan the training corpus to construct routing
+tables.
 
 ### Controls
 
-- `round_robin`: assignment over frequency rank when frequencies exist;
+- `round_robin`: deterministic token-rank assignment;
 - `random`: seeded deterministic lexical partition;
 - `lsh_hidden`: experimental fixed random-hyperplane routing on hidden states.
 
@@ -141,7 +135,7 @@ config = ModelConfig(
     intermediate_size=128,
     shared_expert=True,
     shared_intermediate_size=1536,
-    routing_strategy="zipf",
+    routing_strategy="modulo_cyclic",
     top_k=2,
     top_k_primary_weight=0.5,
 )
@@ -167,7 +161,7 @@ mlp = TokenRoutedMLP(
         num_experts=4,
         shared_expert=True,
         shared_intermediate_size=128,
-        routing_strategy="modulo",
+        routing_strategy="modulo_cyclic",
         top_k=2,
         top_k_primary_weight=0.5,
     )

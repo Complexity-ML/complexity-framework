@@ -83,7 +83,7 @@ def test_dense_and_fixed_id_configs_share_the_full_training_protocol():
     assert dense["intermediate_size"] == (
         routed["shared_intermediate_size"] + routed["intermediate_size"]
     )
-    assert routed["routing_strategy"] == "modulo_balanced_secondary"
+    assert routed["routing_strategy"] == "modulo_cyclic"
     assert routed["top_k"] == 2
     assert routed["top_k_primary_weight"] == 0.5
     assert routed["learn_shared_routed_gates"] is False

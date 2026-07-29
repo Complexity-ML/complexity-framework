@@ -60,6 +60,7 @@ def make_config(args) -> ModelConfig:
         attention_type="gqa",
         mlp_type="token_routed",
         num_experts=4,
+        routing_strategy="modulo_cyclic",
         shared_expert=True,
         shared_intermediate_size=args.shared_intermediate_size,
         norm_type="rmsnorm",
@@ -158,20 +159,6 @@ def infer_vocab_size(args) -> int:
     if args.dataset == "random":
         return 32000
     return Tokenizer.load(args.tokenizer).vocab_size
-
-
-def text_token_frequencies(path: str, tokenizer_path: str, vocab_size: int) -> torch.Tensor:
-    tokens = load_text_tokens(path, tokenizer_path)
-    ids = torch.tensor(tokens, dtype=torch.long)
-    ids = ids[(ids >= 0) & (ids < vocab_size)]
-    freqs = torch.zeros(vocab_size, dtype=torch.float32)
-    if ids.numel() > 0:
-        freqs.scatter_add_(0, ids, torch.ones_like(ids, dtype=torch.float32))
-    logger.info(
-        f"Zipf routing frequencies: {int(freqs.sum().item()):,} tokens, "
-        f"{int((freqs > 0).sum().item()):,} vocab entries"
-    )
-    return freqs
 
 
 def split_tokens(tokens: list[int], eval_ratio: float) -> tuple[list[int], list[int]]:
@@ -343,23 +330,12 @@ def main():
     parser.add_argument("--save-dir", type=str, default="checkpoints/100m-tr-local")
     parser.add_argument("--save-total-limit", type=int, default=3)
     parser.add_argument("--resume", type=str, default=None)
-    parser.add_argument(
-        "--no-zipf-from-text",
-        action="store_true",
-        help="Disable token-frequency balanced routing when --dataset text.",
-    )
     args = parser.parse_args()
 
     device, distributed, rank, local_rank, world_size = init_distributed(args.seed)
     is_main = rank == 0
     args.vocab_size = infer_vocab_size(args)
     config = make_config(args)
-    if args.dataset == "text" and not args.no_zipf_from_text:
-        config.token_frequencies = text_token_frequencies(
-            args.text_file,
-            args.tokenizer,
-            config.vocab_size,
-        )
     raw_model = ComplexityModel(config).to(device)
     if args.grad_ckpt:
         raw_model.gradient_checkpointing_enable()

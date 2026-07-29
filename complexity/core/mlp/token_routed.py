@@ -278,20 +278,24 @@ class TokenRoutedMLP(MLPBase):
         """
         Create deterministic mapping from token ID to expert ID.
 
-        With token_frequencies: greedy bin-packing so each expert gets
-        equal corpus frequency load (Zipf-balanced).
-        Without: simple modulo fallback (token_id % E).
+        Canonical routing is token_id modulo E. Frequency-aware construction
+        remains available only to replay historical ablations.
 
         When config.per_layer_routing is True, a deterministic permutation
         of the expert indices specific to this layer is applied after the
-        mapping is built. This keeps Zipf balance intact (a permutation
-        preserves load distribution) while giving each layer a different
+        mapping is built. This preserves route cardinality while giving each
+        layer a different
         token→expert assignment, enriching specialization.
         """
-        strategy = str(getattr(self.config, "routing_strategy", "zipf")).lower()
+        strategy = str(
+            getattr(self.config, "routing_strategy", "modulo_cyclic")
+        ).lower()
+        strategy = {
+            "modulo_cyclic": "modulo",
+        }.get(strategy, strategy)
         freqs = getattr(self.config, 'token_frequencies', None)
         if strategy == "zipf" and freqs is not None:
-            freqs = freqs.detach().cpu().float()
+            freqs = freqs.detach().cpu().double()
             sorted_indices = freqs.argsort(descending=True)
             mapping = torch.empty(vocab_size, dtype=torch.long, device="cpu")
             expert_loads = [0.0] * num_experts
@@ -315,7 +319,7 @@ class TokenRoutedMLP(MLPBase):
             # Round-robin over frequency rank (or token id if no frequencies),
             # giving a routing-table control distinct from token-id modulo.
             if freqs is not None:
-                order = freqs.detach().cpu().float().argsort(descending=True)
+                order = freqs.detach().cpu().double().argsort(descending=True)
             else:
                 order = torch.arange(vocab_size, dtype=torch.long, device="cpu")
             mapping = torch.empty(vocab_size, dtype=torch.long, device="cpu")
@@ -329,8 +333,7 @@ class TokenRoutedMLP(MLPBase):
             raise ValueError(f"Unsupported lexical routing_strategy: {strategy}")
 
         # Per-layer routing is always on: a deterministic layer-dependent
-        # permutation of expert indices. Preserves Zipf load balance (a
-        # permutation is measure-preserving) while forcing each layer to
+        # permutation of expert indices. It preserves route cardinality while forcing each layer to
         # route differently → richer specialization, zero runtime cost.
         layer_idx = int(getattr(self.config, 'layer_idx', 0))
         g = torch.Generator().manual_seed(0xC0DE + layer_idx)
@@ -346,7 +349,7 @@ class TokenRoutedMLP(MLPBase):
             raise ValueError(
                 f"token_frequencies length ({freqs.numel()}) must match vocab_size ({vocab_size})"
             )
-        return freqs.detach().cpu().float().clamp_min(0.0)
+        return freqs.detach().cpu().double().clamp_min(0.0)
 
     def _create_topk_token_mapping(
         self,
@@ -358,10 +361,9 @@ class TokenRoutedMLP(MLPBase):
         """Build deterministic auxiliary expert maps.
 
         For k>0 each token is assigned to an expert different from all earlier
-        routes for that token. Zipf keeps frequency-balanced auxiliary routes;
-        routing controls preserve their own control strategy. The explicit
-        modulo_balanced_secondary strategy is the exception: it keeps the
-        modulo primary route and balances only auxiliary routes by frequency.
+        routes for that token. Canonical modulo routing uses cyclic successors.
+        Frequency-balanced auxiliary routes exist only for historical
+        ablation replay.
         """
 
         routes = torch.empty(top_k, vocab_size, dtype=torch.long, device="cpu")
@@ -369,7 +371,12 @@ class TokenRoutedMLP(MLPBase):
         if top_k == 1:
             return routes
 
-        strategy = str(getattr(self.config, "routing_strategy", "zipf")).lower()
+        strategy = str(
+            getattr(self.config, "routing_strategy", "modulo_cyclic")
+        ).lower()
+        strategy = {
+            "modulo_cyclic": "modulo",
+        }.get(strategy, strategy)
         if strategy in {"modulo", "round_robin"}:
             for route_idx in range(1, top_k):
                 routes[route_idx] = (routes[0] + route_idx) % num_experts

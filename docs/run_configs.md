@@ -34,7 +34,7 @@ run:
   num_attention_heads: 8
   num_key_value_heads: 2
   shared_expert: true
-  routing_strategy: zipf
+  routing_strategy: modulo_cyclic
   top_k: 2
 ```
 
@@ -47,7 +47,7 @@ run:
   num_attention_heads: 8
   num_key_value_heads: 8
   shared_expert: true
-  routing_strategy: modulo_balanced_secondary
+  routing_strategy: modulo_cyclic
   top_k: 2
 ```
 
@@ -67,15 +67,15 @@ Match parameter counts explicitly by adjusting `intermediate_size` and
 
 | Value | Route source | Frequency artifact |
 | --- | --- | --- |
-| `zipf` | lexical lookup | used when available; otherwise modulo fallback |
-| `modulo` | token ID | not required |
-| `modulo_balanced_secondary` | modulo primary, greedy auxiliary | used when available |
-| `round_robin` | frequency rank or token ID | optional |
+| `modulo_cyclic` | token ID | not required |
+| `modulo` | token ID | legacy alias for `modulo_cyclic` |
+| `round_robin` | token ID rank | not required |
 | `random` | fixed seeded lexical partition | not required |
 | `lsh_hidden` | hidden-state hash | not lexical routing |
 
-The parser accepts only these values. Older documentation mentioning
-`zipf_token_class` is obsolete.
+`zipf` and `modulo_balanced_secondary` remain parser-compatible only for the
+historical TMLR ablations. They are not used by canonical run configurations.
+Older documentation mentioning `zipf_token_class` is obsolete.
 
 ## Profiles
 

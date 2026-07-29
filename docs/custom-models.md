@@ -20,7 +20,7 @@ config = ModelConfig(
     intermediate_size=256,
     shared_expert=True,
     shared_intermediate_size=1536,
-    routing_strategy="zipf",
+    routing_strategy="modulo_cyclic",
     top_k=2,
 )
 model = ComplexityModel(config)
@@ -41,7 +41,7 @@ config = ModelConfig(
     intermediate_size=256,
     shared_expert=True,
     shared_intermediate_size=1536,
-    routing_strategy="zipf",
+    routing_strategy="modulo_cyclic",
     top_k=2,
 )
 model = ComplexityModel(config)

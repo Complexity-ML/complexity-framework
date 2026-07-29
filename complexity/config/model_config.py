@@ -94,8 +94,10 @@ class ModelConfig:
 
     # === MoE (Token-Routed) ===
     num_experts: int = 1  # 1 = standard MLP, >1 = MoE
-    token_frequencies: Optional[torch.Tensor] = None  # Zipf-balanced routing
-    routing_strategy: str = "zipf"  # zipf, modulo, modulo_balanced_secondary, round_robin, random, lsh_hidden
+    # Frequency tables are accepted only for reproducing historical ablations.
+    # Canonical TR-GQA/TR-MHA uses a fixed token-ID modulo route.
+    token_frequencies: Optional[torch.Tensor] = None
+    routing_strategy: str = "modulo_cyclic"
     lsh_routing: bool = False  # Route on a fixed random-hyperplane hash of h (semantic), not the token id
     lsh_bits: int = 0  # Number of hyperplanes (0 = ceil(log2(num_experts)))
     lsh_from_layer: int = 0  # LSH routing only for layers >= this index; earlier layers stay lexical
@@ -106,7 +108,7 @@ class ModelConfig:
     use_shared_routed_gates: bool = False  # Learn scalar gates for shared vs routed expert outputs
     shared_gate_init: float = 1.0  # Initial multiplier for shared expert output
     routed_gate_init: float = 1.0  # Initial multiplier for routed expert output
-    top_k: int = 1  # Token-Routed top-K deterministic (1 = classic Zipf top-1; K>1 activates K Zipf-balanced expert routes)
+    top_k: int = 1  # Token-Routed top-K deterministic fixed lookup
     top_k_primary_weight: Optional[float] = None  # K>1 blend weight for primary expert (default: 0.95)
     static_expert_capacity: bool = False  # Use fixed per-expert dispatch capacity for torch.export / pipeline tracing
     use_custom_kernels: Any = "auto"  # "auto", True, or False. ROCm defaults to PyTorch fallback in auto mode.
@@ -265,14 +267,16 @@ class ModelConfig:
         if self.routing_strategy not in {
             "zipf",
             "modulo",
+            "modulo_cyclic",
             "modulo_balanced_secondary",
             "round_robin",
             "random",
             "lsh_hidden",
         }:
             raise ValueError(
-                "routing_strategy must be one of zipf, modulo, "
-                "modulo_balanced_secondary, round_robin, random, lsh_hidden"
+                "routing_strategy must be one of modulo_cyclic, zipf, "
+                "round_robin, random, lsh_hidden "
+                "(legacy aliases: modulo, modulo_balanced_secondary)"
             )
         if self.lsh_threshold_mode not in {"batch_median", "zero"}:
             raise ValueError("lsh_threshold_mode must be 'batch_median' or 'zero'")
@@ -372,12 +376,13 @@ class ModelConfig:
             None,
             "zipf",
             "modulo",
+            "modulo_cyclic",
             "modulo_balanced_secondary",
             "round_robin",
             "random",
             "lsh_hidden",
         }:
-            filtered["routing_strategy"] = "zipf"
+            filtered["routing_strategy"] = "modulo_cyclic"
         return cls(**filtered)
 
     @classmethod

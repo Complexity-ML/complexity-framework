@@ -84,7 +84,7 @@ def test_pair_shares_protocol_and_consumes_two_billion_tokens():
         routed["shared_intermediate_size"] + routed["intermediate_size"]
     )
     assert dense["steps"] * 4 * dense["batch_size"] * dense["seq_len"] == 1_999_896_576
-    assert routed["routing_strategy"] == "modulo_balanced_secondary"
+    assert routed["routing_strategy"] == "modulo_cyclic"
     assert routed["top_k"] == 2
     assert routed["top_k_primary_weight"] == 0.5
     assert routed["learn_shared_routed_gates"] is False

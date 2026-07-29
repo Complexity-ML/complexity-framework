@@ -201,7 +201,10 @@ class MPSOnlineRLEngine:
         )
 
     def _validate_semantic_routing(self) -> None:
-        if getattr(self.model_config, "routing_strategy", "zipf") != "lsh_hidden":
+        if (
+            getattr(self.model_config, "routing_strategy", "modulo_cyclic")
+            != "lsh_hidden"
+        ):
             return
 
         lsh_layers = [

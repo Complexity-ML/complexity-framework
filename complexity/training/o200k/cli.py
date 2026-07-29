@@ -217,16 +217,17 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[
             "zipf",
             "modulo",
+            "modulo_cyclic",
             "modulo_balanced_secondary",
             "round_robin",
             "random",
             "lsh_hidden",
         ],
-        default="zipf",
+        default="modulo_cyclic",
         help=(
-            "Token-Routed strategy: zipf/modulo/"
-            "modulo_balanced_secondary/round_robin/random lexical routing, "
-            "or lsh_hidden semantic routing."
+            "Token-Routed strategy. modulo_cyclic uses token_id modulo E plus "
+            "cyclic successors and no corpus counts. zipf and the legacy "
+            "modulo_balanced_secondary name are retained for ablations."
         ),
     )
     parser.add_argument(
