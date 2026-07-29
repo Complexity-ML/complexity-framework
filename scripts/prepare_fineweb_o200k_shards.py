@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Freeze FineWeb-Edu into disjoint uint16 train/eval token shards.
+"""Freeze FineWeb-Edu into disjoint o200k train/eval token shards.
 
 The script is intended to run on the training server before ``torchrun``. It
 downloads one pinned Parquet file at a time to local NVMe, tokenizes it with the
-repository's 32k tokenizer, appends EOS between documents, writes memory-mapped
-token streams, and deletes the raw Parquet file. Training therefore performs
-no network I/O.
+repository's cached o200k tokenizer, appends EOS between documents, writes
+memory-mapped uint32 token streams, and deletes the raw Parquet file. Training
+therefore performs no network I/O.
 """
 
 from __future__ import annotations
@@ -34,13 +34,13 @@ DATASET_PREFIX = "sample/10BT/"
 # the new matched pair.
 DEFAULT_REVISION = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
 FORMAT = "complexity-token-shard-v1"
-DTYPE = np.dtype("<u2")
+DTYPE = np.dtype("<u4")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-root", type=Path, required=True)
-    parser.add_argument("--tokenizer", type=Path, default=Path("./tokenizer"))
+    parser.add_argument("--tokenizer", type=Path, default=Path("./tokenizer-o200k"))
     parser.add_argument("--revision", default=DEFAULT_REVISION)
     parser.add_argument(
         "--train-tokens",
@@ -131,8 +131,8 @@ class TokenWriter:
                 f"{self.name}: token id outside vocabulary: min={minimum}, max={maximum}, "
                 f"vocab={self.vocab_size}"
             )
-        if maximum > np.iinfo(np.uint16).max:
-            raise ValueError(f"{self.name}: token id {maximum} does not fit uint16")
+        if maximum > np.iinfo(np.uint32).max:
+            raise ValueError(f"{self.name}: token id {maximum} does not fit uint32")
         array = array64.astype(DTYPE, copy=False)
         payload = array.tobytes()
         self.handle.write(payload)
@@ -178,6 +178,14 @@ class TokenWriter:
 
 def encode_batch(tokenizer: Tokenizer, texts: list[str]) -> list[list[int]]:
     backend = getattr(tokenizer, "_tokenizer", None)
+    tiktoken_encoding = getattr(backend, "encoding", None)
+    if tiktoken_encoding is not None and hasattr(
+        tiktoken_encoding, "encode_ordinary_batch"
+    ):
+        return tiktoken_encoding.encode_ordinary_batch(
+            texts,
+            num_threads=min(32, os.cpu_count() or 8),
+        )
     if backend is not None and hasattr(backend, "encode_batch"):
         encoded = backend.encode_batch(texts, add_special_tokens=False)
         return [list(item.ids) for item in encoded]
@@ -216,14 +224,20 @@ def main() -> None:
         )
 
     tokenizer = Tokenizer.load(str(args.tokenizer))
-    if tokenizer.vocab_size > np.iinfo(np.uint16).max:
+    if tokenizer.vocab_size > np.iinfo(np.uint32).max:
         raise ValueError(
-            f"Tokenizer vocabulary {tokenizer.vocab_size:,} does not fit uint16"
+            f"Tokenizer vocabulary {tokenizer.vocab_size:,} does not fit uint32"
         )
-    tokenizer_file = args.tokenizer / "tokenizer.json"
-    if not tokenizer_file.exists():
-        raise FileNotFoundError(f"Tokenizer file not found: {tokenizer_file}")
-    tokenizer_digest = file_sha256(tokenizer_file)
+    tokenizer_files = sorted(path for path in args.tokenizer.rglob("*") if path.is_file())
+    if not tokenizer_files:
+        raise FileNotFoundError(f"No tokenizer files found under {args.tokenizer}")
+    tokenizer_hasher = hashlib.sha256()
+    for tokenizer_file in tokenizer_files:
+        relative_path = tokenizer_file.relative_to(args.tokenizer)
+        tokenizer_hasher.update(str(relative_path).encode("utf-8"))
+        tokenizer_hasher.update(b"\0")
+        tokenizer_hasher.update(bytes.fromhex(file_sha256(tokenizer_file)))
+    tokenizer_digest = tokenizer_hasher.hexdigest()
     eos_id = tokenizer.eos_token_id
     if eos_id is None:
         raise ValueError("Tokenizer must expose an EOS token")

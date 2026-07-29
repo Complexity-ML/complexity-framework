@@ -79,14 +79,14 @@ The parser accepts only these values. Older documentation mentioning
 
 ## Profiles
 
-The local runner defines `50m`, `100m`, `200m_32k`, `300m`, `1b`, and `8b`
+The local runner defines `50m`, `100m`, `200m_o200k`, `300m`, `1b`, and `8b`
 profiles.
 Profile names are approximate. The realized parameter count depends on
 vocabulary size and explicit overrides and is recorded at launch.
 
 The matched 200,082,688-parameter Dense/TR protocol, frozen 4B-token dataset
 preparation, B200 launcher, artifact export, and server teardown checklist are
-documented in [the 200M B200 runbook](200m-32k-b200-runbook.md).
+documented in [the 200M B200 runbook](200m-o200k-b200-runbook.md).
 
 ## Experimental configurations
 

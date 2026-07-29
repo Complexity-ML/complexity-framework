@@ -1,4 +1,4 @@
-"""Reproducibility guards for the matched 200M / 4B-token B200 pair."""
+"""Reproducibility guards for the matched 200M o200k / 4B-token B200 pair."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 import yaml
 
-CONFIG_ROOT = Path("configs/run_configs/200m_32k_chinchilla")
+CONFIG_ROOT = Path("configs/run_configs/200m_o200k_chinchilla")
 DENSE_CONFIG = CONFIG_ROOT / "dense_gqa_seed42_4b_b200.yaml"
 TR_CONFIG = CONFIG_ROOT / "tr_gqa_fixed_id_seed42_4b_b200.yaml"
 
@@ -31,7 +31,7 @@ def _load_args(path: Path):
     ):
         if getattr(args, key) is None:
             setattr(args, key, profile[key])
-    args.vocab_size = 32_000
+    args.vocab_size = 200_019
     return args
 
 
@@ -46,7 +46,7 @@ def test_dense_and_fixed_id_configs_are_exactly_parameter_matched():
             model = ComplexityModel(make_config(args))
         counts.append(model.num_parameters())
 
-    assert counts == [200_082_688, 200_082_688]
+    assert counts == [200_081_920, 200_081_920]
 
 
 def test_dense_and_fixed_id_configs_share_the_full_training_protocol():
@@ -94,9 +94,9 @@ def test_four_billion_token_budget_matches_frozen_shard_target():
     predicted_tokens = run["steps"] * 4 * run["batch_size"] * run["seq_len"]
 
     assert predicted_tokens == 3_999_793_152
-    prepare_script = Path("scripts/prepare_fineweb_32k_shards.py").read_text()
+    prepare_script = Path("scripts/prepare_fineweb_o200k_shards.py").read_text()
     assert "default=3_999_793_153" in prepare_script
-    assert 'DTYPE = np.dtype("<u2")' in prepare_script
+    assert 'DTYPE = np.dtype("<u4")' in prepare_script
 
 
 def test_sequential_token_shard_partitions_ddp_and_resumes_exactly(tmp_path):

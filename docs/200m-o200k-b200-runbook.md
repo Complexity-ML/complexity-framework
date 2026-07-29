@@ -1,7 +1,7 @@
-# Matched 200M / 4B-token B200 runbook
+# Matched 200M o200k / 4B-token B200 runbook
 
 This protocol trains a parameter-matched Dense GQA and fixed token-ID TR-GQA
-pair. Both models contain exactly 200,082,688 trainable parameters. Each run
+pair. Both models contain exactly 200,081,920 trainable parameters. Each run
 uses 3,999,793,152 target tokens with the same seed, tokenizer, optimizer,
 schedule, frozen training stream, and disjoint held-out stream.
 
@@ -10,24 +10,24 @@ schedule, frozen training stream, and disjoint held-out stream.
 The launcher defaults to local server NVMe:
 
 ```text
-/workspace/data/fineweb_edu_32k_4b/
+/workspace/data/fineweb_edu_o200k_4b/
   train/tokens.bin
   eval/tokens.bin
   dataset_manifest.json
 
-/workspace/artifacts/complexity-200m-32k/
+/workspace/artifacts/complexity-200m-o200k/
   checkpoints/
   logs/
   releases/
 ```
 
-The frozen binary dataset occupies about 8.03 GB. Keep at least 25 GB free for
+The frozen binary dataset occupies about 16.07 GB. Keep at least 35 GB free for
 dataset files, checkpoints, exported model weights, metrics, and logs.
 
 FineWeb-Edu is pinned to revision
 `87f09149ef4734204d70ed1d046ddc9ca3f2b8f9`. The preparation command downloads
 one Parquet file at a time, tokenizes it, appends EOS between documents, writes
-little-endian uint16 token streams, and deletes the raw Parquet file. Training
+little-endian uint32 token streams, and deletes the raw Parquet file. Training
 then performs no dataset network I/O.
 
 Every 200th source document is held out for evaluation. Held-out documents are
@@ -40,11 +40,11 @@ Install the CUDA build of PyTorch first, then install this repository and run:
 ```bash
 cd /workspace/complexity-framework
 
-./scripts/run_200m_32k_4xb200.sh prepare
-./scripts/run_200m_32k_4xb200.sh verify
-./scripts/run_200m_32k_4xb200.sh smoke-dense
-./scripts/run_200m_32k_4xb200.sh dense
-./scripts/run_200m_32k_4xb200.sh collect-dense
+./scripts/run_200m_o200k_4xb200.sh prepare
+./scripts/run_200m_o200k_4xb200.sh verify
+./scripts/run_200m_o200k_4xb200.sh smoke-dense
+./scripts/run_200m_o200k_4xb200.sh dense
+./scripts/run_200m_o200k_4xb200.sh collect-dense
 ```
 
 Do not start the full run unless `verify` and the 10-step smoke test both pass.
@@ -66,13 +66,13 @@ an exact optimizer-state resume is needed.
 Download at least:
 
 ```text
-/workspace/artifacts/complexity-200m-32k/releases/dense-gqa-200m-32k-4b-s42/
+/workspace/artifacts/complexity-200m-o200k/releases/dense-gqa-200m-o200k-4b-s42/
 ```
 
 For exact resume, also download:
 
 ```text
-/workspace/artifacts/complexity-200m-32k/checkpoints/dense-gqa-200m-32k-4b-s42/
+/workspace/artifacts/complexity-200m-o200k/checkpoints/dense-gqa-200m-o200k-4b-s42/
 ```
 
 Verify the downloaded files against `artifact_manifest.json` before destroying
@@ -86,8 +86,8 @@ Restore the frozen dataset, run `verify`, then:
 ```bash
 cd /workspace/complexity-framework
 
-./scripts/run_200m_32k_4xb200.sh tr
-./scripts/run_200m_32k_4xb200.sh collect-tr
+./scripts/run_200m_o200k_4xb200.sh tr
+./scripts/run_200m_o200k_4xb200.sh collect-tr
 ```
 
 Never rebuild the dataset with a new revision, tokenizer, or partition rule
