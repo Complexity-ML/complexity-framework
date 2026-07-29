@@ -134,6 +134,22 @@ evaluation tail. It is not a multi-corpus or scaling result. Protocol details
 and machine-readable values are in [`TR_GQA.md`](TR_GQA.md) and
 [`results/tr_gqa_mps_100m.csv`](results/tr_gqa_mps_100m.csv).
 
+A stricter routing control keeps the same attention backbone, shared path,
+experts, data order, optimizer, and token budget while replacing the fixed
+lookup with a learned contextual top-2 router:
+
+| Attention | Seed | Dense | Learned contextual top-2 | Fixed token-ID top-2 |
+| --- | ---: | ---: | ---: | ---: |
+| GQA | 42 | 7.596686 | 7.602109 | **7.536167** |
+| GQA | 43 | 7.530082 | 7.548665 | **7.492290** |
+| MHA | 42 | 7.586145 | 7.592847 | **7.536471** |
+| MHA | 43 | 7.726971 | 7.666093 | **7.541488** |
+
+The learned control adds only 15,360 routing parameters (0.0154%). Fixed
+routing is lower in NLL in all four short local runs, but two seeds do not
+establish general superiority. Full details are in
+[`RESULTS_100M_MPS.md`](RESULTS_100M_MPS.md).
+
 The other tracked configurations establish implementation and launch
 contracts. A planned large run is not presented as a completed result.
 

@@ -1,22 +1,16 @@
+"""Learned contextual top-k MoE used as the Token-Routed control.
+
+The shared SwiGLU path and routed expert tensors intentionally match
+``TokenRoutedMLP``.  The only architectural addition is a small learned
+``hidden_state -> expert logits`` projection.  This makes the module useful
+for controlled comparisons in which routing is the independent variable.
 """
-Mixtral-style MoE — Learned router with top-k gating and load balancing loss.
 
-Standard MoE baseline for comparison with Token-Routed MLP.
-Uses a learned router (nn.Linear + softmax + top-1) to assign tokens to experts,
-with an auxiliary load balancing loss to prevent expert collapse.
-
-Reference: Mixtral of Experts (Jiang et al., 2024)
-
-Usage:
-    config = MLPConfig(hidden_size=512, intermediate_size=2048, num_experts=4)
-    mlp = MixtralMoE(config)
-    out = mlp(hidden_states)
-"""
+from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
 
 from .base import MLPBase, MLPConfig
 from ..registry import register_mlp
@@ -26,57 +20,123 @@ from ..registry import register_mlp
 @register_mlp("learned_router")
 @register_mlp("standard_moe")
 class MixtralMoE(MLPBase):
-    """
-    Mixtral-style MoE with learned router and load balancing.
-
-    Each token is routed to top-1 expert via a learned router
-    (nn.Linear → softmax → argmax). An auxiliary load balancing
-    loss encourages uniform expert utilization.
-
-    This serves as the MoE baseline for comparison with
-    deterministic Token-Routed MLP.
-    """
-
-    # Weight for the auxiliary load balancing loss
-    LOAD_BALANCE_WEIGHT = 0.01
+    """Shared SwiGLU plus learned contextual top-k residual experts."""
 
     def __init__(self, config: MLPConfig):
         super().__init__(config)
 
-        self.num_experts = config.num_experts
-        self.expert_intermediate_size = self.intermediate_size // self.num_experts
-
-        # Learned router: hidden_size → num_experts
-        self.router = nn.Linear(self.hidden_size, self.num_experts, bias=False)
-
-        # Expert weights: [E, hidden, inter*2] and [E, inter, hidden]
-        self.gate_up_proj = nn.Parameter(
-            torch.empty(self.num_experts, self.hidden_size,
-                        self.expert_intermediate_size * 2)
+        self.num_experts = int(config.num_experts)
+        self.top_k = int(config.top_k)
+        self.expert_intermediate_size = (
+            self.intermediate_size // self.num_experts
         )
-        self.down_proj = nn.Parameter(
-            torch.empty(self.num_experts, self.expert_intermediate_size,
-                        self.hidden_size)
+        if self.intermediate_size % self.num_experts:
+            raise ValueError(
+                "intermediate_size must be divisible by num_experts for "
+                "the learned-router control"
+            )
+
+        # Keep names and shapes identical to TokenRoutedMLP so parameter and
+        # gradient diagnostics compare the same expert tensors.
+        self.gate_proj_w = nn.Parameter(
+            torch.empty(
+                self.num_experts,
+                self.hidden_size,
+                self.expert_intermediate_size,
+            )
+        )
+        self.up_proj_w = nn.Parameter(
+            torch.empty(
+                self.num_experts,
+                self.hidden_size,
+                self.expert_intermediate_size,
+            )
+        )
+        self.down_proj_w = nn.Parameter(
+            torch.empty(
+                self.num_experts,
+                self.expert_intermediate_size,
+                self.hidden_size,
+            )
         )
 
-        # Shared expert (optional, for fair comparison)
-        self.shared_expert = None
-        if getattr(config, 'shared_expert', False):
-            shared_size = self.expert_intermediate_size
-            self.shared_gate = nn.Linear(self.hidden_size, shared_size, bias=False)
-            self.shared_up = nn.Linear(self.hidden_size, shared_size, bias=False)
-            self.shared_down = nn.Linear(shared_size, self.hidden_size, bias=False)
-            self.shared_expert = True
+        for expert_idx in range(self.num_experts):
+            nn.init.kaiming_uniform_(
+                self.gate_proj_w[expert_idx], a=5**0.5
+            )
+            nn.init.kaiming_uniform_(
+                self.up_proj_w[expert_idx], a=5**0.5
+            )
+            nn.init.kaiming_uniform_(
+                self.down_proj_w[expert_idx], a=5**0.5
+            )
+        self.use_shared_expert = bool(
+            getattr(config, "shared_expert", False)
+        )
+        if self.use_shared_expert:
+            shared_size = (
+                getattr(config, "shared_intermediate_size", None)
+                or self.intermediate_size
+            )
+            self.shared_gate = nn.Linear(
+                self.hidden_size, shared_size, bias=False
+            )
+            self.shared_up = nn.Linear(
+                self.hidden_size, shared_size, bias=False
+            )
+            self.shared_down = nn.Linear(
+                shared_size, self.hidden_size, bias=False
+            )
 
-        self._init_weights()
+        # This projection is the only parameter tensor absent from the fixed
+        # Token-Routed control. Isolate its initialization RNG so constructing
+        # the router does not perturb any shared/expert initialization in this
+        # or later layers. The common tensors are then bit-identical between
+        # fixed and learned controls under the same model seed.
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(
+                0x1EA2_0000 + int(getattr(config, "layer_idx", 0))
+            )
+            self.router = nn.Linear(
+                self.hidden_size, self.num_experts, bias=False
+            )
 
-        # Store last load balancing loss for training
-        self.last_aux_loss = 0.0
+        # The current differentiable auxiliary loss is read by the trainer
+        # immediately after forward. It is deliberately not checkpoint state.
+        self.router_aux_loss: Optional[torch.Tensor] = None
+        self.register_buffer(
+            "expert_counts",
+            torch.zeros(self.num_experts, dtype=torch.long),
+            persistent=False,
+        )
+        self.register_buffer(
+            "last_shared_rms",
+            torch.tensor(float("nan")),
+            persistent=False,
+        )
+        self.register_buffer(
+            "last_routed_rms",
+            torch.tensor(float("nan")),
+            persistent=False,
+        )
 
-    def _init_weights(self):
-        nn.init.kaiming_uniform_(self.gate_up_proj, a=5**0.5)
-        nn.init.zeros_(self.down_proj)
-        nn.init.kaiming_uniform_(self.router.weight, a=5**0.5)
+    def reset_expert_counts(self) -> None:
+        self.expert_counts.zero_()
+
+    def get_expert_counts(self) -> torch.Tensor:
+        return self.expert_counts
+
+    def training_control_capabilities(self) -> frozenset[str]:
+        return frozenset({"learned_router_aux"})
+
+    def training_telemetry(self) -> dict[str, float]:
+        if self.router_aux_loss is None:
+            return {}
+        return {
+            "router_aux": float(
+                self.router_aux_loss.detach().float().item()
+            )
+        }
 
     def forward(
         self,
@@ -84,66 +144,81 @@ class MixtralMoE(MLPBase):
         token_ids: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor:
-        """
-        Forward pass with learned routing.
+        """Route each contextual hidden state to its learned top-k experts."""
 
-        Args:
-            hidden_states: [batch, seq_len, hidden_size]
-            token_ids: ignored (kept for API compat with TokenRoutedMLP)
+        del token_ids, kwargs
+        batch_size, seq_len, hidden_size = hidden_states.shape
+        flat_x = hidden_states.reshape(-1, hidden_size)
 
-        Returns:
-            output: [batch, seq_len, hidden_size]
-        """
-        batch_size, seq_len, _ = hidden_states.shape
-        N = batch_size * seq_len
-        chunk = N // self.num_experts
-        E = self.num_experts
-        flat_x = hidden_states.reshape(N, self.hidden_size)
-
-        # Router: learned gating
-        router_logits = self.router(flat_x)  # [N, E]
-        router_probs = F.softmax(router_logits, dim=-1)  # [N, E]
-        expert_ids = router_logits.argmax(dim=-1)  # [N]
-
-        # Load balancing loss (Mixtral-style)
-        # Encourages uniform expert assignment
-        if self.training:
-            # Fraction of tokens assigned to each expert
-            tokens_per_expert = F.one_hot(expert_ids, E).float().mean(dim=0)  # [E]
-            # Average router probability per expert
-            router_prob_per_expert = router_probs.mean(dim=0)  # [E]
-            # Auxiliary loss: dot product (penalizes correlation between assignment and probability)
-            self.last_aux_loss = (E * (tokens_per_expert * router_prob_per_expert).sum()).item()
-
-        # Sort-and-split dispatch (same as TokenRoutedMLP)
-        sort_idx = expert_ids.argsort(stable=True)
-        sorted_x = flat_x[sort_idx]
-
-        # bmm gate+up
-        gu = torch.bmm(
-            sorted_x.view(E, chunk, self.hidden_size), self.gate_up_proj
+        router_logits = self.router(flat_x)
+        router_probs = F.softmax(router_logits.float(), dim=-1)
+        route_weights, route_expert_ids = torch.topk(
+            router_probs, k=self.top_k, dim=-1
         )
-        gate, up = gu.chunk(2, dim=-1)
-        activated = F.silu(gate) * up
+        route_weights = route_weights / route_weights.sum(
+            dim=-1, keepdim=True
+        ).clamp_min(1e-9)
+        route_weights = route_weights.to(flat_x.dtype)
 
-        # bmm down
-        sorted_out = torch.bmm(activated, self.down_proj).reshape(N, self.hidden_size)
+        # Switch-style load balancing objective generalized to top-k. The hard
+        # assignment fraction is treated as a target while router_probs keeps
+        # the gradient path to the learned projection.
+        assignment_fraction = F.one_hot(
+            route_expert_ids, num_classes=self.num_experts
+        ).float().sum(dim=1)
+        assignment_fraction = (
+            assignment_fraction.mean(dim=0) / float(self.top_k)
+        )
+        probability_fraction = router_probs.mean(dim=0)
+        self.router_aux_loss = self.num_experts * torch.sum(
+            assignment_fraction.detach() * probability_fraction
+        )
 
-        # Weight output by router probability (soft gating)
-        sorted_probs = router_probs[sort_idx]
-        expert_idx_sorted = expert_ids[sort_idx]
-        # Gather the probability for the selected expert
-        selected_probs = sorted_probs.gather(1, expert_idx_sorted.unsqueeze(-1)).squeeze(-1)
-        sorted_out = sorted_out * selected_probs.unsqueeze(-1)
+        collect_telemetry = bool(
+            getattr(self.config, "collect_moe_telemetry", False)
+        )
+        if collect_telemetry:
+            with torch.no_grad():
+                self.expert_counts += torch.bincount(
+                    route_expert_ids.reshape(-1),
+                    minlength=self.num_experts,
+                ).to(self.expert_counts.dtype)
 
-        out = torch.zeros(N, self.hidden_size, device=flat_x.device, dtype=sorted_out.dtype)
-        out[sort_idx] = sorted_out
+        # MPS/CPU-friendly masked-dense dispatch. TokenRoutedMLP uses the same
+        # expert-loop fallback when custom grouped-GEMM kernels are disabled,
+        # so local throughput remains a meaningful comparison.
+        routed_out = torch.zeros_like(flat_x)
+        for expert_idx in range(self.num_experts):
+            expert_weight = (
+                route_weights
+                * (route_expert_ids == expert_idx).to(route_weights.dtype)
+            ).sum(dim=-1)
+            gate = flat_x @ self.gate_proj_w[expert_idx]
+            up = flat_x @ self.up_proj_w[expert_idx]
+            expert_out = (
+                F.silu(gate) * up
+            ) @ self.down_proj_w[expert_idx]
+            routed_out = routed_out + (
+                expert_weight.unsqueeze(-1) * expert_out
+            )
 
-        # Shared expert
-        if self.shared_expert:
+        if self.use_shared_expert:
             shared_out = self.shared_down(
                 F.silu(self.shared_gate(flat_x)) * self.shared_up(flat_x)
-            ).to(flat_x.dtype)
-            out = out + shared_out
+            )
+            output = shared_out + routed_out
+        else:
+            shared_out = None
+            output = routed_out
 
-        return out.reshape(batch_size, seq_len, self.hidden_size)
+        if collect_telemetry:
+            with torch.no_grad():
+                self.last_routed_rms.copy_(
+                    routed_out.float().pow(2).mean().sqrt()
+                )
+                if shared_out is not None:
+                    self.last_shared_rms.copy_(
+                        shared_out.float().pow(2).mean().sqrt()
+                    )
+
+        return output.reshape(batch_size, seq_len, hidden_size)

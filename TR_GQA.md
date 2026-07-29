@@ -71,6 +71,26 @@ The seed-43 difference is -0.037792 NLL in favor of TR-GQA. Across the two
 reported seeds, the direction is consistent. The mean paired difference is
 -0.049156 NLL, but two seeds are insufficient for a statistical claim.
 
+## Learned contextual-router control
+
+A matched local control replaces only the fixed token-ID lookup with a learned
+contextual top-2 router. The GQA backbone, shared path, expert tensors, data
+order, seed, optimizer, token budget, and evaluation protocol remain fixed.
+Common expert and shared-path tensors are initialized identically under each
+paired seed. The learned router adds a 384-by-4 projection: 15,360 parameters
+over 10 layers, or 0.0154% above the 99,487,680-parameter reference. Its
+differentiable load-balancing loss uses coefficient 0.01.
+
+| Seed | Dense GQA | Learned contextual top-2 | Fixed token-ID top-2 | Fixed vs dense | Fixed vs learned |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 42 | 7.596686 | 7.602109 | **7.536167** | -0.060519 | -0.065942 |
+| 43 | 7.530082 | 7.548665 | **7.492290** | -0.037792 | -0.056375 |
+
+At this short budget, fixed token-ID routing is lower in NLL than the learned
+contextual control for both seeds. The mean fixed-versus-learned difference is
+-0.061159 NLL. This is a two-seed local pilot, not evidence that fixed routing
+is generally superior to learned routing.
+
 ## Required falsification work
 
 The next useful controls are:

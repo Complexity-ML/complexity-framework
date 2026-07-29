@@ -5,7 +5,7 @@ The framework contains two different MoE families.
 | Family | Class | Routing | Auxiliary balancing loss |
 | --- | --- | --- | --- |
 | TR-MoE | `TokenRoutedMLP` | fixed lexical tables or experimental LSH | no |
-| Learned-router control | `MixtralMoE` | learned logits and top-k selection | implementation-dependent |
+| Learned-router control | `MixtralMoE` | learned contextual logits and top-k selection | differentiable Switch-style loss |
 
 ## TR-MoE
 
@@ -35,9 +35,10 @@ output = mlp(hidden_states, token_ids=input_ids)
 ## Learned-router control
 
 `MixtralMoE` exists for controlled comparisons with a learned router. Its
-configuration and loss handling must be inspected for the specific experiment;
-the framework does not claim that every historical run used a common,
-production-equivalent Mixtral recipe.
+expert and shared-path tensors use the same shapes and initialization order as
+`TokenRoutedMLP`; only the small contextual routing projection is additional.
+The training entry point applies the differentiable balancing loss with
+`--router-aux-loss-weight`.
 
 ```python
 from complexity.core.mlp import MLPConfig, MixtralMoE
@@ -45,8 +46,10 @@ from complexity.core.mlp import MLPConfig, MixtralMoE
 mlp = MixtralMoE(
     MLPConfig(
         hidden_size=768,
-        intermediate_size=2048,
+        intermediate_size=512,
+        shared_intermediate_size=2048,
         num_experts=4,
+        top_k=2,
     )
 )
 output = mlp(hidden_states)

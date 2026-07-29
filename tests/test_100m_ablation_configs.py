@@ -241,6 +241,70 @@ def test_best_mha_balanced_shared_pilot_keeps_the_matched_parameter_width():
     assert run["steps"] * run["batch_size"] * run["seq_len"] == 1_024_000
 
 
+@pytest.mark.parametrize(
+    ("filename", "fixed_name", "seed"),
+    [
+        (
+            "100m_params_gqa_learned_top2_shared_256_mps.yaml",
+            "100m_params_gqa_modulo_balanced_shared_256_mps.yaml",
+            42,
+        ),
+        (
+            "100m_params_gqa_learned_top2_shared_256_seed43_mps.yaml",
+            "100m_params_gqa_modulo_balanced_shared_256_seed43_mps.yaml",
+            43,
+        ),
+        (
+            "100m_params_mha_learned_top2_shared_1296_mps.yaml",
+            "100m_params_mha_modulo_balanced_shared_1296_mps.yaml",
+            42,
+        ),
+        (
+            "100m_params_mha_learned_top2_shared_1296_seed43_mps.yaml",
+            "100m_params_mha_modulo_balanced_shared_1296_seed43_mps.yaml",
+            43,
+        ),
+    ],
+)
+def test_learned_router_controls_match_fixed_protocol(
+    filename, fixed_name, seed
+):
+    root = Path("configs/run_configs/experiments_100m")
+    learned = yaml.safe_load((root / filename).read_text())["run"]
+    fixed = yaml.safe_load((root / fixed_name).read_text())["run"]
+
+    matched_fields = [
+        "dataset",
+        "text_file",
+        "tokenizer",
+        "steps",
+        "batch_size",
+        "seq_len",
+        "hidden_size",
+        "num_hidden_layers",
+        "num_attention_heads",
+        "num_key_value_heads",
+        "attention_type",
+        "intermediate_size",
+        "shared_intermediate_size",
+        "top_k",
+        "shared_expert",
+        "learn_shared_routed_gates",
+        "optimizer",
+        "lr",
+        "weight_decay",
+        "eval_steps",
+        "eval_batches",
+        "seed",
+    ]
+    assert {key: learned[key] for key in matched_fields} == {
+        key: fixed[key] for key in matched_fields
+    }
+    assert learned["mlp_type"] == "learned_router"
+    assert fixed["mlp_type"] == "token_routed"
+    assert learned["router_aux_loss_weight"] == 0.01
+
+
 @pytest.mark.parametrize("routed_width", [64, 128, 160, 256])
 def test_gqa_balanced_shared_pilots_match_dense_width_and_protocol(routed_width):
     path = Path(

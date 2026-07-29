@@ -39,6 +39,7 @@ from complexity.training.o200k import (
     build_optimizer,
     evaluate,
     expert_diversity_loss,
+    learned_router_aux_loss,
     init_distributed,
     load_checkpoint,
     make_config,
@@ -94,6 +95,8 @@ def architecture_label(args, active_controls) -> str:
         return f"Lexical {str(args.attention_type).upper()}"
     if "topk_primary_weight" in active_controls.capabilities:
         return f"TR-{str(args.attention_type).upper()}"
+    if "learned_router_aux" in active_controls.capabilities:
+        return f"Learned-MoE {str(args.attention_type).upper()}"
     return f"Dense {str(args.attention_type).upper()}"
 
 
@@ -275,6 +278,17 @@ def main():
             )
         elif "topk_primary_weight" in active_controls.capabilities:
             logger.info(token_routed_config_summary(args))
+        elif "learned_router_aux" in active_controls.capabilities:
+            logger.info(
+                f"Config: learned top-{args.top_k} contextual router with "
+                f"shared {str(args.attention_type).upper()} path, "
+                f"heads={args.num_attention_heads}/{args.num_key_value_heads}, "
+                f"hidden={args.hidden_size}, layers={args.num_hidden_layers}, "
+                f"shared_width={args.shared_intermediate_size}, "
+                f"routed_width={args.intermediate_size}, experts=4, "
+                f"router_aux_weight={args.router_aux_loss_weight:g}, "
+                f"grad_ckpt={args.grad_ckpt}"
+            )
         else:
             logger.info(
                 f"Config: dense {args.attention_type} + {args.mlp_type}, "
@@ -387,7 +401,8 @@ def main():
                 "expert_dead_count", "shared_gate", "routed_gate", "shared_rms", "routed_rms",
                 "shared_grad_norm", "routed_grad_norm", "expert_0_grad_norm",
                 "expert_1_grad_norm", "expert_2_grad_norm", "expert_3_grad_norm",
-                "expert_diversity_loss", "expert_diversity_lambda", "total_loss",
+                "expert_diversity_loss", "expert_diversity_lambda",
+                "router_aux_loss", "router_aux_weight", "total_loss",
             ])
         csv_file.flush()
 
@@ -482,10 +497,16 @@ def main():
                     sync_metrics=False,
                 )
             diversity = expert_diversity_loss(raw_model, args.expert_diversity_target)
-            total_loss = (
+            base_loss = (
                 loss
                 if diversity is None or diversity_lambda <= 0.0
                 else loss + diversity_lambda * diversity
+            )
+            router_aux = learned_router_aux_loss(raw_model)
+            total_loss = (
+                base_loss
+                if router_aux is None or args.router_aux_loss_weight <= 0.0
+                else base_loss + args.router_aux_loss_weight * router_aux
             )
         total_loss.backward()
         if args.max_grad_norm and args.max_grad_norm > 0.0:
@@ -518,6 +539,11 @@ def main():
                 if diversity is not None
                 else float("nan")
             )
+            train_router_aux_loss = (
+                reduce_average_tensor(router_aux, distributed)
+                if router_aux is not None
+                else float("nan")
+            )
             train_ppl = math.exp(min(train_loss, 20))
             eval_ppl = math.exp(min(eval_loss, 20)) if math.isfinite(eval_loss) else float("nan")
             lr_now = scheduler.get_last_lr()[0]
@@ -543,6 +569,8 @@ def main():
                     ],
                     f"{train_diversity_loss:.8f}",
                     f"{diversity_lambda:.8e}",
+                    f"{train_router_aux_loss:.8f}",
+                    f"{args.router_aux_loss_weight:.8e}",
                     f"{train_total_loss:.6f}",
                 ])
                 csv_file.flush()

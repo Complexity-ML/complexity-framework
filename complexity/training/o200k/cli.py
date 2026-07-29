@@ -133,6 +133,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="down",
         help="Expert weights used by the separation penalty.",
     )
+    parser.add_argument(
+        "--router-aux-loss-weight",
+        type=float,
+        default=0.01,
+        help=(
+            "Load-balancing auxiliary-loss weight for learned_router. "
+            "Ignored by fixed and dense MLPs."
+        ),
+    )
     parser.add_argument("--learn-shared-routed-gates", dest="learn_shared_routed_gates", action="store_true", default=True)
     parser.add_argument("--no-learn-shared-routed-gates", dest="learn_shared_routed_gates", action="store_false")
     parser.add_argument("--top-k", type=int, default=2)

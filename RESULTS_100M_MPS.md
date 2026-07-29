@@ -66,6 +66,28 @@ initialization. The mean paired NLL difference across the two seeds is
 variation in the MHA differences is itself a reason not to claim statistical
 significance.
 
+## Learned contextual-router controls
+
+The fixed TR-GQA and TR-MHA configurations were also compared with a learned
+contextual top-2 router. Within each attention family, the shared path,
+experts, backbone, seed, data order, optimizer, and token budget are identical.
+The learned router adds only its 384-by-4 projection in each layer: 15,360
+parameters, or 0.0154%.
+
+| Attention | Seed | Dense NLL | Learned contextual NLL | Fixed token-ID NLL | Fixed improvement vs learned |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| GQA | 42 | 7.596686 | 7.602109 | **7.536167** | 0.065942 |
+| GQA | 43 | 7.530082 | 7.548665 | **7.492290** | 0.056375 |
+| MHA | 42 | 7.586145 | 7.592847 | **7.536471** | 0.056376 |
+| MHA | 43 | 7.726971 | 7.666093 | **7.541488** | 0.124605 |
+
+Fixed token-ID routing has lower NLL than the learned contextual control in all
+four runs. The learned control is slightly behind Dense in three runs and
+ahead of Dense by 0.060878 NLL for MHA seed 43. These controls isolate the
+routing signal more directly than a fixed-versus-dense comparison, but remain
+short two-seed pilots on one small data sample. Machine-readable values are in
+[`results/matched_gqa_mha_mps_100m.csv`](results/matched_gqa_mha_mps_100m.csv).
+
 ## Interpretation limits
 
 The evaluation tail is excluded from training and route construction, but it

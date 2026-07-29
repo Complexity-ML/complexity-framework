@@ -249,3 +249,16 @@ def expert_diversity_loss(model, target: str = "down") -> torch.Tensor | None:
     if not losses:
         return None
     return torch.stack(losses).mean()
+
+
+def learned_router_aux_loss(model) -> torch.Tensor | None:
+    """Return the mean differentiable load-balancing loss across router layers."""
+
+    losses = []
+    for module in model.modules():
+        value = getattr(module, "router_aux_loss", None)
+        if isinstance(value, torch.Tensor) and value.requires_grad:
+            losses.append(value)
+    if not losses:
+        return None
+    return torch.stack(losses).mean()
