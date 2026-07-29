@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import shutil
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,8 +79,11 @@ def download_file(url: str, destination: Path) -> tuple[str, int]:
     partial.unlink(missing_ok=True)
     digest = hashlib.sha256()
     total_bytes = 0
+    started = time.monotonic()
+    last_report = started
     with requests.get(url, stream=True, timeout=(30, 300)) as response:
         response.raise_for_status()
+        expected_bytes = int(response.headers.get("content-length") or 0)
         with partial.open("wb") as handle:
             for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
                 if not chunk:
@@ -87,9 +91,30 @@ def download_file(url: str, destination: Path) -> tuple[str, int]:
                 handle.write(chunk)
                 digest.update(chunk)
                 total_bytes += len(chunk)
+                now = time.monotonic()
+                if now - last_report >= 5.0:
+                    elapsed = max(now - started, 1e-9)
+                    rate_mib = total_bytes / elapsed / 1024**2
+                    progress = (
+                        f" · {100.0 * total_bytes / expected_bytes:.1f}%"
+                        if expected_bytes > 0
+                        else ""
+                    )
+                    print(
+                        f"  download {destination.name}: "
+                        f"{total_bytes / 1e9:.2f} GB{progress} · {rate_mib:.1f} MiB/s",
+                        flush=True,
+                    )
+                    last_report = now
             handle.flush()
             os.fsync(handle.fileno())
     partial.replace(destination)
+    elapsed = max(time.monotonic() - started, 1e-9)
+    print(
+        f"  downloaded {destination.name}: {total_bytes / 1e9:.2f} GB "
+        f"in {elapsed:.1f}s · {total_bytes / elapsed / 1024**2:.1f} MiB/s",
+        flush=True,
+    )
     return digest.hexdigest(), total_bytes
 
 
@@ -298,12 +323,19 @@ def main() -> None:
             )
 
             parquet = pq.ParquetFile(local_path)
+            file_documents = 0
+            file_total_documents = int(parquet.metadata.num_rows)
+            file_started = time.monotonic()
+            file_last_report = file_started
+            train_tokens_before = train_writer.num_tokens
+            eval_tokens_before = eval_writer.num_tokens
             for record_batch in parquet.iter_batches(
                 batch_size=args.document_batch_size,
                 columns=["text"],
             ):
                 texts = [str(text or "") for text in record_batch.column(0).to_pylist()]
                 encoded_documents = encode_batch(tokenizer, texts)
+                file_documents += len(texts)
                 for text, token_ids in zip(texts, encoded_documents):
                     document_index = source_documents
                     source_documents += 1
@@ -319,6 +351,25 @@ def main() -> None:
                     target.append([*token_ids, int(eos_id)])
                     if train_writer.full and eval_writer.full:
                         break
+                now = time.monotonic()
+                if now - file_last_report >= 5.0:
+                    elapsed = max(now - file_started, 1e-9)
+                    produced_tokens = (
+                        train_writer.num_tokens
+                        - train_tokens_before
+                        + eval_writer.num_tokens
+                        - eval_tokens_before
+                    )
+                    print(
+                        f"  tokenize {Path(filename).name}: "
+                        f"{file_documents:,}/{file_total_documents:,} docs "
+                        f"({100.0 * file_documents / max(file_total_documents, 1):.1f}%) · "
+                        f"{produced_tokens / elapsed:,.0f} tok/s · "
+                        f"train={train_writer.num_tokens:,}/{args.train_tokens:,} · "
+                        f"eval={eval_writer.num_tokens:,}/{args.eval_tokens:,}",
+                        flush=True,
+                    )
+                    file_last_report = now
                 if train_writer.full and eval_writer.full:
                     break
             local_path.unlink(missing_ok=True)
