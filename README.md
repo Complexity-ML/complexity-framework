@@ -1,158 +1,224 @@
-# Complexity Framework v0.4.0
+# Complexity Framework
 
-**Modular Python framework for building LLMs with Token-Routed MoE, Mu-Guidance, and Zipf-balanced routing.**
+Research framework for controlled language-model architecture experiments in
+PyTorch. The repository contains matched GQA and MHA baselines, contextual
+Write--Read--Value (W/R/V) attention, deterministic token-routed feed-forward
+paths, TR-MHA pilots, training utilities, and reproducibility artifacts.
+
+This is an active research codebase rather than a finished pretrained model.
+Every numerical claim below is tied to a specific configuration, token budget,
+hardware setup, and evaluation protocol.
+
+## Current research paths
+
+| Path | What changes | Current evidence |
+| --- | --- | --- |
+| **GQA / MHA controls** | Standard causal softmax attention | Matched baselines |
+| **Contextual W/R/V** | Contextual read heads with shared write/value heads | Three paired H200 seeds |
+| **TR-MHA** | Dense MHA plus small token-selected attention adapters | Short MPS pilots |
+| **Shared + routed FFN** | Dense shared SwiGLU plus deterministic token-ID experts | Short matched MPS pilot |
+| **Lexical controls** | Fixed, balanced, random, round-robin, and semantic-LSH routes | Ablations and diagnostics |
+
+Historical Mu-Guidance, convolutional, fixed-state, and lexical-write variants
+remain available as controls. They are not presented as the canonical
+architecture.
+
+## Evidence snapshot
+
+### Controlled W/R/V comparison
+
+Six approximately 98.2M-parameter runs use the same FineWeb-Edu shard,
+tokenizer, 100,007,936-token budget, optimizer, peak learning rate, BF16 mode,
+evaluation protocol, and seeds 42--44.
+
+| Architecture | Held-out NLL, mean ± sample SD | Mean training throughput |
+| --- | ---: | ---: |
+| GQA | 4.703035 ± 0.017657 | 125,021 tok/s |
+| Contextual W/R/V | **4.684432 ± 0.021137** | 121,448 tok/s |
+
+W/R/V is lower on all three paired seeds, with a mean paired difference of
+-0.018604 NLL and a 2.86% training-throughput penalty. The 95% t interval
+[-0.0541, 0.0169] includes zero, so this is reported as a consistent
+small-scale observation, not statistical significance or universal
+superiority.
+
+Sources and raw measurements are under [`paper/tmlr`](paper/tmlr).
+
+### TR-MHA and routed-FFN pilot
+
+The matched 99,487,680-parameter, seed-42 MPS pilot trains for 1,024,000 tokens.
+The strongest configuration keeps MHA dense and uses a width-1,296 shared
+SwiGLU path plus two deterministic width-40 token-ID experts:
+
+| Architecture | Final eval NLL | Eval PPL |
+| --- | ---: | ---: |
+| GQA dense | 7.359221 | 1570.61 |
+| MHA dense | 7.369812 | 1587.34 |
+| MHA + shared FFN + balanced token-ID experts | **7.321415** | **1512.34** |
+
+This is a single-seed short pilot. It validates the implementation and motivates
+replication; it does not establish scaling or production-speed gains. See
+[`TR_MHA.md`](TR_MHA.md) for the complete ablation table.
+
+## Installation
+
+PyTorch is intentionally not installed by the package because its wheel must
+match the selected CPU, CUDA, ROCm, or MPS backend.
 
 ```bash
-pip install complexity-framework
+git clone https://github.com/Complexity-ML/complexity-framework.git
+cd complexity-framework
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install the appropriate PyTorch build first.
+pip install torch
+pip install -e ".[dev,tools]"
 ```
 
-## What's New in v0.4.0
+For CUDA and ROCm environments, use the backend-specific PyTorch index or the
+helpers described in [`docs/cuda.md`](docs/cuda.md).
 
-- **Zipf-balanced routing**: frequency-aware expert assignment (no more load imbalance)
-- **GPT-style residual init**: `1/√(2N)` scaling on output projections
-- **3D cluster parallelism**: TP × PP × DP for multi-node training
-- **Dynamic warmup**: auto 5% of total steps
-- **LR auto-scaling**: `√(effective_batch/64)` prevents explosion with large batches
-- **WSD scheduler**: Warmup-Stable-Decay (LLaMA 3 style)
-- **Muon optimizer**: Newton-Schulz orthogonalization for 2x convergence
-- **OmniModel**: any-to-any multimodal (text + image + audio + video)
-
-## Quick Start
+## Build a model
 
 ```python
-from complexity.models import ComplexityModel
 from complexity.config import ModelConfig
+from complexity.models import ComplexityModel
 
-# 150M Token-Routed model with Mu-Guidance
 config = ModelConfig(
-    hidden_size=768,
-    num_hidden_layers=18,
-    num_attention_heads=12,
-    num_key_value_heads=4,
-    intermediate_size=2048,
-    vocab_size=32000,
+    hidden_size=384,
+    num_hidden_layers=10,
+    num_attention_heads=8,
+    num_key_value_heads=8,
+    attention_type="mha",
+    vocab_size=200_019,
     mlp_type="token_routed",
     num_experts=4,
-    use_mu_guidance=True,
+    intermediate_size=160,
+    shared_expert=True,
+    shared_intermediate_size=1296,
+    routing_strategy="modulo_balanced_secondary",
+    top_k=2,
+    top_k_primary_weight=0.5,
 )
+
 model = ComplexityModel(config)
-# 170M params, deterministic routing, no auxiliary losses
 ```
 
-## Architecture
+The primary route is derived deterministically from token identity. The
+secondary table is built offline to balance estimated token-frequency load.
+Both selected experts transform the current contextual hidden state; token
+identity selects parameters, not a context-free output.
 
-```
-Input
-  │
-  ▼
-[Embed] ──► mu_init (learnable, layer 0 guidance)
-  │              │
-  ▼              ▼
-[RMSNorm] ─► [Mu-Guided GQA] ─► [MuGuidance] ─► [RMSNorm] ─► [Token-Routed MLP]
-  │              ▲                    │                            ▲
-  │              │                    │                            │
-  │         mu_prev              mu_contextual                Zipf-balanced
-  │                                   │                       expert dispatch
-  +────────── Residual ──────────────┼─────────── Residual ───────+
-  │                                   │                            │
-  ▼                                   ▼                            │
-Output ◄────────────────────── mu_next (to next layer) ◄──────────┘
+## Run a bounded training experiment
+
+```bash
+python -m complexity.training.o200k_pretrain \
+  --config configs/run_configs/experiments_100m/100m_params_mha_modulo_balanced_shared_1296_mps.yaml
 ```
 
-## Key Innovations
+Run configurations intentionally record model size, token budget, seed,
+optimizer, evaluation cadence, and output location. Local dataset and tokenizer
+paths must be adapted to the machine running the experiment.
 
-### 1. Token-Routed MLP (Deterministic MoE)
+## Inference boundary
+
+The framework builds, trains, evaluates, and exports models. Native
+`model.generate()` is deliberately disabled; production generation is delegated
+to an OpenAI-compatible vLLM or SGLang server.
+
+```bash
+complexity inference generate my-model \
+  --backend vllm \
+  --base-url http://localhost:8000 \
+  --prompt "A computer program is"
+```
+
+The external client is available directly:
 
 ```python
-from complexity.core.mlp import TokenRoutedMLP, MLPConfig
-
-config = MLPConfig(
-    hidden_size=768,
-    intermediate_size=3072,
-    num_experts=4,
-    vocab_size=32000,
-    token_frequencies=freqs,  # Zipf-balanced routing
+from complexity.inference import (
+    ExternalGenerationConfig,
+    create_external_backend,
 )
-mlp = TokenRoutedMLP(config)
+
+backend = create_external_backend(
+    "vllm",
+    base_url="http://localhost:8000",
+    model="my-model",
+)
+text = backend.complete(
+    "A computer program is",
+    ExternalGenerationConfig(max_tokens=128),
+)
 ```
 
-| Aspect | Top-K MoE | Token-Routed |
-|--------|-----------|--------------|
-| Routing | Learned softmax | **Deterministic (Zipf-balanced)** |
-| Load Balance | Auxiliary loss | **Guaranteed by design** |
-| Expert Collapse | Risk | **Impossible** |
-| Compute | 1/k of dense | **1/k of dense** |
+## Reproducibility
 
-### 2. Mu-Guidance (Cross-layer Information Flow)
+```bash
+# Architecture, serving-boundary, and MCP tests
+python -m pytest -q \
+  tests/test_tr_mha.py \
+  tests/test_100m_ablation_configs.py \
+  tests/test_external_inference.py \
+  tests/test_mcp_official.py \
+  tests/test_models.py
 
-```python
-# mu flows between layers: layer N's mu guides layer N+1's attention
-# mu_init: learnable parameter so layer 0 also gets guidance
-q = q + mu_to_q(mu_prev)  # mu biases Q projection
-k = k + mu_to_k(mu_prev)  # mu biases K projection
-v = v + mu_to_v(mu_prev)  # mu biases V projection
+# Standalone W/R/V artifact
+cd paper/tmlr/standalone_artifact
+python -m pytest -q tests
 ```
 
-### 3. Zipf-balanced Routing
+The repository tracks lightweight configurations, raw metrics, checksums,
+generated tables, and the standalone mini-framework. Multi-gigabyte datasets
+and checkpoints are excluded from Git.
 
-```python
-# Problem: token_id % num_experts concentrates frequent tokens
-# Solution: sort by frequency, distribute round-robin
-sorted_by_freq = vocab.argsort(by=frequency, descending=True)
-expert_assignment[sorted_by_freq[i]] = i % num_experts
-# Result: each expert gets equal mix of frequent/rare tokens
+To rebuild the anonymous supplement:
+
+```bash
+python paper/tmlr/scripts/generate_controlled_tables.py
+python paper/tmlr/scripts/build_anonymous_supplement.py
 ```
 
-## Cluster Parallelism
+Generated submission packages are written to `paper/tmlr/submission/` and are
+not tracked.
 
-```python
-from complexity.parallel.cluster import ClusterConfig, ClusterModel
+## Experimental integrations
 
-# Auto-configures TP × PP × DP based on model size and GPU count
-config = ClusterConfig(tp_size=8, pp_size=1, dp_size=2)
-model = ClusterModel(model, config)
+- OpenAI-compatible vLLM/SGLang inference client.
+- Official MCP stdio client under `complexity.mcp`.
+- Experimental shared online-RL and MPS wrappers.
+- MLX conversion, generation, and PyTorch-parity utilities.
+- Expert-route, CKA, semantic-LSH, and routed-vocabulary-head diagnostics.
+
+These integrations are research utilities and should be validated for the
+target deployment before production use.
+
+## Repository map
+
+```text
+complexity/                  model, training, inference, MCP, and RL code
+configs/run_configs/         explicit experiment configurations
+tests/                       architecture and integration tests
+paper/tmlr/                  paper, measurements, and standalone artifact
+figures/                     generated diagnostic figures
+scripts/                     training, evaluation, conversion, and audit tools
+spikes/                      isolated performance prototypes
 ```
-
-| GPUs | Config | Effective Batch | Use Case |
-|------|--------|-----------------|----------|
-| 1 | DP=1 | 64 | Dev/test |
-| 4 | DP=4 | 256 | Ablation |
-| 8 | DP=8 | 512 | 400M training |
-| 16 | DP=16 | 1,024 | 1B training |
-| 64 | DP=64 | 4,096 | 7B training |
-
-## Features
-
-| Module | Description |
-|--------|-------------|
-| **Attention** | GQA/MHA/MQA with Mu-Guided KQV, QK Norm, RoPE |
-| **MLP** | Token-Routed with Zipf-balanced routing, Fused gate+up |
-| **Mu-Guidance** | Cross-layer contextual mu, learnable mu_init |
-| **Optimizers** | AdamW, Muon (Newton-Schulz), muP scaling |
-| **Schedulers** | Cosine, WSD (LLaMA 3), Linear, Constant |
-| **Parallel** | FSDP v2, Tensor Parallel, Pipeline Parallel, 3D Cluster |
-| **CUDA/Triton** | Flash Attention, CGGR expert dispatch |
-| **Multimodal** | OmniModel (text + image + audio + video) |
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md)
-- [Token-Routed MLP](docs/token-routed.md) - Sort-and-split dispatch, Zipf routing
-- [Mu-Guidance](docs/dynamics.md) - Inter-layer communication
-- [MoE Comparison](docs/moe.md) - Token-Routed vs Mixtral
-- [Training Guide](docs/training.md) - Ablation results, loss curves
-- [Architecture](docs/architectures.md) - Full architecture overview
-- [Custom Models](docs/custom-models.md) - Build your own
-- [CUDA / GPU](docs/cuda.md) - Optimizations, vLLM integration
-- [Efficient Training](docs/efficient.md) - Small budget tips
+- [Getting started](docs/getting-started.md)
+- [Architecture reference](docs/architectures.md)
+- [Token-routed MLP](docs/token-routed.md)
+- [Training](docs/training.md)
+- [CUDA and serving](docs/cuda.md)
+- [TR-MHA pilot](TR_MHA.md)
 
-## Links
-
-- [HuggingFace](https://huggingface.co/Complexity-ML)
-- [PyPI](https://pypi.org/project/complexity-framework/)
-- [GitHub](https://github.com/Complexity-ML/complexity-framework)
-- [vLLM Integration](https://github.com/Complexity-ML/vllm-cuda_graph)
+Some historical documentation describes earlier controls and should be read
+together with the dated configuration and artifact it references.
 
 ## License
 
-CC BY-NC 4.0 (Creative Commons Attribution-NonCommercial 4.0)
+[CC BY-NC 4.0](LICENSE) — Creative Commons Attribution-NonCommercial 4.0.
