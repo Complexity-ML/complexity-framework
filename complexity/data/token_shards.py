@@ -214,14 +214,31 @@ def load_token_shard(path: str | Path, *, mmap_mode: str = "r") -> tuple[np.memm
     return tokens, metadata
 
 
-def token_shard_frequencies(path: str | Path, vocab_size: int) -> torch.Tensor:
-    """Count token frequencies from a memory-mapped token shard."""
+def token_shard_frequencies(
+    path: str | Path,
+    vocab_size: int,
+    *,
+    eval_ratio: float = 0.0,
+    seq_len: int = 0,
+) -> torch.Tensor:
+    """Count token frequencies from the training partition of a token shard.
+
+    ``eval_ratio=0`` preserves the historical whole-shard behavior for callers
+    that do not create an evaluation split. Training launchers must pass their
+    actual split settings so static routing never observes held-out tokens.
+    """
 
     tokens, _ = load_token_shard(path)
+    end = int(tokens.shape[0])
+    if eval_ratio > 0.0:
+        min_eval_tokens = max(1, int(seq_len) + 1)
+        eval_tokens = max(min_eval_tokens, int(end * eval_ratio))
+        eval_tokens = min(eval_tokens, max(min_eval_tokens, end // 10))
+        end -= eval_tokens
     freqs = torch.zeros(vocab_size, dtype=torch.float32)
     chunk_size = 8_000_000
-    for start in range(0, int(tokens.shape[0]), chunk_size):
-        chunk = np.asarray(tokens[start:start + chunk_size], dtype=np.int64)
+    for start in range(0, end, chunk_size):
+        chunk = np.asarray(tokens[start:min(end, start + chunk_size)], dtype=np.int64)
         valid = chunk[(chunk >= 0) & (chunk < vocab_size)]
         if valid.size == 0:
             continue

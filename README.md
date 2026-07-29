@@ -84,6 +84,34 @@ out. The routed implementation is also approximately 21% slower in training.
 The matched measurements are published in
 [`corrected_300m_scaling.csv`](https://github.com/Complexity-ML/tmlr-paper-pool/blob/main/supplementary_code/results/corrected_300m_scaling.csv).
 
+An additional matched 99,487,680-parameter MPS pilot tests how much of the
+1,648-unit FFN budget should be assigned to the routed branch. All runs use the
+same local FineWeb-Edu sample, 5% held-out tail, optimizer, 1,024,000-token
+budget, and seed 42. Routing frequencies are computed from the training
+partition only.
+
+| Routed width | Shared width | Final evaluation NLL | Evaluation PPL |
+| ---: | ---: | ---: | ---: |
+| Dense GQA | 1,648 | 7.596686 | 1991.58 |
+| 64 | 1,584 | 7.598139 | 1994.48 |
+| 128 | 1,520 | 7.570862 | 1940.81 |
+| 160 | 1,488 | 7.547887 | 1896.73 |
+| **256** | **1,392** | **7.536167** | **1874.63** |
+
+Because width 256 was selected on this sweep, it was rerun against Dense GQA
+with seed 43:
+
+| Seed 43 architecture | Final evaluation NLL | Evaluation PPL |
+| --- | ---: | ---: |
+| Dense GQA | 7.530082 | 1863.26 |
+| **TR-GQA, routed width 256** | **7.492290** | **1794.16** |
+
+The seed-43 difference is -0.037792 NLL in favor of TR-GQA. This confirms the
+direction on a second initialization, but it uses the same small corpus and
+evaluation tail. It is not a multi-corpus or scaling result. Protocol details
+and machine-readable values are in [`TR_GQA.md`](TR_GQA.md) and
+[`results/tr_gqa_mps_100m.csv`](results/tr_gqa_mps_100m.csv).
+
 The other tracked configurations establish implementation and launch
 contracts. A planned large run is not presented as a completed result.
 

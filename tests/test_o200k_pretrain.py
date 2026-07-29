@@ -233,10 +233,39 @@ def test_token_shard_dataset_and_frequencies(tmp_path):
     assert freqs.sum().item() == 100
     assert freqs[42].item() == 1
 
+    train_freqs = token_shard_frequencies(
+        tmp_path,
+        vocab_size=128,
+        eval_ratio=0.2,
+        seq_len=8,
+    )
+    assert train_freqs.sum().item() == 90
+    assert train_freqs[89].item() == 1
+    assert train_freqs[90].item() == 0
+
     ds = TokenShardDataset(tmp_path, seq_len=8, seed=0, eval_ratio=0.2)
     batch = next(iter(ds))
     assert batch["input_ids"].shape == (8,)
     assert batch["labels"].shape == (8,)
+
+
+def test_text_routing_frequencies_exclude_the_eval_tail(monkeypatch):
+    from complexity.training.o200k import data
+
+    tokens = list(range(10_000))
+    monkeypatch.setattr(data, "load_text_tokens", lambda *args: tokens)
+
+    freqs = data.text_token_frequencies(
+        "ignored.txt",
+        "ignored-tokenizer",
+        vocab_size=10_000,
+        eval_ratio=0.1,
+    )
+
+    # Local text reserves at least 2,048 tokens, capped at 20% here.
+    assert freqs.sum().item() == 8_000
+    assert freqs[7_999].item() == 1
+    assert freqs[8_000].item() == 0
 
 
 def test_token_routed_topk_uses_precomputed_zipf_routes():

@@ -175,7 +175,12 @@ def main():
         "modulo_balanced_secondary",
     }
     if args.dataset == "tokens" and needs_routing_frequencies:
-        config.token_frequencies = token_shard_frequencies(args.tokens_path, config.vocab_size)
+        config.token_frequencies = token_shard_frequencies(
+            args.tokens_path,
+            config.vocab_size,
+            eval_ratio=args.eval_ratio,
+            seq_len=args.seq_len,
+        )
         if is_main:
             logger.info(
                 f"Routing frequency table ({args.routing_strategy}): "
@@ -192,6 +197,7 @@ def main():
             args.text_file,
             args.tokenizer,
             config.vocab_size,
+            eval_ratio=args.eval_ratio,
         )
     if args.routing_strategy == "lsh_hidden":
         config.lsh_routing = True

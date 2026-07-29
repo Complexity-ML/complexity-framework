@@ -128,15 +128,26 @@ def infer_vocab_size(args) -> int:
     return vocab_size
 
 
-def text_token_frequencies(path: str, tokenizer_path: str, vocab_size: int) -> torch.Tensor:
+def text_token_frequencies(
+    path: str,
+    tokenizer_path: str,
+    vocab_size: int,
+    *,
+    eval_ratio: float = 0.0,
+) -> torch.Tensor:
+    """Count routing frequencies without observing the held-out tail."""
+
     tokens = load_text_tokens(path, tokenizer_path)
+    if eval_ratio > 0.0:
+        tokens, _ = split_tokens(tokens, eval_ratio)
     ids = torch.tensor(tokens, dtype=torch.long)
     ids = ids[(ids >= 0) & (ids < vocab_size)]
     freqs = torch.zeros(vocab_size, dtype=torch.float32)
     if ids.numel() > 0:
         freqs.scatter_add_(0, ids, torch.ones_like(ids, dtype=torch.float32))
     logger.info(
-        f"Routing frequency table: {int(freqs.sum().item()):,} tokens, "
+        f"Routing frequency table (train partition): "
+        f"{int(freqs.sum().item()):,} tokens, "
         f"{int((freqs > 0).sum().item()):,} observed vocabulary entries"
     )
     return freqs
