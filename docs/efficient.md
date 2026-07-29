@@ -1,67 +1,92 @@
-# Efficient Training
+# Efficient training
 
-Optimizations for training on limited hardware.
+Efficiency depends on active parameters, sequence length, vocabulary size,
+device kernels, and communication topology. Profile the realized run instead
+of relying on a model-size label.
 
-## GPU Requirements
+## First controls to use
 
-| VRAM | Model | Batch | Optimizations |
-|------|-------|-------|---------------|
-| 96 GB (RTX 6000) | 187M | 128 | bf16, 2 GPUs |
-| 48 GB (A6000) | 187M | 64 | bf16 |
-| 24 GB (4090) | 187M | 16 | bf16, gradient checkpointing |
-| 16 GB (4080/5060Ti) | 187M | 8 | bf16, checkpointing, accumulation |
+1. BF16 on supported devices.
+2. Chunked or fused linear cross entropy for large vocabularies.
+3. Shared-expert token chunking.
+4. Gradient checkpointing when activation memory dominates.
+5. DDP when the model fits on one device.
+6. CGGR only after parity and throughput validation.
 
-## Training Results
-
-![Loss Curves](../figures/fig_loss_curves.png)
-
-Our 187M model trained on 500M tokens with 2x RTX 6000 (96GB each):
-
-| Metric | Value |
-|--------|-------|
-| Steps | 954 |
-| Time | ~83 min |
-| Avg Loss | 4.793 (full model) |
-| Throughput | ~100k tokens/step |
-
-## Inference
-
-![Average Loss](../figures/fig_avg_total.png)
-
-Deployed on vLLM: **204 tokens/s** on a single RTX 5060 Ti (16GB).
-
-## Gradient Checkpointing
-
-Reduces VRAM at ~30% speed cost:
-
-```python
-model.gradient_checkpointing_enable()
-```
-
-## Mixed Precision (bf16)
-
-```python
-with torch.autocast("cuda", dtype=torch.bfloat16):
-    loss = model(input_ids)
-loss.backward()
-```
-
-## Gradient Accumulation
-
-Simulate larger batch on small GPUs:
+## BF16
 
 ```bash
-# Effective batch = batch_size * gradient_accumulation * num_gpus
-python scripts/train_ablation_150m.py --run 2 --batch-size 16 --gradient-accumulation 8
+cf-o200k-pretrain ... --bf16
 ```
 
-## Multi-GPU (FSDP)
+The runner selects backend-appropriate autocast. BF16 support and performance
+vary by device.
+
+## Gradient checkpointing
+
+Enabled by default in the runner:
 
 ```bash
-torchrun --nproc_per_node=2 scripts/train_ablation_150m.py -- --run 2 --batch-size 128
+--grad-ckpt
 ```
 
-## See Also
+Disable for a small model that fits comfortably:
 
-- [Training Guide](training.md)
-- [CUDA Optimizations](cuda.md)
+```bash
+--no-grad-ckpt
+```
+
+Checkpointing trades additional forward computation for lower activation
+memory.
+
+## Shared-path chunking
+
+TR-MoE's shared branch touches every token. Limit its peak activation memory:
+
+```bash
+--shared-expert-chunk-tokens 32768
+```
+
+Set zero for one dense pass. Chunking preserves the mathematical output.
+
+## Large-vocabulary loss
+
+```bash
+--loss-backend auto --loss-chunk-tokens 1024
+```
+
+See [GPU and dispatch paths](cuda.md).
+
+## DDP versus cluster plans
+
+Use DDP when each worker can hold a complete model:
+
+```bash
+torchrun --nproc_per_node=8 \
+  -m complexity.training.o200k_pretrain \
+  --config path/to/direct-run.yaml
+```
+
+TP/PP/DP files are planning contracts validated with `cf-plan-cluster`; they
+need an external cluster launcher.
+
+## Measurement protocol
+
+For a defensible throughput result, record:
+
+- framework and PyTorch commits;
+- device model and count;
+- backend and kernel path;
+- model and active parameter counts;
+- vocabulary and sequence length;
+- batch per device and world size;
+- precision;
+- gradient checkpointing;
+- loss backend;
+- telemetry state;
+- compilation state;
+- warm-up exclusion;
+- synchronization boundaries.
+
+Do not compare a telemetry-enabled run against a telemetry-disabled run as if
+the numbers measured only architecture.

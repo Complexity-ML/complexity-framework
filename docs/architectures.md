@@ -1,56 +1,126 @@
-# Architecture Overview
+# Architecture and naming
 
-## Complexity-Deep
+Complexity Framework composes a sequence mixer and a feed-forward path in a
+pre-norm causal decoder:
 
-![Architecture](../figures/architecture_complexity_deep.png)
+```text
+x ─► RMSNorm ─► attention ─► residual add
+  └► RMSNorm ─► FFN       ─► residual add
+```
 
-### Decoder Layer
+Token identity may influence the FFN, attention, or an experimental lexical
+residual, but these mechanisms are configured independently.
 
-Each of the 18 decoder layers:
+## Primary decoder families
 
-1. **RMSNorm + GQA Attention** (12 Q heads, 4 KV heads, head_dim=64)
-   - Mu-Guided Q/K/V bias from previous layer
-   - QK RMSNorm + RoPE (theta=10000)
-   - Residual connection
+### TR-GQA
 
-2. **RMSNorm + Token-Routed MLP** (4 experts SwiGLU, 512d each)
-   - Sort-and-split dispatch (bmm, fullgraph safe)
-   - Zipf-balanced deterministic routing
-   - Shared Lexical Expert (dense SwiGLU, all tokens)
-   - Residual connection
+TR-GQA combines grouped-query attention with TR-MoE:
 
-3. **Mu-Guidance** (after MLP)
-   - mu = clamp(mu_param + mu_proj(h), -2, 2)
-   - Flows to next layer's attention
+```python
+ModelConfig(
+    attention_type="gqa",
+    num_attention_heads=8,
+    num_key_value_heads=2,
+    mlp_type="token_routed",
+)
+```
 
-### Specs (187M)
+Multiple query heads share each K/V head. The FFN contains a shared dense path
+and deterministic token-selected experts. This is the default o200k
+pretraining family.
 
-| Component | Value |
-|-----------|-------|
-| Hidden size | 768 |
-| Layers | 18 |
-| Attention | GQA (12h / 4kv) |
-| MLP | Token-Routed (4 experts) |
-| Expert size | 512 |
-| Shared expert | Yes |
-| Routing | Zipf bin-packing |
-| Mu-Guidance | Yes |
-| Vocab | 32k BPE |
+### TR-MHA
 
-## Supported Architectures
+TR-MHA combines full multi-head attention with the same TR-MoE:
 
-The framework also supports:
+```python
+ModelConfig(
+    attention_type="mha",
+    num_attention_heads=8,
+    num_key_value_heads=8,
+    mlp_type="token_routed",
+)
+```
 
-| Architecture | Type | Use Case |
-|-------------|------|----------|
-| Dense SwiGLU | Standard MLP | Baseline comparison |
-| Mixtral MoE | Learned router | MoE baseline |
-| Mamba | SSM (O(N)) | Long sequences |
-| RetNet | Retention | Efficient inference |
-| RWKV | Linear attention | Low memory |
+Every query head has its own K/V head. Only the attention layout changes;
+TR-MoE routing and expert computation remain the same.
 
-## See Also
+### Dense controls
 
-- [Token-Routed MLP](token-routed.md)
-- [Mu-Guidance](dynamics.md)
-- [Training](training.md)
+Matched dense controls replace `mlp_type="token_routed"` with
+`mlp_type="swiglu"`. Parameter matching must be done explicitly through
+`intermediate_size` and, for TR-MoE, `shared_intermediate_size`.
+
+## TR-MoE block
+
+For hidden state \(x\) and token identifier \(t\):
+
+\[
+\mathrm{TRMoE}(x,t)
+=g_s\,\mathrm{Shared}(x)
++g_r\sum_{k=1}^{K}w_k\,\mathrm{Expert}_{r_{l,k}(t)}(x).
+\]
+
+- \(r_{l,k}(t)\) is a deterministic layer-specific lookup.
+- The selected experts process the contextual hidden state \(x\), not an
+  embedding-only representation.
+- The shared path is optional in code but enabled in the principal TR-GQA and
+  TR-MHA configurations.
+- Gates \(g_s\) and \(g_r\) may be fixed or learned.
+- No learned MoE router or auxiliary load-balancing loss is required for
+  lexical routing.
+
+See [TR-MoE internals](token-routed.md).
+
+## Experimental routed-attention adapters
+
+The attention registry also exposes:
+
+- `tr_mha` / `token_routed_mha`;
+- `tr_mha_v2` / `token_routed_mha_v2`.
+
+These keep a full MHA path and add low-rank token-routed Q/V residual adapters.
+They are **not** the same configuration as MHA + `TokenRoutedMLP`. The first
+prototype evaluates contextual logits across all route experts; v2 restricts
+contextual reweighting to two fixed token-ID candidates and starts the routed
+up-projection at zero.
+
+See [`../TR_MHA.md`](../TR_MHA.md).
+
+## Other implemented sequence mixers
+
+| Registry value | Status | Description |
+| --- | --- | --- |
+| `gqa`, `mha`, `mqa` | baseline | Standard causal attention variants |
+| `lexical_wrv` | controlled experiment | Grouped reads with shared writes/values |
+| `lexical_gqa`, `lexical_key_gqa` | experiment | Lexical residuals around GQA |
+| `causal_conv`, `causal_state_conv` | experiment | Attention-free causal convolution |
+| `causal_fast_weight_conv` | experiment | Fixed-state fast-weight convolution |
+| `routed_gqa` | prototype | Routed GQA implementation |
+
+These are research alternatives and should not be presented as equivalent
+evidence without a matched run.
+
+## Historical Mu-Guidance
+
+`use_mu_guidance=True` enables an optional contextual state passed between
+layers. It remains in the framework for reproducibility and ablation work, but
+it is not part of the current TR-GQA or TR-MHA definition. See
+[Historical Mu-Guidance control](dynamics.md).
+
+## Configuration invariants
+
+- `hidden_size` must be divisible by `num_attention_heads`.
+- `num_attention_heads` must be divisible by `num_key_value_heads`.
+- MHA requires equal query and K/V head counts.
+- `top_k` cannot exceed `num_experts`.
+- TR-MoE requires `token_ids` to preserve lexical routing.
+- Exact parameter matching must be checked after model construction.
+
+## Related pages
+
+- [TR-MoE internals](token-routed.md)
+- [Getting started](getting-started.md)
+- [Run configurations](run_configs.md)
+- [API reference](api.md)

@@ -1,78 +1,70 @@
-# Mixture of Experts (MoE)
+# MoE implementations
 
-Two MoE approaches available:
+The framework contains two different MoE families.
 
-| Type | Class | Routing | aux_loss |
-|------|-------|---------|----------|
-| **Token-Routed** (ours) | `TokenRoutedMLP` | Zipf-balanced deterministic | None |
-| **Mixtral-style** (baseline) | `MixtralMoE` | Learned router + top-1 | Required |
+| Family | Class | Routing | Auxiliary balancing loss |
+| --- | --- | --- | --- |
+| TR-MoE | `TokenRoutedMLP` | fixed lexical tables or experimental LSH | no |
+| Learned-router control | `MixtralMoE` | learned logits and top-k selection | implementation-dependent |
 
-## Token-Routed MLP (Recommended)
+## TR-MoE
 
-Sort-and-split dispatch with deterministic routing. Zero overhead, perfect load balancing.
+TR-MoE is the main research path. It combines a dense shared SwiGLU branch with
+deterministically selected narrow experts. See
+[TR-MoE internals](token-routed.md).
 
 ```python
-from complexity.core.mlp import TokenRoutedMLP, MLPConfig
+from complexity.core.mlp import MLPConfig, TokenRoutedMLP
 
-config = MLPConfig(
-    hidden_size=768,
-    intermediate_size=2048,
-    num_experts=4,
-    vocab_size=32000,
-    shared_expert=True,
-    token_frequencies=freqs,  # Zipf-balanced routing
+mlp = TokenRoutedMLP(
+    MLPConfig(
+        hidden_size=768,
+        intermediate_size=512,
+        shared_intermediate_size=2048,
+        vocab_size=32_000,
+        num_experts=4,
+        shared_expert=True,
+        routing_strategy="modulo_balanced_secondary",
+        top_k=2,
+        top_k_primary_weight=0.5,
+    )
 )
-mlp = TokenRoutedMLP(config)
-output = mlp(hidden_states, token_ids=input_ids)  # No aux_loss!
+output = mlp(hidden_states, token_ids=input_ids)
 ```
 
-See [Token-Routed MLP](token-routed.md) for full documentation.
+## Learned-router control
 
-## Mixtral-style MoE (Baseline)
-
-Learned router with load balancing loss. For comparison with standard MoE.
+`MixtralMoE` exists for controlled comparisons with a learned router. Its
+configuration and loss handling must be inspected for the specific experiment;
+the framework does not claim that every historical run used a common,
+production-equivalent Mixtral recipe.
 
 ```python
-from complexity.core.mlp import MixtralMoE, MLPConfig
+from complexity.core.mlp import MLPConfig, MixtralMoE
 
-config = MLPConfig(
-    hidden_size=768,
-    intermediate_size=2048,
-    num_experts=4,
-    vocab_size=32000,
-    shared_expert=True,
+mlp = MixtralMoE(
+    MLPConfig(
+        hidden_size=768,
+        intermediate_size=2048,
+        num_experts=4,
+    )
 )
-mlp = MixtralMoE(config)
 output = mlp(hidden_states)
-# aux_loss stored in mlp.last_aux_loss
 ```
 
-## Comparison
+## Fair comparisons
 
-| Aspect | Token-Routed (ours) | Mixtral-style |
-|--------|---------------------|---------------|
-| Router | **None (table lookup)** | nn.Linear + softmax |
-| aux_loss | **None** | Required |
-| Load balancing | **Perfect by design** | Must be learned |
-| Expert collapse | **Impossible** | Possible |
-| Deterministic | **Yes** | No |
-| CUDA graph safe | **Yes** | Needs special handling |
-| Dispatch | Sort-and-split (bmm) | Sort-and-split (bmm) |
+An MoE comparison should report:
 
-### Training Results (500M tokens, 700 steps avg)
+- total trainable parameters;
+- active parameters per token;
+- token budget and data order;
+- optimizer and learning-rate schedule;
+- number of seeds;
+- training and evaluation NLL;
+- throughput on the same hardware;
+- the realized route distribution;
+- any auxiliary loss and its coefficient.
 
-| Configuration | Avg Loss |
-|---------------|----------|
-| **TR + Mu + Zipf** | **5.026** |
-| Mixtral (learned) | 5.110 |
-| Dense baseline | 5.205 |
-
-Token-Routed converges faster because experts specialize immediately without learning a router.
-
-![Loss Curves](../figures/fig_loss_curves.png)
-
-## See Also
-
-- [Token-Routed MLP](token-routed.md)
-- [Mu-Guidance](dynamics.md)
-- [Training](training.md)
+Historical figures without those fields are not used as headline evidence in
+the current documentation.

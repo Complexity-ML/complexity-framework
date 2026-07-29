@@ -1,278 +1,233 @@
-# API Reference
+# API reference
 
-## Import principal
+This page covers the stable research-facing surface. The source remains the
+authority for experimental fields.
+
+## Top-level imports
 
 ```python
-from complexity.api import (
-    # === Base ===
-    Tokenizer, Model, Dataset, Trainer,
+from complexity import ComplexityModel, ModelConfig
+```
 
-    # === Building Blocks ===
-    Attention, MLP, Position, Norm, Block,
-    GQA, MHA, MQA,
-    SwiGLU, GeGLU, TokenRoutedMLP,
-    RoPE, YaRN, ALiBi,
-    RMSNorm, LayerNorm,
+The package also exports:
 
-    # === INL Dynamics ===
-    INLDynamics, INLDynamicsLite, DynamicsConfig,
+- component registries and registration decorators;
+- GQA, MHA, and MQA classes;
+- dense and token-routed MLP classes;
+- normalization and position-embedding components.
 
-    # === CUDA/Triton ===
-    CUDA, Triton,
-    FlashAttention, SlidingWindowAttention, SparseAttention, LinearAttention,
+## `ModelConfig`
 
-    # === Efficient ===
-    Efficient, Quantize, SmallModels,
+### Model shape
 
-    # === Architectures O(N) ===
-    Architecture, Mamba, RWKV, RetNet,
+| Field | Meaning |
+| --- | --- |
+| `hidden_size` | residual width |
+| `num_hidden_layers` | decoder depth |
+| `intermediate_size` | routed expert pool width or dense FFN width |
+| `vocab_size` | tokenizer vocabulary |
+| `max_position_embeddings` | configured context bound |
 
-    # === Helpers ===
-    Helpers, Init, Mask, KVCache, Sampling, Debug,
+### Attention
 
-    # === Multimodal ===
-    Vision, Audio, Fusion,
+| Field | Meaning |
+| --- | --- |
+| `attention_type` | registry key such as `gqa`, `mha`, `tr_mha_v2` |
+| `num_attention_heads` | query head count |
+| `num_key_value_heads` | K/V head count |
+| `use_qk_norm` | Q/K RMS normalization |
+| `use_sdpa` | PyTorch SDPA path |
+| `sliding_window` | optional local-attention window |
 
-    # === Registry ===
-    register, Registry,
+### TR-MoE
+
+| Field | Meaning |
+| --- | --- |
+| `mlp_type` | set `token_routed` for TR-MoE |
+| `num_experts` | routed expert count |
+| `routing_strategy` | lexical or experimental LSH route |
+| `shared_expert` | enable dense shared SwiGLU |
+| `shared_intermediate_size` | shared branch width |
+| `shared_expert_chunk_tokens` | chunk shared computation over tokens |
+| `top_k` | number of deterministic expert routes |
+| `top_k_primary_weight` | blend assigned to primary route |
+| `use_shared_routed_gates` | learn shared/routed scalar gates |
+| `collect_moe_telemetry` | collect route/RMS diagnostics |
+| `use_custom_kernels` | custom-kernel policy |
+| `use_cggr` | grouped-GEMM policy |
+
+Configuration validates shape, routing, and range invariants in
+`ModelConfig.__post_init__`.
+
+## `ComplexityModel`
+
+### Construct
+
+```python
+model = ComplexityModel(config)
+model = ComplexityModel.from_config("config.yaml")
+model = ComplexityModel.from_pretrained("checkpoint-directory")
+```
+
+### Forward
+
+```python
+result = model(
+    input_ids,
+    attention_mask=None,
+    past_key_values=None,
+    use_cache=False,
+    return_hidden_states=False,
+    return_logits=True,
 )
 ```
 
----
+Return mapping:
 
-## Attention
+| Key | Value |
+| --- | --- |
+| `logits` | `[batch, sequence, vocabulary]`, or `None` |
+| `last_hidden_state` | final normalized hidden states |
+| `past_key_values` | optional per-layer cache/state list |
+| `hidden_states` | optional embedding and layer states |
 
-### Factory
+Set `return_logits=False` for fused or chunked tied-head loss paths.
+
+### Save and load
 
 ```python
-attn = Attention.gqa(hidden_size=4096, num_heads=32, kv_heads=8)
-attn = Attention.mha(hidden_size=4096, num_heads=32)
-attn = Attention.mqa(hidden_size=4096, num_heads=32)
+model.save_pretrained("checkpoint")
+restored = ComplexityModel.from_pretrained("checkpoint")
 ```
 
-### Classes directes
+For distributed DTensor/FSDP saves, every rank must enter
+`save_pretrained` because full-tensor gathering is collective.
+
+### Generation
+
+`model.generate()` intentionally raises `RuntimeError`. Use the external
+serving client.
+
+## External inference
 
 ```python
-from complexity.api import GQA, MHA, MQA, AttentionConfig
-
-config = AttentionConfig(
-    hidden_size=4096,
-    num_attention_heads=32,
-    num_key_value_heads=8,
+from complexity.inference import (
+    ExternalGenerationConfig,
+    OpenAICompatibleBackend,
+    create_external_backend,
 )
-attn = GQA(config)
 ```
 
----
-
-## MLP
-
-### Factory
+`create_external_backend` accepts `"vllm"` or `"sglang"` and calls
+`/v1/completions` or `/v1/chat/completions`.
 
 ```python
-mlp = MLP.swiglu(hidden_size=4096, intermediate_size=11008)
-mlp = MLP.geglu(hidden_size=4096, intermediate_size=11008)
-mlp = MLP.standard(hidden_size=4096, intermediate_size=16384)
-mlp = MLP.moe(hidden_size=4096, num_experts=8, top_k=2)
-```
-
-### Classes directes
-
-```python
-from complexity.api import SwiGLU, GeGLU, TokenRoutedMLP
-
-mlp = SwiGLU(hidden_size=4096, intermediate_size=11008)
-```
-
----
-
-## Position Embeddings
-
-### Factory
-
-```python
-pos = Position.rope(dim=128, max_seq_len=4096)
-pos = Position.yarn(dim=128, max_seq_len=4096, scale=4)
-pos = Position.alibi(num_heads=32)
-```
-
-### Classes directes
-
-```python
-from complexity.api import RoPE, YaRN, ALiBi
-
-rope = RoPE(dim=128, max_seq_len=4096, base=10000)
-```
-
----
-
-## Normalization
-
-### Factory
-
-```python
-norm = Norm.rms(hidden_size=4096)
-norm = Norm.layer(hidden_size=4096)
-```
-
-### Classes directes
-
-```python
-from complexity.api import RMSNorm, LayerNorm
-
-norm = RMSNorm(hidden_size=4096, eps=1e-6)
-```
-
----
-
-## INL Dynamics
-
-```python
-from complexity.api import INLDynamics, INLDynamicsLite
-
-# Version complète (paramètres adaptatifs)
-dynamics = INLDynamics(
-    hidden_size=768,
-    init_alpha=0.9,
-    init_beta=0.1,
-    init_gate=0.5,
-    dt=0.1,
-    beta_max=2.0,        # CRITICAL!
-    velocity_max=10.0,
+backend = create_external_backend(
+    "vllm",
+    base_url="http://localhost:8000",
+    model="tr-gqa",
 )
-
-# Version lite (paramètres fixes)
-dynamics = INLDynamicsLite(
-    hidden_size=768,
-    alpha=0.9,
-    beta=0.1,
-    gate=0.5,
+answer = backend.chat(
+    [{"role": "user", "content": "Summarize the experiment."}],
+    ExternalGenerationConfig(max_tokens=128),
 )
-
-# Forward
-h_next, v_next = dynamics(hidden_states, velocity_states)
 ```
 
----
+The client is synchronous and non-streaming in the current implementation.
 
-## CUDA / Triton
+## Component registries
 
 ```python
-from complexity.api import CUDA
-
-attn = CUDA.flash(hidden_size=4096, num_heads=32)
-attn = CUDA.sliding_window(hidden_size=4096, num_heads=32, window_size=4096)
-attn = CUDA.sparse(hidden_size=4096, num_heads=32, block_size=64)
-attn = CUDA.linear(hidden_size=4096, num_heads=32)
-attn = CUDA.multiscale(hidden_size=4096, num_heads=32)
+from complexity.core.registry import (
+    ATTENTION_REGISTRY,
+    MLP_REGISTRY,
+    NORMALIZATION_REGISTRY,
+    POSITION_REGISTRY,
+    register_attention,
+    register_mlp,
+)
 ```
 
----
+Principal attention keys:
 
-## Efficient
+```text
+gqa, mha, mqa
+tr_mha, tr_mha_v2
+lexical_wrv, lexical_gqa, lexical_key_gqa
+causal_conv, causal_state_conv, causal_fast_weight_conv
+```
+
+Principal MLP keys:
+
+```text
+swiglu, gelu, geglu
+token_routed
+mixtral
+dense_deterministic
+lexical_modulated
+```
+
+Several aliases exist for checkpoint compatibility. New documentation should
+use the principal key.
+
+## Direct TR-MoE module
 
 ```python
-from complexity.api import Efficient
+from complexity.core.mlp import MLPConfig, TokenRoutedMLP
 
-# Modèles
-model = Efficient.nano_llm(vocab_size=32000)   # ~10M
-model = Efficient.micro_llm(vocab_size=32000)  # ~30M
-model = Efficient.tiny_llm(vocab_size=32000)   # ~125M
-model = Efficient.small_llm(vocab_size=32000)  # ~350M
-
-# Optimisations
-Efficient.enable_checkpointing(model)
-model, opt, scaler = Efficient.mixed_precision(model, optimizer)
-model = Efficient.quantize_model(model, bits=4)
-
-# Estimation
-mem = Efficient.estimate_memory(model, batch_size=4, seq_len=2048)
-config = Efficient.recommend_config(vram_gb=12, training=True)
+layer = TokenRoutedMLP(
+    MLPConfig(
+        hidden_size=384,
+        intermediate_size=128,
+        vocab_size=32_000,
+        num_experts=4,
+        shared_expert=True,
+        shared_intermediate_size=1536,
+        top_k=2,
+    )
+)
+output = layer(hidden_states, token_ids=input_ids)
 ```
 
----
-
-## Architectures O(N)
+Useful diagnostics:
 
 ```python
-from complexity.api import Architecture
-
-# Modèles complets
-model = Architecture.mamba(hidden_size=768, num_layers=12)
-model = Architecture.rwkv(hidden_size=768, num_layers=12)
-model = Architecture.retnet(hidden_size=768, num_layers=12)
-
-# Blocks individuels
-block = Architecture.mamba_block(hidden_size=768)
-block = Architecture.rwkv_block(hidden_size=768)
-block = Architecture.mod_block(hidden_size=768, capacity_factor=0.5)
+layer.last_dispatch_path
+layer.get_expert_counts()
+layer.training_telemetry()
 ```
 
----
+## Official MCP client
 
-## Helpers
+Install:
+
+```bash
+pip install -e ".[tools]"
+```
+
+Imports:
 
 ```python
-from complexity.api import Helpers, Init, Mask, KVCache, Sampling, Debug
-
-# Initialisation
-Init.xavier(model)
-Init.kaiming(model, mode="fan_out")
-Helpers.init_weights(model, init_type="normal", std=0.02)
-
-# Masking
-mask = Mask.causal(seq_len=2048, device="cuda")
-mask = Mask.sliding_window(seq_len=2048, window_size=512)
-mask = Mask.padding(lengths=[10, 15, 8], max_len=20)
-
-# KV Cache
-cache = KVCache.create(num_layers=32, num_heads=32, head_dim=128)
-k, v = cache.update(layer_idx, new_k, new_v)
-
-# Sampling
-token = Sampling.sample(logits, temperature=0.7, top_k=50, top_p=0.9)
-token = Sampling.greedy(logits)
-
-# Debug
-print(Debug.count_params(model))  # "7.2B"
-Debug.print_summary(model)
-mem = Debug.memory_usage()
+from complexity.mcp import (
+    MCPTool,
+    MCPToolResult,
+    OfficialMCPStdioClient,
+    OfficialMCPStdioConfig,
+)
 ```
 
----
+The wrapper launches and calls an MCP server through the official Python SDK
+stdio transport. It does not reimplement tools.
 
-## Registry (Custom Components)
+## CLI entry points
 
-```python
-from complexity.api import register, AttentionBase
-
-@register("attention", "my_attention")
-class MyAttention(AttentionBase):
-    def forward(self, x, **kwargs):
-        # Custom implementation
-        return x, None
-
-# Utilisation
-attn = Attention.create("my_attention", hidden_size=768)
+```text
+complexity
+cf-o200k-pretrain
+cf-plan-run
+cf-plan-cluster
+cf-check-pipeline
 ```
 
----
-
-## Multimodal
-
-```python
-from complexity.api import Vision, Audio, Fusion
-
-# Vision
-encoder = Vision.clip(image_size=224, patch_size=16)
-encoder = Vision.siglip(image_size=384)
-
-# Audio
-encoder = Audio.whisper(sample_rate=16000)
-encoder = Audio.mel_spectrogram(n_mels=80)
-
-# Fusion
-fusion = Fusion.cross_attention(hidden_size=768)
-fusion = Fusion.gated(hidden_size=768)
-fusion = Fusion.perceiver(hidden_size=768, num_latents=64)
-```
+The o200k runner and planners are the documented research paths. Some older
+`complexity` subcommands remain experimental.

@@ -1,75 +1,138 @@
-# CUDA / GPU Optimizations
+# GPU and dispatch paths
+
+Complexity Framework uses PyTorch for CPU, Apple MPS, NVIDIA CUDA, and AMD
+ROCm. PyTorch exposes ROCm devices through `torch.device("cuda")`; the
+framework records the logical backend separately.
+
+## Install the correct PyTorch build
+
+Use the helper:
+
+```bash
+./scripts/install_backend.sh cpu
+./scripts/install_backend.sh cuda
+./scripts/install_backend.sh rocm
+```
+
+or the Make targets:
+
+```bash
+make install-cpu
+make install-cuda
+make install-rocm
+```
+
+Review the selected wheel index before using these commands on a managed
+cluster.
 
 ## Attention
 
-| Type | Complexity | Memory | Usage |
-|------|-----------|--------|-------|
-| Flash Attention (SDPA) | O(N^2) | O(N) | Default, up to 8k tokens |
-| Sliding Window | O(NxW) | O(W) | Long sequences |
+GQA and MHA use PyTorch scaled dot-product attention when `use_sdpa=True`.
+Available kernels depend on the installed PyTorch build, device, dtype, shape,
+and mask.
 
-### GQA with Flash Attention
+The framework requests Flash, efficient, and math SDPA backends when available.
+Override the preference list with:
 
-```python
-# 12 query heads, 4 KV heads (Complexity-Deep default)
-# Uses PyTorch SDPA with Flash backend
-attn = GroupedQueryAttention(config)
+```bash
+export COMPLEXITY_SDPA_BACKENDS=flash,efficient,math
 ```
 
-### KV Cache Fix
+This is a preference, not proof that a specific kernel was selected. Record
+profiler evidence when publishing throughput.
 
-When using SDPA with KV cache (autoregressive generation), `is_causal=True` must be disabled when `q_len != kv_len`:
+## TR-MoE dispatch
 
-```python
-# is_causal=True only valid when q_len == kv_len (no KV cache)
-use_causal = (attn_mask is None) and (q.shape[2] == k.shape[2])
-attn_output = F.scaled_dot_product_attention(q, k, v, is_causal=use_causal)
+### `masked_dense`
+
+Portable PyTorch/autograd path used when the custom grouped-GEMM path is
+unavailable or disabled.
+
+```yaml
+run:
+  use_custom_kernels: false
+  cggr: false
 ```
 
-## Token-Routed MLP Dispatch
+### `cggr`
 
-### Sort-and-Split (current)
+Autograd-aware CUDA/Triton grouped GEMM for routed experts. Selection requires:
 
-```python
-sort_idx = expert_ids.argsort(stable=True)
-sorted_x = flat[sort_idx]
-# BMM: [E, N/E, hidden] @ [E, hidden, inter*2]
-gu = torch.bmm(sorted_x.view(E, chunk, hidden), gate_up_proj)
+- CUDA-visible tensors;
+- custom kernels enabled;
+- the `complexity_cuda` Triton import;
+- the CGGR autograd wrapper;
+- non-static dispatch.
+
+```yaml
+run:
+  use_custom_kernels: auto
+  cggr: auto
 ```
 
-- Fullgraph compatible with `torch.compile`
-- Each expert processes exactly N/E tokens
-- No dynamic shapes
+The selected path is logged and exposed as `TokenRoutedMLP.last_dispatch_path`.
 
-### Fused Cross-Entropy
+### ROCm policy
 
-```python
-from complexity_cuda.fused_cross_entropy import fused_cross_entropy
-# Never materializes full logits tensor
-loss = fused_cross_entropy(hidden_states, embed_weight, labels)
+`auto` leaves custom Triton disabled on ROCm by default. Opt in only after
+testing the installed ROCm/Triton combination:
+
+```bash
+export COMPLEXITY_ALLOW_ROCM_TRITON=1
 ```
 
-## vLLM Integration
+or:
 
-The model runs on vLLM with:
-- **PagedAttention**: KV cache management
-- **CUDA Graphs**: captured for decode steps
-- **Custom splitting_op**: deterministic routing in eager mode during graph replay
-- **204 tok/s** on RTX 5060 Ti (16GB)
+```bash
+cf-o200k-pretrain ... --use-custom-kernels true --cggr true
+```
 
-## torch.compile Notes
+The opt-in is experimental and should be benchmarked against the fallback.
 
-- Expert weights as `nn.Parameter` (not 3D indexed tensors) for XBLOCK compatibility
-- `token_to_expert` buffer stored outside compiled module to avoid pickle issues
-- `mu_init` in `ComplexityForCausalLM` (not compiled) to avoid serialization errors
+### Static dispatch
 
-## Memory Tips
+`static_expert_capacity=True` selects an export-friendly route intended for
+pipeline tracing. It disables CGGR in the current implementation.
 
-| Model | GPU Memory | Config |
-|-------|-----------|--------|
-| 187M (training) | ~31 GB | bf16, batch 128, seq 2048 |
-| 187M (inference, vLLM) | ~0.4 GB | bf16, PagedAttention |
+## Large-vocabulary loss
 
-## See Also
+With o200k, materializing all logits for every token can dominate memory.
 
-- [Token-Routed MLP](token-routed.md)
-- [Training](training.md)
+- `--loss-backend chunked` computes exact tied-head CE in token chunks.
+- `--loss-backend liger` uses fused linear CE when installed.
+- `--loss-backend auto` selects Liger when importable.
+
+Record the active backend from `run_config.json`.
+
+## Memory controls
+
+- lower `batch_size` or `seq_len`;
+- enable gradient checkpointing;
+- use `shared_expert_chunk_tokens` for the dense shared path;
+- use chunked or fused linear CE;
+- use BF16 where supported;
+- disable MoE telemetry for throughput measurements;
+- avoid forcing cache emptying at short intervals unless diagnosing pressure.
+
+## `torch.compile`
+
+The runner supports:
+
+```bash
+--compile --compile-mode default
+```
+
+Compilation is shape- and backend-sensitive. The first step includes compile
+time, so exclude warm-up from steady-state throughput. Verify numerical parity
+before comparing speed.
+
+## Serving
+
+The repository provides checkpoint export and OpenAI-compatible clients.
+Upstream vLLM/SGLang does not automatically understand a custom TR-MoE
+checkpoint. A serving integration must implement the architecture and its
+route tables.
+
+No device-specific tokens/s value is treated as universal documentation.
+Always report hardware, dtype, batch/concurrency, prompt length, generated
+length, quantization, and runtime commit.

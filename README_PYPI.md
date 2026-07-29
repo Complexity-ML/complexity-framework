@@ -1,22 +1,34 @@
 # Complexity Framework
 
-Modular Python framework for Transformer and Token-Routed language-model research.
+PyTorch research framework for TR-GQA, TR-MHA, and deterministic
+Token-Routed Mixture-of-Experts (TR-MoE) language models.
+
+## Architecture vocabulary
+
+- **TR-GQA**: grouped-query attention + TR-MoE.
+- **TR-MHA**: multi-head attention + TR-MoE.
+- **TR-MoE**: dense shared SwiGLU + deterministic token-selected experts.
+
+Token identity selects expert parameters while every selected branch transforms
+the current contextual hidden state.
+
+## Installation
+
+Install the PyTorch build for the target CPU, CUDA, ROCm, or MPS environment
+first. The package deliberately does not choose a PyTorch wheel.
 
 ```bash
+pip install torch
 pip install complexity-framework
 ```
 
-## What is included
+Development tools and the optional MCP client:
 
-| Area | Description |
-| --- | --- |
-| Models | GPT/Llama-style decoder models with GQA, RMSNorm, RoPE, dense SwiGLU, and Token-Routed MLPs |
-| Training | DDP-friendly local runners, BF16, gradient checkpointing, rotating checkpoints, CSV metrics |
-| Tokenization | HuggingFace `tokenizers` folders and local `tiktoken`/`o200k_base` cache folders |
-| Losses | Standard causal LM loss and chunked tied-head CE for large vocabularies |
-| Utilities | Token-budget planning, checkpoint conversion, FineWeb-Edu streaming helpers |
+```bash
+pip install -e ".[dev,tools]"
+```
 
-## Quick Start
+## Build TR-GQA
 
 ```python
 from complexity import ComplexityModel, ModelConfig
@@ -26,57 +38,57 @@ config = ModelConfig(
     num_hidden_layers=10,
     num_attention_heads=8,
     num_key_value_heads=2,
-    vocab_size=200019,
+    attention_type="gqa",
+    vocab_size=200_019,
     mlp_type="token_routed",
     num_experts=4,
+    intermediate_size=128,
     shared_expert=True,
     shared_intermediate_size=1536,
-    intermediate_size=128,
+    routing_strategy="zipf",
     top_k=2,
     top_k_primary_weight=0.5,
 )
-
 model = ComplexityModel(config)
-print(model.num_parameters())
 ```
 
-## Local o200k Token-Routed Runs
+For TR-MHA, set `attention_type="mha"` and make
+`num_key_value_heads == num_attention_heads`.
 
-After installing with `pip install -e .`, the package exposes stable console commands:
-
-```bash
-cf-plan-run --tokens 30B --gpus 8 --batch-size 256 --seq-len 2048 --tok-s 840000 --save-steps 200
-```
+## Train
 
 ```bash
 cf-o200k-pretrain \
-  --profile 100m \
-  --dataset fineweb \
-  --tokenizer ./tokenizer-o200k \
-  --steps 7153 \
-  --batch-size 256 \
-  --seq-len 2048 \
-  --bf16 \
-  --eval-steps 200 \
-  --log-steps 10 \
-  --save-steps 200 \
-  --loss-chunk-tokens 1024 \
-  --run-name 30b-100m-o200k-tr
+  --config configs/run_configs/100m_o200k_tr_rocm_mi350x.yaml
 ```
 
-The `--profile` flag currently supports:
+The runner records the resolved arguments, model configuration, parameter
+count, Git commit, backend metadata, and token accounting in
+`runs/<run-name>/run_config.json`.
 
-| Profile | Parameters with o200k | Use |
-| --- | ---: | --- |
-| `50m` | ~51.9M | quick local and ablation runs |
-| `100m` | ~99.7M | main o200k Token-Routed research runs |
+## Inference
 
-## Large-Vocabulary Training
+Native `ComplexityModel.generate()` is disabled. Exported checkpoints are
+served by a compatible external runtime such as vLLM or SGLang and accessed
+through the OpenAI-compatible client.
 
-For `o200k_base`, full `[batch, seq, vocab]` logits are too large for practical
-training at high batch sizes. Use `--loss-chunk-tokens` to compute the exact same
-tied-head cross entropy in token chunks without materializing the full logits tensor.
+```python
+from complexity.inference import ExternalGenerationConfig, create_external_backend
+
+backend = create_external_backend(
+    "vllm",
+    base_url="http://localhost:8000",
+    model="my-model",
+)
+text = backend.complete(
+    "A computer program is",
+    ExternalGenerationConfig(max_tokens=128),
+)
+```
+
+Full documentation:
+<https://github.com/Complexity-ML/complexity-framework/tree/main/docs>
 
 ## License
 
-CC BY-NC 4.0 (Creative Commons Attribution-NonCommercial 4.0)
+CC BY-NC 4.0.

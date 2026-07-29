@@ -304,8 +304,12 @@ class TokenRoutedMLP(MLPBase):
             "zipf",
             "modulo",
             "modulo_balanced_secondary",
+            "lsh_hidden",
         }:
             # zipf without frequencies intentionally falls back to modulo.
+            # lsh_hidden replaces this lexical bootstrap in forward(); it still
+            # needs a valid table while the module and auxiliary routes are
+            # constructed.
             mapping = torch.arange(vocab_size, dtype=torch.long, device="cpu") % num_experts
         elif strategy == "round_robin":
             # Round-robin over frequency rank (or token id if no frequencies),

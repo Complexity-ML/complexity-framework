@@ -1,74 +1,150 @@
-# Getting Started
+# Getting started
 
-## Installation
+## Requirements
+
+- Python 3.8 or newer;
+- a PyTorch build matched to the machine;
+- enough memory for the selected vocabulary, model profile, batch, and
+  sequence length.
+
+The package does not depend on a generic `torch` wheel because CUDA, ROCm, CPU,
+and MPS installations require different builds.
+
+## Install from source
 
 ```bash
-pip install complexity-framework
-
-# Development
 git clone https://github.com/Complexity-ML/complexity-framework.git
 cd complexity-framework
-pip install -e .
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install torch
+pip install -e ".[dev,tools]"
 ```
 
-## First Model
+For Linux GPU backends, consult [GPU and dispatch paths](cuda.md).
+
+## Build a first TR-GQA model
 
 ```python
-from complexity.models import ComplexityModel
-from complexity.config import ModelConfig
+import torch
 
-# 187M Token-Routed model with Mu-Guidance
+from complexity import ComplexityModel, ModelConfig
+
 config = ModelConfig(
-    hidden_size=768,
-    num_hidden_layers=18,
-    num_attention_heads=12,
-    num_key_value_heads=4,
-    intermediate_size=2048,
-    vocab_size=32000,
+    hidden_size=128,
+    num_hidden_layers=2,
+    num_attention_heads=4,
+    num_key_value_heads=1,
+    attention_type="gqa",
+    vocab_size=1_024,
+    max_position_embeddings=128,
     mlp_type="token_routed",
     num_experts=4,
+    intermediate_size=64,
     shared_expert=True,
-    use_mu_guidance=True,
+    shared_intermediate_size=256,
+    routing_strategy="modulo",
+    top_k=2,
+    top_k_primary_weight=0.5,
 )
+
 model = ComplexityModel(config)
+input_ids = torch.randint(0, config.vocab_size, (2, 32))
+result = model(input_ids)
+
+print(result["logits"].shape)
+print(model.num_parameters())
 ```
 
-## Training
+The model passes `input_ids` to every TR-MoE layer as route identifiers.
+
+## Switch to TR-MHA
+
+```python
+from dataclasses import replace
+
+tr_mha_config = replace(
+    config,
+    attention_type="mha",
+    num_key_value_heads=config.num_attention_heads,
+)
+tr_mha_model = ComplexityModel(tr_mha_config)
+```
+
+TR-GQA and TR-MHA use the same TR-MoE FFN. Only the attention head layout
+changes.
+
+## Run a local smoke training
+
+The following uses synthetic data and avoids custom GPU kernels:
 
 ```bash
-# Single GPU
-python scripts/train_ablation_150m.py --run 2 --batch-size 128 --target-tokens 500000000
-
-# Multi-GPU
-torchrun --nproc_per_node=2 scripts/train_ablation_150m.py -- --run 2 --batch-size 128 --target-tokens 500000000
+cf-o200k-pretrain \
+  --profile 50m \
+  --dataset random \
+  --vocab-size 32000 \
+  --steps 2 \
+  --batch-size 1 \
+  --seq-len 64 \
+  --routing-strategy modulo \
+  --no-grad-ckpt \
+  --use-custom-kernels false \
+  --cggr false \
+  --run-name smoke-tr-gqa
 ```
 
-## Inference (vLLM)
+This validates construction and the training loop; it is not a language-model
+quality experiment.
+
+## Run from YAML
 
 ```bash
-# Deploy on vLLM
-python -m vllm.entrypoints.openai.api_server --model /path/to/checkpoint --port 8081
-
-# Query
-curl http://localhost:8081/v1/completions -H "Content-Type: application/json" \
-  -d '{"model": "/path/to/checkpoint", "prompt": "The meaning of life is", "max_tokens": 100, "temperature": 0.7}'
+cf-o200k-pretrain \
+  --config configs/run_configs/experiments_100m/100m_params_mha_modulo_balanced_shared_1296_mps.yaml
 ```
 
-## Evaluation
+Machine-specific dataset and tokenizer paths in experimental files must be
+updated before launch.
 
-```bash
-# Zero-shot benchmarks (ARC-Easy, HellaSwag)
-python scripts/eval_benchmarks.py --checkpoint checkpoints/run2-iso-shared/final --tasks arc_easy,hellaswag
+## Save and load
+
+```python
+model.save_pretrained("checkpoints/example")
+restored = ComplexityModel.from_pretrained("checkpoints/example")
 ```
 
-## Architecture
+`save_pretrained` writes `config.json` plus `model.safetensors` when
+`safetensors` is available.
 
-![Architecture](../figures/architecture_complexity_deep.png)
+## Generate text
 
-## Next Steps
+`ComplexityModel.generate()` intentionally raises an error. Serve a compatible
+export through vLLM or SGLang and use the external client:
 
-- [Token-Routed MLP](token-routed.md) - Deterministic MoE with sort-and-split dispatch
-- [Mu-Guidance](dynamics.md) - Inter-layer communication
-- [MoE Comparison](moe.md) - Token-Routed vs Mixtral
-- [Training Guide](training.md) - Full training documentation
-- [CUDA](cuda.md) - GPU optimizations
+```python
+from complexity.inference import ExternalGenerationConfig, create_external_backend
+
+backend = create_external_backend(
+    "vllm",
+    base_url="http://localhost:8000",
+    model="example",
+)
+print(
+    backend.complete(
+        "The experiment shows",
+        ExternalGenerationConfig(max_tokens=64),
+    )
+)
+```
+
+The external server must itself support the exported architecture.
+
+## Next steps
+
+- [Architecture and naming](architectures.md)
+- [TR-MoE internals](token-routed.md)
+- [Training](training.md)
+- [Run configurations](run_configs.md)
+- [API reference](api.md)

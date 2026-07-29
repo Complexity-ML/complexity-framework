@@ -1,56 +1,123 @@
-# Run Configs
+# Run configurations
 
-Research runs can be launched from YAML configs so the command, run summary, and
-resume checks stay reproducible.
+The repository separates direct runner configurations, bounded experiments, and
+cluster plans.
 
-Example:
+## Direct runner YAML
 
-```bash
-torchrun --nproc_per_node=8 -m complexity.training.o200k_pretrain \
-  --config configs/run_configs/100m_o200k_tr_30b_b300.yaml
-```
-
-CLI flags override YAML values:
+`cf-o200k-pretrain` accepts YAML defaults:
 
 ```bash
-torchrun --nproc_per_node=8 -m complexity.training.o200k_pretrain \
-  --config configs/run_configs/100m_o200k_tr_30b_b300.yaml \
-  --steps 100 --run-name smoke-yaml
+cf-o200k-pretrain \
+  --config configs/run_configs/100m_o200k_tr_rocm_mi350x.yaml
 ```
 
-At launch, rank 0 writes `runs/<run-name>/run_config.json` with:
-
-- CLI/YAML args after defaults and overrides
-- model config
-- git commit
-- parameter count
-- tokens per step and total token budget
-
-When resuming, the runner compares the saved `run_config.json` against the new
-launch config and refuses mismatches in training-critical fields such as model
-shape, tokenizer, dataset, batch size, sequence length, optimizer LR, and routing
-options. Operational fields such as `save_steps`, `log_steps`, `eval_steps`,
-`run_name`, and `save_dir` may change.
-
-Use `--force-resume` only for intentional mismatches.
-
-## Routing Strategies
-
-The o200k Token-Routed runner supports:
-
-- `zipf`: existing deterministic Zipf/frequency-balanced routing. This remains
-  the default.
-- `zipf_token_class`: optional class-balanced routing. It classifies tokenizer
-  entries into coarse buckets such as whitespace, digits, ASCII words,
-  punctuation, non-ASCII, and mixed tokens, then greedily balances both total
-  token load and per-class load across experts. This keeps routing static and
-  deterministic while reducing class skew inside experts.
-
-Example:
+The runner reads the top-level `run` mapping. CLI flags override YAML values:
 
 ```bash
-torchrun --nproc_per_node=8 -m complexity.training.o200k_pretrain \
-  --config configs/run_configs/100m_o200k_tr_30b_b300.yaml \
-  --routing-strategy zipf_token_class \
-  --run-name 30b-100m-o200k-tr-token-class
+cf-o200k-pretrain \
+  --config configs/run_configs/100m_o200k_tr_rocm_mi350x.yaml \
+  --steps 10 \
+  --run-name smoke-override
 ```
+
+Unknown keys fail immediately rather than being silently ignored.
+
+## Architecture mapping
+
+### TR-GQA
+
+```yaml
+run:
+  attention_type: gqa
+  mlp_type: token_routed
+  num_attention_heads: 8
+  num_key_value_heads: 2
+  shared_expert: true
+  routing_strategy: zipf
+  top_k: 2
+```
+
+### TR-MHA
+
+```yaml
+run:
+  attention_type: mha
+  mlp_type: token_routed
+  num_attention_heads: 8
+  num_key_value_heads: 8
+  shared_expert: true
+  routing_strategy: modulo_balanced_secondary
+  top_k: 2
+```
+
+### Dense controls
+
+```yaml
+run:
+  attention_type: gqa  # or mha
+  mlp_type: swiglu
+  shared_expert: false
+```
+
+Match parameter counts explicitly by adjusting `intermediate_size` and
+`shared_intermediate_size`.
+
+## Routing strategies
+
+| Value | Route source | Frequency artifact |
+| --- | --- | --- |
+| `zipf` | lexical lookup | used when available; otherwise modulo fallback |
+| `modulo` | token ID | not required |
+| `modulo_balanced_secondary` | modulo primary, greedy auxiliary | used when available |
+| `round_robin` | frequency rank or token ID | optional |
+| `random` | fixed seeded lexical partition | not required |
+| `lsh_hidden` | hidden-state hash | not lexical routing |
+
+The parser accepts only these values. Older documentation mentioning
+`zipf_token_class` is obsolete.
+
+## Profiles
+
+The local runner defines `50m`, `100m`, `300m`, `1b`, and `8b` profiles.
+Profile names are approximate. The realized parameter count depends on
+vocabulary size and explicit overrides and is recorded at launch.
+
+## Experimental configurations
+
+`configs/run_configs/experiments_100m` contains bounded MPS and architecture
+experiments. Several files contain absolute local dataset paths. Treat them as
+reproducibility records and update paths before launch.
+
+`configs/run_configs/review_h200` contains matched review and evidence runs.
+
+`configs/run_configs/ablations_100m` contains routing controls.
+
+## Cluster plans
+
+Cluster plans with top-level `model`, `parallel`, and `run` sections are
+validated with:
+
+```bash
+cf-plan-cluster \
+  --config configs/run_configs/8b_o200k_tr_32t_gb300_4608.yaml
+```
+
+The planner checks TP × PP × DP world size, global batch, steps, target tokens,
+and overshoot. It does not launch Slurm, Kubernetes, Ray, or vendor jobs.
+
+Do not pass a cluster-plan YAML directly to `cf-o200k-pretrain`.
+
+## Resume contract
+
+At first launch, the runner writes:
+
+```text
+runs/<run-name>/run_config.json
+```
+
+On resume it rejects differences in training-critical arguments and
+`ModelConfig`. Operational fields such as logging cadence, evaluation cadence,
+save cadence, and output names may change.
+
+Use `--force-resume` only when the mismatch is understood and documented.

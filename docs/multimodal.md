@@ -1,234 +1,86 @@
-# Multimodal
+# Multimodal prototypes
 
-Vision, Audio, and Fusion components for multimodal models.
+`complexity.multimodal` contains research prototypes for vision, audio, video,
+fusion, and an omni wrapper.
+
+These modules are separate from the text TR-GQA/TR-MHA evidence. Their routing
+keys are positions, not tokenizer IDs:
+
+| Module | Route key |
+| --- | --- |
+| vision | patch position |
+| audio | time-step position |
+| video | spatiotemporal position |
+| fusion | query position |
+
+Do not describe these as lexical TR-MoE without that qualification.
 
 ## Vision
 
-### CLIP Encoder
-
 ```python
-from complexity.api import Vision
+import torch
 
-# CLIP-style vision encoder
-encoder = Vision.clip(
+from complexity.multimodal import VisionEncoder
+
+encoder = VisionEncoder(
     image_size=224,
     patch_size=16,
-    hidden_size=768,
-    num_layers=12,
+    hidden_size=384,
+    num_layers=4,
+    num_heads=6,
+    num_experts=4,
 )
-
-# Forward
-image_features = encoder(images)  # [B, num_patches, hidden]
+pixels = torch.randn(2, 3, 224, 224)
+features = encoder(pixels)
 ```
 
-### SigLIP Encoder
-
-```python
-# SigLIP (better for retrieval)
-encoder = Vision.siglip(
-    image_size=384,
-    patch_size=14,
-)
-```
-
-### Custom Vision Transformer
-
-```python
-from complexity.api import VisionTransformer, VisionConfig, PatchEmbedding
-
-config = VisionConfig(
-    image_size=224,
-    patch_size=16,
-    hidden_size=768,
-    num_attention_heads=12,
-    num_layers=12,
-)
-
-encoder = VisionTransformer(config)
-```
+`num_experts=1` selects the dense MLP fallback. Values above one enable
+position-routed MLPs.
 
 ## Audio
 
-### Whisper Encoder
-
 ```python
-from complexity.api import Audio
+from complexity.multimodal import AudioEncoder
 
-# Whisper-style audio encoder
-encoder = Audio.whisper(
-    sample_rate=16000,
+encoder = AudioEncoder(
     n_mels=80,
-    hidden_size=768,
+    hidden_size=384,
+    num_layers=4,
+    num_heads=6,
+    num_experts=4,
 )
-
-# Forward
-audio_features = encoder(mel_spectrogram)
+features = encoder(mel_spectrogram)
 ```
 
-### Mel Spectrogram
+## Video
 
 ```python
-# Just the mel spectrogram encoder
-mel_encoder = Audio.mel_spectrogram(
-    sample_rate=16000,
-    n_mels=80,
-    n_fft=400,
-)
+from complexity.multimodal import VideoEncoder
 
-features = mel_encoder(waveform)
+encoder = VideoEncoder(num_experts=4)
+features = encoder(video)
 ```
 
-### Custom Audio Stack
-
-```python
-from complexity.api import AudioConvStack, AudioConfig
-
-config = AudioConfig(
-    sample_rate=16000,
-    n_mels=80,
-    hidden_size=768,
-)
-
-encoder = AudioConvStack(config)
-```
+Expected video layout is documented by the module as
+`[batch, channels, frames, height, width]`.
 
 ## Fusion
 
-### Cross-Attention Fusion
-
 ```python
-from complexity.api import Fusion
+from complexity.multimodal import MultimodalFusion
 
-# Cross-attention between modalities
-fusion = Fusion.cross_attention(
-    hidden_size=768,
-    num_heads=12,
-)
-
-# text attends to image
-fused = fusion(
-    query=text_features,
-    key_value=image_features,
-)
+fusion = MultimodalFusion(num_experts=4)
 ```
 
-### Gated Fusion
+Available components include cross-attention, gated fusion, concatenation,
+Perceiver resampling, and a vision-language connector.
 
-```python
-# Learned gating between modalities
-fusion = Fusion.gated(hidden_size=768)
+## Status
 
-# Combines with learned weights
-fused = fusion(text_features, image_features)
-```
+The multimodal package is experimental:
 
-### Perceiver Resampler
-
-```python
-# Compress variable-length inputs to fixed latents
-fusion = Fusion.perceiver(
-    hidden_size=768,
-    num_latents=64,  # Output size
-    num_layers=2,
-)
-
-# [B, N, D] -> [B, 64, D]
-compressed = fusion(image_features)
-```
-
-## Complete Multimodal Model
-
-```python
-import torch.nn as nn
-from complexity.api import (
-    Vision, Audio, Fusion,
-    Model, INLDynamics
-)
-
-class MultimodalLLM(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-
-        # Encoders
-        self.vision = Vision.clip(image_size=224, patch_size=16)
-        self.audio = Audio.whisper(sample_rate=16000)
-
-        # Compress to fixed size
-        self.vision_resampler = Fusion.perceiver(
-            hidden_size=config.hidden_size,
-            num_latents=64,
-        )
-        self.audio_resampler = Fusion.perceiver(
-            hidden_size=config.hidden_size,
-            num_latents=32,
-        )
-
-        # LLM backbone
-        self.llm = Model.from_config(config)
-
-        # Dynamics for stability
-        self.dynamics = INLDynamics(
-            hidden_size=config.hidden_size,
-            beta_max=2.0,
-        )
-
-    def forward(self, text_ids, images=None, audio=None):
-        # Encode text
-        text_embeds = self.llm.embed(text_ids)
-
-        # Encode and resample vision
-        if images is not None:
-            vis_features = self.vision(images)
-            vis_features = self.vision_resampler(vis_features)
-
-        # Encode and resample audio
-        if audio is not None:
-            aud_features = self.audio(audio)
-            aud_features = self.audio_resampler(aud_features)
-
-        # Concatenate all modalities
-        inputs = [text_embeds]
-        if images is not None:
-            inputs.insert(0, vis_features)  # Vision first
-        if audio is not None:
-            inputs.insert(0, aud_features)  # Audio first
-
-        hidden = torch.cat(inputs, dim=1)
-
-        # Process through LLM
-        output = self.llm.forward_hidden(hidden)
-
-        return output
-```
-
-## API Reference
-
-### Vision Factory
-
-```python
-Vision.clip(image_size, patch_size, **kwargs)
-Vision.siglip(image_size, **kwargs)
-Vision.vit(image_size, patch_size, **kwargs)
-```
-
-### Audio Factory
-
-```python
-Audio.whisper(sample_rate, n_mels, **kwargs)
-Audio.mel_spectrogram(sample_rate, n_mels, **kwargs)
-Audio.wav2vec(sample_rate, **kwargs)
-```
-
-### Fusion Factory
-
-```python
-Fusion.cross_attention(hidden_size, num_heads, **kwargs)
-Fusion.gated(hidden_size, **kwargs)
-Fusion.perceiver(hidden_size, num_latents, **kwargs)
-Fusion.concat(hidden_size, **kwargs)
-```
-
-## See Also
-
-- [API Reference](api.md) - Full API documentation
-- [Custom Models](custom-models.md) - Building custom architectures
+- it does not inherit the text-model training results;
+- it has no production serving contract in this repository;
+- position routing and token-ID routing answer different research questions;
+- users should add modality-specific parity, masking, and benchmark tests
+  before drawing conclusions.

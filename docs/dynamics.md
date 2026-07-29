@@ -1,80 +1,54 @@
-# Mu-Guidance
+# Historical Mu-Guidance control
 
-Inter-layer communication channel for Token-Routed MoE architectures.
+Mu-Guidance is an optional contextual state passed from one decoder layer to
+the next. It remains implemented for historical reproduction and ablation
+work.
 
-## Overview
+It is **not** part of the current definition of TR-GQA, TR-MHA, or TR-MoE.
 
-Mu-Guidance is a learnable signal that flows from layer $l$ to layer $l+1$, carrying expert-aware context. Each layer computes a contextual $\mu$ after its MLP, which influences the next layer's Q/K/V attention projections.
-
-```
-Layer l:   Attention → MLP → MuGuidance → mu_current
-                                              │
-Layer l+1: Attention(mu_prev=mu_current) → MLP → MuGuidance → ...
-```
-
-![Architecture](../figures/architecture_complexity_deep.png)
-
-## How It Works
+## Enable it
 
 ```python
-# MuGuidance module (after MLP in each layer)
-mu_current = clamp(mu_param + mu_proj(hidden_states), -2.0, 2.0)
+from complexity import ComplexityModel, ModelConfig
 
-# Next layer's attention receives mu_current as mu_prev
-q = q_proj(x) + mu_to_q(mu_prev)
-k = k_proj(x) + mu_to_k(mu_prev)
-v = v_proj(x) + mu_to_v(mu_prev)
+config = ModelConfig(
+    attention_type="gqa",
+    mlp_type="token_routed",
+    use_mu_guidance=True,
+)
+model = ComplexityModel(config)
 ```
 
-Key components:
-- **mu_param**: learnable vector (768d), initialized to 1.0
-- **mu_proj**: linear projection from hidden states
-- **clamp(-2, 2)**: prevents feedback explosion between layers
-- **mu_init**: learnable parameter for layer 0 (so it also gets guidance)
+The runner exposes:
 
-## Why It Matters
-
-![Mu Contribution](../figures/mu_contribution.png)
-
-Without Mu-Guidance, the Token-Routed MLP is slightly worse than dense:
-
-| Configuration | Avg Loss (700 steps) |
-|---------------|---------------------|
-| TR + Mu + Zipf | **5.026** |
-| TR sans Mu | 5.127 |
-| Dense | 5.205 |
-
-Mu-Guidance is the key component: it tells the next layer which expert processed each token, enabling cross-layer expert coordination.
-
-![Component Activity](../figures/component_activity.png)
-
-## Usage
-
-```python
-from complexity.models.block import MuGuidance
-
-mu_guidance = MuGuidance(hidden_size=768, mu_min=0.0, mu_max=2.0)
-mu_current = mu_guidance(hidden_states)  # [batch, seq, 768]
+```bash
+--use-mu-guidance
+--mu-clamp
+--mu-norm
+--mu-alpha-init 1.0
+--mu-init-value 0.0
+--mu-context-min -2.0
+--mu-context-max 2.0
 ```
 
-In the training loop (builder.py), the clamp is applied between layers:
+## Computation
 
-```python
-mu_prev = model.mu_init.expand(batch_size, seq_len, -1)
-for layer in model.layers:
-    hidden_states, _, _, mu_contextual = layer(hidden_states, mu_prev=mu_prev)
-    mu_prev = torch.clamp(mu_contextual, -2.0, 2.0)
+After the MLP, each enabled layer produces:
+
+```text
+mu_contextual = clamp(mu_parameter) + alpha * projection(hidden_state)
 ```
 
-## vLLM Integration
+The next supported attention layer receives this value as `mu_prev`.
+Contextual clamping and RMS normalization are optional.
 
-Mu-Guidance is fully supported in vLLM inference:
-- `mu_init` stored outside `torch.compile` scope
-- `mu_prev` flows through all 18 layers with clamp(-2, 2)
-- Compatible with PagedAttention and CUDA graphs
+## Evidence status
 
-## See Also
+Older documentation associated Mu-Guidance with unsourced aggregate loss and
+serving claims. Those claims are not carried into the current documentation.
+Any new Mu comparison must be parameter-, token-, seed-, and protocol-matched.
 
-- [Token-Routed MLP](token-routed.md)
-- [Architecture Overview](architectures.md)
-- [Training](training.md)
+## Compatibility
+
+Mu-Guidance adds state to the layer interface. A serving runtime must implement
+that state explicitly; the external inference client does not provide it.
