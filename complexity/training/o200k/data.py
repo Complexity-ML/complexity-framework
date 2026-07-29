@@ -142,9 +142,9 @@ def text_token_frequencies(
         tokens, _ = split_tokens(tokens, eval_ratio)
     ids = torch.tensor(tokens, dtype=torch.long)
     ids = ids[(ids >= 0) & (ids < vocab_size)]
-    freqs = torch.zeros(vocab_size, dtype=torch.float32)
+    freqs = torch.zeros(vocab_size, dtype=torch.int64)
     if ids.numel() > 0:
-        freqs.scatter_add_(0, ids, torch.ones_like(ids, dtype=torch.float32))
+        freqs.add_(torch.bincount(ids, minlength=vocab_size))
     logger.info(
         f"Routing frequency table (train partition): "
         f"{int(freqs.sum().item()):,} tokens, "

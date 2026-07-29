@@ -213,6 +213,22 @@ def load_token_shard(path: str | Path, *, mmap_mode: str = "r") -> tuple[np.memm
     return tokens, metadata
 
 
+def _accumulate_frequency_chunk(
+    frequencies: torch.Tensor,
+    token_ids: torch.Tensor,
+) -> None:
+    """Accumulate one token chunk without losing counts above 2**24.
+
+    A float32 accumulator stops changing when repeated unit increments cross
+    its exact-integer range. Keep the running histogram in int64; callers can
+    convert the completed table for routing math after all counts are known.
+    """
+
+    if frequencies.dtype != torch.int64:
+        raise TypeError("token frequency accumulator must use int64")
+    frequencies.add_(torch.bincount(token_ids, minlength=frequencies.numel()))
+
+
 def token_shard_frequencies(
     path: str | Path,
     vocab_size: int,
@@ -234,7 +250,7 @@ def token_shard_frequencies(
         eval_tokens = max(min_eval_tokens, int(end * eval_ratio))
         eval_tokens = min(eval_tokens, max(min_eval_tokens, end // 10))
         end -= eval_tokens
-    freqs = torch.zeros(vocab_size, dtype=torch.float32)
+    freqs = torch.zeros(vocab_size, dtype=torch.int64)
     chunk_size = 8_000_000
     for start in range(0, end, chunk_size):
         chunk = np.asarray(tokens[start:min(end, start + chunk_size)], dtype=np.int64)
@@ -242,7 +258,7 @@ def token_shard_frequencies(
         if valid.size == 0:
             continue
         ids = torch.from_numpy(valid)
-        freqs.scatter_add_(0, ids, torch.ones_like(ids, dtype=torch.float32))
+        _accumulate_frequency_chunk(freqs, ids)
     return freqs
 
 

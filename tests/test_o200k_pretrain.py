@@ -238,6 +238,7 @@ def test_token_shard_dataset_and_frequencies(tmp_path):
     assert len(metadata["sha256"]) == 64
 
     freqs = token_shard_frequencies(tmp_path, vocab_size=128)
+    assert freqs.dtype == torch.int64
     assert freqs.sum().item() == 100
     assert freqs[42].item() == 1
 
@@ -257,6 +258,15 @@ def test_token_shard_dataset_and_frequencies(tmp_path):
     assert batch["labels"].shape == (8,)
 
 
+def test_token_frequency_accumulator_is_exact_above_float32_limit():
+    from complexity.data.token_shards import _accumulate_frequency_chunk
+
+    frequencies = torch.tensor([2**24, 0], dtype=torch.int64)
+    _accumulate_frequency_chunk(frequencies, torch.tensor([0, 1, 1]))
+
+    assert frequencies.tolist() == [2**24 + 1, 2]
+
+
 def test_text_routing_frequencies_exclude_the_eval_tail(monkeypatch):
     from complexity.training.o200k import data
 
@@ -271,6 +281,7 @@ def test_text_routing_frequencies_exclude_the_eval_tail(monkeypatch):
     )
 
     # Local text reserves at least 2,048 tokens, capped at 20% here.
+    assert freqs.dtype == torch.int64
     assert freqs.sum().item() == 8_000
     assert freqs[7_999].item() == 1
     assert freqs[8_000].item() == 0
