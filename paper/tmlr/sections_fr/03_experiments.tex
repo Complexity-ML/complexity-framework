@@ -1,26 +1,24 @@
 \section{Protocole expérimental}
 \label{sec:experiments}
 
-\subsection{Contrôles et chemin architectural}
+\subsection{Comparaison contrôlée}
 
-L'étude compare GQA, des variantes associatives à état fixe, des hybrides WVR--attention et le modèle contextuel W/R/V final à dix couches, tous autour de 98,2 millions de paramètres. Le chemin archivé évalue une couche W/R/V, huit couches fortement lexicales, huit couches contextuelles avec deux couches WVR, puis le modèle final à dix couches contextuelles avec normalisation RMS par tête.
-
-L'entraînement historique séparé du modèle convolutionnel à micro-experts lexicaux sur 1~000~013~824 tokens est rapporté à part. Il ne constitue pas un contrôle apparié pour le tableau WVR à 100M tokens.
+L'expérience principale compare GQA dense à l'attention contextuelle W/R/V. Les deux modèles ont dix couches, une dimension cachée de 384, huit têtes de lecture/query, deux têtes partagées d'écriture/valeur ou key/value, et le même chemin feed-forward à objets lexicaux et micro-experts. GQA compte 98~179~844 paramètres et W/R/V 98~195~204 (écart de 0,016\%). Le résidu lexical d'écriture W/R/V est fixé à zéro et omis, tandis que RMSNorm par tête sur R et W reste active.
 
 \subsection{Données, tokenizer et budget}
 
-Les modèles utilisent un tokenizer de 200~019 entrées enregistré comme \texttt{o200k\_base} et FineWeb-Edu sample-10BT. Son checksum n'a pas été archivé. Les runs principaux utilisent une séquence de 2~048, la seed 42, BF16 et 100~007~936 tokens. Chaque estimation finale moyenne 8 batches, soit 262~144 tokens, sans estimation d'incertitude. Le tableau~\ref{tab:wvr-100m} rapporte la dernière évaluation finie.
+Les six runs utilisent le tokenizer \texttt{o200k\_base} de 200~019 entrées et FineWeb-Edu \texttt{sample-10BT}, des séquences de 2~048, BF16, un batch de 16 et les seeds 42--44. Chaque run effectue 3~052 étapes, soit exactement 100~007~936 tokens. Un flux déterministe de 5\% des documents est réservé à l'évaluation. L'estimation finale moyenne 32 batches (1~048~576 tokens) à l'étape 3~000. Le shard archivé est fixé à la révision \texttt{87f0914}, SHA-256 \texttt{b1ba7b2c...d78e871}.
 
-Les métriques GQA archivées utilisent $3\times10^{-4}$ ; les runs récents utilisent $4\times10^{-4}$. Aucune configuration GQA réalisée n'est colocalisée avec son CSV ; dimensions, budget exact, tokenizer, données, seed et kernels ne sont donc pas revérifiables depuis l'artefact. La comparaison reste descriptive.
+Les deux conditions utilisent AdamW, un LR maximal de $4\times10^{-4}$, weight decay 0,1, le même warmup/decay, une loss exacte sur le vocabulaire par chunks, l'exécution eager et la même pile H200. La compilation est désactivée pour les deux, car le chemin à table lexicale liée produisait des gradients non finis avec la pile compilateur testée ; eager restait fini.
 
-\subsection{Mesures et règle de preuve}
+\subsection{Mesures et débit}
 
-Nous rapportons l'entropie croisée next-token sur les données tenues à part, le nombre réel de paramètres, le nombre exact de tokens et le débit d'entraînement journalisé à l'étape d'évaluation finie. Qualité et débit constituent des affirmations séparées. Chaque entrée numérique d'un tableau doit correspondre à un artefact CSV ou JSON archivé ; les figures générées sont dérivées de ces fichiers et ne constituent pas la preuve primaire. Les proxies courts servent uniquement de filtres d'échec, plusieurs classements favorables sur proxy ne s'étant pas transférés au budget complet.
+Nous séparons entropie croisée next-token et débit d'entraînement. Pour chaque run, le débit est la médiane des points finis après l'étape 500, en excluant les points sous 80k tokens/s dus aux évaluations, checkpoints ou pauses réseau. Nous rapportons la moyenne des trois médianes. L'écart apparié est W/R/V moins GQA à seed identique. Avec $n=3$, nous donnons l'écart-type échantillonnal et un intervalle $t$ bilatéral à 95\%, sans l'interpréter comme preuve de significativité.
 
-\subsection{Diagnostics de contexte}
+\subsection{Preuves archivées}
 
-Le rappel associatif, l'induction et l'apprentissage synthétique en contexte sont évalués selon la distance. Ils testent une récupération sélective des occurrences que la loss moyenne peut masquer. Les checkpoints sans attention terminés obtiennent une précision nulle sur les sondes archivées de rappel et d'induction à toutes les distances testées, tandis que GQA fournit le contrôle positif. Les revendications d'état persistant au-delà du champ réceptif convolutionnel restent donc non étayées et exigent des tests dédiés à 4--8k de contexte.
+Chaque run possède une configuration JSON réalisée, un CSV par étape, un checkpoint final, un commit source et un manifeste SHA-256. Le shard Parquet FineWeb-Edu exact de 2,15 Go est archivé pour réévaluation offline. Les anciens runs H100 WVR/W/R/V n'emploient pas le même protocole et ne servent que de chemin descriptif.
 
 \subsection{Matériel et vérifications numériques}
 
-Les runs complets utilisent un NVIDIA H100 80GB HBM3. Les tests FP32 couvrent la causalité et l'équivalence full/incrémental de W/R/V, ainsi que l'état fixe des primitives convolutionnelles et WVR. Les profils BF16 archivés ne soutiennent pas une équivalence exacte à $10^{-5}$ au niveau checkpoint. Le run final n'a pas de checkpoint ; les portes apprises sont irrécupérables. Les champs génériques top-$k$/Zipf du namespace CLI sont inactifs pour le module micro-expert réalisé, qui utilise le modulo défini en Section~\ref{sec:method}.
+Les runs contrôlés utilisent un NVIDIA H200 avec PyTorch SDPA autorisant FlashAttention. Les tests FP32 couvrent causalité, padding, formes groupées, RoPE, cache, équivalence de la projection R/W/V fusionnée, invariance lexical-off et équivalence full/incrémental. Le cache W/V croît avec le préfixe, comme un cache KV groupé ; W/R/V n'est présenté ni comme état fixe ni comme sans attention.

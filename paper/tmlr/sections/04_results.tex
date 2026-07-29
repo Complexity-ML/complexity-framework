@@ -1,52 +1,24 @@
 \section{Results}
 \label{sec:results}
 
-\subsection{Completed 100M-token architecture path}
+\subsection{Controlled H200 comparison}
 
-\begin{table}[t]
-\caption{Completed nominal 100M-token results read from archived CSV/JSON measurements. Throughput is one logged point at the final finite evaluation step on one H100. The GQA row lacks a realized configuration and used peak LR $3\times10^{-4}$; recent WVR and W/R/V runs used $4\times10^{-4}$.}
-\label{tab:wvr-100m}
-\centering
-\small
-\begin{tabular}{lrr}
-\toprule
-Mechanism & Held-out loss $\downarrow$ & Train tok/s $\uparrow$ \\
-\midrule
-Dense GQA (QKV) & \textbf{4.820476} & 111,355 \\
-Shared additive associative context & 4.921405 & 124,363 \\
-Stable Delta WVR & 4.898880 & 121,971 \\
-Multi-timescale Delta WVR & 4.905554 & 120,496 \\
-Collision-normalized WVR & \underline{4.895427} & 122,282 \\
-Collision WVR + 1 lexical W/R/V layer & 4.892026 & 123,145 \\
-Lexical-value WVR & 4.963167 & 123,113 \\
-Lexical Forge V3 WVR & 4.900726 & 121,697 \\
-Forge V3 + collision normalization & 4.897241 & 121,312 \\
-Compact context + position address & 4.899072 & 122,764 \\
-Strongly lexical W/R/V, 8/10 layers & 4.973798 & 118,546 \\
-Contextual W/R/V, 8/10 layers & 4.852761 & 118,936 \\
-Contextual W/R/V + RMSNorm, 10/10 & \textbf{4.706118} & 118,416 \\
-\bottomrule
-\end{tabular}
-\end{table}
+\input{generated/controlled_tables_en}
 
-Collision-normalized WVR is the best completed fixed-state associative variant, improving Stable Delta by 0.003453 loss. Adding one W/R/V attention layer changes loss by 0.003401. The strongly lexical eight-layer condition reaches 4.973798, while the contextual eight-layer hybrid reaches 4.852761. The final jointly changed condition removes the two remaining WVR layers and adds per-head RMS normalization, reaching 4.706118 at 118,416 tokens/s. These path comparisons do not isolate lexical residuals, normalization, or layer replacement as causes.
+W/R/V is lower in loss on all three seeds. The mean paired difference is $-0.018604$, approximately 0.40\% of the GQA mean loss. The two-sided 95\% Student-$t$ interval is $[-0.0541,0.0169]$. Because it includes zero and contains only three pairs, we describe the ordering as consistent in this experiment rather than statistically established.
 
-The final row is 0.114358 lower in loss, and its single logged throughput point is 6.34\% higher than the archived GQA point. This is not an architectural superiority or reproducible speedup estimate: peak learning rate differs and the GQA realized configuration is missing. A fully archived GQA rerun at $4\times10^{-4}$ is required before declaring a controlled winner.
+W/R/V is 3,573 tokens/s slower on average, a 2.86\% throughput penalty. Quality and throughput therefore move in opposite directions: the controlled result is a modest quality improvement at modest training-speed cost, not a Pareto improvement.
 
-The lexical forge reuses the rank-16 lexical-object table through a $16\rightarrow4\rightarrow128$ network. Its strong short-proxy improvement did not transfer: Forge V3 reached 4.900726 at full budget, and combining it with collision normalization reached 4.897241 rather than improving the collision-only result. A lexical payload was substantially worse at 4.963167, supporting the design decision to retain $\mathbf{v}_t=\mW_v\vh_t$. Independent and weakly coupled read/write forge variants were rejected in paired proxies; their raw JSON artifacts are retained as negative ablations rather than promoted to the canonical implementation.
+\subsection{Historical architecture path}
 
-\subsection{Proxy reliability}
+Historical single-seed H100 runs motivated the controlled comparison but are not matched to the H200 protocol. Their key completed losses are 4.895427 for collision-normalized fixed-state WVR, 4.892026 after adding one W/R/V layer, 4.973798 for a strongly lexical eight-layer W/R/V condition, 4.852761 for an eight-layer contextual hybrid, and 4.706118 for the ten-layer contextual condition with RMS normalization. These values document the development path only. They are not combined with Table~\ref{tab:h200-controlled}, and no causal credit is assigned from their joint changes.
 
-Short matched proxies were useful for detecting catastrophic failures but were not reliable rankers of final 100M-token loss. Multi-timescale Delta, Lexical Forge V3, and Forge V3 plus collision normalization each looked favorable in a short proxy and failed to improve the corresponding full-budget control. Consequently, no architectural claim in Table~\ref{tab:wvr-100m} is based on a proxy. The compact context-plus-position occurrence address also failed to improve collision normalization at full budget (4.899072 versus 4.895427).
+Short proxies were useful failure screens but unreliable rankers: several favorable lexical-forge and multi-timescale proxy results did not improve at full budget. The final controlled model therefore removes the lexical write residual from the evaluated W/R/V attention path. Tied lexical objects and deterministic micro-experts remain in the shared feed-forward architecture of both GQA and W/R/V.
 
-\subsection{Longer-budget convolutional run}
+Two H200 seed-42 ablations are reported descriptively and are not pooled with the three-seed comparison. Enabling the lexical write residual gives 4.660939 loss versus 4.662531 with the residual disabled, a difference of $-0.001592$, while reducing median throughput from 121,479 to 119,121 tokens/s ($-1.94\%$). Disabling per-head R/W RMS normalization gives 4.795811 loss, $+0.133280$ relative to the lexical-off normalized condition, at 123,257 tokens/s. The lexical-residual run uses an earlier source commit, and both comparisons have one seed; these observations motivate matched ablations but do not isolate causal effects.
 
-The separate historical 1B-token attention-free convolutional run contains 98,194,244 parameters and reached held-out loss 4.180625 at step 30,000 with measured throughput 113,621 tokens/s. Because its token budget differs by a factor of ten, it is not used to rank the 100M-token QKV and WVR mechanisms.
+\subsection{Fixed-state negative controls}
 
-\subsection{Incremental equivalence and fixed state}
+The historical fixed-state experiments remain informative negative controls. A separate 1B-token causal-convolution run cannot be ranked against the 100M-token conditions because its budget differs by a factor of ten. Archived associative-recall and induction probes report zero accuracy for evaluated attention-free checkpoints, but the available GQA probe does not document an identical protocol; no quantitative positive-control comparison is claimed.
 
-FP32 unit tests reproduce full-sequence outputs under token-by-token incremental execution at tolerance $10^{-5}$ for the convolution and WVR primitives. The archived BF16 checkpoint profiles show larger numerical differences (approximately 0.02--0.17 maximum absolute error), so exact checkpoint-level BF16 equivalence is not claimed. For WVR, the recurrent state is one rank-128 association matrix, the previous write address, and---for collision normalization---one rank-128 diagonal load vector. The occurrence-address ablation adds one scalar absolute-position counter. These state shapes do not grow with generated context length.
-
-We audit the realized exported convolutional checkpoint rather than inferring the absence of attention from configuration alone. Across 182 tensors, the name-and-shape audit finds no query, key, value, or fused-QKV projection. Compatibility paths such as \texttt{self\_attn} do not correspond to an attention operation. This structural audit is not treated as a substitute for runtime tests.
-
-The archived associative-recall and induction probes report zero accuracy for the evaluated attention-free checkpoints at every tested distance. The available GQA synthetic artifact does not document an identical protocol, so we do not report a quantitative positive-control comparison. The negative attention-free diagnostic alone does not establish instance-selective retrieval.
+FP32 unit tests reproduce full-sequence W/R/V outputs under token-by-token incremental execution at tolerance $10^{-5}$. The retained W/V tensors grow with context, so these tests support causal implementation equivalence rather than a fixed-state serving claim.

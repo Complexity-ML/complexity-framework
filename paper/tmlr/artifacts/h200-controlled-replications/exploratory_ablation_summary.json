@@ -1,0 +1,38 @@
+{
+  "scope": "exploratory single-seed H200 ablations; not pooled with the controlled three-seed comparison",
+  "reference": {
+    "run": "h200-review-wrv-lexical-off-seed42",
+    "eval_step": 3000,
+    "eval_loss": 4.662531,
+    "median_tok_s": 121479.0
+  },
+  "ablations": [
+    {
+      "run": "h200-review-wrv-optimized-seed42",
+      "description": "lexical write residual enabled",
+      "eval_step": 3000,
+      "eval_loss": 4.660939,
+      "loss_delta_vs_reference": -0.001592,
+      "median_tok_s": 119121.0,
+      "throughput_delta_vs_reference": -2358.0,
+      "throughput_percent_delta_vs_reference": -1.941076,
+      "source_commit": "3461073",
+      "metrics_sha256": "5f97e31a594aeda14538efcc07d4a33bafd6a9d858125a1eff4bc3c5f228d9e0",
+      "run_config_sha256": "18f532924dc41961cf55e101e6692ecec02f6ef232d67f3c54c0fb50c4ae7683"
+    },
+    {
+      "run": "h200-review-wrv-lexical-off-no-rmsnorm-seed42",
+      "description": "lexical write residual disabled and per-head R/W RMS normalization disabled",
+      "eval_step": 3000,
+      "eval_loss": 4.795811,
+      "loss_delta_vs_reference": 0.133280,
+      "median_tok_s": 123257.0,
+      "throughput_delta_vs_reference": 1778.0,
+      "throughput_percent_delta_vs_reference": 1.463627,
+      "source_commit": "b9d6c9c",
+      "metrics_sha256": "e58b6f6226d972da57011a89aebf2751810ae981607dce9eece92160b7031cb8",
+      "run_config_sha256": "31ef3123272b66906175f80d81693026c466868e8feab98c7aa1545bf4c03609"
+    }
+  ],
+  "caveat": "Both comparisons use one seed. The lexical-residual run uses an earlier source commit, so neither row isolates a causal effect."
+}

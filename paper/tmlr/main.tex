@@ -17,15 +17,15 @@
 \def\openreview{\url{https://openreview.net/forum?id=ANONYMOUS}}
 
 % Headline values are populated only from completed, archived metrics.
-\newcommand{\HeadlineEval}{4.706118}
-\newcommand{\HeadlineThroughput}{118,416}
-\newcommand{\BaselineEval}{4.820476}
+\newcommand{\HeadlineEval}{4.684432}
+\newcommand{\HeadlineThroughput}{121,448}
+\newcommand{\BaselineEval}{4.703035}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-We study contextual Write--Read--Value (W/R/V) attention for an approximately 98.2M-parameter causal language model with tied lexical residual objects and deterministic micro-experts. W/R/V uses eight contextual read heads, two shared contextual write/value heads, per-head RMS normalization, rotary position encoding, and a zero-initialized lexical residual in each write stream. PyTorch scaled dot-product attention is configured to permit FlashAttention dispatch for the resulting causal softmax. A completed 100M-token run reaches 4.706118 evaluation loss at 118,416 logged training tokens/s on one H100. An archived grouped-query-attention run reaches 4.820476 at 111,355 tokens/s, but it used a lower peak learning rate ($3\times10^{-4}$ versus $4\times10^{-4}$) and lacks a colocated realized configuration; we therefore report the numerical difference without claiming an aligned architectural win. Fixed-state WVR ablations remain informative negative controls: their best completed result is 4.895427. The evidence supports the complete realized W/R/V configuration as a candidate for controlled replication, not an isolated lexical-residual effect.
+We study contextual Write--Read--Value (W/R/V) attention in approximately 98.2M-parameter causal language models. W/R/V uses eight contextual read heads, two shared contextual write/value heads, per-head RMS normalization, rotary position encoding, and causal softmax through PyTorch scaled dot-product attention. In a controlled H200 comparison, GQA and W/R/V use the same tokenizer, FineWeb-Edu stream, 100,007,936-token budget, optimizer, peak learning rate, BF16 numerical mode, evaluation protocol, and three seeds. W/R/V improves held-out loss on all three paired seeds: its mean is $4.684432\pm0.021137$ versus $4.703035\pm0.017657$ for GQA, with a mean paired difference of $-0.018604$. Mean training throughput is 121,448 versus 125,021 tokens/s, a 2.86\% penalty. With only three pairs, the 95\% $t$ interval for the mean loss difference, $[-0.0541,0.0169]$, includes zero; we therefore report a consistent small-scale observation rather than universal superiority. Historical fixed-state WVR runs and lexical-write variants are retained only as architecture-path evidence. The controlled W/R/V condition disables the lexical write residual, isolating the contextual attention path used in the main comparison.
 \end{abstract}
 
 \input{sections/01_introduction}

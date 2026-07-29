@@ -198,6 +198,9 @@ tokenizer.model
 *.rar
 *.7z
 
+# Generated paper submission packages
+paper/tmlr/submission/
+
 # Triton cache
 .triton/
 

@@ -9,13 +9,7 @@ Let $\mH\in\mathbb{R}^{B\times T\times d}$ be normalized hidden states. Each lay
     \mW_{\mathrm{ctx}} &= \mH\mW_w, &
     \mV &= \mH\mW_v.
 \end{align}
-The evaluated model uses eight read heads and two shared write/value heads, with head dimension 48. A deterministic token code and a learned projection of the tied rank-16 lexical table form a lexical write address $\mL(x_t)$. For write head $h$,
-\begin{equation}
-    \vw_{t,h}=\vw^{\mathrm{ctx}}_{t,h}
-      +\tanh(g_h)\,\mL_h(x_t),
-    \qquad g_h=0\ \text{at initialization}.
-\end{equation}
-Thus the lexical branch is exactly neutral initially; the contextual write stream remains fully active. Reads and writes receive independent RMS normalization per head and rotary position encoding. Write/value heads are repeated across their four read-head groups, and causal attention is
+The evaluated model uses eight read heads and two shared write/value heads, with head dimension 48. Reads and writes receive independent RMS normalization per head and rotary position encoding. Write/value heads are repeated across their four read-head groups, and causal attention is
 \begin{equation}
     \vy_{t,h}=\sum_{j\le t}
     \operatorname{softmax}_j\!\left(
@@ -23,7 +17,7 @@ Thus the lexical branch is exactly neutral initially; the contextual write strea
       \operatorname{RoPE}(\vw_{j,\kappa(h)})}{\sqrt{48}}
     \right)\vv_{j,\kappa(h)},
 \end{equation}
-where $\kappa(h)$ maps each read head to one of the two shared write/value heads. PyTorch scaled dot-product attention is configured to permit FlashAttention dispatch on H100. W/R/V is therefore an attention mechanism; the terminology describes data flow and the lexical write residual, not the absence of softmax attention. Incremental execution retains past W and V tensors and grows with prefix length.
+where $\kappa(h)$ maps each read head to one of the two shared write/value heads. PyTorch scaled dot-product attention is configured to permit FlashAttention dispatch on H200. W/R/V is therefore an attention mechanism: R and W are passed to the query and key boundary of SDPA, respectively, and V is the contextual value stream. The terminology describes data flow, not an attention-free operator. Incremental execution retains past W and V tensors and grows with prefix length. An exploratory lexical write residual exists in the implementation, but it is fixed to zero and skipped in every controlled run reported in Table~\ref{tab:h200-controlled}.
 
 \subsection{Tied lexical residual object}
 

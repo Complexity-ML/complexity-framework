@@ -1,26 +1,24 @@
 \section{Experimental Design}
 \label{sec:experiments}
 
-\subsection{Controls and architectural path}
+\subsection{Controlled comparison}
 
-The study compares GQA, fixed-state associative variants, hybrid WVR--attention models, and the final ten-layer contextual W/R/V model at approximately 98.2M parameters. Fixed-state conditions include the additive predecessor, Stable Delta, collision normalization, multiple timescales, lexical values, Lexical Forge V3, Forge V3 plus collision normalization, and compact context-plus-position addressing. The archived attention path evaluates one W/R/V layer, eight strongly lexical W/R/V layers, eight contextual W/R/V layers with two WVR layers, and the final ten-layer contextual W/R/V model with per-head RMS normalization.
-
-The historical causal-convolution lexical micro-expert run trained for 1,000,013,824 tokens is reported separately. It is not a matched control for the 100M-token WVR table.
+The primary experiment compares dense GQA with contextual W/R/V attention. Both models use ten layers, hidden size 384, eight read/query heads, two shared write/value or key/value heads, and the same lexical-object micro-expert feed-forward path. GQA has 98,179,844 parameters and W/R/V has 98,195,204 (a 0.016\% difference). The W/R/V lexical write residual is fixed to zero and skipped, while per-head RMS normalization of R and W remains active.
 
 \subsection{Data, tokenizer, and budget}
 
-Models use a 200,019-entry tokenizer recorded as \texttt{o200k\_base} and FineWeb-Edu sample-10BT. The tokenizer asset checksum was not archived and remains a reproducibility blocker. The principal runs use sequence length 2,048, seed 42, BF16, and 100,007,936 training tokens. A deterministic 5\% document stream is reserved for evaluation and excluded from training by the data pipeline. Each final estimate averages 8 batches, or 262,144 tokens; no uncertainty estimate is available. Table~\ref{tab:wvr-100m} reports the last finite evaluation, normally step 3,000.
+All six controlled runs use the 200,019-entry \texttt{o200k\_base} tokenizer and FineWeb-Edu \texttt{sample-10BT}, sequence length 2,048, BF16, batch size 16, and seeds 42--44. Each run performs 3,052 steps, or exactly 100,007,936 training tokens. A deterministic 5\% document stream is reserved for evaluation and excluded from training. The final estimate averages 32 batches (1,048,576 tokens) and is taken at step 3,000. The archived dataset shard is pinned to revision \texttt{87f0914} with SHA-256 \texttt{b1ba7b2c...d78e871}.
 
-The archived GQA metrics used peak learning rate $3\times10^{-4}$; recent WVR and contextual W/R/V runs use $4\times10^{-4}$. No realized GQA configuration is colocated with its CSV, so dimensions, exact token budget, tokenizer, dataset construction, seed, software path, and kernel settings cannot be independently reverified from the review artifact. Cross-run comparisons are descriptive rather than controlled architecture comparisons.
+Both conditions use AdamW, peak learning rate $4\times10^{-4}$, weight decay 0.1, identical warmup/decay, chunked exact-vocabulary loss, eager execution, and the same H200 software stack. Compilation is disabled for both because a tied lexical-table path produced non-finite gradients under the tested compiler stack; eager execution remained finite.
 
-\subsection{Metrics and evidence rule}
+\subsection{Metrics and throughput}
 
-We report held-out next-token cross-entropy, realized parameter count, exact token count, and the training throughput logged at the finite evaluation step. Quality and throughput are separate claims. Every numerical table entry must map to an archived CSV or JSON artifact; generated figures are derived from those files and are not primary evidence. Short proxies are used only as failure screens because several favorable proxy rankings did not transfer to full budget.
+We report held-out next-token cross-entropy and training throughput separately. Throughput for each run is the median of finite logged points from step 500 onward after excluding points below 80k tokens/s caused by evaluation, checkpoint, or network stalls. We report the mean of the three run medians. The paired loss difference is W/R/V minus GQA for the same seed. With $n=3$, we provide the sample standard deviation and a two-sided 95\% Student-$t$ interval, but do not treat it as evidence of significance.
 
-\subsection{Context diagnostics}
+\subsection{Archived evidence}
 
-Associative recall, induction, and synthetic in-context probes are evaluated by distance. They test instance-selective retrieval that average language-model loss may hide. The completed attention-free checkpoints score zero on the archived recall and induction probes at all tested distances. The available GQA synthetic artifact is not sufficiently documented as the same protocol, so no numerical positive-control claim is made. Persistent-state claims beyond the convolutional receptive field remain unsupported and require dedicated 4--8k-context tests.
+Each controlled run has a realized JSON configuration, per-step CSV, final checkpoint, source commit, and SHA-256 manifest. The exact 2.15GB FineWeb-Edu Parquet shard is archived for offline reevaluation. Historical H100 WVR and W/R/V path runs use different protocols and appear only as descriptive development evidence; they are not pooled with H200 results.
 
 \subsection{Hardware and numerical checks}
 
-The full runs use one NVIDIA H100 80GB HBM3. FP32 unit tests cover causality and full/incremental equivalence for contextual W/R/V, plus fixed state and stable state addresses for convolutional and recurrent WVR primitives. Archived BF16 checkpoint profiles are reported separately and do not support an exact $10^{-5}$ checkpoint-level equivalence claim. The final W/R/V run disabled periodic checkpoint saving; its metric and realized configuration artifacts are archived, but learned gate values cannot be recovered. Generic top-$k$/Zipf fields in the serialized CLI namespace are inactive for the realized \texttt{lexical\_object\_micro\_expert} module, whose actual assignment is the modulo rule in Section~\ref{sec:method}.
+Controlled runs use one NVIDIA H200 with PyTorch SDPA permitting FlashAttention dispatch. FP32 unit tests cover W/R/V causality, padding masks, grouped head shapes, RoPE, cache behavior, fused R/W/V projection equivalence, lexical-off invariance, and full/incremental equivalence. The W/V cache grows with prefix length, like a grouped KV cache; W/R/V is not presented as fixed-state or attention-free.
