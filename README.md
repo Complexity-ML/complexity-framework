@@ -67,8 +67,25 @@ approximately 50M, 100M, 300M, 1B, and 8B parameters, with local, ROCm, and
 cluster-planning configurations under
 [`configs/run_configs`](configs/run_configs).
 
-These configurations establish implementation and launch contracts. A planned
-large run is not presented as a completed result.
+The completed primary comparison uses one matched seed per architecture,
+306.5M parameters, and an 8B-token FineWeb-Edu training budget. At the last
+common evaluation checkpoint (step 7,500; 7.864B tokens processed):
+
+| Architecture | Evaluation-stream NLL | Evaluation PPL | Training throughput |
+| --- | ---: | ---: | ---: |
+| Dense GQA + dense SwiGLU | 2.948246 | 19.07 | ~0.95M tok/s |
+| **TR-GQA: GQA + shared top-2 TR-MoE** | **2.932897** | **18.78** | ~0.75M tok/s |
+
+The NLL difference is -0.015349 in favor of TR-GQA at this checkpoint. This is
+a token-matched, single-seed observation, not a claim of statistical
+significance or general superiority. The fixed evaluation stream comes from
+the FineWeb-Edu training split and is therefore diagnostic rather than held
+out. The routed implementation is also approximately 21% slower in training.
+The matched measurements are published in
+[`corrected_300m_scaling.csv`](https://github.com/Complexity-ML/tmlr-paper-pool/blob/main/supplementary_code/results/corrected_300m_scaling.csv).
+
+The other tracked configurations establish implementation and launch
+contracts. A planned large run is not presented as a completed result.
 
 ### TR-MHA
 
