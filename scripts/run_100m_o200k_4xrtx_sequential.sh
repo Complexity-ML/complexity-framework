@@ -9,7 +9,7 @@ CUDA_DEVICES="${CUDA_DEVICES:-0,1,2,3}"
 MODE="${1:-pair}"
 
 DENSE_CONFIG="$REPO_ROOT/configs/run_configs/100m_o200k_chinchilla/dense_gqa_seed42_2b_b200.yaml"
-TR_CONFIG="$REPO_ROOT/configs/run_configs/100m_o200k_chinchilla/tr_gqa_balanced_secondary_scale15_seed42_2b_b200.yaml"
+TR_CONFIG="$REPO_ROOT/configs/run_configs/100m_o200k_chinchilla/tr_gqa_depth_scaled_seed42_2b_b200.yaml"
 
 FULL_ARGS=(
   --batch-size 24
@@ -44,7 +44,7 @@ run_model() {
       ;;
     tr)
       config="$TR_CONFIG"
-      run_name="tr-gqa-balanced-secondary-scale15-100m-o200k-2b-s42-b24"
+      run_name="tr-gqa-depth-scaled-100m-o200k-2b-s42-b24"
       master_port=29602
       ;;
     *)

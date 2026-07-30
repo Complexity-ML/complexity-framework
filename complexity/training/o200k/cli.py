@@ -138,6 +138,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fixed non-parameter multiplier applied after top-k routed blending.",
     )
     parser.add_argument(
+        "--shared-output-scale-first-layer",
+        type=float,
+        default=None,
+        help="Optional shared-branch scale at the first layer.",
+    )
+    parser.add_argument(
+        "--shared-output-scale-last-layer",
+        type=float,
+        default=None,
+        help="Optional shared-branch scale at the last layer; linearly interpolated by depth.",
+    )
+    parser.add_argument(
+        "--routed-output-scale-first-layer",
+        type=float,
+        default=None,
+        help="Optional routed-branch scale at the first layer.",
+    )
+    parser.add_argument(
+        "--routed-output-scale-last-layer",
+        type=float,
+        default=None,
+        help="Optional routed-branch scale at the last layer; linearly interpolated by depth.",
+    )
+    parser.add_argument(
         "--shared-gate-final",
         type=float,
         default=None,

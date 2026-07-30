@@ -184,6 +184,29 @@ class TransformerBlock(nn.Module):
         )
 
         # MLP
+        def layer_scale(
+            base: float,
+            first: Optional[float],
+            last: Optional[float],
+        ) -> float:
+            if first is None and last is None:
+                return float(base)
+            start = float(base if first is None else first)
+            end = float(start if last is None else last)
+            denominator = max(1, int(config.num_hidden_layers) - 1)
+            ratio = min(1.0, max(0.0, layer_idx / denominator))
+            return start + (end - start) * ratio
+
+        shared_output_scale = layer_scale(
+            getattr(config, 'shared_output_scale', 1.0),
+            getattr(config, 'shared_output_scale_first_layer', None),
+            getattr(config, 'shared_output_scale_last_layer', None),
+        )
+        routed_output_scale = layer_scale(
+            getattr(config, 'routed_output_scale', 1.0),
+            getattr(config, 'routed_output_scale_first_layer', None),
+            getattr(config, 'routed_output_scale_last_layer', None),
+        )
         mlp_config = MLPConfig(
             hidden_size=config.hidden_size,
             intermediate_size=config.intermediate_size,
@@ -206,8 +229,8 @@ class TransformerBlock(nn.Module):
             use_shared_routed_gates=getattr(config, 'use_shared_routed_gates', False),
             shared_gate_init=getattr(config, 'shared_gate_init', 1.0),
             routed_gate_init=getattr(config, 'routed_gate_init', 1.0),
-            shared_output_scale=getattr(config, 'shared_output_scale', 1.0),
-            routed_output_scale=getattr(config, 'routed_output_scale', 1.0),
+            shared_output_scale=shared_output_scale,
+            routed_output_scale=routed_output_scale,
             top_k=getattr(config, 'top_k', 1),
             top_k_primary_weight=getattr(config, 'top_k_primary_weight', None),
             layer_idx=layer_idx,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import torch
 import yaml
 
@@ -27,6 +28,9 @@ BALANCED_SECONDARY_MATCHED_TR_CONFIG = (
 )
 BALANCED_SECONDARY_SCALE15_TR_CONFIG = (
     CONFIG_ROOT / "tr_gqa_balanced_secondary_scale15_seed42_2b_b200.yaml"
+)
+DEPTH_SCALED_TR_CONFIG = (
+    CONFIG_ROOT / "tr_gqa_depth_scaled_seed42_2b_b200.yaml"
 )
 
 
@@ -214,6 +218,41 @@ def test_balanced_secondary_scale15_is_parameter_matched():
     assert routed["shared_output_scale"] == 1.0
     assert routed["routed_output_scale"] == 1.5
     assert routed["learn_shared_routed_gates"] is False
+
+
+def test_depth_scaled_pair_is_parameter_matched_and_interpolates_by_layer():
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k.profiles import make_config
+
+    counts = []
+    models = []
+    for path in (DENSE_CONFIG, DEPTH_SCALED_TR_CONFIG):
+        args = _load_args(path)
+        with torch.device("meta"):
+            model = ComplexityModel(make_config(args))
+        counts.append(model.num_parameters())
+        models.append(model)
+
+    assert counts == [99_487_680, 99_487_680]
+
+    routed_run = yaml.safe_load(DEPTH_SCALED_TR_CONFIG.read_text())["run"]
+    assert routed_run["routing_strategy"] == "modulo_balanced_secondary"
+    assert routed_run["shared_output_scale"] == 1.0
+    assert routed_run["routed_output_scale_first_layer"] == 1.2
+    assert routed_run["routed_output_scale_last_layer"] == 2.4
+    assert routed_run["learn_shared_routed_gates"] is False
+
+    routed_model = models[1]
+    routed_scales = [
+        layer.mlp.routed_output_scale for layer in routed_model.layers
+    ]
+    shared_scales = [
+        layer.mlp.shared_output_scale for layer in routed_model.layers
+    ]
+    assert routed_scales[0] == 1.2
+    assert routed_scales[-1] == 2.4
+    assert routed_scales[4] == pytest.approx(1.2 + 4 * (1.2 / 9))
+    assert shared_scales == [1.0] * 10
 
 
 def test_pair_shares_protocol_and_consumes_two_billion_tokens():

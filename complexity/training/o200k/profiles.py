@@ -146,6 +146,18 @@ def make_config(args) -> ModelConfig:
         routed_gate_init=args.routed_gate_init,
         shared_output_scale=getattr(args, "shared_output_scale", 1.0),
         routed_output_scale=getattr(args, "routed_output_scale", 1.0),
+        shared_output_scale_first_layer=getattr(
+            args, "shared_output_scale_first_layer", None
+        ),
+        shared_output_scale_last_layer=getattr(
+            args, "shared_output_scale_last_layer", None
+        ),
+        routed_output_scale_first_layer=getattr(
+            args, "routed_output_scale_first_layer", None
+        ),
+        routed_output_scale_last_layer=getattr(
+            args, "routed_output_scale_last_layer", None
+        ),
         top_k=args.top_k,
         top_k_primary_weight=args.top_k_primary_weight,
         use_custom_kernels=getattr(args, "use_custom_kernels", "auto"),

@@ -137,6 +137,31 @@ def token_routed_config_summary(args) -> str:
             "fixed_branch_scales="
             f"{shared_output_scale:g}/{routed_output_scale:g}"
         )
+    shared_first = getattr(args, "shared_output_scale_first_layer", None)
+    shared_last = getattr(args, "shared_output_scale_last_layer", None)
+    routed_first = getattr(args, "routed_output_scale_first_layer", None)
+    routed_last = getattr(args, "routed_output_scale_last_layer", None)
+    if any(
+        value is not None
+        for value in (shared_first, shared_last, routed_first, routed_last)
+    ):
+        resolved_shared_first = (
+            shared_output_scale if shared_first is None else float(shared_first)
+        )
+        resolved_shared_last = (
+            resolved_shared_first if shared_last is None else float(shared_last)
+        )
+        resolved_routed_first = (
+            routed_output_scale if routed_first is None else float(routed_first)
+        )
+        resolved_routed_last = (
+            resolved_routed_first if routed_last is None else float(routed_last)
+        )
+        parts.append(
+            "depth_branch_scales="
+            f"shared:{resolved_shared_first:g}->{resolved_shared_last:g}/"
+            f"routed:{resolved_routed_first:g}->{resolved_routed_last:g}"
+        )
     if args.expert_diversity_lambda > 0.0:
         parts.append(
             f"expert_diversity={args.expert_diversity_lambda:g}"

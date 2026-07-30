@@ -111,6 +111,10 @@ class ModelConfig:
     routed_gate_init: float = 1.0  # Initial multiplier for routed expert output
     shared_output_scale: float = 1.0  # Fixed, non-parameter shared branch multiplier
     routed_output_scale: float = 1.0  # Fixed, non-parameter routed branch multiplier
+    shared_output_scale_first_layer: Optional[float] = None
+    shared_output_scale_last_layer: Optional[float] = None
+    routed_output_scale_first_layer: Optional[float] = None
+    routed_output_scale_last_layer: Optional[float] = None
     top_k: int = 1  # Token-Routed top-K deterministic fixed lookup
     top_k_primary_weight: Optional[float] = None  # K>1 blend weight for primary expert (default: 0.95)
     static_expert_capacity: bool = False  # Use fixed per-expert dispatch capacity for torch.export / pipeline tracing
@@ -226,6 +230,15 @@ class ModelConfig:
             raise ValueError("shared_output_scale must be non-negative")
         if self.routed_output_scale < 0.0:
             raise ValueError("routed_output_scale must be non-negative")
+        for name in (
+            "shared_output_scale_first_layer",
+            "shared_output_scale_last_layer",
+            "routed_output_scale_first_layer",
+            "routed_output_scale_last_layer",
+        ):
+            value = getattr(self, name)
+            if value is not None and value < 0.0:
+                raise ValueError(f"{name} must be non-negative")
         if self.num_key_value_heads is None or self.num_key_value_heads <= 0:
             raise ValueError("num_key_value_heads must be positive")
         if self.hidden_size % self.num_attention_heads != 0:
