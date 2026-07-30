@@ -103,6 +103,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--intermediate-size", type=int, default=None)
     parser.add_argument("--shared-intermediate-size", type=int, default=None)
     parser.add_argument(
+        "--expert-initialization",
+        choices=["gpt_normal", "legacy_kaiming"],
+        default="gpt_normal",
+        help=(
+            "Initialization for raw routed-expert tensors. gpt_normal matches "
+            "dense/shared projections; legacy_kaiming reproduces historical runs."
+        ),
+    )
+    parser.add_argument(
         "--shared-expert-chunk-tokens",
         type=int,
         default=32768,
@@ -116,6 +125,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-shared-expert", dest="shared_expert", action="store_false")
     parser.add_argument("--shared-gate-init", type=float, default=1.0)
     parser.add_argument("--routed-gate-init", type=float, default=0.1)
+    parser.add_argument(
+        "--shared-output-scale",
+        type=float,
+        default=1.0,
+        help="Fixed non-parameter multiplier applied to the shared MLP branch.",
+    )
+    parser.add_argument(
+        "--routed-output-scale",
+        type=float,
+        default=1.0,
+        help="Fixed non-parameter multiplier applied after top-k routed blending.",
+    )
     parser.add_argument(
         "--shared-gate-final",
         type=float,

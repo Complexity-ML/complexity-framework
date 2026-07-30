@@ -60,16 +60,25 @@ class MixtralMoE(MLPBase):
             )
         )
 
-        for expert_idx in range(self.num_experts):
-            nn.init.kaiming_uniform_(
-                self.gate_proj_w[expert_idx], a=5**0.5
-            )
-            nn.init.kaiming_uniform_(
-                self.up_proj_w[expert_idx], a=5**0.5
-            )
-            nn.init.kaiming_uniform_(
-                self.down_proj_w[expert_idx], a=5**0.5
-            )
+        expert_initialization = getattr(
+            config, "expert_initialization", "gpt_normal"
+        )
+        if expert_initialization == "legacy_kaiming":
+            for expert_idx in range(self.num_experts):
+                nn.init.kaiming_uniform_(
+                    self.gate_proj_w[expert_idx], a=5**0.5
+                )
+                nn.init.kaiming_uniform_(
+                    self.up_proj_w[expert_idx], a=5**0.5
+                )
+                nn.init.kaiming_uniform_(
+                    self.down_proj_w[expert_idx], a=5**0.5
+                )
+        else:
+            std = float(getattr(config, "initializer_range", 0.02))
+            nn.init.normal_(self.gate_proj_w, mean=0.0, std=std)
+            nn.init.normal_(self.up_proj_w, mean=0.0, std=std)
+            nn.init.normal_(self.down_proj_w, mean=0.0, std=std)
         self.use_shared_expert = bool(
             getattr(config, "shared_expert", False)
         )

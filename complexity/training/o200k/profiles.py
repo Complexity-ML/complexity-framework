@@ -132,6 +132,9 @@ def make_config(args) -> ModelConfig:
 
         mlp_type=getattr(args, "mlp_type", None) or "token_routed",
         num_experts=4,
+        expert_initialization=getattr(
+            args, "expert_initialization", "gpt_normal"
+        ),
         shared_expert=bool(getattr(args, "shared_expert", True)),
         shared_intermediate_size=args.shared_intermediate_size,
         shared_expert_chunk_tokens=getattr(args, "shared_expert_chunk_tokens", 0),
@@ -141,6 +144,8 @@ def make_config(args) -> ModelConfig:
         use_shared_routed_gates=args.learn_shared_routed_gates,
         shared_gate_init=args.shared_gate_init,
         routed_gate_init=args.routed_gate_init,
+        shared_output_scale=getattr(args, "shared_output_scale", 1.0),
+        routed_output_scale=getattr(args, "routed_output_scale", 1.0),
         top_k=args.top_k,
         top_k_primary_weight=args.top_k_primary_weight,
         use_custom_kernels=getattr(args, "use_custom_kernels", "auto"),

@@ -18,6 +18,7 @@ run:
   intermediate_size: 256
   shared_intermediate_size: 1392
   mlp_type: token_routed
+  expert_initialization: gpt_normal
   shared_expert: true
   shared_expert_chunk_tokens: 32768
   # TMLR-faithful fixed lookup: primary token_id % E, then cyclic successor.

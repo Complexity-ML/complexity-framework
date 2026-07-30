@@ -94,6 +94,7 @@ class ModelConfig:
 
     # === MoE (Token-Routed) ===
     num_experts: int = 1  # 1 = standard MLP, >1 = MoE
+    expert_initialization: str = "gpt_normal"  # gpt_normal or legacy_kaiming
     # Frequency tables are accepted only for reproducing historical ablations.
     # Canonical TR-GQA/TR-MHA uses a fixed token-ID modulo route.
     token_frequencies: Optional[torch.Tensor] = None
@@ -108,6 +109,8 @@ class ModelConfig:
     use_shared_routed_gates: bool = False  # Learn scalar gates for shared vs routed expert outputs
     shared_gate_init: float = 1.0  # Initial multiplier for shared expert output
     routed_gate_init: float = 1.0  # Initial multiplier for routed expert output
+    shared_output_scale: float = 1.0  # Fixed, non-parameter shared branch multiplier
+    routed_output_scale: float = 1.0  # Fixed, non-parameter routed branch multiplier
     top_k: int = 1  # Token-Routed top-K deterministic fixed lookup
     top_k_primary_weight: Optional[float] = None  # K>1 blend weight for primary expert (default: 0.95)
     static_expert_capacity: bool = False  # Use fixed per-expert dispatch capacity for torch.export / pipeline tracing
@@ -219,6 +222,10 @@ class ModelConfig:
             raise ValueError("vocab_size must be positive")
         if self.num_attention_heads <= 0:
             raise ValueError("num_attention_heads must be positive")
+        if self.shared_output_scale < 0.0:
+            raise ValueError("shared_output_scale must be non-negative")
+        if self.routed_output_scale < 0.0:
+            raise ValueError("routed_output_scale must be non-negative")
         if self.num_key_value_heads is None or self.num_key_value_heads <= 0:
             raise ValueError("num_key_value_heads must be positive")
         if self.hidden_size % self.num_attention_heads != 0:
@@ -258,6 +265,10 @@ class ModelConfig:
             raise ValueError("causal_state_rank must be positive")
         if self.num_experts <= 0:
             raise ValueError("num_experts must be positive")
+        if self.expert_initialization not in {"gpt_normal", "legacy_kaiming"}:
+            raise ValueError(
+                "expert_initialization must be 'gpt_normal' or 'legacy_kaiming'"
+            )
         if self.top_k <= 0:
             raise ValueError("top_k must be positive")
         if self.top_k > self.num_experts:

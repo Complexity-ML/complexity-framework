@@ -150,16 +150,39 @@ class TokenRoutedMLP(MLPBase):
         self.down_proj_w = nn.Parameter(torch.empty(
             self.num_experts, self.expert_intermediate_size, self.hidden_size
         ))
-        for expert_idx in range(self.num_experts):
-            nn.init.kaiming_uniform_(self.gate_proj_w[expert_idx], a=5**0.5)
-            nn.init.kaiming_uniform_(self.up_proj_w[expert_idx], a=5**0.5)
-            nn.init.kaiming_uniform_(self.down_proj_w[expert_idx], a=5**0.5)
+        expert_initialization = getattr(
+            config, "expert_initialization", "gpt_normal"
+        )
+        if expert_initialization == "legacy_kaiming":
+            # Historical checkpoints used the raw tensor layout below with
+            # Kaiming's second dimension interpreted as fan-in. Keep this mode
+            # only for exact reproduction of those runs.
+            for expert_idx in range(self.num_experts):
+                nn.init.kaiming_uniform_(
+                    self.gate_proj_w[expert_idx], a=5**0.5
+                )
+                nn.init.kaiming_uniform_(
+                    self.up_proj_w[expert_idx], a=5**0.5
+                )
+                nn.init.kaiming_uniform_(
+                    self.down_proj_w[expert_idx], a=5**0.5
+                )
+        else:
+            # Raw nn.Parameter tensors are not visited by the model's
+            # nn.Linear initializer. Initialize them explicitly so routed and
+            # dense/shared input projections start on the same GPT-style scale.
+            std = float(getattr(config, "initializer_range", 0.02))
+            nn.init.normal_(self.gate_proj_w, mean=0.0, std=std)
+            nn.init.normal_(self.up_proj_w, mean=0.0, std=std)
+            nn.init.normal_(self.down_proj_w, mean=0.0, std=std)
 
         # Shared lexical expert: dense SwiGLU all tokens pass through.
         # Default size = intermediate_size (full dense width). shared_down is
         # also rescaled by _init_residual_scaling() (residual output projection).
         self.use_shared_expert = getattr(config, 'shared_expert', False)
         self.use_shared_routed_gates = bool(getattr(config, "use_shared_routed_gates", False))
+        self.shared_output_scale = float(getattr(config, "shared_output_scale", 1.0))
+        self.routed_output_scale = float(getattr(config, "routed_output_scale", 1.0))
         if self.use_shared_expert:
             shared_size = getattr(config, 'shared_intermediate_size', None) or self.intermediate_size
             self.shared_gate = nn.Linear(self.hidden_size, shared_size, bias=False)
@@ -620,9 +643,15 @@ class TokenRoutedMLP(MLPBase):
                 self.last_routed_rms.copy_(routed_out.detach().float().pow(2).mean().sqrt())
 
         if self.use_shared_expert and self.use_shared_routed_gates:
-            out = self.shared_output_gate * shared_out + self.routed_output_gate * routed_out
+            out = (
+                self.shared_output_scale * self.shared_output_gate * shared_out
+                + self.routed_output_scale * self.routed_output_gate * routed_out
+            )
         else:
-            out = shared_out + routed_out
+            out = (
+                self.shared_output_scale * shared_out
+                + self.routed_output_scale * routed_out
+            )
         return out.view(B, S, H)
 
     def _shared_expert_forward(self, flat_x: torch.Tensor) -> torch.Tensor:

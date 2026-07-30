@@ -18,6 +18,7 @@ run:
   intermediate_size: 1648
   shared_intermediate_size: 1392
   mlp_type: swiglu
+  expert_initialization: gpt_normal
   shared_expert: false
 
   optimizer: adamw

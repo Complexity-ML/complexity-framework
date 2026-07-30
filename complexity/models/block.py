@@ -189,6 +189,10 @@ class TransformerBlock(nn.Module):
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
             num_experts=config.num_experts,
+            expert_initialization=getattr(
+                config, "expert_initialization", "gpt_normal"
+            ),
+            initializer_range=getattr(config, "initializer_range", 0.02),
             vocab_size=config.vocab_size,
             routing_strategy=getattr(config, 'routing_strategy', 'zipf'),
             token_frequencies=config.token_frequencies,
@@ -202,6 +206,8 @@ class TransformerBlock(nn.Module):
             use_shared_routed_gates=getattr(config, 'use_shared_routed_gates', False),
             shared_gate_init=getattr(config, 'shared_gate_init', 1.0),
             routed_gate_init=getattr(config, 'routed_gate_init', 1.0),
+            shared_output_scale=getattr(config, 'shared_output_scale', 1.0),
+            routed_output_scale=getattr(config, 'routed_output_scale', 1.0),
             top_k=getattr(config, 'top_k', 1),
             top_k_primary_weight=getattr(config, 'top_k_primary_weight', None),
             layer_idx=layer_idx,

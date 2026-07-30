@@ -22,6 +22,8 @@ class MLPConfig:
 
     # MoE specific
     num_experts: int = 1  # 1 = standard MLP, >1 = MoE
+    expert_initialization: str = "gpt_normal"
+    initializer_range: float = 0.02
     vocab_size: int = 100000  # For token-routed MoE
     hash_routing: str = ""  # "" = modulo (token_id % E), "learned" = learned projection router
     routing_strategy: str = "modulo_cyclic"
@@ -41,6 +43,8 @@ class MLPConfig:
     use_shared_routed_gates: bool = False  # Learn scalar gates for shared vs routed expert outputs.
     shared_gate_init: float = 1.0  # Initial shared expert output multiplier.
     routed_gate_init: float = 1.0  # Initial routed expert output multiplier.
+    shared_output_scale: float = 1.0  # Fixed shared branch multiplier; adds no parameters.
+    routed_output_scale: float = 1.0  # Fixed routed branch multiplier; adds no parameters.
     top_k: int = 1  # Token-Routed top-K deterministic: each token activates K fixed expert routes.
     top_k_primary_weight: Optional[float] = None  # K>1 primary expert blend weight; None keeps the default 0.95.
     layer_idx: int = 0  # Layer index propagated from the block; used for the built-in per-layer routing permutation.
@@ -64,6 +68,12 @@ class MLPConfig:
             raise ValueError("intermediate_size must be positive")
         if self.num_experts <= 0:
             raise ValueError("num_experts must be positive")
+        if self.expert_initialization not in {"gpt_normal", "legacy_kaiming"}:
+            raise ValueError(
+                "expert_initialization must be 'gpt_normal' or 'legacy_kaiming'"
+            )
+        if self.initializer_range <= 0.0:
+            raise ValueError("initializer_range must be positive")
         if self.vocab_size <= 0:
             raise ValueError("vocab_size must be positive")
         if self.top_k <= 0:
@@ -93,6 +103,10 @@ class MLPConfig:
             raise ValueError("use_cggr must be one of 'auto', 'true', 'false', True, or False")
         if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
             raise ValueError("shared_intermediate_size must be positive when set")
+        if self.shared_output_scale < 0.0:
+            raise ValueError("shared_output_scale must be non-negative")
+        if self.routed_output_scale < 0.0:
+            raise ValueError("routed_output_scale must be non-negative")
         if self.shared_expert_chunk_tokens < 0:
             raise ValueError("shared_expert_chunk_tokens must be non-negative")
         if self.lexical_object_rank <= 0:

@@ -19,6 +19,68 @@ ABLATION_NAMES = [
 ]
 
 
+def test_routed_expert_initialization_matches_dense_scale_by_default():
+    from complexity.config.model_config import ModelConfig
+    from complexity.models.builder import ComplexityModel
+
+    torch.manual_seed(11)
+    corrected = ComplexityModel(
+        ModelConfig(
+            vocab_size=128,
+            hidden_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            intermediate_size=32,
+            num_experts=4,
+            mlp_type="token_routed",
+            shared_expert=True,
+            shared_intermediate_size=96,
+            expert_initialization="gpt_normal",
+            initializer_range=0.02,
+        )
+    )
+    torch.manual_seed(11)
+    historical = ComplexityModel(
+        ModelConfig(
+            vocab_size=128,
+            hidden_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            intermediate_size=32,
+            num_experts=4,
+            mlp_type="token_routed",
+            shared_expert=True,
+            shared_intermediate_size=96,
+            expert_initialization="legacy_kaiming",
+            initializer_range=0.02,
+        )
+    )
+
+    corrected_mlp = corrected.layers[0].mlp
+    historical_mlp = historical.layers[0].mlp
+    corrected_std = corrected_mlp.gate_proj_w.detach().std().item()
+    shared_std = corrected_mlp.shared_gate.weight.detach().std().item()
+    historical_std = historical_mlp.gate_proj_w.detach().std().item()
+
+    assert corrected_std == pytest.approx(0.02, rel=0.03)
+    assert shared_std == pytest.approx(0.02, rel=0.03)
+    assert corrected_std == pytest.approx(shared_std, rel=0.04)
+    assert historical_std > corrected_std * 3.0
+
+
+def test_expert_initialization_rejects_unknown_mode():
+    from complexity.core.mlp.base import MLPConfig
+
+    with pytest.raises(ValueError, match="expert_initialization"):
+        MLPConfig(
+            hidden_size=8,
+            intermediate_size=16,
+            expert_initialization="mystery",
+        )
+
+
 def test_token_routed_supports_explicit_lexical_routing_strategies():
     from complexity.core.mlp.base import MLPConfig
     from complexity.core.mlp.token_routed import TokenRoutedMLP
@@ -352,6 +414,94 @@ def test_gqa_balanced_shared_pilots_match_dense_width_and_protocol(routed_width)
     assert run["shared_intermediate_size"] + run["intermediate_size"] == 1648
     assert run["steps"] * run["batch_size"] * run["seq_len"] == 1_024_000
     assert run["seed"] == 42
+
+
+def test_fixed_routed_scale_control_is_strictly_iso_parameter():
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k.cli import build_parser
+    from complexity.training.o200k.profiles import make_config
+    from complexity.training.run_config import parse_args_with_yaml_config
+
+    root = Path("configs/run_configs/experiments_100m")
+    baseline_path = root / "100m_params_gqa_modulo_balanced_shared_256_mps.yaml"
+    scaled_path = (
+        root
+        / "100m_params_gqa_modulo_balanced_shared_256_routed_scale2_mps.yaml"
+    )
+    baseline = yaml.safe_load(baseline_path.read_text())["run"]
+    scaled = yaml.safe_load(scaled_path.read_text())["run"]
+
+    architecture_fields = [
+        "hidden_size",
+        "num_hidden_layers",
+        "num_attention_heads",
+        "num_key_value_heads",
+        "attention_type",
+        "intermediate_size",
+        "shared_intermediate_size",
+        "mlp_type",
+        "top_k",
+        "top_k_primary_weight",
+        "routing_strategy",
+        "shared_expert",
+        "learn_shared_routed_gates",
+    ]
+    assert {key: baseline[key] for key in architecture_fields} == {
+        key: scaled[key] for key in architecture_fields
+    }
+    assert scaled["shared_output_scale"] == 1.0
+    assert scaled["routed_output_scale"] == 2.0
+
+    counts = []
+    for path in (baseline_path, scaled_path):
+        args = parse_args_with_yaml_config(build_parser(), ["--config", str(path)])
+        args.vocab_size = 200_019
+        with torch.device("meta"):
+            model = ComplexityModel(make_config(args))
+        counts.append(model.num_parameters())
+    assert counts == [99_487_680, 99_487_680]
+
+
+def test_fixed_routed_output_scale_changes_only_the_routed_contribution():
+    from complexity.core.mlp.base import MLPConfig
+    from complexity.core.mlp.token_routed import TokenRoutedMLP
+
+    torch.manual_seed(7)
+    base = TokenRoutedMLP(
+        MLPConfig(
+            hidden_size=8,
+            intermediate_size=16,
+            shared_intermediate_size=24,
+            num_experts=4,
+            vocab_size=32,
+            shared_expert=True,
+            top_k=2,
+            top_k_primary_weight=0.5,
+            routed_output_scale=1.0,
+        )
+    )
+    scaled = TokenRoutedMLP(
+        MLPConfig(
+            hidden_size=8,
+            intermediate_size=16,
+            shared_intermediate_size=24,
+            num_experts=4,
+            vocab_size=32,
+            shared_expert=True,
+            top_k=2,
+            top_k_primary_weight=0.5,
+            routed_output_scale=2.0,
+        )
+    )
+    scaled.load_state_dict(base.state_dict())
+
+    hidden = torch.randn(2, 5, 8)
+    token_ids = torch.arange(10).view(2, 5)
+    base_out = base(hidden, token_ids=token_ids)
+    scaled_out = scaled(hidden, token_ids=token_ids)
+    shared = base._shared_expert_forward(hidden.reshape(-1, 8)).view_as(base_out)
+
+    assert torch.allclose(scaled_out, shared + 2.0 * (base_out - shared))
 
 
 def test_launcher_reports_the_real_tr_gqa_controls_only():

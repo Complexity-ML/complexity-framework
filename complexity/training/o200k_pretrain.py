@@ -114,6 +114,7 @@ def token_routed_config_summary(args) -> str:
         f"routed_width={args.intermediate_size}",
         f"expert_width={expert_width}",
         "experts=4",
+        f"expert_init={getattr(args, 'expert_initialization', 'gpt_normal')}",
         f"route={args.routing_strategy}",
         f"top_k={args.top_k}",
         f"route_weights={args.top_k_primary_weight:.2f}/"
@@ -128,6 +129,13 @@ def token_routed_config_summary(args) -> str:
         parts.append(
             "learned_gates="
             f"{args.shared_gate_init}/{args.routed_gate_init}"
+        )
+    shared_output_scale = float(getattr(args, "shared_output_scale", 1.0))
+    routed_output_scale = float(getattr(args, "routed_output_scale", 1.0))
+    if shared_output_scale != 1.0 or routed_output_scale != 1.0:
+        parts.append(
+            "fixed_branch_scales="
+            f"{shared_output_scale:g}/{routed_output_scale:g}"
         )
     if args.expert_diversity_lambda > 0.0:
         parts.append(
