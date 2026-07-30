@@ -41,6 +41,10 @@ EXPERT_LR2_TR_CONFIG = (
 PAIRED_ACTIVE96_TR_CONFIG = (
     CONFIG_ROOT / "tr_gqa_paired_active96_seed42_2b_b200.yaml"
 )
+PAIR_COVERAGE_HASH_TR_CONFIG = (
+    CONFIG_ROOT
+    / "tr_gqa_paired_active96_pair_coverage_hash_seed42_2b_b200.yaml"
+)
 
 
 def _load_args(path: Path):
@@ -352,6 +356,7 @@ def test_paired_active96_hash_candidate_is_a_reproducible_balanced_pair():
     first = ComplexityModel(make_config(routed_args))
     second = ComplexityModel(make_config(routed_args))
     previous_routes = None
+    all_routes = []
     for first_layer, second_layer in zip(
         first.layers, second.layers, strict=True
     ):
@@ -378,6 +383,113 @@ def test_paired_active96_hash_candidate_is_a_reproducible_balanced_pair():
         if previous_routes is not None:
             assert not torch.equal(routes, previous_routes)
         previous_routes = routes
+        all_routes.append(routes)
+
+    stacked_routes = torch.stack(all_routes, dim=0)
+    ordered_pair_ids = (
+        stacked_routes[:, 0] * 4 + stacked_routes[:, 1]
+    )
+    route_signatures = torch.zeros(
+        ordered_pair_ids.size(1), dtype=torch.long
+    )
+    for layer_pair_ids in ordered_pair_ids:
+        route_signatures = route_signatures * 16 + layer_pair_ids
+    _, signature_counts = torch.unique(
+        route_signatures, return_counts=True
+    )
+    assert signature_counts.numel() >= 199_000
+    assert int(signature_counts.max()) <= 2
+
+    unordered_routes = torch.sort(stacked_routes, dim=1).values
+    unordered_pair_ids = (
+        unordered_routes[:, 0] * 4 + unordered_routes[:, 1]
+    )
+    adjacent_repeat_rate = (
+        unordered_pair_ids[1:] == unordered_pair_ids[:-1]
+    ).float().mean()
+    assert float(adjacent_repeat_rate) < 0.18
+
+    valid_pair_ids = torch.tensor([1, 2, 3, 6, 7, 11])
+    unique_pairs_per_token = torch.stack(
+        [
+            (unordered_pair_ids == pair_id).any(dim=0)
+            for pair_id in valid_pair_ids
+        ]
+    ).sum(dim=0)
+    assert float(unique_pairs_per_token.float().mean()) > 5.0
+
+
+def test_pair_coverage_hash_is_balanced_deterministic_and_covers_all_pairs():
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k.profiles import make_config
+
+    dense_args = _load_args(DENSE_CONFIG)
+    routed_args = _load_args(PAIR_COVERAGE_HASH_TR_CONFIG)
+    with torch.device("meta"):
+        dense = ComplexityModel(make_config(dense_args))
+        routed_meta = ComplexityModel(make_config(routed_args))
+    assert dense.num_parameters() == routed_meta.num_parameters() == 99_487_680
+
+    routed_run = yaml.safe_load(
+        PAIR_COVERAGE_HASH_TR_CONFIG.read_text()
+    )["run"]
+    assert routed_run["routing_strategy"] == "token_id_pair_coverage_hash"
+    assert routed_run["top_k_primary_weight"] == 0.5
+    assert routed_run["top_k_primary_weight_final"] == 0.5
+
+    first = ComplexityModel(make_config(routed_args))
+    second = ComplexityModel(make_config(routed_args))
+    layer_routes = []
+    for first_layer, second_layer in zip(
+        first.layers, second.layers, strict=True
+    ):
+        routes = first_layer.mlp.topk_token_to_expert.cpu()
+        repeated_routes = second_layer.mlp.topk_token_to_expert.cpu()
+        assert torch.equal(routes, repeated_routes)
+        assert torch.all(routes[0] != routes[1])
+
+        unordered = torch.sort(routes, dim=0).values
+        pair_ids = unordered[0] * 4 + unordered[1]
+        pair_counts = torch.bincount(pair_ids, minlength=16)
+        pair_counts = pair_counts[pair_counts > 0]
+        assert pair_counts.numel() == 6
+        assert int(pair_counts.max() - pair_counts.min()) <= 1
+        layer_routes.append(unordered)
+
+    # The first six layers form a complete no-repeat pair schedule for every
+    # token ID, independently of token frequency.
+    early_pair_ids = torch.stack(
+        [
+            routes[0] * 4 + routes[1]
+            for routes in layer_routes[:6]
+        ],
+        dim=0,
+    )
+    sorted_pair_ids = torch.sort(early_pair_ids, dim=0).values
+    assert torch.all(sorted_pair_ids[1:] != sorted_pair_ids[:-1])
+
+    all_pair_ids = torch.stack(
+        [
+            routes[0] * 4 + routes[1]
+            for routes in layer_routes
+        ],
+        dim=0,
+    )
+    route_signatures = torch.zeros(
+        all_pair_ids.size(1), dtype=torch.long
+    )
+    for layer_pair_ids in all_pair_ids:
+        route_signatures = route_signatures * 16 + layer_pair_ids
+    _, signature_counts = torch.unique(
+        route_signatures, return_counts=True
+    )
+    assert signature_counts.numel() == routed_args.vocab_size
+    assert int(signature_counts.max()) == 1
+
+    adjacent_repeat_rate = (
+        all_pair_ids[1:] == all_pair_ids[:-1]
+    ).float().mean()
+    assert float(adjacent_repeat_rate) < 0.10
 
 
 def test_pair_shares_protocol_and_consumes_two_billion_tokens():

@@ -89,6 +89,7 @@ class MLPConfig:
             "modulo_balanced_secondary",
             "modulo_frequency_balanced_secondary",
             "token_id_balanced_hash",
+            "token_id_pair_coverage_hash",
             "round_robin",
             "random",
             "lsh_hidden",
@@ -96,6 +97,7 @@ class MLPConfig:
             raise ValueError(
                 "routing_strategy must be one of modulo_cyclic, zipf, "
                 "modulo_frequency_balanced_secondary, token_id_balanced_hash, "
+                "token_id_pair_coverage_hash, "
                 "round_robin, random, lsh_hidden "
                 "(legacy aliases: modulo, modulo_balanced_secondary)"
             )

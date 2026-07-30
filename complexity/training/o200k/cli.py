@@ -275,6 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
             "modulo_balanced_secondary",
             "modulo_frequency_balanced_secondary",
             "token_id_balanced_hash",
+            "token_id_pair_coverage_hash",
             "round_robin",
             "random",
             "lsh_hidden",
@@ -286,7 +287,9 @@ def build_parser() -> argparse.ArgumentParser:
             "modulo_frequency_balanced_secondary reproduces the winning local "
             "pilot: modulo primary plus a training-frequency-balanced secondary. "
             "token_id_balanced_hash creates layer-specific, exactly balanced "
-            "fixed lookup tables. zipf and modulo_balanced_secondary are "
+            "fixed lookup tables. token_id_pair_coverage_hash additionally "
+            "gives every token all unordered expert pairs before repetition. "
+            "zipf and modulo_balanced_secondary are "
             "retained for ablations."
         ),
     )

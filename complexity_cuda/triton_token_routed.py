@@ -112,6 +112,148 @@ if HAS_TRITON:
     # CGGR TRITON KERNELS
     # =========================================================================
 
+    @triton.jit
+    def _pair_coverage_hash_kernel(
+        token_ids_ptr,
+        route_codes_ptr,
+        expert_pairs_ptr,
+        output_ptr,
+        total_tokens: tl.constexpr,
+        vocab_size: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Decode a deterministic top-2 route directly from token identity.
+
+        The large per-layer ``int64[2, vocab]`` lookup is replaced by one
+        compact ``uint8[vocab]`` compiled hash plus a tiny pair table. Its
+        output is laid out as two concatenated int32 assignment streams
+        consumed by one CGGR partition.
+        """
+
+        offsets = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < total_tokens
+        token_ids = tl.load(token_ids_ptr + offsets, mask=mask, other=0)
+        token_ids = tl.maximum(0, tl.minimum(token_ids, vocab_size - 1))
+        route_codes = tl.load(
+            route_codes_ptr + token_ids, mask=mask, other=0
+        )
+        pair_indices = route_codes & 0x7
+
+        expert_a = tl.load(
+            expert_pairs_ptr + pair_indices * 2,
+            mask=mask,
+            other=0,
+        )
+        expert_b = tl.load(
+            expert_pairs_ptr + pair_indices * 2 + 1,
+            mask=mask,
+            other=0,
+        )
+        swap = (route_codes & 0x8) != 0
+        primary = tl.where(swap, expert_b, expert_a)
+        secondary = tl.where(swap, expert_a, expert_b)
+        tl.store(output_ptr + offsets, primary, mask=mask)
+        tl.store(output_ptr + total_tokens + offsets, secondary, mask=mask)
+
+    @triton.jit
+    def _pair_hash_block_counts_kernel(
+        token_ids_ptr,
+        route_codes_ptr,
+        expert_pairs_ptr,
+        block_counts_ptr,
+        total_tokens: tl.constexpr,
+        vocab_size: tl.constexpr,
+        num_experts: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Count each block's two hash assignments without global atomics."""
+
+        block_id = tl.program_id(0)
+        offsets = block_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < total_tokens
+        token_ids = tl.load(token_ids_ptr + offsets, mask=mask, other=0)
+        token_ids = tl.maximum(0, tl.minimum(token_ids, vocab_size - 1))
+        codes = tl.load(route_codes_ptr + token_ids, mask=mask, other=0)
+        pair_indices = codes & 0x7
+        expert_a = tl.load(
+            expert_pairs_ptr + pair_indices * 2, mask=mask, other=0
+        )
+        expert_b = tl.load(
+            expert_pairs_ptr + pair_indices * 2 + 1, mask=mask, other=0
+        )
+
+        for expert_idx in range(num_experts):
+            count = tl.sum(
+                (mask & (expert_a == expert_idx)).to(tl.int32)
+                + (mask & (expert_b == expert_idx)).to(tl.int32),
+                axis=0,
+            )
+            tl.store(
+                block_counts_ptr + block_id * num_experts + expert_idx,
+                count,
+            )
+
+    @triton.jit
+    def _pair_hash_scatter_kernel(
+        token_ids_ptr,
+        route_codes_ptr,
+        expert_pairs_ptr,
+        block_offsets_ptr,
+        expert_offsets_ptr,
+        sorted_indices_ptr,
+        total_tokens: tl.constexpr,
+        vocab_size: tl.constexpr,
+        num_experts: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Scatter both routes into expert-contiguous order.
+
+        Prefixes are computed per input block, so the scatter needs no global
+        atomics and remains deterministic across launches.
+        """
+
+        block_id = tl.program_id(0)
+        offsets = block_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < total_tokens
+        token_ids = tl.load(token_ids_ptr + offsets, mask=mask, other=0)
+        token_ids = tl.maximum(0, tl.minimum(token_ids, vocab_size - 1))
+        codes = tl.load(route_codes_ptr + token_ids, mask=mask, other=0)
+        pair_indices = codes & 0x7
+        expert_a = tl.load(
+            expert_pairs_ptr + pair_indices * 2, mask=mask, other=0
+        )
+        expert_b = tl.load(
+            expert_pairs_ptr + pair_indices * 2 + 1, mask=mask, other=0
+        )
+        swap = (codes & 0x8) != 0
+        primary = tl.where(swap, expert_b, expert_a)
+        secondary = tl.where(swap, expert_a, expert_b)
+
+        for expert_idx in range(num_experts):
+            primary_match = mask & (primary == expert_idx)
+            secondary_match = mask & (secondary == expert_idx)
+            match = primary_match | secondary_match
+            local_positions = (
+                tl.cumsum(match.to(tl.int32), axis=0) - 1
+            )
+            block_start = tl.load(
+                block_offsets_ptr
+                + block_id * num_experts
+                + expert_idx
+            )
+            expert_start = tl.load(expert_offsets_ptr + expert_idx)
+            destinations = expert_start + block_start + local_positions
+            assignment_indices = tl.where(
+                primary_match,
+                offsets,
+                total_tokens + offsets,
+            )
+            tl.store(
+                sorted_indices_ptr + destinations,
+                assignment_indices,
+                mask=match,
+            )
+
     # Autotune configs cover the MoE shapes we actually run:
     #   hidden ∈ {640, 1024}, expert_inter ∈ {448, 502, 2008}, shared_inter ∈ {..., 2008}
     # Tuning keys are the matmul dims (in_dim, out_dim); num_experts is
@@ -518,6 +660,186 @@ else:
             sorted_x, expert_weights, expert_offsets,
             torch.diff(expert_offsets),
         )
+
+
+def pair_coverage_hash_expert_ids(
+    token_ids: torch.Tensor,
+    route_codes: torch.Tensor,
+    expert_pairs: torch.Tensor,
+    *,
+    vocab_size: int,
+) -> torch.Tensor:
+    """Decode both pair-coverage hash routes in one CUDA planning kernel.
+
+    The returned tensor has shape ``[2, *token_ids.shape]``. CUDA/Triton reads
+    one compact uint8 hash code per token and derives both experts. CPU/MPS
+    executes the identical decode with PyTorch, which also provides a reference
+    for kernel-equivalence tests.
+    """
+
+    if route_codes.ndim != 1 or int(route_codes.numel()) != int(vocab_size):
+        raise ValueError(
+            "route_codes must contain one entry per vocabulary ID"
+        )
+    if route_codes.dtype != torch.uint8:
+        raise ValueError("route_codes must use the compact uint8 format")
+    if expert_pairs.ndim != 2 or expert_pairs.size(1) != 2:
+        raise ValueError("expert_pairs must be shaped [pair_count, 2]")
+
+    original_shape = token_ids.shape
+    flat_token_ids = token_ids.contiguous().view(-1)
+    total_tokens = int(flat_token_ids.numel())
+    output = torch.empty(
+        (2, total_tokens),
+        dtype=torch.int32,
+        device=token_ids.device,
+    )
+    if total_tokens == 0:
+        return output.view(2, *original_shape)
+
+    if HAS_TRITON and flat_token_ids.is_cuda:
+        if not (route_codes.is_cuda and expert_pairs.is_cuda):
+            raise ValueError(
+                "hash metadata must be on the same CUDA device as token_ids"
+            )
+        block_size = 256
+        _pair_coverage_hash_kernel[
+            (triton.cdiv(total_tokens, block_size),)
+        ](
+            flat_token_ids,
+            route_codes,
+            expert_pairs,
+            output,
+            total_tokens=total_tokens,
+            vocab_size=int(vocab_size),
+            BLOCK_SIZE=block_size,
+        )
+        return output.view(2, *original_shape)
+
+    clamped = flat_token_ids.clamp(0, int(vocab_size) - 1)
+    codes = route_codes[clamped].to(torch.int64)
+    pair_indices = codes & 0x7
+    selected = expert_pairs[pair_indices.long()].long()
+    swap = (codes & 0x8).ne(0)
+    output[0] = torch.where(swap, selected[:, 1], selected[:, 0])
+    output[1] = torch.where(swap, selected[:, 0], selected[:, 1])
+    return output.view(2, *original_shape)
+
+
+def sort_pair_hash_by_expert(
+    token_ids: torch.Tensor,
+    route_codes: torch.Tensor,
+    expert_pairs: torch.Tensor,
+    *,
+    vocab_size: int,
+    num_experts: int,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Counting-partition two hash routes without materializing expert IDs.
+
+    Returns assignment indices in ``[0, 2*N)`` where ``[0, N)`` denotes the
+    primary route and ``[N, 2*N)`` the secondary route, followed by expert
+    offsets and counts. Unlike ``torch.sort``, work is linear in the number of
+    tokens and the hash decode is fused into both counting/scatter kernels.
+    """
+
+    if route_codes.ndim != 1 or int(route_codes.numel()) != int(vocab_size):
+        raise ValueError(
+            "route_codes must contain one entry per vocabulary ID"
+        )
+    if route_codes.dtype != torch.uint8:
+        raise ValueError("route_codes must use the compact uint8 format")
+    if expert_pairs.ndim != 2 or expert_pairs.size(1) != 2:
+        raise ValueError("expert_pairs must be shaped [pair_count, 2]")
+
+    flat_token_ids = token_ids.contiguous().view(-1)
+    total_tokens = int(flat_token_ids.numel())
+    if total_tokens == 0:
+        return (
+            torch.empty(0, dtype=torch.long, device=token_ids.device),
+            torch.zeros(
+                num_experts + 1,
+                dtype=torch.int32,
+                device=token_ids.device,
+            ),
+            torch.zeros(
+                num_experts,
+                dtype=torch.int32,
+                device=token_ids.device,
+            ),
+        )
+
+    if HAS_TRITON and flat_token_ids.is_cuda:
+        if not (route_codes.is_cuda and expert_pairs.is_cuda):
+            raise ValueError(
+                "hash metadata must be on the same CUDA device as token_ids"
+            )
+        block_size = 256
+        num_blocks = triton.cdiv(total_tokens, block_size)
+        block_counts = torch.empty(
+            (num_blocks, num_experts),
+            dtype=torch.int32,
+            device=token_ids.device,
+        )
+        _pair_hash_block_counts_kernel[(num_blocks,)](
+            flat_token_ids,
+            route_codes,
+            expert_pairs,
+            block_counts,
+            total_tokens=total_tokens,
+            vocab_size=int(vocab_size),
+            num_experts=int(num_experts),
+            BLOCK_SIZE=block_size,
+        )
+        block_offsets = torch.cumsum(
+            block_counts, dim=0, dtype=torch.int32
+        ) - block_counts
+        expert_counts = block_counts.sum(dim=0, dtype=torch.int32)
+        expert_offsets = torch.zeros(
+            num_experts + 1,
+            dtype=torch.int32,
+            device=token_ids.device,
+        )
+        expert_offsets[1:] = torch.cumsum(
+            expert_counts, dim=0, dtype=torch.int32
+        )
+        sorted_indices = torch.empty(
+            2 * total_tokens,
+            dtype=torch.long,
+            device=token_ids.device,
+        )
+        _pair_hash_scatter_kernel[(num_blocks,)](
+            flat_token_ids,
+            route_codes,
+            expert_pairs,
+            block_offsets,
+            expert_offsets,
+            sorted_indices,
+            total_tokens=total_tokens,
+            vocab_size=int(vocab_size),
+            num_experts=int(num_experts),
+            BLOCK_SIZE=block_size,
+        )
+        return sorted_indices, expert_offsets, expert_counts
+
+    expert_ids = pair_coverage_hash_expert_ids(
+        flat_token_ids,
+        route_codes,
+        expert_pairs,
+        vocab_size=vocab_size,
+    ).reshape(-1)
+    _, sorted_indices = torch.sort(expert_ids, stable=True)
+    expert_counts = torch.bincount(
+        expert_ids, minlength=num_experts
+    ).to(torch.int32)
+    expert_offsets = torch.zeros(
+        num_experts + 1,
+        dtype=torch.int32,
+        device=token_ids.device,
+    )
+    expert_offsets[1:] = torch.cumsum(
+        expert_counts, dim=0, dtype=torch.int32
+    )
+    return sorted_indices, expert_offsets, expert_counts
 
 
 # =============================================================================

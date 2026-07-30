@@ -17,6 +17,7 @@ Usage:
 
 import itertools
 import logging
+import math
 from typing import Optional
 
 import torch
@@ -34,6 +35,8 @@ logger = logging.getLogger(__name__)
 try:
     from complexity_cuda.triton_token_routed import (
         sort_tokens_by_expert,
+        pair_coverage_hash_expert_ids,
+        sort_pair_hash_by_expert,
         cggr_grouped_gemm_triton,
         cggr_grouped_gemm_autograd,
         grouped_gemm_pytorch,
@@ -44,6 +47,14 @@ try:
 except Exception:
     HAS_CGGR = False
     cggr_grouped_gemm_autograd = None
+    try:
+        from complexity_cuda.triton_token_routed import (
+            pair_coverage_hash_expert_ids,
+            sort_pair_hash_by_expert,
+        )
+    except Exception:
+        pair_coverage_hash_expert_ids = None
+        sort_pair_hash_by_expert = None
 
     def sort_tokens_by_expert(tokens, expert_ids, num_experts):
         """Pure-PyTorch fallback — stable sort + cumsum offsets.
@@ -76,6 +87,154 @@ def _normalize_cggr_policy(policy: object) -> str:
     if policy is False:
         return "false"
     return "auto"
+
+
+def _create_pair_coverage_hash_metadata(
+    vocab_size: int,
+    num_experts: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Build the compact, layer-independent state for pair-coverage hashing.
+
+    ``token_rank`` is the seeded permutation hash of token identity. The other
+    two tensors are tiny decode tables shared conceptually by every layer:
+    canonical unordered expert pairs and the 120 possible six-pair schedules.
+    Model construction uses them to compile the per-layer uint8 hash codes
+    consumed by CUDA instead of two full int64 expert-ID tables.
+    """
+
+    pairs = torch.combinations(
+        torch.arange(num_experts, dtype=torch.int32, device="cpu"),
+        r=2,
+    )
+    pair_count = int(pairs.size(0))
+    if num_experts < 2 or num_experts > 4:
+        raise ValueError(
+            "token_id_pair_coverage_hash supports two to four experts"
+        )
+
+    token_generator = torch.Generator().manual_seed(0xC04E2A63)
+    token_order = torch.randperm(
+        vocab_size, generator=token_generator, device="cpu"
+    )
+    token_rank = torch.empty(vocab_size, dtype=torch.int32, device="cpu")
+    token_rank[token_order] = torch.arange(
+        vocab_size, dtype=torch.int32, device="cpu"
+    )
+
+    # Every permutation has one unique cyclic rotation beginning with pair
+    # zero. Assign one such base order to each six-token rank group, then
+    # rotate it by the token's rank inside that group. Consequently:
+    #   * every token sees every unordered pair once in the first six layers;
+    #   * every complete rank group uses every pair once in every layer;
+    #   * all pair loads differ by at most one for an incomplete last group;
+    #   * the 120 base orders x six rotations retain all 720 early-layer
+    #     route signatures instead of collapsing tokens onto six schedules.
+    base_orders = torch.tensor(
+        [
+            (0, *tail)
+            for tail in itertools.permutations(range(1, pair_count))
+        ],
+        dtype=torch.int32,
+        device="cpu",
+    )
+    base_generator = torch.Generator().manual_seed(0xC04E2A63 ^ 0x51A7)
+    base_orders = base_orders[
+        torch.randperm(
+            base_orders.size(0),
+            generator=base_generator,
+            device="cpu",
+        )
+    ]
+    return token_rank, pairs, base_orders
+
+
+def _pair_coverage_hash_routes_from_metadata(
+    token_rank: torch.Tensor,
+    pairs: torch.Tensor,
+    base_orders: torch.Tensor,
+    layer_idx: int,
+) -> torch.Tensor:
+    """Decode one layer's equal-weight expert pair from compact hash state."""
+
+    pair_count = int(pairs.size(0))
+    group_rank = torch.div(token_rank, pair_count, rounding_mode="floor")
+    rotation = token_rank.remainder(pair_count)
+
+    if layer_idx < pair_count:
+        base_idx = group_rank.remainder(base_orders.size(0))
+        position = (rotation + layer_idx).remainder(pair_count)
+        pair_idx = base_orders[base_idx, position]
+    else:
+        # The remaining layers encode the quotient left after selecting one
+        # of the canonical base orders. Four base-6 digits plus the 720 early
+        # schedules provide 933,120 distinct ten-layer signatures, enough for
+        # the 200,019-token vocabulary. Rotation keeps every layer balanced
+        # within each six-token group while the full signature remains
+        # collision-free.
+        route_code = torch.div(
+            group_rank,
+            base_orders.size(0),
+            rounding_mode="floor",
+        )
+        digit_place = pair_count ** (layer_idx - pair_count)
+        route_digit = torch.div(
+            route_code,
+            digit_place,
+            rounding_mode="floor",
+        ).remainder(pair_count)
+        pair_idx = (rotation + route_digit).remainder(pair_count)
+
+    selected = pairs[pair_idx.long()].long()
+    # Pair weights are exactly 0.5/0.5, so orientation does not change the
+    # function. Still alternate it deterministically to keep primary and
+    # secondary telemetry approximately symmetric without a second V-entry
+    # lookup table in the CUDA planner.
+    swap = (token_rank.long() + int(layer_idx)).remainder(2).bool()
+    primary = torch.where(swap, selected[:, 1], selected[:, 0])
+    secondary = torch.where(swap, selected[:, 0], selected[:, 1])
+    return torch.stack((primary, secondary), dim=0)
+
+
+def _create_pair_coverage_hash_routes(
+    vocab_size: int,
+    num_experts: int,
+    layer_idx: int,
+) -> torch.Tensor:
+    """Return two token-ID routes with full pair coverage across early layers.
+
+    For four experts there are six unordered expert pairs. Each token receives
+    a deterministic permutation of those six pairs over the first six layers,
+    so it visits every pair exactly once before any pair can repeat. The
+    compact metadata is also consumed directly by the hash-aware CGGR planner.
+    """
+
+    metadata = _create_pair_coverage_hash_metadata(vocab_size, num_experts)
+    return _pair_coverage_hash_routes_from_metadata(*metadata, layer_idx)
+
+
+def _encode_pair_coverage_hash_routes(
+    routes: torch.Tensor,
+    expert_pairs: torch.Tensor,
+) -> torch.Tensor:
+    """Compile two expert routes into one byte per vocabulary entry.
+
+    Bits 0..2 store the unordered pair index and bit 3 stores orientation.
+    Keeping orientation makes the CUDA planner bit-identical to the reference
+    lookup even though equal 0.5/0.5 weights make it functionally irrelevant.
+    """
+
+    if routes.ndim != 2 or routes.size(0) != 2:
+        raise ValueError("routes must be shaped [2, vocab_size]")
+    unordered = torch.sort(routes.long(), dim=0).values
+    pair_matches = (
+        (unordered[0].unsqueeze(0) == expert_pairs[:, 0].long().unsqueeze(1))
+        & (unordered[1].unsqueeze(0) == expert_pairs[:, 1].long().unsqueeze(1))
+    )
+    if not torch.all(pair_matches.any(dim=0)):
+        raise ValueError("routes contain a pair absent from expert_pairs")
+    pair_indices = pair_matches.to(torch.int64).argmax(dim=0)
+    swap = routes[0].long().eq(unordered[1]).to(torch.int64)
+    return (pair_indices | (swap << 3)).to(torch.uint8)
 
 
 def cggr_dispatch_decision(
@@ -219,6 +378,38 @@ class TokenRoutedMLP(MLPBase):
             "topk_token_to_expert",
             topk_token_to_expert,
         )
+        self.has_pair_coverage_hash = (
+            str(getattr(config, "routing_strategy", "")).lower()
+            == "token_id_pair_coverage_hash"
+        )
+        if self.has_pair_coverage_hash:
+            if self.gate_proj_w.is_meta:
+                pair_count = self.num_experts * (self.num_experts - 1) // 2
+                pair_hash_expert_pairs = torch.empty(
+                    pair_count, 2, dtype=torch.int32, device="meta"
+                )
+                pair_hash_route_codes = torch.empty(
+                    self.vocab_size, dtype=torch.uint8, device="meta"
+                )
+            else:
+                pair_hash_expert_pairs = torch.combinations(
+                    torch.arange(self.num_experts, dtype=torch.int32),
+                    r=2,
+                )
+                pair_hash_route_codes = _encode_pair_coverage_hash_routes(
+                    topk_token_to_expert,
+                    pair_hash_expert_pairs,
+                )
+            self.register_buffer(
+                "pair_hash_route_codes",
+                pair_hash_route_codes,
+                persistent=True,
+            )
+            self.register_buffer(
+                "pair_hash_expert_pairs",
+                pair_hash_expert_pairs,
+                persistent=True,
+            )
 
         # Semantic LSH routing: route the primary (and top-k neighbour) experts
         # on a fixed random-hyperplane hash of the hidden state, not the token
@@ -230,8 +421,6 @@ class TokenRoutedMLP(MLPBase):
             _lsh_layer_idx >= int(getattr(config, "lsh_from_layer", 0))
         )
         if self.has_lsh_routing:
-            import math
-
             bits = int(getattr(config, "lsh_bits", 0)) or max(
                 1, math.ceil(math.log2(max(2, self.num_experts)))
             )
@@ -370,6 +559,16 @@ class TokenRoutedMLP(MLPBase):
             )
             mapping[token_order] = pairs[pair_indices, 0]
             return mapping
+        elif strategy == "token_id_pair_coverage_hash":
+            if self.top_k != 2:
+                raise ValueError(
+                    "token_id_pair_coverage_hash requires top_k=2"
+                )
+            return _create_pair_coverage_hash_routes(
+                vocab_size,
+                num_experts,
+                int(getattr(self.config, "layer_idx", 0)),
+            )[0]
         elif strategy == "round_robin":
             # Round-robin over frequency rank (or token id if no frequencies),
             # giving a routing-table control distinct from token-id modulo.
@@ -478,6 +677,17 @@ class TokenRoutedMLP(MLPBase):
             routes[:, token_order] = expert_tuples[tuple_indices].T
             return routes
 
+        if strategy == "token_id_pair_coverage_hash":
+            if top_k != 2:
+                raise ValueError(
+                    "token_id_pair_coverage_hash requires top_k=2"
+                )
+            return _create_pair_coverage_hash_routes(
+                vocab_size,
+                num_experts,
+                int(getattr(self.config, "layer_idx", 0)),
+            )
+
         if strategy == "random":
             for route_idx in range(1, top_k):
                 g = torch.Generator().manual_seed(0xA61A710 + 7919 * route_idx)
@@ -541,8 +751,24 @@ class TokenRoutedMLP(MLPBase):
 
         # Look up expert assignment per token
         token_ids_clamped = token_ids.clamp(0, self.vocab_size - 1)
-        expert_ids = self.token_to_expert[token_ids_clamped]  # [B, S]
-        route_expert_ids = self.topk_token_to_expert[:, token_ids_clamped]  # [K, B, S]
+        hash_cggr_candidate = bool(
+            self.has_pair_coverage_hash
+            and not self.has_lsh_routing
+            and token_ids_clamped.is_cuda
+            and HAS_CGGR
+            and pair_coverage_hash_expert_ids is not None
+            and sort_pair_hash_by_expert is not None
+        )
+        if hash_cggr_candidate:
+            # Defer the route entirely: the hash-aware CGGR counting partition
+            # consumes token IDs and uint8 route codes directly.
+            expert_ids = None
+            route_expert_ids = None
+        else:
+            expert_ids = self.token_to_expert[token_ids_clamped]  # [B, S]
+            route_expert_ids = self.topk_token_to_expert[
+                :, token_ids_clamped
+            ]  # [K, B, S]
 
         # Semantic LSH overlay: replace the lexical routing with a fixed
         # random-hyperplane hash of h. proj = h . planes; the sign bits index a
@@ -577,13 +803,24 @@ class TokenRoutedMLP(MLPBase):
             route_expert_ids = torch.stack(routes, dim=0)  # [K, B, S]
 
         flat_x = hidden_states.view(-1, H)
-        flat_expert_ids = expert_ids.view(-1)
+        flat_expert_ids = (
+            expert_ids.view(-1) if expert_ids is not None else None
+        )
         static_dispatch = bool(getattr(self.config, "static_expert_capacity", False))
         collect_telemetry = bool(getattr(self.config, "collect_moe_telemetry", False))
 
         # Track expert utilization (in-place, non-differentiable)
         if collect_telemetry and not static_dispatch:
             with torch.no_grad():
+                if route_expert_ids is None:
+                    route_expert_ids = pair_coverage_hash_expert_ids(
+                        token_ids_clamped,
+                        self.pair_hash_route_codes,
+                        self.pair_hash_expert_pairs,
+                        vocab_size=self.vocab_size,
+                    )
+                    expert_ids = route_expert_ids[0]
+                    flat_expert_ids = expert_ids.view(-1)
                 batch_counts = torch.bincount(route_expert_ids.reshape(-1), minlength=self.num_experts)
                 self.expert_counts += batch_counts.to(self.expert_counts.dtype)
 
@@ -631,7 +868,32 @@ class TokenRoutedMLP(MLPBase):
             has_autograd=cggr_grouped_gemm_autograd is not None,
             static_dispatch=static_dispatch,
         )
-        self.last_dispatch_path = "cggr" if use_cggr else "masked_dense"
+        use_equal_top2_pair = (
+            not static_dispatch
+            and self.top_k == 2
+            and abs(self._primary_weight - 0.5) <= 1e-12
+        )
+        use_fused_pair_cggr = use_equal_top2_pair and use_cggr
+        use_fused_pair_fallback = use_equal_top2_pair and not use_cggr
+        use_hash_route_kernel = (
+            hash_cggr_candidate and use_fused_pair_cggr
+        )
+        if route_expert_ids is None and not use_hash_route_kernel:
+            expert_ids = self.token_to_expert[token_ids_clamped]
+            route_expert_ids = self.topk_token_to_expert[
+                :, token_ids_clamped
+            ]
+            flat_expert_ids = expert_ids.view(-1)
+        if use_fused_pair_cggr:
+            self.last_dispatch_path = (
+                "top2_hash_cggr"
+                if use_hash_route_kernel
+                else "top2_pair_cggr"
+            )
+        elif use_fused_pair_fallback:
+            self.last_dispatch_path = "top2_pair_fused"
+        else:
+            self.last_dispatch_path = "cggr" if use_cggr else "masked_dense"
 
         # Log path selection once per path/device/policy combo. Helps diagnose
         # whether a run is on CGGR or the universal no-sync fallback.
@@ -641,7 +903,27 @@ class TokenRoutedMLP(MLPBase):
             logged_keys.add(log_key)
             self.__class__._path_logged_keys = logged_keys
             if use_cggr:
-                logger.info("[TokenRoutedMLP] dispatch path = CGGR (Triton grouped-GEMM, no sync)")
+                if use_fused_pair_cggr and use_hash_route_kernel:
+                    logger.info(
+                        "[TokenRoutedMLP] dispatch path = top2_hash_cggr "
+                        "(token-ID hash decoded by Triton, one combined "
+                        "partition, grouped-GEMM)"
+                    )
+                elif use_fused_pair_cggr:
+                    logger.info(
+                        "[TokenRoutedMLP] dispatch path = top2_pair_cggr "
+                        "(one combined partition, Triton grouped-GEMM)"
+                    )
+                else:
+                    logger.info(
+                        "[TokenRoutedMLP] dispatch path = CGGR "
+                        "(Triton grouped-GEMM, no sync)"
+                    )
+            elif use_fused_pair_fallback:
+                logger.info(
+                    "[TokenRoutedMLP] dispatch path = top2_pair_fused "
+                    "(equal-weight pair, one expert pass)"
+                )
             else:
                 logger.info(
                     "[TokenRoutedMLP] dispatch path = masked_dense (no CPU sync) "
@@ -650,7 +932,33 @@ class TokenRoutedMLP(MLPBase):
 
         # Top-K deterministic lookup: dispatch K precomputed expert maps.
         # Primary keeps the configured weight; auxiliaries share the remainder.
-        if static_dispatch:
+        if use_hash_route_kernel:
+            routed_out = self._dispatch_equal_top2_hash_cggr(
+                flat_x,
+                token_ids_clamped.view(-1),
+                gate_w,
+                up_w,
+                down_w,
+                H,
+            )
+        elif use_fused_pair_cggr:
+            routed_out = self._dispatch_equal_top2_pair_cggr(
+                flat_x,
+                route_expert_ids.view(2, -1),
+                gate_w,
+                up_w,
+                down_w,
+                H,
+            )
+        elif use_fused_pair_fallback:
+            routed_out = self._dispatch_equal_top2_pair(
+                flat_x,
+                route_expert_ids.view(2, -1),
+                gate_w,
+                up_w,
+                down_w,
+            )
+        elif static_dispatch:
             if self.top_k == 1:
                 routed_out = self._dispatch_once(
                     flat_x, flat_expert_ids, gate_w, up_w, down_w, use_cggr, H,
@@ -718,6 +1026,157 @@ class TokenRoutedMLP(MLPBase):
                 + self.routed_output_scale * routed_out
             )
         return out.view(B, S, H)
+
+    def _dispatch_equal_top2_pair(
+        self,
+        flat_x: torch.Tensor,
+        route_expert_ids: torch.Tensor,
+        gate_w: torch.Tensor,
+        up_w: torch.Tensor,
+        down_w: torch.Tensor,
+    ) -> torch.Tensor:
+        """Dispatch an equal-weight top-2 pair with one pass per expert.
+
+        The generic top-k fallback dispatches the primary and secondary maps
+        separately. With fixed 0.5/0.5 routing that evaluates every expert
+        twice over the full token block. A pair hash already exposes both
+        selected experts, so compute each expert once and apply its per-token
+        multiplicity after the non-linearity. This preserves the exact
+        mathematical function, supports repeated routes defensively, avoids
+        both sorting passes, and halves routed fallback GEMMs.
+        """
+
+        if route_expert_ids.ndim != 2 or route_expert_ids.size(0) != 2:
+            raise ValueError(
+                "equal top-2 pair dispatch expects expert IDs shaped [2, N]"
+            )
+        if route_expert_ids.size(1) != flat_x.size(0):
+            raise ValueError(
+                "route expert IDs must match the flattened token count"
+            )
+
+        routed_out = torch.zeros_like(flat_x)
+        for expert_idx in range(self.num_experts):
+            route_weight = (
+                route_expert_ids == expert_idx
+            ).sum(dim=0).to(flat_x.dtype) * 0.5
+            active = route_weight.ne(0).unsqueeze(-1).to(flat_x.dtype)
+            expert_x = flat_x * active
+            gate = expert_x @ gate_w[expert_idx]
+            up = expert_x @ up_w[expert_idx]
+            expert_out = (
+                fused_silu_mul(gate, up) @ down_w[expert_idx]
+            ).to(routed_out.dtype)
+            routed_out = (
+                routed_out
+                + expert_out * route_weight.unsqueeze(-1)
+            )
+        return routed_out
+
+    def _dispatch_equal_top2_pair_cggr(
+        self,
+        flat_x: torch.Tensor,
+        route_expert_ids: torch.Tensor,
+        gate_w: torch.Tensor,
+        up_w: torch.Tensor,
+        down_w: torch.Tensor,
+        hidden_size: int,
+        *,
+        use_cggr: bool = True,
+    ) -> torch.Tensor:
+        """Dispatch both equal-weight routes through one grouped batch.
+
+        The generic CGGR path sorts and launches grouped GEMMs once per route.
+        A fixed pair hash allows both assignments to be concatenated, sorted
+        once, and processed by one gate/up/down grouped-GEMM sequence. The
+        final mean restores the 0.5/0.5 mixture.
+        """
+
+        if route_expert_ids.ndim != 2 or route_expert_ids.size(0) != 2:
+            raise ValueError(
+                "equal top-2 CGGR dispatch expects expert IDs shaped [2, N]"
+            )
+        if route_expert_ids.size(1) != flat_x.size(0):
+            raise ValueError(
+                "route expert IDs must match the flattened token count"
+            )
+
+        pair_x = flat_x.unsqueeze(0).expand(2, -1, -1).reshape(
+            -1, hidden_size
+        )
+        pair_expert_ids = route_expert_ids.reshape(-1)
+        sorted_x, sorted_idx, expert_offsets, expert_counts = (
+            sort_tokens_by_expert(
+                pair_x,
+                pair_expert_ids,
+                self.num_experts,
+            )
+        )
+        pair_out = self._dispatch_sorted(
+            pair_x,
+            sorted_x,
+            sorted_idx,
+            expert_offsets,
+            expert_counts,
+            gate_w,
+            up_w,
+            down_w,
+            use_cggr,
+            hidden_size,
+        )
+        return pair_out.view(2, flat_x.size(0), hidden_size).mean(dim=0)
+
+    def _dispatch_equal_top2_hash_cggr(
+        self,
+        flat_x: torch.Tensor,
+        flat_token_ids: torch.Tensor,
+        gate_w: torch.Tensor,
+        up_w: torch.Tensor,
+        down_w: torch.Tensor,
+        hidden_size: int,
+        *,
+        use_cggr: bool = True,
+    ) -> torch.Tensor:
+        """Decode and counting-partition the pair hash inside CGGR.
+
+        No ``[2, N]`` expert-ID tensor and no radix sort are created. Two
+        Triton kernels build an expert-contiguous assignment order from the
+        uint8 hash codes; the grouped GEMMs then consume the resulting rows.
+        """
+
+        if flat_token_ids.ndim != 1:
+            raise ValueError("hash CGGR expects flattened token IDs")
+        if flat_token_ids.numel() != flat_x.size(0):
+            raise ValueError("token IDs must match the flattened token count")
+        assignment_indices, expert_offsets, expert_counts = (
+            sort_pair_hash_by_expert(
+                flat_token_ids,
+                self.pair_hash_route_codes,
+                self.pair_hash_expert_pairs,
+                vocab_size=self.vocab_size,
+                num_experts=self.num_experts,
+            )
+        )
+        token_count = flat_x.size(0)
+        source_indices = assignment_indices.remainder(token_count)
+        sorted_x = flat_x[source_indices]
+        pair_layout = flat_x.new_empty(
+            2 * token_count,
+            hidden_size,
+        )
+        pair_out = self._dispatch_sorted(
+            pair_layout,
+            sorted_x,
+            assignment_indices,
+            expert_offsets,
+            expert_counts,
+            gate_w,
+            up_w,
+            down_w,
+            use_cggr,
+            hidden_size,
+        )
+        return pair_out.view(2, token_count, hidden_size).mean(dim=0)
 
     def _shared_expert_forward(self, flat_x: torch.Tensor) -> torch.Tensor:
         """Run the dense shared expert, optionally chunked over tokens.

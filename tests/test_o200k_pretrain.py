@@ -431,6 +431,264 @@ def test_token_routed_topk_uses_precomputed_zipf_routes():
     assert torch.allclose(out_fast.reshape_as(out_ref), out_ref, atol=1e-6)
 
 
+def test_equal_top2_pair_fusion_matches_legacy_outputs_and_gradients():
+    from complexity.core.mlp.base import MLPConfig
+    from complexity.core.mlp.token_routed import TokenRoutedMLP
+
+    torch.manual_seed(7)
+    cfg = MLPConfig(
+        hidden_size=16,
+        intermediate_size=32,
+        num_experts=4,
+        vocab_size=64,
+        shared_expert=False,
+        routing_strategy="token_id_balanced_hash",
+        top_k=2,
+        top_k_primary_weight=0.5,
+        use_cggr=False,
+    )
+    fused = TokenRoutedMLP(cfg)
+    legacy = TokenRoutedMLP(cfg)
+    combined = TokenRoutedMLP(cfg)
+    legacy.load_state_dict(fused.state_dict())
+    combined.load_state_dict(fused.state_dict())
+
+    hidden_fused = torch.randn(3, 5, 16, requires_grad=True)
+    hidden_legacy = hidden_fused.detach().clone().requires_grad_(True)
+    hidden_combined = hidden_fused.detach().clone().requires_grad_(True)
+    token_ids = torch.randint(0, 64, (3, 5))
+    probe = torch.randn(15, 16)
+
+    out_fused = fused(hidden_fused, token_ids=token_ids).reshape(15, 16)
+    routes = legacy.topk_token_to_expert[:, token_ids].reshape(2, -1)
+    flat_legacy = hidden_legacy.reshape(15, 16)
+    out_legacy = 0.5 * legacy._dispatch_once(
+        flat_legacy,
+        routes[0],
+        legacy.gate_proj_w,
+        legacy.up_proj_w,
+        legacy.down_proj_w,
+        False,
+        16,
+    )
+    out_legacy = out_legacy + 0.5 * legacy._dispatch_once(
+        flat_legacy,
+        routes[1],
+        legacy.gate_proj_w,
+        legacy.up_proj_w,
+        legacy.down_proj_w,
+        False,
+        16,
+    )
+    combined_routes = combined.topk_token_to_expert[:, token_ids].reshape(
+        2, -1
+    )
+    out_combined = combined._dispatch_equal_top2_pair_cggr(
+        hidden_combined.reshape(15, 16),
+        combined_routes,
+        combined.gate_proj_w,
+        combined.up_proj_w,
+        combined.down_proj_w,
+        16,
+        use_cggr=False,
+    )
+
+    assert fused.last_dispatch_path == "top2_pair_fused"
+    assert torch.allclose(out_fused, out_legacy, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(out_combined, out_legacy, atol=1e-6, rtol=1e-5)
+
+    (out_fused * probe).sum().backward()
+    (out_legacy * probe).sum().backward()
+    (out_combined * probe).sum().backward()
+    assert torch.allclose(
+        hidden_fused.grad,
+        hidden_legacy.grad,
+        atol=1e-6,
+        rtol=1e-5,
+    )
+    assert torch.allclose(
+        hidden_combined.grad,
+        hidden_legacy.grad,
+        atol=1e-6,
+        rtol=1e-5,
+    )
+    legacy_params = dict(legacy.named_parameters())
+    combined_params = dict(combined.named_parameters())
+    for name, parameter in fused.named_parameters():
+        assert parameter.grad is not None
+        assert legacy_params[name].grad is not None
+        assert combined_params[name].grad is not None
+        assert torch.allclose(
+            parameter.grad,
+            legacy_params[name].grad,
+            atol=1e-5,
+            rtol=1e-5,
+        ), name
+        assert torch.allclose(
+            combined_params[name].grad,
+            legacy_params[name].grad,
+            atol=1e-5,
+            rtol=1e-5,
+        ), name
+
+
+def test_compact_pair_hash_planner_matches_precomputed_routes():
+    from complexity.core.mlp.token_routed import (
+        _encode_pair_coverage_hash_routes,
+        _create_pair_coverage_hash_metadata,
+        _create_pair_coverage_hash_routes,
+    )
+    from complexity_cuda.triton_token_routed import (
+        pair_coverage_hash_expert_ids,
+        sort_pair_hash_by_expert,
+    )
+
+    vocab_size = 4096
+    token_ids = torch.tensor(
+        [[-1, 0, 1, 17, 511], [2048, 4094, 4095, 4096, 9999]]
+    )
+    _, expert_pairs, _ = _create_pair_coverage_hash_metadata(vocab_size, 4)
+    for layer_idx in range(10):
+        routes = _create_pair_coverage_hash_routes(
+            vocab_size,
+            4,
+            layer_idx,
+        )
+        route_codes = _encode_pair_coverage_hash_routes(
+            routes,
+            expert_pairs,
+        )
+        decoded = pair_coverage_hash_expert_ids(
+            token_ids,
+            route_codes,
+            expert_pairs,
+            vocab_size=vocab_size,
+        )
+        expected = routes[:, token_ids.clamp(0, vocab_size - 1)]
+        assert torch.equal(decoded.long(), expected)
+        sorted_indices, expert_offsets, expert_counts = (
+            sort_pair_hash_by_expert(
+                token_ids,
+                route_codes,
+                expert_pairs,
+                vocab_size=vocab_size,
+                num_experts=4,
+            )
+        )
+        flat_experts = expected.reshape(-1)
+        expected_experts, _ = torch.sort(flat_experts, stable=True)
+        actual_experts = flat_experts[sorted_indices]
+        assert torch.equal(actual_experts, expected_experts)
+        assert int(expert_counts.sum()) == 2 * token_ids.numel()
+        assert torch.equal(
+            torch.diff(expert_offsets),
+            expert_counts,
+        )
+
+    compact_bytes = (
+        route_codes.numel() * route_codes.element_size()
+        + expert_pairs.numel() * expert_pairs.element_size()
+    )
+    full_routes_bytes = (
+        _create_pair_coverage_hash_routes(vocab_size, 4, 0).numel() * 8
+    )
+    assert compact_bytes < full_routes_bytes
+
+
+def test_hash_counting_dispatch_matches_pair_dispatch_and_gradients():
+    from complexity.core.mlp.base import MLPConfig
+    from complexity.core.mlp.token_routed import TokenRoutedMLP
+
+    torch.manual_seed(23)
+    cfg = MLPConfig(
+        hidden_size=12,
+        intermediate_size=32,
+        num_experts=4,
+        vocab_size=128,
+        shared_expert=False,
+        routing_strategy="token_id_pair_coverage_hash",
+        top_k=2,
+        top_k_primary_weight=0.5,
+        use_cggr=False,
+    )
+    reference = TokenRoutedMLP(cfg)
+    hashed = TokenRoutedMLP(cfg)
+    hashed.load_state_dict(reference.state_dict())
+    token_ids = torch.randint(0, cfg.vocab_size, (21,))
+    reference_x = torch.randn(21, 12, requires_grad=True)
+    hashed_x = reference_x.detach().clone().requires_grad_(True)
+    routes = reference.topk_token_to_expert[:, token_ids]
+
+    reference_out = reference._dispatch_equal_top2_pair_cggr(
+        reference_x,
+        routes,
+        reference.gate_proj_w,
+        reference.up_proj_w,
+        reference.down_proj_w,
+        12,
+        use_cggr=False,
+    )
+    hashed_out = hashed._dispatch_equal_top2_hash_cggr(
+        hashed_x,
+        token_ids,
+        hashed.gate_proj_w,
+        hashed.up_proj_w,
+        hashed.down_proj_w,
+        12,
+        use_cggr=False,
+    )
+    assert torch.allclose(
+        hashed_out,
+        reference_out,
+        atol=1e-6,
+        rtol=1e-5,
+    )
+
+    probe = torch.randn_like(reference_out)
+    (reference_out * probe).sum().backward()
+    (hashed_out * probe).sum().backward()
+    assert torch.allclose(
+        hashed_x.grad,
+        reference_x.grad,
+        atol=1e-6,
+        rtol=1e-5,
+    )
+    reference_parameters = dict(reference.named_parameters())
+    for name, parameter in hashed.named_parameters():
+        assert parameter.grad is not None
+        assert torch.allclose(
+            parameter.grad,
+            reference_parameters[name].grad,
+            atol=1e-5,
+            rtol=1e-5,
+        ), name
+
+
+def test_unequal_top2_weights_keep_the_generic_dispatch():
+    from complexity.core.mlp.base import MLPConfig
+    from complexity.core.mlp.token_routed import TokenRoutedMLP
+
+    mlp = TokenRoutedMLP(
+        MLPConfig(
+            hidden_size=8,
+            intermediate_size=16,
+            num_experts=4,
+            vocab_size=32,
+            shared_expert=False,
+            routing_strategy="token_id_balanced_hash",
+            top_k=2,
+            top_k_primary_weight=0.6,
+            use_cggr=False,
+        )
+    )
+    mlp(
+        torch.randn(2, 4, 8),
+        token_ids=torch.randint(0, 32, (2, 4)),
+    )
+
+    assert mlp.last_dispatch_path == "masked_dense"
+
+
 def test_token_routed_topk_aux_routes_are_balanced_and_distinct():
     from complexity.core.mlp.base import MLPConfig
     from complexity.core.mlp.token_routed import TokenRoutedMLP
