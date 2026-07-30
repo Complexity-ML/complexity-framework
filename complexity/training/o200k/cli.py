@@ -112,6 +112,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--paired-dense-init",
+        action="store_true",
+        help=(
+            "Initialize the common backbone and the shared/routed MLP slices "
+            "from the exact parameter-matched dense model for this seed. "
+            "This removes architecture-dependent RNG drift."
+        ),
+    )
+    parser.add_argument(
         "--shared-expert-chunk-tokens",
         type=int,
         default=32768,

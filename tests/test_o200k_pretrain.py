@@ -78,6 +78,101 @@ def test_reduce_average_tensor_defers_to_single_item_sync():
     assert reduce_average_tensor(value, distributed=False) == pytest.approx(3.5)
 
 
+def _paired_init_test_configs(*, top_k=2, routed_output_scale=1.0):
+    from complexity.config import ModelConfig
+    from complexity.training.o200k.paired_init import dense_reference_config
+
+    routed = ModelConfig(
+        vocab_size=128,
+        hidden_size=32,
+        num_hidden_layers=3,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        attention_type="gqa",
+        mlp_type="token_routed",
+        intermediate_size=16,
+        shared_intermediate_size=48,
+        shared_expert=True,
+        num_experts=4,
+        top_k=top_k,
+        top_k_primary_weight=1.0 / top_k,
+        routing_strategy="modulo_balanced_secondary",
+        routed_output_scale=routed_output_scale,
+    )
+    return routed, dense_reference_config(routed)
+
+
+def test_same_seed_alone_does_not_pair_deeper_backbone_weights():
+    from complexity.models import ComplexityModel
+
+    routed_config, dense_config = _paired_init_test_configs()
+    torch.manual_seed(42)
+    dense = ComplexityModel(dense_config)
+    torch.manual_seed(42)
+    routed = ComplexityModel(routed_config)
+
+    assert torch.equal(
+        dense.layers[0].self_attn.q_proj.weight,
+        routed.layers[0].self_attn.q_proj.weight,
+    )
+    assert not torch.equal(
+        dense.layers[1].self_attn.q_proj.weight,
+        routed.layers[1].self_attn.q_proj.weight,
+    )
+
+
+def test_paired_dense_initialization_copies_common_backbone_exactly():
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k.paired_init import (
+        initialize_token_routed_from_dense_reference,
+    )
+
+    routed_config, dense_config = _paired_init_test_configs()
+    torch.manual_seed(42)
+    dense = ComplexityModel(dense_config)
+    torch.manual_seed(42)
+    routed = ComplexityModel(routed_config)
+
+    stats = initialize_token_routed_from_dense_reference(routed, dense)
+
+    assert stats["split_layers"] == 3
+    for dense_layer, routed_layer in zip(
+        dense.layers, routed.layers, strict=True
+    ):
+        assert torch.equal(
+            dense_layer.self_attn.q_proj.weight,
+            routed_layer.self_attn.q_proj.weight,
+        )
+
+
+def test_paired_top4_routed_model_is_functionally_dense_at_initialization():
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k.paired_init import (
+        initialize_token_routed_from_dense_reference,
+    )
+
+    routed_config, dense_config = _paired_init_test_configs(
+        top_k=4,
+        routed_output_scale=4.0,
+    )
+    torch.manual_seed(7)
+    dense = ComplexityModel(dense_config).eval()
+    torch.manual_seed(7)
+    routed = ComplexityModel(routed_config).eval()
+    initialize_token_routed_from_dense_reference(routed, dense)
+    token_ids = torch.randint(0, routed_config.vocab_size, (2, 9))
+
+    with torch.no_grad():
+        dense_hidden = dense(token_ids, return_logits=False)[
+            "last_hidden_state"
+        ]
+        routed_hidden = routed(token_ids, return_logits=False)[
+            "last_hidden_state"
+        ]
+
+    assert torch.allclose(dense_hidden, routed_hidden, atol=2e-6, rtol=2e-5)
+
+
 def test_topk_primary_weight_schedule_ramps_toward_final():
     from complexity.training.o200k.runtime import scheduled_topk_primary_weight
 
@@ -194,6 +289,14 @@ def test_o200k_parser_can_disable_grad_checkpointing():
     args = build_parser().parse_args(["--no-grad-ckpt"])
 
     assert args.grad_ckpt is False
+
+
+def test_o200k_parser_supports_paired_dense_initialization():
+    from complexity.training.o200k_pretrain import build_parser
+
+    args = build_parser().parse_args(["--paired-dense-init"])
+
+    assert args.paired_dense_init is True
 
 
 def test_o200k_parser_disables_grad_clipping_by_default():
@@ -676,6 +779,43 @@ def test_adamw_optimizer_uses_foreach_for_o200k_runner():
     assert group_lrs["base"] == pytest.approx(3e-4)
     assert group_lrs["shared"] == pytest.approx(2.25e-4)
     assert group_lrs["expert"] == pytest.approx(6e-4)
+
+
+def test_token_routed_summary_reports_stored_and_active_width():
+    from types import SimpleNamespace
+
+    from complexity.training.o200k_pretrain import token_routed_config_summary
+
+    args = SimpleNamespace(
+        attention_type="gqa",
+        num_attention_heads=8,
+        num_key_value_heads=2,
+        hidden_size=384,
+        num_hidden_layers=10,
+        shared_intermediate_size=1392,
+        intermediate_size=256,
+        top_k=2,
+        expert_initialization="gpt_normal",
+        routing_strategy="modulo_balanced_secondary",
+        top_k_primary_weight=0.5,
+        top_k_primary_weight_final=0.5,
+        grad_ckpt=False,
+        learn_shared_routed_gates=False,
+        shared_output_scale=1.0,
+        routed_output_scale=1.8,
+        shared_output_scale_first_layer=None,
+        shared_output_scale_last_layer=None,
+        routed_output_scale_first_layer=None,
+        routed_output_scale_last_layer=None,
+        expert_diversity_lambda=0.0,
+        expert_lr_scale=2.0,
+    )
+
+    summary = token_routed_config_summary(args)
+
+    assert "stored_width=1648" in summary
+    assert "active_width=1520 (92.2%)" in summary
+    assert "expert_lr_scale=2" in summary
 
 
 def test_batch_expert_counts_counts_current_batch():

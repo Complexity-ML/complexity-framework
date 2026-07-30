@@ -39,12 +39,15 @@ from complexity.training.o200k import (
     build_loaders,
     build_optimizer,
     build_parser,
+    dense_reference_config,
     evaluate,
     expert_diversity_loss,
     init_distributed,
     learned_router_aux_loss,
+    initialize_token_routed_from_dense_reference,
     load_checkpoint,
     make_config,
+    optimizer_group_lrs,
     reduce_average_tensor,
     runtime_controls,
     save_checkpoint,
@@ -77,6 +80,17 @@ for noisy_logger in ("httpx", "httpcore", "huggingface_hub", "datasets"):
     library_logger.setLevel(logging.ERROR)
     library_logger.propagate = False
 
+METRIC_COLUMNS = [
+    "step", "train_loss", "train_ppl", "eval_loss", "eval_ppl",
+    "lr", "shared_lr", "expert_lr", "tok_s",
+    "expert_0_share", "expert_1_share", "expert_2_share", "expert_3_share",
+    "expert_dead_count", "shared_gate", "routed_gate", "shared_rms", "routed_rms",
+    "shared_grad_norm", "routed_grad_norm", "expert_0_grad_norm",
+    "expert_1_grad_norm", "expert_2_grad_norm", "expert_3_grad_norm",
+    "expert_diversity_loss", "expert_diversity_lambda",
+    "router_aux_loss", "router_aux_weight", "total_loss",
+]
+
 
 def infer_vocab_size(args) -> int:
     """Backward-compatible wrapper for tests/callers patching this module."""
@@ -105,6 +119,8 @@ def token_routed_config_summary(args) -> str:
     """Format only controls that are active for this Token-Routed run."""
 
     expert_width = args.intermediate_size // 4
+    stored_width = args.shared_intermediate_size + args.intermediate_size
+    active_width = args.shared_intermediate_size + args.top_k * expert_width
     parts = [
         f"Config: TR-{str(args.attention_type).upper()}",
         f"heads={args.num_attention_heads}/{args.num_key_value_heads}",
@@ -113,6 +129,8 @@ def token_routed_config_summary(args) -> str:
         f"shared_width={args.shared_intermediate_size}",
         f"routed_width={args.intermediate_size}",
         f"expert_width={expert_width}",
+        f"stored_width={stored_width}",
+        f"active_width={active_width} ({active_width / stored_width:.1%})",
         "experts=4",
         f"expert_init={getattr(args, 'expert_initialization', 'gpt_normal')}",
         f"route={args.routing_strategy}",
@@ -166,6 +184,13 @@ def token_routed_config_summary(args) -> str:
         parts.append(
             f"expert_diversity={args.expert_diversity_lambda:g}"
             f"({args.expert_diversity_target})"
+        )
+    if getattr(args, "paired_dense_init", False):
+        parts.append("paired_init=dense_reference")
+    expert_lr_scale = float(getattr(args, "expert_lr_scale", 1.0))
+    if expert_lr_scale != 1.0:
+        parts.append(
+            f"expert_lr_scale={expert_lr_scale:g}"
         )
     return ", ".join(parts)
 
@@ -247,7 +272,19 @@ def main():
         config.lsh_bits = int(getattr(args, "lsh_bits", 0))
         config.lsh_from_layer = int(getattr(args, "lsh_from_layer", 0))
         config.lsh_threshold_mode = getattr(args, "lsh_threshold_mode", "zero")
-    raw_model = ComplexityModel(config).to(device)
+    raw_model = ComplexityModel(config)
+    paired_init_stats = None
+    if args.paired_dense_init:
+        rng_state = torch.random.get_rng_state()
+        torch.manual_seed(args.seed + rank)
+        dense_reference = ComplexityModel(dense_reference_config(config))
+        paired_init_stats = initialize_token_routed_from_dense_reference(
+            raw_model,
+            dense_reference,
+        )
+        del dense_reference
+        torch.random.set_rng_state(rng_state)
+    raw_model = raw_model.to(device)
     active_controls = runtime_controls(raw_model)
     if args.grad_ckpt:
         raw_model.gradient_checkpointing_enable()
@@ -270,6 +307,12 @@ def main():
             force_resume=args.force_resume,
         )
         logger.info(f"Model: {params / 1e6:.1f}M params")
+        if paired_init_stats is not None:
+            logger.info(
+                "Paired dense initialization: "
+                f"{paired_init_stats['common_tensors']} common tensors, "
+                f"{paired_init_stats['split_layers']} split SwiGLU layers"
+            )
         for line in format_run_summary(run_config):
             logger.info(line)
         if "tr_mha_routing" in active_controls.capabilities:
@@ -437,18 +480,18 @@ def main():
     writer = None
     if is_main:
         csv_mode = "a" if args.resume and csv_path.exists() else "w"
+        if csv_mode == "a":
+            with csv_path.open(newline="") as existing_file:
+                existing_header = next(csv.reader(existing_file), [])
+            if existing_header != METRIC_COLUMNS:
+                raise ValueError(
+                    "Cannot append to metrics.csv with a different schema. "
+                    "Resume with a new run name or migrate the existing CSV."
+                )
         csv_file = csv_path.open(csv_mode, newline="")
         writer = csv.writer(csv_file)
         if csv_mode == "w":
-            writer.writerow([
-                "step", "train_loss", "train_ppl", "eval_loss", "eval_ppl", "lr", "tok_s",
-                "expert_0_share", "expert_1_share", "expert_2_share", "expert_3_share",
-                "expert_dead_count", "shared_gate", "routed_gate", "shared_rms", "routed_rms",
-                "shared_grad_norm", "routed_grad_norm", "expert_0_grad_norm",
-                "expert_1_grad_norm", "expert_2_grad_norm", "expert_3_grad_norm",
-                "expert_diversity_loss", "expert_diversity_lambda",
-                "router_aux_loss", "router_aux_weight", "total_loss",
-            ])
+            writer.writerow(METRIC_COLUMNS)
         csv_file.flush()
 
     model.train()
@@ -591,7 +634,10 @@ def main():
             )
             train_ppl = math.exp(min(train_loss, 20))
             eval_ppl = math.exp(min(eval_loss, 20)) if math.isfinite(eval_loss) else float("nan")
-            lr_now = scheduler.get_last_lr()[0]
+            group_lrs = optimizer_group_lrs(optimizer)
+            lr_now = group_lrs.get("base", scheduler.get_last_lr()[0])
+            shared_lr_now = group_lrs.get("shared", float("nan"))
+            expert_lr_now = group_lrs.get("expert", float("nan"))
             shares, dead = global_expert_shares(raw_model, config.num_experts)
             if not shares:
                 shares = [float("nan")] * config.num_experts
@@ -600,7 +646,8 @@ def main():
                 writer.writerow([
                     step, f"{train_loss:.6f}", f"{train_ppl:.2f}",
                     f"{eval_loss:.6f}", f"{eval_ppl:.2f}",
-                    f"{lr_now:.6e}", f"{tok_s:.0f}",
+                    f"{lr_now:.6e}", f"{shared_lr_now:.6e}",
+                    f"{expert_lr_now:.6e}", f"{tok_s:.0f}",
                     *[f"{s:.4f}" for s in shares],
                     "nan" if dead is None else dead,
                     f"{tr_diag.get('shared_gate', float('nan')):.6f}",

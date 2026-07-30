@@ -147,3 +147,18 @@ def build_optimizer(args, raw_model):
         }
 
     raise ValueError(f"Unknown optimizer: {args.optimizer}")
+
+
+def optimizer_group_lrs(optimizer) -> dict[str, float]:
+    """Return current optimizer LRs keyed by semantic parameter group."""
+
+    values: dict[str, list[float]] = {}
+    for group in optimizer.param_groups:
+        values.setdefault(str(group.get("group_name", "base")), []).append(
+            float(group["lr"])
+        )
+    return {
+        name: sum(group_values) / len(group_values)
+        for name, group_values in values.items()
+        if group_values
+    }

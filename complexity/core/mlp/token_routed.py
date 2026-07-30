@@ -1,15 +1,13 @@
-"""
-Token-Routed MLP — Deterministic Mixture-of-Experts.
+"""Token-Routed MLP — deterministic residual experts selected by token ID.
 
-Innovation from Complexity-ML (2026):
-  Each token is routed to exactly one expert based on its token ID.
-  Routing is deterministic (no learned router, no load-balancing loss).
+Each layer uses a fixed token-ID lookup rather than a learned contextual
+router. A shared dense SwiGLU path remains active for every token.
 
 Features:
-  - Zipf-balanced routing via greedy bin-packing on token frequencies
-  - Shared Lexical Expert (dense SwiGLU all tokens pass through)
-  - Sparse dispatch (loop over experts with masking)
-  - Falls back to simple modulo routing without token frequencies
+  - fixed modulo or balanced token-hash lookup tables
+  - layer-specific deterministic expert assignments
+  - shared dense SwiGLU plus sparse routed residuals
+  - historical frequency-aware strategies retained only for ablation replay
 
 Usage:
     config = MLPConfig(hidden_size=512, intermediate_size=2048, num_experts=4)
@@ -118,8 +116,8 @@ class TokenRoutedMLP(MLPBase):
     """
     Token-Routed MLP with Shared Lexical Expert.
 
-    Routes tokens to experts deterministically (token_id -> expert_id)
-    via Zipf-balanced bin-packing, then dispatches with sparse masking.
+    Routes tokens through a fixed layer-specific lookup
+    (token_id -> expert IDs), then dispatches with sparse masking.
     """
 
     def __init__(self, config: MLPConfig):
@@ -128,10 +126,9 @@ class TokenRoutedMLP(MLPBase):
         self.num_experts = config.num_experts
         self.vocab_size = config.vocab_size
         self.expert_intermediate_size = self.intermediate_size // self.num_experts
-        # Top-K deterministic: each token activates K precomputed Zipf-balanced
-        # expert maps. K=1 is the classic single-expert Zipf routing. K>1 gives
-        # more gradient coverage while keeping zero learned routing and zero
-        # runtime router overhead.
+        # Top-K deterministic: each token activates K precomputed expert maps.
+        # K>1 gives broader conditional capacity while preserving zero learned
+        # routing and zero runtime router-network overhead.
         self.top_k = max(1, int(getattr(config, "top_k", 1)))
         primary_weight = getattr(config, "top_k_primary_weight", None)
         if primary_weight is None:
@@ -651,7 +648,7 @@ class TokenRoutedMLP(MLPBase):
                     f"(CGGR rejected: {', '.join(why_not_cggr) if why_not_cggr else 'unknown'})"
                 )
 
-        # Top-K deterministic Zipf: dispatch K precomputed expert maps.
+        # Top-K deterministic lookup: dispatch K precomputed expert maps.
         # Primary keeps the configured weight; auxiliaries share the remainder.
         if static_dispatch:
             if self.top_k == 1:

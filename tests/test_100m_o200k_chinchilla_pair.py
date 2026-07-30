@@ -38,6 +38,9 @@ TOKEN_HASH_TR_CONFIG = (
 EXPERT_LR2_TR_CONFIG = (
     CONFIG_ROOT / "tr_gqa_expert_lr2_seed42_2b_b200.yaml"
 )
+PAIRED_ACTIVE96_TR_CONFIG = (
+    CONFIG_ROOT / "tr_gqa_paired_active96_seed42_2b_b200.yaml"
+)
 
 
 def _load_args(path: Path):
@@ -317,6 +320,64 @@ def test_expert_lr2_pair_is_parameter_matched():
     assert routed["expert_lr_scale"] == 2.0
     assert routed["shared_lr_scale"] == 1.0
     assert routed["routed_output_scale"] == 1.8
+
+
+def test_paired_active96_hash_candidate_is_a_reproducible_balanced_pair():
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k.profiles import make_config
+
+    dense_args = _load_args(DENSE_CONFIG)
+    routed_args = _load_args(PAIRED_ACTIVE96_TR_CONFIG)
+    with torch.device("meta"):
+        dense = ComplexityModel(make_config(dense_args))
+        routed_meta = ComplexityModel(make_config(routed_args))
+
+    assert dense.num_parameters() == routed_meta.num_parameters() == 99_487_680
+
+    routed = yaml.safe_load(PAIRED_ACTIVE96_TR_CONFIG.read_text())["run"]
+    expert_width = routed_args.intermediate_size // 4
+    assert routed_args.shared_intermediate_size + 4 * expert_width == 1648
+    assert (
+        routed_args.shared_intermediate_size
+        + routed_args.top_k * expert_width
+    ) == 1584
+    assert routed["paired_dense_init"] is True
+    assert routed["routing_strategy"] == "token_id_balanced_hash"
+    assert routed["top_k_primary_weight"] == 0.5
+    assert routed["top_k_primary_weight_final"] == 0.5
+    assert routed["routed_output_scale"] == 2.0
+    assert routed["expert_lr_scale"] == 2.0
+    assert routed["shared_lr_scale"] == 1.0
+
+    first = ComplexityModel(make_config(routed_args))
+    second = ComplexityModel(make_config(routed_args))
+    previous_routes = None
+    for first_layer, second_layer in zip(
+        first.layers, second.layers, strict=True
+    ):
+        routes = first_layer.mlp.topk_token_to_expert.cpu()
+        repeated_routes = second_layer.mlp.topk_token_to_expert.cpu()
+        assert torch.equal(routes, repeated_routes)
+        assert torch.all(routes[0] != routes[1])
+
+        for route in routes:
+            counts = torch.bincount(route, minlength=4)
+            # The 200,019-entry vocabulary leaves three entries after full
+            # 12-pair cycles. Pair loads stay within one; their expert
+            # marginals stay within two.
+            assert int(counts.max() - counts.min()) <= 2
+
+        pair_counts = torch.bincount(
+            routes[0] * 4 + routes[1], minlength=16
+        ).reshape(4, 4)
+        assert torch.count_nonzero(pair_counts.diagonal()) == 0
+        nonzero_pair_counts = pair_counts[pair_counts > 0]
+        assert nonzero_pair_counts.numel() == 12
+        assert int(nonzero_pair_counts.max() - nonzero_pair_counts.min()) <= 1
+
+        if previous_routes is not None:
+            assert not torch.equal(routes, previous_routes)
+        previous_routes = routes
 
 
 def test_pair_shares_protocol_and_consumes_two_billion_tokens():

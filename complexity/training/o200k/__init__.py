@@ -13,7 +13,11 @@ from .data import (
 )
 from .cli import build_parser
 from .checkpointing import load_checkpoint, save_checkpoint
-from .optimizer import build_optimizer
+from .optimizer import build_optimizer, optimizer_group_lrs
+from .paired_init import (
+    dense_reference_config,
+    initialize_token_routed_from_dense_reference,
+)
 from .profiles import PROFILES, make_config
 from .runtime import (
     apply_topk_primary_weight,
@@ -34,6 +38,9 @@ __all__ = [
     "make_config",
     "build_parser",
     "build_optimizer",
+    "optimizer_group_lrs",
+    "dense_reference_config",
+    "initialize_token_routed_from_dense_reference",
     "save_checkpoint",
     "load_checkpoint",
     "evaluate",
