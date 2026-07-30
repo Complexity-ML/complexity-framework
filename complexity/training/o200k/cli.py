@@ -220,6 +220,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-k", type=int, default=2)
     parser.add_argument("--top-k-primary-weight", type=float, default=0.5)
     parser.add_argument(
+        "--learn-hash-pair-gates",
+        action="store_true",
+        help=(
+            "Learn one mixture scalar for each fixed unordered token-ID hash "
+            "pair. Routing remains deterministic and cacheable."
+        ),
+    )
+    parser.add_argument(
+        "--hash-pair-gate-init",
+        type=float,
+        default=0.5,
+        help=(
+            "Initial expert-a weight for learned hash-pair gates. The default "
+            "0.5 exactly preserves equal top-2 routing at initialization."
+        ),
+    )
+    parser.add_argument(
         "--top-k-primary-weight-final",
         type=float,
         default=0.85,

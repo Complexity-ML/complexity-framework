@@ -201,6 +201,7 @@ if HAS_TRITON:
         block_offsets_ptr,
         expert_offsets_ptr,
         sorted_indices_ptr,
+        inverse_indices_ptr,
         total_tokens: tl.constexpr,
         vocab_size: tl.constexpr,
         num_experts: tl.constexpr,
@@ -253,6 +254,271 @@ if HAS_TRITON:
                 assignment_indices,
                 mask=match,
             )
+            tl.store(
+                inverse_indices_ptr + assignment_indices,
+                destinations,
+                mask=match,
+            )
+
+    @triton.jit
+    def _pair_hash_reduce_kernel(
+        sorted_values_ptr,
+        inverse_indices_ptr,
+        output_ptr,
+        token_count: tl.constexpr,
+        feature_count: tl.constexpr,
+        stride_s_row,
+        stride_s_col,
+        stride_o_row,
+        stride_o_col,
+        SCALE: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Reduce two expert-sorted hash assignments into token order."""
+
+        linear = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        total = token_count * feature_count
+        mask = linear < total
+        token_rows = linear // feature_count
+        feature_cols = linear % feature_count
+        primary_rows = tl.load(
+            inverse_indices_ptr + token_rows,
+            mask=mask,
+            other=0,
+        )
+        secondary_rows = tl.load(
+            inverse_indices_ptr + token_count + token_rows,
+            mask=mask,
+            other=0,
+        )
+        primary = tl.load(
+            sorted_values_ptr
+            + primary_rows * stride_s_row
+            + feature_cols * stride_s_col,
+            mask=mask,
+            other=0.0,
+        )
+        secondary = tl.load(
+            sorted_values_ptr
+            + secondary_rows * stride_s_row
+            + feature_cols * stride_s_col,
+            mask=mask,
+            other=0.0,
+        )
+        tl.store(
+            output_ptr
+            + token_rows * stride_o_row
+            + feature_cols * stride_o_col,
+            (primary + secondary) * SCALE,
+            mask=mask,
+        )
+
+    @triton.jit
+    def _pair_hash_expand_kernel(
+        token_values_ptr,
+        sorted_indices_ptr,
+        output_ptr,
+        token_count: tl.constexpr,
+        feature_count: tl.constexpr,
+        stride_t_row,
+        stride_t_col,
+        stride_o_row,
+        stride_o_col,
+        SCALE: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Expand token-ordered values into expert-sorted assignment order."""
+
+        linear = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        assignment_count = 2 * token_count
+        total = assignment_count * feature_count
+        mask = linear < total
+        sorted_rows = linear // feature_count
+        feature_cols = linear % feature_count
+        assignment_rows = tl.load(
+            sorted_indices_ptr + sorted_rows,
+            mask=mask,
+            other=0,
+        )
+        token_rows = assignment_rows % token_count
+        values = tl.load(
+            token_values_ptr
+            + token_rows * stride_t_row
+            + feature_cols * stride_t_col,
+            mask=mask,
+            other=0.0,
+        )
+        tl.store(
+            output_ptr
+            + sorted_rows * stride_o_row
+            + feature_cols * stride_o_col,
+            values * SCALE,
+            mask=mask,
+        )
+
+    @triton.jit
+    def _pair_hash_weighted_reduce_kernel(
+        sorted_values_ptr,
+        inverse_indices_ptr,
+        primary_weights_ptr,
+        output_ptr,
+        token_count: tl.constexpr,
+        feature_count: tl.constexpr,
+        stride_s_row,
+        stride_s_col,
+        stride_o_row,
+        stride_o_col,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Reduce two hash routes with one learned weight per token."""
+
+        linear = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        total = token_count * feature_count
+        mask = linear < total
+        token_rows = linear // feature_count
+        feature_cols = linear % feature_count
+        primary_rows = tl.load(
+            inverse_indices_ptr + token_rows,
+            mask=mask,
+            other=0,
+        )
+        secondary_rows = tl.load(
+            inverse_indices_ptr + token_count + token_rows,
+            mask=mask,
+            other=0,
+        )
+        primary = tl.load(
+            sorted_values_ptr
+            + primary_rows * stride_s_row
+            + feature_cols * stride_s_col,
+            mask=mask,
+            other=0.0,
+        )
+        secondary = tl.load(
+            sorted_values_ptr
+            + secondary_rows * stride_s_row
+            + feature_cols * stride_s_col,
+            mask=mask,
+            other=0.0,
+        )
+        primary_weight = tl.load(
+            primary_weights_ptr + token_rows,
+            mask=mask,
+            other=0.5,
+        ).to(tl.float32)
+        output = (
+            primary.to(tl.float32) * primary_weight
+            + secondary.to(tl.float32) * (1.0 - primary_weight)
+        )
+        tl.store(
+            output_ptr
+            + token_rows * stride_o_row
+            + feature_cols * stride_o_col,
+            output,
+            mask=mask,
+        )
+
+    @triton.jit
+    def _pair_hash_weighted_expand_kernel(
+        token_values_ptr,
+        sorted_indices_ptr,
+        primary_weights_ptr,
+        output_ptr,
+        token_count: tl.constexpr,
+        feature_count: tl.constexpr,
+        stride_t_row,
+        stride_t_col,
+        stride_o_row,
+        stride_o_col,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Backpropagate through the weighted hash route reduction."""
+
+        linear = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        assignment_count = 2 * token_count
+        total = assignment_count * feature_count
+        mask = linear < total
+        sorted_rows = linear // feature_count
+        feature_cols = linear % feature_count
+        assignment_rows = tl.load(
+            sorted_indices_ptr + sorted_rows,
+            mask=mask,
+            other=0,
+        )
+        token_rows = assignment_rows % token_count
+        primary_weight = tl.load(
+            primary_weights_ptr + token_rows,
+            mask=mask,
+            other=0.5,
+        ).to(tl.float32)
+        route_weight = tl.where(
+            assignment_rows < token_count,
+            primary_weight,
+            1.0 - primary_weight,
+        )
+        values = tl.load(
+            token_values_ptr
+            + token_rows * stride_t_row
+            + feature_cols * stride_t_col,
+            mask=mask,
+            other=0.0,
+        )
+        tl.store(
+            output_ptr
+            + sorted_rows * stride_o_row
+            + feature_cols * stride_o_col,
+            values.to(tl.float32) * route_weight,
+            mask=mask,
+        )
+
+    @triton.jit
+    def _pair_hash_weight_grad_kernel(
+        sorted_values_ptr,
+        inverse_indices_ptr,
+        grad_output_ptr,
+        grad_weights_ptr,
+        token_count: tl.constexpr,
+        feature_count: tl.constexpr,
+        stride_s_row,
+        stride_s_col,
+        stride_g_row,
+        stride_g_col,
+        BLOCK_FEATURES: tl.constexpr,
+    ):
+        """Compute dL/d(primary_weight) for each token."""
+
+        token_row = tl.program_id(0)
+        feature_cols = tl.arange(0, BLOCK_FEATURES)
+        feature_mask = feature_cols < feature_count
+        primary_row = tl.load(inverse_indices_ptr + token_row)
+        secondary_row = tl.load(
+            inverse_indices_ptr + token_count + token_row
+        )
+        primary = tl.load(
+            sorted_values_ptr
+            + primary_row * stride_s_row
+            + feature_cols * stride_s_col,
+            mask=feature_mask,
+            other=0.0,
+        ).to(tl.float32)
+        secondary = tl.load(
+            sorted_values_ptr
+            + secondary_row * stride_s_row
+            + feature_cols * stride_s_col,
+            mask=feature_mask,
+            other=0.0,
+        ).to(tl.float32)
+        grad = tl.load(
+            grad_output_ptr
+            + token_row * stride_g_row
+            + feature_cols * stride_g_col,
+            mask=feature_mask,
+            other=0.0,
+        ).to(tl.float32)
+        tl.store(
+            grad_weights_ptr + token_row,
+            tl.sum(grad * (primary - secondary), axis=0),
+        )
 
     # Autotune configs cover the MoE shapes we actually run:
     #   hidden ∈ {640, 1024}, expert_inter ∈ {448, 502, 2008}, shared_inter ∈ {..., 2008}
@@ -383,6 +649,105 @@ if HAS_TRITON:
         tl.store(w_ptrs, acc.to(grad_w_ptr.dtype.element_ty),
                  mask=n_mask[:, None] & o_mask[None, :])
 
+    @triton.autotune(
+        configs=_CGGR_GRAD_W_CONFIGS,
+        key=["in_dim", "out_dim"],
+    )
+    @triton.jit
+    def _hash_cggr_grad_w_kernel(
+        tokens_ptr,
+        sorted_indices_ptr,
+        grad_out_ptr,
+        offsets_ptr,
+        grad_w_ptr,
+        source_rows,
+        in_dim,
+        out_dim,
+        stride_x_row,
+        stride_x_col,
+        stride_g_row,
+        stride_g_col,
+        stride_w_exp,
+        stride_w_in,
+        stride_w_out,
+        BLOCK_M: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+        BLOCK_O: tl.constexpr,
+    ):
+        """CGGR weight gradient with hash-native indirect token reads."""
+
+        pid_n = tl.program_id(0)
+        pid_o = tl.program_id(1)
+        pid_e = tl.program_id(2)
+        expert_start = tl.load(offsets_ptr + pid_e)
+        expert_end = tl.load(offsets_ptr + pid_e + 1)
+
+        n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+        o_offs = pid_o * BLOCK_O + tl.arange(0, BLOCK_O)
+        n_mask = n_offs < in_dim
+        o_mask = o_offs < out_dim
+
+        if expert_end == expert_start:
+            w_ptrs = (
+                grad_w_ptr
+                + pid_e * stride_w_exp
+                + n_offs[:, None] * stride_w_in
+                + o_offs[None, :] * stride_w_out
+            )
+            tl.store(
+                w_ptrs,
+                tl.zeros(
+                    [BLOCK_N, BLOCK_O],
+                    dtype=grad_w_ptr.dtype.element_ty,
+                ),
+                mask=n_mask[:, None] & o_mask[None, :],
+            )
+            return
+
+        acc = tl.zeros([BLOCK_N, BLOCK_O], dtype=tl.float32)
+        for m_start in range(expert_start, expert_end, BLOCK_M):
+            sorted_rows = m_start + tl.arange(0, BLOCK_M)
+            m_mask = sorted_rows < expert_end
+            assignment_rows = tl.load(
+                sorted_indices_ptr + sorted_rows,
+                mask=m_mask,
+                other=0,
+            )
+            source_indices = assignment_rows % source_rows
+            x_ptrs = (
+                tokens_ptr
+                + source_indices[:, None] * stride_x_row
+                + n_offs[None, :] * stride_x_col
+            )
+            g_ptrs = (
+                grad_out_ptr
+                + sorted_rows[:, None] * stride_g_row
+                + o_offs[None, :] * stride_g_col
+            )
+            x_blk = tl.load(
+                x_ptrs,
+                mask=m_mask[:, None] & n_mask[None, :],
+                other=0.0,
+            )
+            g_blk = tl.load(
+                g_ptrs,
+                mask=m_mask[:, None] & o_mask[None, :],
+                other=0.0,
+            )
+            acc += tl.dot(tl.trans(x_blk), g_blk)
+
+        w_ptrs = (
+            grad_w_ptr
+            + pid_e * stride_w_exp
+            + n_offs[:, None] * stride_w_in
+            + o_offs[None, :] * stride_w_out
+        )
+        tl.store(
+            w_ptrs,
+            acc.to(grad_w_ptr.dtype.element_ty),
+            mask=n_mask[:, None] & o_mask[None, :],
+        )
+
 
     def cggr_grad_w_triton(
         sorted_x: torch.Tensor,       # [T, in_dim]
@@ -409,6 +774,48 @@ if HAS_TRITON:
             grad_W.stride(0), grad_W.stride(1), grad_W.stride(2),
         )
         return grad_W
+
+    def hash_cggr_grad_w_triton(
+        tokens: torch.Tensor,
+        sorted_indices: torch.Tensor,
+        grad_output: torch.Tensor,
+        expert_offsets: torch.Tensor,
+        num_experts: int,
+    ) -> torch.Tensor:
+        """Compute CGGR weight gradients without materializing sorted input."""
+
+        source_rows, in_dim = tokens.shape
+        out_dim = grad_output.shape[1]
+        grad_w = torch.empty(
+            num_experts,
+            in_dim,
+            out_dim,
+            device=tokens.device,
+            dtype=tokens.dtype,
+        )
+        grid = lambda META: (
+            triton.cdiv(in_dim, META["BLOCK_N"]),
+            triton.cdiv(out_dim, META["BLOCK_O"]),
+            num_experts,
+        )
+        _hash_cggr_grad_w_kernel[grid](
+            tokens,
+            sorted_indices,
+            grad_output,
+            expert_offsets,
+            grad_w,
+            source_rows,
+            in_dim,
+            out_dim,
+            tokens.stride(0),
+            tokens.stride(1),
+            grad_output.stride(0),
+            grad_output.stride(1),
+            grad_w.stride(0),
+            grad_w.stride(1),
+            grad_w.stride(2),
+        )
+        return grad_w
 
 
     @triton.autotune(configs=_CGGR_CONFIGS, key=["in_dim", "out_dim"])
@@ -486,6 +893,93 @@ if HAS_TRITON:
         tl.store(o_ptrs, acc.to(output_ptr.dtype.element_ty),
                  mask=token_mask[:, None] & out_mask[None, :])
 
+    @triton.autotune(configs=_CGGR_CONFIGS, key=["in_dim", "out_dim"])
+    @triton.jit
+    def _hash_cggr_grouped_gemm_kernel(
+        tokens_ptr,
+        sorted_indices_ptr,
+        weights_ptr,
+        offsets_ptr,
+        output_ptr,
+        source_rows,
+        in_dim,
+        out_dim,
+        num_experts,
+        total_assignments,
+        stride_t_row,
+        stride_t_col,
+        stride_w_exp,
+        stride_w_in,
+        stride_w_out,
+        stride_o_row,
+        stride_o_col,
+        BLOCK_M: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+        BLOCK_K: tl.constexpr,
+    ):
+        """CGGR projection reading token rows through the compact hash order."""
+
+        pid_m = tl.program_id(0)
+        pid_n = tl.program_id(1)
+        pid_expert = tl.program_id(2)
+        expert_start = tl.load(offsets_ptr + pid_expert)
+        expert_end = tl.load(offsets_ptr + pid_expert + 1)
+        if expert_end == expert_start:
+            return
+
+        sorted_start = expert_start + pid_m * BLOCK_M
+        if sorted_start >= expert_end:
+            return
+
+        sorted_rows = sorted_start + tl.arange(0, BLOCK_M)
+        row_mask = sorted_rows < expert_end
+        assignment_rows = tl.load(
+            sorted_indices_ptr + sorted_rows,
+            mask=row_mask,
+            other=0,
+        )
+        source_indices = assignment_rows % source_rows
+        out_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+        out_mask = out_offs < out_dim
+        acc = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+
+        for k in range(0, in_dim, BLOCK_K):
+            k_offs = k + tl.arange(0, BLOCK_K)
+            k_mask = k_offs < in_dim
+            token_ptrs = (
+                tokens_ptr
+                + source_indices[:, None] * stride_t_row
+                + k_offs[None, :] * stride_t_col
+            )
+            token_block = tl.load(
+                token_ptrs,
+                mask=row_mask[:, None] & k_mask[None, :],
+                other=0.0,
+            )
+            weight_ptrs = (
+                weights_ptr
+                + pid_expert * stride_w_exp
+                + k_offs[:, None] * stride_w_in
+                + out_offs[None, :] * stride_w_out
+            )
+            weight_block = tl.load(
+                weight_ptrs,
+                mask=k_mask[:, None] & out_mask[None, :],
+                other=0.0,
+            )
+            acc += tl.dot(token_block, weight_block)
+
+        output_ptrs = (
+            output_ptr
+            + sorted_rows[:, None] * stride_o_row
+            + out_offs[None, :] * stride_o_col
+        )
+        tl.store(
+            output_ptrs,
+            acc.to(output_ptr.dtype.element_ty),
+            mask=row_mask[:, None] & out_mask[None, :],
+        )
+
 
     @triton.jit
     def _fused_swiglu_kernel(
@@ -552,6 +1046,221 @@ if HAS_TRITON:
         )
 
         return output
+
+    def hash_cggr_grouped_gemm_triton(
+        tokens: torch.Tensor,
+        sorted_indices: torch.Tensor,
+        expert_weights: torch.Tensor,
+        expert_offsets: torch.Tensor,
+    ) -> torch.Tensor:
+        """Grouped GEMM over hash assignments without a sorted-token copy."""
+
+        source_rows, in_dim = tokens.shape
+        total_assignments = int(sorted_indices.numel())
+        num_experts, _, out_dim = expert_weights.shape
+        output = torch.empty(
+            total_assignments,
+            out_dim,
+            device=tokens.device,
+            dtype=tokens.dtype,
+        )
+        grid = lambda META: (
+            triton.cdiv(total_assignments, META["BLOCK_M"]),
+            triton.cdiv(out_dim, META["BLOCK_N"]),
+            num_experts,
+        )
+        _hash_cggr_grouped_gemm_kernel[grid](
+            tokens,
+            sorted_indices,
+            expert_weights,
+            expert_offsets,
+            output,
+            source_rows,
+            in_dim,
+            out_dim,
+            num_experts,
+            total_assignments,
+            tokens.stride(0),
+            tokens.stride(1),
+            expert_weights.stride(0),
+            expert_weights.stride(1),
+            expert_weights.stride(2),
+            output.stride(0),
+            output.stride(1),
+        )
+        return output
+
+    def pair_hash_reduce_triton(
+        sorted_values: torch.Tensor,
+        inverse_indices: torch.Tensor,
+        token_count: int,
+        *,
+        scale: float,
+    ) -> torch.Tensor:
+        """Reduce the two sorted hash routes directly into token order."""
+
+        feature_count = int(sorted_values.shape[1])
+        output = torch.empty(
+            token_count,
+            feature_count,
+            device=sorted_values.device,
+            dtype=sorted_values.dtype,
+        )
+        block_size = 256
+        total = token_count * feature_count
+        _pair_hash_reduce_kernel[
+            (triton.cdiv(total, block_size),)
+        ](
+            sorted_values,
+            inverse_indices,
+            output,
+            token_count=token_count,
+            feature_count=feature_count,
+            stride_s_row=sorted_values.stride(0),
+            stride_s_col=sorted_values.stride(1),
+            stride_o_row=output.stride(0),
+            stride_o_col=output.stride(1),
+            SCALE=float(scale),
+            BLOCK_SIZE=block_size,
+        )
+        return output
+
+    def pair_hash_expand_triton(
+        token_values: torch.Tensor,
+        sorted_indices: torch.Tensor,
+        token_count: int,
+        *,
+        scale: float,
+    ) -> torch.Tensor:
+        """Expand token rows directly into sorted top-2 assignment order."""
+
+        feature_count = int(token_values.shape[1])
+        output = torch.empty(
+            2 * token_count,
+            feature_count,
+            device=token_values.device,
+            dtype=token_values.dtype,
+        )
+        block_size = 256
+        total = 2 * token_count * feature_count
+        _pair_hash_expand_kernel[
+            (triton.cdiv(total, block_size),)
+        ](
+            token_values,
+            sorted_indices,
+            output,
+            token_count=token_count,
+            feature_count=feature_count,
+            stride_t_row=token_values.stride(0),
+            stride_t_col=token_values.stride(1),
+            stride_o_row=output.stride(0),
+            stride_o_col=output.stride(1),
+            SCALE=float(scale),
+            BLOCK_SIZE=block_size,
+        )
+        return output
+
+    def pair_hash_weighted_reduce_triton(
+        sorted_values: torch.Tensor,
+        inverse_indices: torch.Tensor,
+        primary_weights: torch.Tensor,
+        token_count: int,
+    ) -> torch.Tensor:
+        """Reduce sorted routes with token-specific primary weights."""
+
+        feature_count = int(sorted_values.shape[1])
+        output = torch.empty(
+            token_count,
+            feature_count,
+            device=sorted_values.device,
+            dtype=sorted_values.dtype,
+        )
+        block_size = 256
+        total = token_count * feature_count
+        _pair_hash_weighted_reduce_kernel[
+            (triton.cdiv(total, block_size),)
+        ](
+            sorted_values,
+            inverse_indices,
+            primary_weights,
+            output,
+            token_count=token_count,
+            feature_count=feature_count,
+            stride_s_row=sorted_values.stride(0),
+            stride_s_col=sorted_values.stride(1),
+            stride_o_row=output.stride(0),
+            stride_o_col=output.stride(1),
+            BLOCK_SIZE=block_size,
+        )
+        return output
+
+    def pair_hash_weighted_expand_triton(
+        token_values: torch.Tensor,
+        sorted_indices: torch.Tensor,
+        primary_weights: torch.Tensor,
+        token_count: int,
+    ) -> torch.Tensor:
+        """Expand token gradients with token-specific route weights."""
+
+        feature_count = int(token_values.shape[1])
+        output = torch.empty(
+            2 * token_count,
+            feature_count,
+            device=token_values.device,
+            dtype=token_values.dtype,
+        )
+        block_size = 256
+        total = 2 * token_count * feature_count
+        _pair_hash_weighted_expand_kernel[
+            (triton.cdiv(total, block_size),)
+        ](
+            token_values,
+            sorted_indices,
+            primary_weights,
+            output,
+            token_count=token_count,
+            feature_count=feature_count,
+            stride_t_row=token_values.stride(0),
+            stride_t_col=token_values.stride(1),
+            stride_o_row=output.stride(0),
+            stride_o_col=output.stride(1),
+            BLOCK_SIZE=block_size,
+        )
+        return output
+
+    def pair_hash_weight_grad_triton(
+        sorted_values: torch.Tensor,
+        inverse_indices: torch.Tensor,
+        grad_output: torch.Tensor,
+        token_count: int,
+    ) -> torch.Tensor:
+        """Compute gradients for learned hash-pair mixture weights."""
+
+        feature_count = int(sorted_values.shape[1])
+        block_features = triton.next_power_of_2(feature_count)
+        if block_features > 65536:
+            raise ValueError(
+                "hash-pair weight gradients support at most 65,536 features"
+            )
+        grad_weights = torch.empty(
+            token_count,
+            device=sorted_values.device,
+            dtype=torch.float32,
+        )
+        _pair_hash_weight_grad_kernel[(token_count,)](
+            sorted_values,
+            inverse_indices,
+            grad_output,
+            grad_weights,
+            token_count=token_count,
+            feature_count=feature_count,
+            stride_s_row=sorted_values.stride(0),
+            stride_s_col=sorted_values.stride(1),
+            stride_g_row=grad_output.stride(0),
+            stride_g_col=grad_output.stride(1),
+            BLOCK_FEATURES=block_features,
+        )
+        return grad_weights
 
 
     def fused_swiglu_triton(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
@@ -624,6 +1333,172 @@ if HAS_TRITON:
 
             return grad_x, grad_W, None  # offsets is non-differentiable
 
+    class HashCGGRGroupedGEMM(torch.autograd.Function):
+        """Autograd CGGR projection over compact hash assignments.
+
+        Forward reads the original token matrix indirectly and therefore never
+        creates the duplicated ``[2*N, hidden]`` sorted input. Backward reuses
+        the inverse assignment to sum the two route gradients per token and
+        computes weight gradients through the same indirect order.
+        """
+
+        @staticmethod
+        def forward(
+            ctx,
+            tokens: torch.Tensor,
+            expert_weights: torch.Tensor,
+            expert_offsets: torch.Tensor,
+            sorted_indices: torch.Tensor,
+            inverse_indices: torch.Tensor,
+        ) -> torch.Tensor:
+            output = hash_cggr_grouped_gemm_triton(
+                tokens,
+                sorted_indices,
+                expert_weights,
+                expert_offsets,
+            )
+            ctx.save_for_backward(
+                tokens,
+                expert_weights,
+                expert_offsets,
+                sorted_indices,
+                inverse_indices,
+            )
+            return output
+
+        @staticmethod
+        def backward(ctx, grad_output: torch.Tensor):
+            (
+                tokens,
+                expert_weights,
+                expert_offsets,
+                sorted_indices,
+                inverse_indices,
+            ) = ctx.saved_tensors
+            num_experts = int(expert_weights.shape[0])
+            grad_output = grad_output.contiguous()
+            grad_tokens = None
+            grad_weights = None
+
+            if ctx.needs_input_grad[0]:
+                weights_t = expert_weights.transpose(-2, -1).contiguous()
+                sorted_grad_tokens = cggr_grouped_gemm_triton(
+                    grad_output,
+                    weights_t,
+                    expert_offsets,
+                )
+                grad_tokens = pair_hash_reduce_triton(
+                    sorted_grad_tokens,
+                    inverse_indices,
+                    int(tokens.shape[0]),
+                    scale=1.0,
+                )
+
+            if ctx.needs_input_grad[1]:
+                grad_weights = hash_cggr_grad_w_triton(
+                    tokens,
+                    sorted_indices,
+                    grad_output,
+                    expert_offsets,
+                    num_experts,
+                )
+
+            return (
+                grad_tokens,
+                grad_weights,
+                None,
+                None,
+                None,
+            )
+
+    class PairHashReduce(torch.autograd.Function):
+        """Fuse hash unsort and equal top-2 reduction."""
+
+        @staticmethod
+        def forward(
+            ctx,
+            sorted_values: torch.Tensor,
+            sorted_indices: torch.Tensor,
+            inverse_indices: torch.Tensor,
+            token_count: int,
+            scale: float,
+        ) -> torch.Tensor:
+            ctx.token_count = int(token_count)
+            ctx.scale = float(scale)
+            ctx.save_for_backward(sorted_indices)
+            return pair_hash_reduce_triton(
+                sorted_values,
+                inverse_indices,
+                ctx.token_count,
+                scale=ctx.scale,
+            )
+
+        @staticmethod
+        def backward(ctx, grad_output: torch.Tensor):
+            (sorted_indices,) = ctx.saved_tensors
+            grad_sorted = pair_hash_expand_triton(
+                grad_output.contiguous(),
+                sorted_indices,
+                ctx.token_count,
+                scale=ctx.scale,
+            )
+            return grad_sorted, None, None, None, None
+
+    class PairHashWeightedReduce(torch.autograd.Function):
+        """Fuse hash unsort with a learned deterministic pair mixture."""
+
+        @staticmethod
+        def forward(
+            ctx,
+            sorted_values: torch.Tensor,
+            sorted_indices: torch.Tensor,
+            inverse_indices: torch.Tensor,
+            primary_weights: torch.Tensor,
+            token_count: int,
+        ) -> torch.Tensor:
+            ctx.token_count = int(token_count)
+            ctx.save_for_backward(
+                sorted_values,
+                sorted_indices,
+                inverse_indices,
+                primary_weights,
+            )
+            return pair_hash_weighted_reduce_triton(
+                sorted_values,
+                inverse_indices,
+                primary_weights,
+                ctx.token_count,
+            )
+
+        @staticmethod
+        def backward(ctx, grad_output: torch.Tensor):
+            (
+                sorted_values,
+                sorted_indices,
+                inverse_indices,
+                primary_weights,
+            ) = ctx.saved_tensors
+            grad_output = grad_output.contiguous()
+            grad_sorted = pair_hash_weighted_expand_triton(
+                grad_output,
+                sorted_indices,
+                primary_weights,
+                ctx.token_count,
+            )
+            grad_primary_weights = pair_hash_weight_grad_triton(
+                sorted_values,
+                inverse_indices,
+                grad_output,
+                ctx.token_count,
+            )
+            return (
+                grad_sorted,
+                None,
+                None,
+                grad_primary_weights,
+                None,
+            )
+
 
     def cggr_grouped_gemm_autograd(
         sorted_x: torch.Tensor,
@@ -633,6 +1508,58 @@ if HAS_TRITON:
         """Autograd-aware entry point. Use this instead of cggr_grouped_gemm_triton
         whenever the call may be inside a training graph."""
         return CGGRGroupedGEMM.apply(sorted_x, expert_weights, expert_offsets)
+
+    def hash_cggr_grouped_gemm_autograd(
+        tokens: torch.Tensor,
+        expert_weights: torch.Tensor,
+        expert_offsets: torch.Tensor,
+        sorted_indices: torch.Tensor,
+        inverse_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """Autograd-aware hash-native grouped projection."""
+
+        return HashCGGRGroupedGEMM.apply(
+            tokens,
+            expert_weights,
+            expert_offsets,
+            sorted_indices,
+            inverse_indices,
+        )
+
+    def pair_hash_reduce_autograd(
+        sorted_values: torch.Tensor,
+        sorted_indices: torch.Tensor,
+        inverse_indices: torch.Tensor,
+        token_count: int,
+        *,
+        scale: float,
+    ) -> torch.Tensor:
+        """Autograd-aware hash unsort and route reduction."""
+
+        return PairHashReduce.apply(
+            sorted_values,
+            sorted_indices,
+            inverse_indices,
+            int(token_count),
+            float(scale),
+        )
+
+    def pair_hash_weighted_reduce_autograd(
+        sorted_values: torch.Tensor,
+        sorted_indices: torch.Tensor,
+        inverse_indices: torch.Tensor,
+        primary_weights: torch.Tensor,
+        token_count: int,
+    ) -> torch.Tensor:
+        """Autograd-aware learned hash-pair reduction."""
+
+        return PairHashWeightedReduce.apply(
+            sorted_values,
+            sorted_indices,
+            inverse_indices,
+            primary_weights,
+            int(token_count),
+        )
 
 else:
     # PyTorch fallback when Triton is not available
@@ -659,6 +1586,68 @@ else:
         return grouped_gemm_pytorch(
             sorted_x, expert_weights, expert_offsets,
             torch.diff(expert_offsets),
+        )
+
+    def hash_cggr_grouped_gemm_autograd(
+        tokens: torch.Tensor,
+        expert_weights: torch.Tensor,
+        expert_offsets: torch.Tensor,
+        sorted_indices: torch.Tensor,
+        inverse_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """PyTorch reference for the hash-native grouped projection."""
+
+        del inverse_indices
+        source_rows = int(tokens.shape[0])
+        sorted_tokens = tokens[
+            sorted_indices.remainder(source_rows).long()
+        ]
+        return grouped_gemm_pytorch(
+            sorted_tokens,
+            expert_weights,
+            expert_offsets,
+            torch.diff(expert_offsets),
+        )
+
+    def pair_hash_reduce_autograd(
+        sorted_values: torch.Tensor,
+        sorted_indices: torch.Tensor,
+        inverse_indices: torch.Tensor,
+        token_count: int,
+        *,
+        scale: float,
+    ) -> torch.Tensor:
+        """PyTorch reference for fused hash unsort and top-2 reduction."""
+
+        del sorted_indices
+        primary = sorted_values[
+            inverse_indices[:token_count].long()
+        ]
+        secondary = sorted_values[
+            inverse_indices[token_count : 2 * token_count].long()
+        ]
+        return (primary + secondary) * float(scale)
+
+    def pair_hash_weighted_reduce_autograd(
+        sorted_values: torch.Tensor,
+        sorted_indices: torch.Tensor,
+        inverse_indices: torch.Tensor,
+        primary_weights: torch.Tensor,
+        token_count: int,
+    ) -> torch.Tensor:
+        """PyTorch reference for learned hash-pair route reduction."""
+
+        del sorted_indices
+        primary = sorted_values[
+            inverse_indices[:token_count].long()
+        ]
+        secondary = sorted_values[
+            inverse_indices[token_count : 2 * token_count].long()
+        ]
+        primary_weights = primary_weights.to(primary.dtype).unsqueeze(-1)
+        return (
+            primary * primary_weights
+            + secondary * (1.0 - primary_weights)
         )
 
 
@@ -733,13 +1722,17 @@ def sort_pair_hash_by_expert(
     *,
     vocab_size: int,
     num_experts: int,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return_inverse: bool = False,
+) -> Tuple[torch.Tensor, ...]:
     """Counting-partition two hash routes without materializing expert IDs.
 
     Returns assignment indices in ``[0, 2*N)`` where ``[0, N)`` denotes the
     primary route and ``[N, 2*N)`` the secondary route, followed by expert
-    offsets and counts. Unlike ``torch.sort``, work is linear in the number of
-    tokens and the hash decode is fused into both counting/scatter kernels.
+    offsets and counts. With ``return_inverse=True``, the inverse assignment
+    permutation is returned second so subsequent CGGR projections can read and
+    reduce directly without materializing sorted token buffers. Unlike
+    ``torch.sort``, work is linear in the number of tokens and the hash decode
+    is fused into both counting/scatter kernels.
     """
 
     if route_codes.ndim != 1 or int(route_codes.numel()) != int(vocab_size):
@@ -754,7 +1747,7 @@ def sort_pair_hash_by_expert(
     flat_token_ids = token_ids.contiguous().view(-1)
     total_tokens = int(flat_token_ids.numel())
     if total_tokens == 0:
-        return (
+        result = (
             torch.empty(0, dtype=torch.long, device=token_ids.device),
             torch.zeros(
                 num_experts + 1,
@@ -767,6 +1760,9 @@ def sort_pair_hash_by_expert(
                 device=token_ids.device,
             ),
         )
+        if return_inverse:
+            return result[0], result[0].clone(), result[1], result[2]
+        return result
 
     if HAS_TRITON and flat_token_ids.is_cuda:
         if not (route_codes.is_cuda and expert_pairs.is_cuda):
@@ -807,6 +1803,7 @@ def sort_pair_hash_by_expert(
             dtype=torch.long,
             device=token_ids.device,
         )
+        inverse_indices = torch.empty_like(sorted_indices)
         _pair_hash_scatter_kernel[(num_blocks,)](
             flat_token_ids,
             route_codes,
@@ -814,11 +1811,19 @@ def sort_pair_hash_by_expert(
             block_offsets,
             expert_offsets,
             sorted_indices,
+            inverse_indices,
             total_tokens=total_tokens,
             vocab_size=int(vocab_size),
             num_experts=int(num_experts),
             BLOCK_SIZE=block_size,
         )
+        if return_inverse:
+            return (
+                sorted_indices,
+                inverse_indices,
+                expert_offsets,
+                expert_counts,
+            )
         return sorted_indices, expert_offsets, expert_counts
 
     expert_ids = pair_coverage_hash_expert_ids(
@@ -839,6 +1844,19 @@ def sort_pair_hash_by_expert(
     expert_offsets[1:] = torch.cumsum(
         expert_counts, dim=0, dtype=torch.int32
     )
+    if return_inverse:
+        inverse_indices = torch.empty_like(sorted_indices)
+        inverse_indices[sorted_indices] = torch.arange(
+            sorted_indices.numel(),
+            dtype=sorted_indices.dtype,
+            device=sorted_indices.device,
+        )
+        return (
+            sorted_indices,
+            inverse_indices,
+            expert_offsets,
+            expert_counts,
+        )
     return sorted_indices, expert_offsets, expert_counts
 
 

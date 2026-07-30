@@ -160,6 +160,12 @@ def make_config(args) -> ModelConfig:
         ),
         top_k=args.top_k,
         top_k_primary_weight=args.top_k_primary_weight,
+        learn_hash_pair_gates=bool(
+            getattr(args, "learn_hash_pair_gates", False)
+        ),
+        hash_pair_gate_init=float(
+            getattr(args, "hash_pair_gate_init", 0.5)
+        ),
         use_custom_kernels=getattr(args, "use_custom_kernels", "auto"),
         use_cggr=getattr(args, "cggr", getattr(args, "use_cggr", "auto")),
         static_expert_capacity=bool(getattr(args, "static_expert_capacity", False)),

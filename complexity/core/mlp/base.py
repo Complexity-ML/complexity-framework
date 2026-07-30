@@ -47,6 +47,8 @@ class MLPConfig:
     routed_output_scale: float = 1.0  # Fixed routed branch multiplier; adds no parameters.
     top_k: int = 1  # Token-Routed top-K deterministic: each token activates K fixed expert routes.
     top_k_primary_weight: Optional[float] = None  # K>1 primary expert blend weight; None keeps the default 0.95.
+    learn_hash_pair_gates: bool = False  # Learn one mixture scalar per fixed unordered hash pair.
+    hash_pair_gate_init: float = 0.5  # Initial expert-a weight; 0.5 exactly reproduces equal top-2 routing.
     layer_idx: int = 0  # Layer index propagated from the block; used for the built-in per-layer routing permutation.
     static_expert_capacity: bool = False  # Fixed capacity for torch.export / pipeline tracing.
     collect_moe_telemetry: bool = False  # Per-layer expert/RMS diagnostics. Off by default for throughput.
@@ -82,6 +84,8 @@ class MLPConfig:
             raise ValueError("top_k cannot exceed num_experts")
         if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
             raise ValueError("top_k_primary_weight must be in [0, 1]")
+        if not 0.0 < self.hash_pair_gate_init < 1.0:
+            raise ValueError("hash_pair_gate_init must be strictly between 0 and 1")
         if self.routing_strategy not in {
             "zipf",
             "modulo",

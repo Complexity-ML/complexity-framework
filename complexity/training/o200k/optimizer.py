@@ -28,7 +28,12 @@ def build_optimizer(args, raw_model):
             if not p.requires_grad:
                 continue
             is_routed_expert = ".mlp." in name and name.endswith(
-                ("gate_proj_w", "up_proj_w", "down_proj_w")
+                (
+                    "gate_proj_w",
+                    "up_proj_w",
+                    "down_proj_w",
+                    "hash_pair_gate_logits",
+                )
             )
             is_shared_expert = ".mlp.shared_" in name
             kind = (

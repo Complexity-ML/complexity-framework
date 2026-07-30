@@ -139,6 +139,11 @@ def token_routed_config_summary(args) -> str:
         f"{1.0 - args.top_k_primary_weight:.2f}",
         f"grad_ckpt={args.grad_ckpt}",
     ]
+    if getattr(args, "learn_hash_pair_gates", False):
+        parts.append(
+            "hash_pair_gates=learned"
+            f"@{getattr(args, 'hash_pair_gate_init', 0.5):.2f}"
+        )
     if args.top_k_primary_weight_final != args.top_k_primary_weight:
         parts.append(f"primary_weight_final={args.top_k_primary_weight_final:.2f}")
     if args.routing_strategy == "lsh_hidden":

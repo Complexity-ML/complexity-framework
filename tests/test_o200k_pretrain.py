@@ -584,6 +584,29 @@ def test_compact_pair_hash_planner_matches_precomputed_routes():
             torch.diff(expert_offsets),
             expert_counts,
         )
+        (
+            inverse_sorted_indices,
+            inverse_indices,
+            inverse_offsets,
+            inverse_counts,
+        ) = sort_pair_hash_by_expert(
+            token_ids,
+            route_codes,
+            expert_pairs,
+            vocab_size=vocab_size,
+            num_experts=4,
+            return_inverse=True,
+        )
+        assert torch.equal(inverse_sorted_indices, sorted_indices)
+        assert torch.equal(inverse_offsets, expert_offsets)
+        assert torch.equal(inverse_counts, expert_counts)
+        assert torch.equal(
+            inverse_sorted_indices[inverse_indices],
+            torch.arange(
+                inverse_sorted_indices.numel(),
+                dtype=inverse_sorted_indices.dtype,
+            ),
+        )
 
     compact_bytes = (
         route_codes.numel() * route_codes.element_size()
@@ -595,7 +618,16 @@ def test_compact_pair_hash_planner_matches_precomputed_routes():
     assert compact_bytes < full_routes_bytes
 
 
-def test_hash_counting_dispatch_matches_pair_dispatch_and_gradients():
+@pytest.mark.parametrize(
+    "routing_strategy",
+    [
+        "token_id_balanced_hash",
+        "token_id_pair_coverage_hash",
+    ],
+)
+def test_hash_counting_dispatch_matches_pair_dispatch_and_gradients(
+    routing_strategy,
+):
     from complexity.core.mlp.base import MLPConfig
     from complexity.core.mlp.token_routed import TokenRoutedMLP
 
@@ -606,7 +638,7 @@ def test_hash_counting_dispatch_matches_pair_dispatch_and_gradients():
         num_experts=4,
         vocab_size=128,
         shared_expert=False,
-        routing_strategy="token_id_pair_coverage_hash",
+        routing_strategy=routing_strategy,
         top_k=2,
         top_k_primary_weight=0.5,
         use_cggr=False,
@@ -662,6 +694,62 @@ def test_hash_counting_dispatch_matches_pair_dispatch_and_gradients():
             atol=1e-5,
             rtol=1e-5,
         ), name
+
+
+def test_hash_pair_gates_preserve_equal_mix_then_learn_without_rerouting():
+    from complexity.core.mlp.base import MLPConfig
+    from complexity.core.mlp.token_routed import TokenRoutedMLP
+
+    torch.manual_seed(29)
+    common = dict(
+        hidden_size=12,
+        intermediate_size=32,
+        num_experts=4,
+        vocab_size=128,
+        shared_expert=False,
+        routing_strategy="token_id_balanced_hash",
+        top_k=2,
+        top_k_primary_weight=0.5,
+        use_cggr=False,
+    )
+    reference = TokenRoutedMLP(MLPConfig(**common))
+    gated = TokenRoutedMLP(
+        MLPConfig(
+            **common,
+            learn_hash_pair_gates=True,
+            hash_pair_gate_init=0.5,
+        )
+    )
+    missing, unexpected = gated.load_state_dict(
+        reference.state_dict(),
+        strict=False,
+    )
+    assert missing == ["hash_pair_gate_logits"]
+    assert unexpected == []
+    assert gated.hash_pair_gate_logits.numel() == 6
+    assert sum(p.numel() for p in gated.parameters()) == (
+        sum(p.numel() for p in reference.parameters()) + 6
+    )
+
+    token_ids = torch.randint(0, 128, (3, 7))
+    hidden = torch.randn(3, 7, 12)
+    original_routes = gated.topk_token_to_expert[:, token_ids].clone()
+    reference_out = reference(hidden, token_ids=token_ids)
+    gated_out = gated(hidden, token_ids=token_ids)
+    assert torch.allclose(gated_out, reference_out, atol=1e-6, rtol=1e-5)
+
+    gated_out.square().mean().backward()
+    assert gated.hash_pair_gate_logits.grad is not None
+    assert gated.hash_pair_gate_logits.grad.abs().sum() > 0
+
+    with torch.no_grad():
+        gated.hash_pair_gate_logits[0] = 1.0
+    changed_out = gated(hidden, token_ids=token_ids)
+    assert not torch.allclose(changed_out, reference_out)
+    assert torch.equal(
+        gated.topk_token_to_expert[:, token_ids],
+        original_routes,
+    )
 
 
 def test_unequal_top2_weights_keep_the_generic_dispatch():

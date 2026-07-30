@@ -117,6 +117,8 @@ class ModelConfig:
     routed_output_scale_last_layer: Optional[float] = None
     top_k: int = 1  # Token-Routed top-K deterministic fixed lookup
     top_k_primary_weight: Optional[float] = None  # K>1 blend weight for primary expert (default: 0.95)
+    learn_hash_pair_gates: bool = False  # Learn one mixture scalar per fixed unordered hash pair
+    hash_pair_gate_init: float = 0.5  # Expert-a weight; 0.5 preserves the equal-route initialization
     static_expert_capacity: bool = False  # Use fixed per-expert dispatch capacity for torch.export / pipeline tracing
     use_custom_kernels: Any = "auto"  # "auto", True, or False. ROCm defaults to PyTorch fallback in auto mode.
     collect_moe_telemetry: bool = False  # Per-layer expert/RMS diagnostics. Disabled by default for throughput.
@@ -288,6 +290,8 @@ class ModelConfig:
             raise ValueError("top_k cannot exceed num_experts")
         if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
             raise ValueError("top_k_primary_weight must be in [0, 1]")
+        if not 0.0 < self.hash_pair_gate_init < 1.0:
+            raise ValueError("hash_pair_gate_init must be strictly between 0 and 1")
         if self.routing_strategy not in {
             "zipf",
             "modulo",
@@ -408,6 +412,8 @@ class ModelConfig:
             "modulo_cyclic",
             "modulo_balanced_secondary",
             "modulo_frequency_balanced_secondary",
+            "token_id_balanced_hash",
+            "token_id_pair_coverage_hash",
             "round_robin",
             "random",
             "lsh_hidden",

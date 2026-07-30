@@ -39,6 +39,9 @@ try:
         sort_pair_hash_by_expert,
         cggr_grouped_gemm_triton,
         cggr_grouped_gemm_autograd,
+        hash_cggr_grouped_gemm_autograd,
+        pair_hash_reduce_autograd,
+        pair_hash_weighted_reduce_autograd,
         grouped_gemm_pytorch,
         fused_swiglu_triton,
         HAS_TRITON,
@@ -47,14 +50,25 @@ try:
 except Exception:
     HAS_CGGR = False
     cggr_grouped_gemm_autograd = None
+    hash_cggr_grouped_gemm_autograd = None
+    pair_hash_reduce_autograd = None
+    pair_hash_weighted_reduce_autograd = None
     try:
         from complexity_cuda.triton_token_routed import (
             pair_coverage_hash_expert_ids,
             sort_pair_hash_by_expert,
+            hash_cggr_grouped_gemm_autograd,
+            pair_hash_reduce_autograd,
+            pair_hash_weighted_reduce_autograd,
+            grouped_gemm_pytorch,
         )
     except Exception:
         pair_coverage_hash_expert_ids = None
         sort_pair_hash_by_expert = None
+        hash_cggr_grouped_gemm_autograd = None
+        pair_hash_reduce_autograd = None
+        pair_hash_weighted_reduce_autograd = None
+        grouped_gemm_pytorch = None
 
     def sort_tokens_by_expert(tokens, expert_ids, num_experts):
         """Pure-PyTorch fallback — stable sort + cumsum offsets.
@@ -382,9 +396,25 @@ class TokenRoutedMLP(MLPBase):
             str(getattr(config, "routing_strategy", "")).lower()
             == "token_id_pair_coverage_hash"
         )
-        if self.has_pair_coverage_hash:
+        self.has_compact_pair_hash = str(
+            getattr(config, "routing_strategy", "")
+        ).lower() in {
+            "token_id_balanced_hash",
+            "token_id_pair_coverage_hash",
+        }
+        self.learn_hash_pair_gates = bool(
+            getattr(config, "learn_hash_pair_gates", False)
+        )
+        if self.learn_hash_pair_gates and (
+            not self.has_compact_pair_hash or self.top_k != 2
+        ):
+            raise ValueError(
+                "learn_hash_pair_gates requires a compact token-ID hash "
+                "routing strategy with top_k=2"
+            )
+        if self.has_compact_pair_hash:
+            pair_count = self.num_experts * (self.num_experts - 1) // 2
             if self.gate_proj_w.is_meta:
-                pair_count = self.num_experts * (self.num_experts - 1) // 2
                 pair_hash_expert_pairs = torch.empty(
                     pair_count, 2, dtype=torch.int32, device="meta"
                 )
@@ -410,6 +440,21 @@ class TokenRoutedMLP(MLPBase):
                 pair_hash_expert_pairs,
                 persistent=True,
             )
+            if self.learn_hash_pair_gates:
+                initial_weight = float(
+                    getattr(config, "hash_pair_gate_init", 0.5)
+                )
+                initial_logit = math.log(
+                    initial_weight / (1.0 - initial_weight)
+                )
+                self.hash_pair_gate_logits = nn.Parameter(
+                    torch.full(
+                        (pair_count,),
+                        initial_logit,
+                        dtype=torch.float32,
+                        device=self.gate_proj_w.device,
+                    )
+                )
 
         # Semantic LSH routing: route the primary (and top-k neighbour) experts
         # on a fixed random-hyperplane hash of the hidden state, not the token
@@ -752,12 +797,18 @@ class TokenRoutedMLP(MLPBase):
         # Look up expert assignment per token
         token_ids_clamped = token_ids.clamp(0, self.vocab_size - 1)
         hash_cggr_candidate = bool(
-            self.has_pair_coverage_hash
+            self.has_compact_pair_hash
             and not self.has_lsh_routing
             and token_ids_clamped.is_cuda
             and HAS_CGGR
             and pair_coverage_hash_expert_ids is not None
             and sort_pair_hash_by_expert is not None
+            and hash_cggr_grouped_gemm_autograd is not None
+            and pair_hash_reduce_autograd is not None
+            and (
+                not self.learn_hash_pair_gates
+                or pair_hash_weighted_reduce_autograd is not None
+            )
         )
         if hash_cggr_candidate:
             # Defer the route entirely: the hash-aware CGGR counting partition
@@ -886,7 +937,7 @@ class TokenRoutedMLP(MLPBase):
             flat_expert_ids = expert_ids.view(-1)
         if use_fused_pair_cggr:
             self.last_dispatch_path = (
-                "top2_hash_cggr"
+                "top2_hash_native_cggr"
                 if use_hash_route_kernel
                 else "top2_pair_cggr"
             )
@@ -905,9 +956,9 @@ class TokenRoutedMLP(MLPBase):
             if use_cggr:
                 if use_fused_pair_cggr and use_hash_route_kernel:
                     logger.info(
-                        "[TokenRoutedMLP] dispatch path = top2_hash_cggr "
-                        "(token-ID hash decoded by Triton, one combined "
-                        "partition, grouped-GEMM)"
+                        "[TokenRoutedMLP] dispatch path = "
+                        "top2_hash_native_cggr (token-ID hash partition, "
+                        "indirect grouped projections, fused route reduction)"
                     )
                 elif use_fused_pair_cggr:
                     logger.info(
@@ -942,6 +993,11 @@ class TokenRoutedMLP(MLPBase):
                 H,
             )
         elif use_fused_pair_cggr:
+            primary_weights = (
+                self._hash_pair_primary_weights(token_ids_clamped.view(-1))
+                if self.learn_hash_pair_gates
+                else None
+            )
             routed_out = self._dispatch_equal_top2_pair_cggr(
                 flat_x,
                 route_expert_ids.view(2, -1),
@@ -949,14 +1005,21 @@ class TokenRoutedMLP(MLPBase):
                 up_w,
                 down_w,
                 H,
+                primary_weights=primary_weights,
             )
         elif use_fused_pair_fallback:
+            primary_weights = (
+                self._hash_pair_primary_weights(token_ids_clamped.view(-1))
+                if self.learn_hash_pair_gates
+                else None
+            )
             routed_out = self._dispatch_equal_top2_pair(
                 flat_x,
                 route_expert_ids.view(2, -1),
                 gate_w,
                 up_w,
                 down_w,
+                primary_weights=primary_weights,
             )
         elif static_dispatch:
             if self.top_k == 1:
@@ -1034,6 +1097,8 @@ class TokenRoutedMLP(MLPBase):
         gate_w: torch.Tensor,
         up_w: torch.Tensor,
         down_w: torch.Tensor,
+        *,
+        primary_weights: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Dispatch an equal-weight top-2 pair with one pass per expert.
 
@@ -1056,10 +1121,23 @@ class TokenRoutedMLP(MLPBase):
             )
 
         routed_out = torch.zeros_like(flat_x)
+        if primary_weights is None:
+            route_weights = torch.full(
+                route_expert_ids.shape,
+                0.5,
+                dtype=flat_x.dtype,
+                device=flat_x.device,
+            )
+        else:
+            route_weights = torch.stack(
+                (primary_weights, 1.0 - primary_weights),
+                dim=0,
+            ).to(flat_x.dtype)
         for expert_idx in range(self.num_experts):
             route_weight = (
-                route_expert_ids == expert_idx
-            ).sum(dim=0).to(flat_x.dtype) * 0.5
+                route_expert_ids.eq(expert_idx).to(flat_x.dtype)
+                * route_weights
+            ).sum(dim=0)
             active = route_weight.ne(0).unsqueeze(-1).to(flat_x.dtype)
             expert_x = flat_x * active
             gate = expert_x @ gate_w[expert_idx]
@@ -1083,6 +1161,7 @@ class TokenRoutedMLP(MLPBase):
         hidden_size: int,
         *,
         use_cggr: bool = True,
+        primary_weights: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Dispatch both equal-weight routes through one grouped batch.
 
@@ -1124,7 +1203,33 @@ class TokenRoutedMLP(MLPBase):
             use_cggr,
             hidden_size,
         )
-        return pair_out.view(2, flat_x.size(0), hidden_size).mean(dim=0)
+        pair_out = pair_out.view(2, flat_x.size(0), hidden_size)
+        if primary_weights is None:
+            return pair_out.mean(dim=0)
+        primary_weights = primary_weights.to(pair_out.dtype).unsqueeze(-1)
+        return (
+            pair_out[0] * primary_weights
+            + pair_out[1] * (1.0 - primary_weights)
+        )
+
+    def _hash_pair_primary_weights(
+        self,
+        flat_token_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return the learned primary weight for each fixed token-ID pair."""
+
+        route_codes = self.pair_hash_route_codes[
+            flat_token_ids.clamp(0, self.vocab_size - 1)
+        ].to(torch.long)
+        pair_indices = route_codes.bitwise_and(0x7)
+        expert_a_weights = torch.sigmoid(
+            self.hash_pair_gate_logits[pair_indices]
+        )
+        return torch.where(
+            route_codes.bitwise_and(0x8).ne(0),
+            1.0 - expert_a_weights,
+            expert_a_weights,
+        )
 
     def _dispatch_equal_top2_hash_cggr(
         self,
@@ -1137,46 +1242,78 @@ class TokenRoutedMLP(MLPBase):
         *,
         use_cggr: bool = True,
     ) -> torch.Tensor:
-        """Decode and counting-partition the pair hash inside CGGR.
+        """Run equal top-2 routing through a fully hash-native CGGR path.
 
-        No ``[2, N]`` expert-ID tensor and no radix sort are created. Two
-        Triton kernels build an expert-contiguous assignment order from the
-        uint8 hash codes; the grouped GEMMs then consume the resulting rows.
+        The hash is counting-partitioned once. Gate/up read the original token
+        matrix indirectly, so no duplicated ``[2*N, hidden]`` sorted input is
+        created. The down projection stays expert-contiguous and a final
+        Triton reduction writes the pair mean directly in token order.
         """
 
         if flat_token_ids.ndim != 1:
             raise ValueError("hash CGGR expects flattened token IDs")
         if flat_token_ids.numel() != flat_x.size(0):
             raise ValueError("token IDs must match the flattened token count")
-        assignment_indices, expert_offsets, expert_counts = (
+        (
+            assignment_indices,
+            inverse_indices,
+            expert_offsets,
+            _expert_counts,
+        ) = (
             sort_pair_hash_by_expert(
                 flat_token_ids,
                 self.pair_hash_route_codes,
                 self.pair_hash_expert_pairs,
                 vocab_size=self.vocab_size,
                 num_experts=self.num_experts,
+                return_inverse=True,
             )
         )
         token_count = flat_x.size(0)
-        source_indices = assignment_indices.remainder(token_count)
-        sorted_x = flat_x[source_indices]
-        pair_layout = flat_x.new_empty(
-            2 * token_count,
-            hidden_size,
-        )
-        pair_out = self._dispatch_sorted(
-            pair_layout,
-            sorted_x,
-            assignment_indices,
-            expert_offsets,
-            expert_counts,
+        gate_out = hash_cggr_grouped_gemm_autograd(
+            flat_x,
             gate_w,
-            up_w,
-            down_w,
-            use_cggr,
-            hidden_size,
+            expert_offsets,
+            assignment_indices,
+            inverse_indices,
         )
-        return pair_out.view(2, token_count, hidden_size).mean(dim=0)
+        up_out = hash_cggr_grouped_gemm_autograd(
+            flat_x,
+            up_w,
+            expert_offsets,
+            assignment_indices,
+            inverse_indices,
+        )
+        intermediate = fused_silu_mul(gate_out, up_out)
+        if use_cggr and cggr_grouped_gemm_autograd is not None:
+            sorted_routed = cggr_grouped_gemm_autograd(
+                intermediate,
+                down_w,
+                expert_offsets,
+            )
+        else:
+            sorted_routed = grouped_gemm_pytorch(
+                intermediate,
+                down_w,
+                expert_offsets,
+                torch.diff(expert_offsets),
+            )
+        if self.learn_hash_pair_gates:
+            primary_weights = self._hash_pair_primary_weights(flat_token_ids)
+            return pair_hash_weighted_reduce_autograd(
+                sorted_routed,
+                assignment_indices,
+                inverse_indices,
+                primary_weights,
+                token_count,
+            )
+        return pair_hash_reduce_autograd(
+            sorted_routed,
+            assignment_indices,
+            inverse_indices,
+            token_count,
+            scale=0.5,
+        )
 
     def _shared_expert_forward(self, flat_x: torch.Tensor) -> torch.Tensor:
         """Run the dense shared expert, optionally chunked over tokens.
