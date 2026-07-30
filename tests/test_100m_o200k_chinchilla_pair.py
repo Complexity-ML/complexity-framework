@@ -19,6 +19,9 @@ BALANCED_SHARED_TR_CONFIG = (
 FREQUENCY_BALANCED_TR_CONFIG = (
     CONFIG_ROOT / "tr_gqa_frequency_balanced_seed42_2b_b200.yaml"
 )
+LOCAL_WINNER_TR_CONFIG = (
+    CONFIG_ROOT / "tr_gqa_local_winner_seed42_2b_b200.yaml"
+)
 
 
 def _load_args(path: Path):
@@ -136,6 +139,29 @@ def test_frequency_balanced_pair_is_exactly_parameter_matched():
     assert routed["expert_initialization"] == "legacy_kaiming"
     assert routed["learn_shared_routed_gates"] is False
     assert routed["max_grad_norm"] == 1.0
+
+
+def test_local_winner_pair_is_exactly_parameter_matched():
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k.profiles import make_config
+
+    counts = []
+    for path in (DENSE_CONFIG, LOCAL_WINNER_TR_CONFIG):
+        args = _load_args(path)
+        with torch.device("meta"):
+            model = ComplexityModel(make_config(args))
+        counts.append(model.num_parameters())
+
+    assert counts == [99_487_680, 99_487_680]
+
+    routed = yaml.safe_load(LOCAL_WINNER_TR_CONFIG.read_text())["run"]
+    assert routed["shared_intermediate_size"] == 1392
+    assert routed["intermediate_size"] == 256
+    assert routed["intermediate_size"] // 4 == 64
+    assert routed["routing_strategy"] == "modulo_balanced_secondary"
+    assert routed["expert_initialization"] == "legacy_kaiming"
+    assert routed["learn_shared_routed_gates"] is False
+    assert routed["max_grad_norm"] == 0.0
 
 
 def test_pair_shares_protocol_and_consumes_two_billion_tokens():
