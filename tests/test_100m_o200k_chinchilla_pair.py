@@ -35,6 +35,9 @@ DEPTH_SCALED_TR_CONFIG = (
 TOKEN_HASH_TR_CONFIG = (
     CONFIG_ROOT / "tr_gqa_token_hash_seed42_2b_b200.yaml"
 )
+EXPERT_LR2_TR_CONFIG = (
+    CONFIG_ROOT / "tr_gqa_expert_lr2_seed42_2b_b200.yaml"
+)
 
 
 def _load_args(path: Path):
@@ -294,6 +297,26 @@ def test_token_hash_pair_is_parameter_matched_and_balanced():
     nonzero_pair_counts = pair_counts[pair_counts > 0]
     assert nonzero_pair_counts.numel() == 12
     assert int(nonzero_pair_counts.max() - nonzero_pair_counts.min()) <= 1
+
+
+def test_expert_lr2_pair_is_parameter_matched():
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k.profiles import make_config
+
+    counts = []
+    for path in (DENSE_CONFIG, EXPERT_LR2_TR_CONFIG):
+        args = _load_args(path)
+        with torch.device("meta"):
+            model = ComplexityModel(make_config(args))
+        counts.append(model.num_parameters())
+
+    assert counts == [99_487_680, 99_487_680]
+
+    routed = yaml.safe_load(EXPERT_LR2_TR_CONFIG.read_text())["run"]
+    assert routed["routing_strategy"] == "modulo_balanced_secondary"
+    assert routed["expert_lr_scale"] == 2.0
+    assert routed["shared_lr_scale"] == 1.0
+    assert routed["routed_output_scale"] == 1.8
 
 
 def test_pair_shares_protocol_and_consumes_two_billion_tokens():

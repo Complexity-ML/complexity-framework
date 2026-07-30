@@ -651,6 +651,8 @@ def test_adamw_optimizer_uses_foreach_for_o200k_runner():
         mu_context_max=2.0,
         optimizer="adamw",
         lr=3e-4,
+        expert_lr_scale=2.0,
+        shared_lr_scale=0.75,
         weight_decay=0.1,
         shared_expert_chunk_tokens=0,
         use_custom_kernels="auto",
@@ -663,6 +665,17 @@ def test_adamw_optimizer_uses_foreach_for_o200k_runner():
     assert isinstance(optimizer, torch.optim.AdamW)
     assert stats["adamw_params"] > 0
     assert stats["adamw_impl"] in {"foreach", "default"}
+    assert stats["adamw_expert_params"] > 0
+    assert stats["adamw_shared_params"] > 0
+    assert stats["expert_lr_scale"] == 2.0
+    assert stats["shared_lr_scale"] == 0.75
+    group_lrs = {
+        group["group_name"]: group["lr"]
+        for group in optimizer.param_groups
+    }
+    assert group_lrs["base"] == pytest.approx(3e-4)
+    assert group_lrs["shared"] == pytest.approx(2.25e-4)
+    assert group_lrs["expert"] == pytest.approx(6e-4)
 
 
 def test_batch_expert_counts_counts_current_batch():

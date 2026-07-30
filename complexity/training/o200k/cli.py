@@ -265,6 +265,7 @@ def build_parser() -> argparse.ArgumentParser:
             "modulo_cyclic",
             "modulo_balanced_secondary",
             "modulo_frequency_balanced_secondary",
+            "token_id_balanced_hash",
             "round_robin",
             "random",
             "lsh_hidden",
@@ -275,7 +276,9 @@ def build_parser() -> argparse.ArgumentParser:
             "cyclic successors and no corpus counts. "
             "modulo_frequency_balanced_secondary reproduces the winning local "
             "pilot: modulo primary plus a training-frequency-balanced secondary. "
-            "zipf and modulo_balanced_secondary are retained for ablations."
+            "token_id_balanced_hash creates layer-specific, exactly balanced "
+            "fixed lookup tables. zipf and modulo_balanced_secondary are "
+            "retained for ablations."
         ),
     )
     parser.add_argument(

@@ -9,15 +9,62 @@ def build_optimizer(args, raw_model):
     """Build AdamW or MuonTR for the o200k TR runner."""
 
     if args.optimizer == "adamw":
-        decay, no_decay = [], []
+        expert_lr_scale = float(getattr(args, "expert_lr_scale", 1.0))
+        shared_lr_scale = float(getattr(args, "shared_lr_scale", 1.0))
+        if expert_lr_scale <= 0.0 or shared_lr_scale <= 0.0:
+            raise ValueError(
+                "expert_lr_scale and shared_lr_scale must be positive"
+            )
+
+        buckets = {
+            ("base", True): [],
+            ("base", False): [],
+            ("shared", True): [],
+            ("shared", False): [],
+            ("expert", True): [],
+            ("expert", False): [],
+        }
         for name, p in raw_model.named_parameters():
             if not p.requires_grad:
                 continue
-            (no_decay if p.ndim < 2 or "bias" in name or "norm" in name else decay).append(p)
-        param_groups = [
-            {"params": decay, "weight_decay": args.weight_decay},
-            {"params": no_decay, "weight_decay": 0.0},
-        ]
+            is_routed_expert = ".mlp." in name and name.endswith(
+                ("gate_proj_w", "up_proj_w", "down_proj_w")
+            )
+            is_shared_expert = ".mlp.shared_" in name
+            kind = (
+                "expert"
+                if is_routed_expert
+                else "shared"
+                if is_shared_expert
+                else "base"
+            )
+            use_decay = not (
+                p.ndim < 2 or "bias" in name or "norm" in name
+            )
+            buckets[(kind, use_decay)].append(p)
+
+        scales = {
+            "base": 1.0,
+            "shared": shared_lr_scale,
+            "expert": expert_lr_scale,
+        }
+        param_groups = []
+        for kind in ("base", "shared", "expert"):
+            for use_decay in (True, False):
+                params = buckets[(kind, use_decay)]
+                if not params:
+                    continue
+                param_groups.append(
+                    {
+                        "params": params,
+                        "lr": args.lr * scales[kind],
+                        "weight_decay": (
+                            args.weight_decay if use_decay else 0.0
+                        ),
+                        "group_name": kind,
+                        "lr_scale": scales[kind],
+                    }
+                )
         kwargs = {
             "lr": args.lr,
             "betas": (0.9, 0.95),
@@ -30,9 +77,22 @@ def build_optimizer(args, raw_model):
             kwargs.pop("foreach", None)
             optimizer = torch.optim.AdamW(param_groups, **kwargs)
             adamw_impl = "default"
+        counts = {
+            kind: sum(
+                p.numel()
+                for use_decay in (True, False)
+                for p in buckets[(kind, use_decay)]
+            )
+            for kind in ("base", "shared", "expert")
+        }
         return optimizer, {
-            "adamw_params": sum(p.numel() for p in decay + no_decay),
+            "adamw_params": sum(counts.values()),
             "adamw_impl": adamw_impl,
+            "adamw_base_params": counts["base"],
+            "adamw_shared_params": counts["shared"],
+            "adamw_expert_params": counts["expert"],
+            "expert_lr_scale": expert_lr_scale,
+            "shared_lr_scale": shared_lr_scale,
         }
 
     if args.optimizer == "muon_tr":

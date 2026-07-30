@@ -397,10 +397,15 @@ def main():
             logger.info(
                 "Optimizer: "
                 f"adamw, lr={args.lr:.2e}, weight_decay={args.weight_decay}, "
-                f"betas=(0.9,0.95), impl={optimizer_stats.get('adamw_impl', 'default')}"
+                f"betas=(0.9,0.95), impl={optimizer_stats.get('adamw_impl', 'default')}, "
+                f"expert_lr_scale={optimizer_stats.get('expert_lr_scale', 1.0):g}, "
+                f"shared_lr_scale={optimizer_stats.get('shared_lr_scale', 1.0):g}"
             )
             logger.info(
-                f"AdamW params: {optimizer_stats['adamw_params'] / 1e6:.1f}M "
+                f"AdamW params: total={optimizer_stats['adamw_params'] / 1e6:.1f}M, "
+                f"base={optimizer_stats.get('adamw_base_params', 0) / 1e6:.1f}M, "
+                f"shared={optimizer_stats.get('adamw_shared_params', 0) / 1e6:.1f}M, "
+                f"expert={optimizer_stats.get('adamw_expert_params', 0) / 1e6:.1f}M "
                 f"impl={optimizer_stats.get('adamw_impl', 'default')}"
             )
     warmup = max(1, int(args.steps * 0.05))
