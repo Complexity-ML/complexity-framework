@@ -140,7 +140,10 @@ def token_routed_config_summary(args) -> str:
 def requires_routing_frequencies(args) -> bool:
     """Return whether the realized MLP consumes a frequency-built route table."""
 
-    return args.mlp_type == "token_routed" and args.routing_strategy == "zipf"
+    return args.mlp_type == "token_routed" and args.routing_strategy in {
+        "zipf",
+        "modulo_frequency_balanced_secondary",
+    }
 
 
 def main():

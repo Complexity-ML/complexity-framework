@@ -219,6 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
             "modulo",
             "modulo_cyclic",
             "modulo_balanced_secondary",
+            "modulo_frequency_balanced_secondary",
             "round_robin",
             "random",
             "lsh_hidden",
@@ -226,8 +227,10 @@ def build_parser() -> argparse.ArgumentParser:
         default="modulo_cyclic",
         help=(
             "Token-Routed strategy. modulo_cyclic uses token_id modulo E plus "
-            "cyclic successors and no corpus counts. zipf and the legacy "
-            "modulo_balanced_secondary name are retained for ablations."
+            "cyclic successors and no corpus counts. "
+            "modulo_frequency_balanced_secondary reproduces the winning local "
+            "pilot: modulo primary plus a training-frequency-balanced secondary. "
+            "zipf and modulo_balanced_secondary are retained for ablations."
         ),
     )
     parser.add_argument(

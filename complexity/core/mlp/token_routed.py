@@ -308,6 +308,7 @@ class TokenRoutedMLP(MLPBase):
             "zipf",
             "modulo",
             "modulo_balanced_secondary",
+            "modulo_frequency_balanced_secondary",
             "lsh_hidden",
         }:
             # zipf without frequencies intentionally falls back to modulo.
@@ -344,6 +345,13 @@ class TokenRoutedMLP(MLPBase):
     def _routing_frequencies(self, vocab_size: int) -> torch.Tensor:
         freqs = getattr(self.config, "token_frequencies", None)
         if freqs is None:
+            if str(getattr(self.config, "routing_strategy", "")).lower() == (
+                "modulo_frequency_balanced_secondary"
+            ):
+                raise ValueError(
+                    "modulo_frequency_balanced_secondary requires token_frequencies "
+                    "from the training partition"
+                )
             return torch.ones(vocab_size, dtype=torch.float32, device="cpu")
         if freqs.numel() != vocab_size:
             raise ValueError(

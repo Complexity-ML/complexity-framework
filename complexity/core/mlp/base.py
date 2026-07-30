@@ -77,13 +77,14 @@ class MLPConfig:
             "modulo",
             "modulo_cyclic",
             "modulo_balanced_secondary",
+            "modulo_frequency_balanced_secondary",
             "round_robin",
             "random",
             "lsh_hidden",
         }:
             raise ValueError(
                 "routing_strategy must be one of modulo_cyclic, zipf, "
-                "round_robin, random, lsh_hidden "
+                "modulo_frequency_balanced_secondary, round_robin, random, lsh_hidden "
                 "(legacy aliases: modulo, modulo_balanced_secondary)"
             )
         if self.lsh_threshold_mode not in {"batch_median", "zero"}:

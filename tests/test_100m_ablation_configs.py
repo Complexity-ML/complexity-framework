@@ -164,6 +164,34 @@ def test_modulo_primary_balanced_secondary_is_distinct_and_balanced():
     )
 
 
+def test_explicit_frequency_balanced_secondary_replays_local_winner():
+    from complexity.core.mlp.base import MLPConfig
+    from complexity.core.mlp.token_routed import TokenRoutedMLP
+
+    freqs = torch.tensor(
+        [100.0, 90.0, 80.0, 70.0, 40.0, 30.0, 20.0, 10.0]
+    )
+
+    def routes(strategy):
+        return TokenRoutedMLP(
+            MLPConfig(
+                hidden_size=8,
+                intermediate_size=16,
+                num_experts=4,
+                vocab_size=8,
+                routing_strategy=strategy,
+                token_frequencies=freqs,
+                top_k=2,
+                shared_expert=False,
+            )
+        ).topk_token_to_expert.cpu()
+
+    assert torch.equal(
+        routes("modulo_frequency_balanced_secondary"),
+        routes("modulo_balanced_secondary"),
+    )
+
+
 def test_model_config_and_o200k_parser_support_ablation_switches():
     from complexity.config import ModelConfig
     from complexity.training.o200k_pretrain import build_parser, make_config
@@ -365,6 +393,12 @@ def test_launcher_reports_the_real_tr_gqa_controls_only():
         SimpleNamespace(
             mlp_type="token_routed",
             routing_strategy="modulo_balanced_secondary",
+        )
+    )
+    assert requires_routing_frequencies(
+        SimpleNamespace(
+            mlp_type="token_routed",
+            routing_strategy="modulo_frequency_balanced_secondary",
         )
     )
     assert not requires_routing_frequencies(
