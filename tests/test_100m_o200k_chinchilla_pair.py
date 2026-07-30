@@ -10,6 +10,9 @@ import yaml
 CONFIG_ROOT = Path("configs/run_configs/100m_o200k_chinchilla")
 DENSE_CONFIG = CONFIG_ROOT / "dense_gqa_seed42_2b_b200.yaml"
 TR_CONFIG = CONFIG_ROOT / "tr_gqa_fixed_id_seed42_2b_b200.yaml"
+FREQUENCY_BALANCED_TR_CONFIG = (
+    CONFIG_ROOT / "tr_gqa_frequency_balanced_seed42_2b_b200.yaml"
+)
 
 
 def _load_args(path: Path):
@@ -41,6 +44,20 @@ def test_pair_is_exactly_parameter_matched():
 
     counts = []
     for path in (DENSE_CONFIG, TR_CONFIG):
+        args = _load_args(path)
+        with torch.device("meta"):
+            model = ComplexityModel(make_config(args))
+        counts.append(model.num_parameters())
+
+    assert counts == [99_487_680, 99_487_680]
+
+
+def test_frequency_balanced_pair_is_exactly_parameter_matched():
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k.profiles import make_config
+
+    counts = []
+    for path in (DENSE_CONFIG, FREQUENCY_BALANCED_TR_CONFIG):
         args = _load_args(path)
         with torch.device("meta"):
             model = ComplexityModel(make_config(args))
@@ -88,3 +105,50 @@ def test_pair_shares_protocol_and_consumes_two_billion_tokens():
     assert routed["top_k"] == 2
     assert routed["top_k_primary_weight"] == 0.5
     assert routed["learn_shared_routed_gates"] is False
+
+
+def test_frequency_balanced_pair_shares_the_dense_b200_protocol():
+    dense = yaml.safe_load(DENSE_CONFIG.read_text())["run"]
+    routed = yaml.safe_load(FREQUENCY_BALANCED_TR_CONFIG.read_text())["run"]
+    matched = [
+        "dataset",
+        "tokens_path",
+        "eval_tokens_path",
+        "token_order",
+        "tokenizer",
+        "steps",
+        "batch_size",
+        "seq_len",
+        "hidden_size",
+        "num_hidden_layers",
+        "num_attention_heads",
+        "num_key_value_heads",
+        "attention_type",
+        "optimizer",
+        "lr",
+        "weight_decay",
+        "max_grad_norm",
+        "label_smoothing",
+        "z_loss",
+        "bf16",
+        "grad_ckpt",
+        "loss_backend",
+        "loss_chunk_tokens",
+        "loss_checkpoint_chunks",
+        "use_custom_kernels",
+        "cggr",
+        "compile",
+        "eval_steps",
+        "eval_batches",
+        "seed",
+    ]
+
+    assert {key: dense[key] for key in matched} == {
+        key: routed[key] for key in matched
+    }
+    assert dense["intermediate_size"] == (
+        routed["shared_intermediate_size"] + routed["intermediate_size"]
+    )
+    assert routed["routing_strategy"] == "modulo_frequency_balanced_secondary"
+    assert routed["top_k"] == 2
+    assert routed["top_k_primary_weight"] == 0.5
