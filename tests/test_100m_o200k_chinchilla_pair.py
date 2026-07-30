@@ -32,6 +32,9 @@ BALANCED_SECONDARY_SCALE15_TR_CONFIG = (
 DEPTH_SCALED_TR_CONFIG = (
     CONFIG_ROOT / "tr_gqa_depth_scaled_seed42_2b_b200.yaml"
 )
+TOKEN_HASH_TR_CONFIG = (
+    CONFIG_ROOT / "tr_gqa_token_hash_seed42_2b_b200.yaml"
+)
 
 
 def _load_args(path: Path):
@@ -253,6 +256,44 @@ def test_depth_scaled_pair_is_parameter_matched_and_interpolates_by_layer():
     assert routed_scales[-1] == 2.4
     assert routed_scales[4] == pytest.approx(1.2 + 4 * (1.2 / 9))
     assert shared_scales == [1.0] * 10
+
+
+def test_token_hash_pair_is_parameter_matched_and_balanced():
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k.profiles import make_config
+
+    counts = []
+    models = []
+    for path in (DENSE_CONFIG, TOKEN_HASH_TR_CONFIG):
+        args = _load_args(path)
+        with torch.device("meta"):
+            parameter_model = ComplexityModel(make_config(args))
+        counts.append(parameter_model.num_parameters())
+        if path == TOKEN_HASH_TR_CONFIG:
+            models.append(ComplexityModel(make_config(args)))
+
+    assert counts == [99_487_680, 99_487_680]
+
+    routed = yaml.safe_load(TOKEN_HASH_TR_CONFIG.read_text())["run"]
+    assert routed["routing_strategy"] == "token_id_balanced_hash"
+    assert routed["routed_output_scale"] == 1.8
+
+    first_routes = models[0].layers[0].mlp.topk_token_to_expert
+    second_routes = models[0].layers[1].mlp.topk_token_to_expert
+    assert torch.all(first_routes[0] != first_routes[1])
+    assert not torch.equal(first_routes, second_routes)
+
+    for route in first_routes:
+        counts_per_expert = torch.bincount(route, minlength=4)
+        assert int(counts_per_expert.max() - counts_per_expert.min()) <= 1
+
+    pair_counts = torch.bincount(
+        first_routes[0] * 4 + first_routes[1], minlength=16
+    ).reshape(4, 4)
+    assert torch.count_nonzero(pair_counts.diagonal()) == 0
+    nonzero_pair_counts = pair_counts[pair_counts > 0]
+    assert nonzero_pair_counts.numel() == 12
+    assert int(nonzero_pair_counts.max() - nonzero_pair_counts.min()) <= 1
 
 
 def test_pair_shares_protocol_and_consumes_two_billion_tokens():

@@ -17,11 +17,13 @@ Usage:
     out = mlp(hidden_states, token_ids=token_ids)
 """
 
+import itertools
+import logging
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
-import logging
 
 from .base import MLPBase, MLPConfig
 from .fused_activations import fused_silu_mul
@@ -339,6 +341,38 @@ class TokenRoutedMLP(MLPBase):
             # needs a valid table while the module and auxiliary routes are
             # constructed.
             mapping = torch.arange(vocab_size, dtype=torch.long, device="cpu") % num_experts
+        elif strategy == "token_id_balanced_hash":
+            # Hash the complete token ID into a different exactly-balanced
+            # lexical partition at every layer. Unlike merely permuting expert
+            # labels after token_id % E, this changes which tokens share an
+            # expert while remaining a fixed, cacheable lookup table.
+            layer_idx = int(getattr(self.config, "layer_idx", 0))
+            token_generator = torch.Generator().manual_seed(
+                0x71D5A17 + 104729 * layer_idx
+            )
+            token_order = torch.randperm(
+                vocab_size, generator=token_generator, device="cpu"
+            )
+            pairs = torch.tensor(
+                list(itertools.permutations(range(num_experts), 2)),
+                dtype=torch.long,
+                device="cpu",
+            )
+            pair_generator = torch.Generator().manual_seed(
+                0x5EC0D + 104729 * layer_idx
+            )
+            pairs = pairs[
+                torch.randperm(
+                    pairs.size(0), generator=pair_generator, device="cpu"
+                )
+            ]
+            mapping = torch.empty(vocab_size, dtype=torch.long, device="cpu")
+            pair_indices = (
+                torch.arange(vocab_size, dtype=torch.long, device="cpu")
+                % pairs.size(0)
+            )
+            mapping[token_order] = pairs[pair_indices, 0]
+            return mapping
         elif strategy == "round_robin":
             # Round-robin over frequency rank (or token id if no frequencies),
             # giving a routing-table control distinct from token-id modulo.
@@ -411,6 +445,40 @@ class TokenRoutedMLP(MLPBase):
         if strategy in {"modulo", "round_robin"}:
             for route_idx in range(1, top_k):
                 routes[route_idx] = (routes[0] + route_idx) % num_experts
+            return routes
+
+        if strategy == "token_id_balanced_hash":
+            # Assign balanced ordered expert tuples to a layer-specific token
+            # permutation. For top-2 and four experts this cycles over all 12
+            # distinct ordered pairs, so both marginal expert loads and pair
+            # loads differ by at most one token.
+            layer_idx = int(getattr(self.config, "layer_idx", 0))
+            token_generator = torch.Generator().manual_seed(
+                0x71D5A17 + 104729 * layer_idx
+            )
+            token_order = torch.randperm(
+                vocab_size, generator=token_generator, device="cpu"
+            )
+            expert_tuples = torch.tensor(
+                list(itertools.permutations(range(num_experts), top_k)),
+                dtype=torch.long,
+                device="cpu",
+            )
+            tuple_generator = torch.Generator().manual_seed(
+                0x5EC0D + 104729 * layer_idx
+            )
+            expert_tuples = expert_tuples[
+                torch.randperm(
+                    expert_tuples.size(0),
+                    generator=tuple_generator,
+                    device="cpu",
+                )
+            ]
+            tuple_indices = (
+                torch.arange(vocab_size, dtype=torch.long, device="cpu")
+                % expert_tuples.size(0)
+            )
+            routes[:, token_order] = expert_tuples[tuple_indices].T
             return routes
 
         if strategy == "random":
