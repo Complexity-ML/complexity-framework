@@ -18,6 +18,9 @@ run:
   intermediate_size: 256
   shared_intermediate_size: 1392
   mlp_type: token_routed
+  # The winning MPS checkpoints predate the explicit initializer switch and
+  # therefore used the historical Kaiming initialization.
+  expert_initialization: legacy_kaiming
   shared_expert: true
   shared_expert_chunk_tokens: 32768
   # Exact architecture of the winning local pilot:

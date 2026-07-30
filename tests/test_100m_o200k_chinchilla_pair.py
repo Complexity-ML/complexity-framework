@@ -129,6 +129,14 @@ def test_frequency_balanced_pair_is_exactly_parameter_matched():
 
     assert counts == [99_487_680, 99_487_680]
 
+    routed = yaml.safe_load(FREQUENCY_BALANCED_TR_CONFIG.read_text())["run"]
+    assert routed["shared_intermediate_size"] == 1392
+    assert routed["intermediate_size"] == 256
+    assert routed["routing_strategy"] == "modulo_frequency_balanced_secondary"
+    assert routed["expert_initialization"] == "legacy_kaiming"
+    assert routed["learn_shared_routed_gates"] is False
+    assert routed["max_grad_norm"] == 1.0
+
 
 def test_pair_shares_protocol_and_consumes_two_billion_tokens():
     dense = yaml.safe_load(DENSE_CONFIG.read_text())["run"]
