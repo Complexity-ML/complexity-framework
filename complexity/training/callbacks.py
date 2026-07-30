@@ -92,9 +92,9 @@ class TqdmCallback:
         postfix = {"loss": f"{loss:.4f}", "ppl": f"{ppl:.1f}", "lr": f"{lr:.2e}"}
 
         # MoE-specific telemetry (only if the model has TokenRoutedMLP layers)
-        if shares:
+        if shares and any(math.isfinite(share) for share in shares):
             postfix["E"] = "/".join(f"{s:.2f}" for s in shares)
-            if dead > 0:
+            if dead is not None and dead > 0:
                 postfix["dead"] = str(dead)
 
         # Per-expert MuonTR/AdamTR diagnostics — local view (no collective).

@@ -9,7 +9,7 @@ CUDA_DEVICES="${CUDA_DEVICES:-0,1,2,3}"
 MODE="${1:-pair}"
 
 DENSE_CONFIG="$REPO_ROOT/configs/run_configs/100m_o200k_chinchilla/dense_gqa_seed42_2b_b200.yaml"
-TR_CONFIG="$REPO_ROOT/configs/run_configs/100m_o200k_chinchilla/tr_gqa_fixed_id_seed42_2b_b200.yaml"
+TR_CONFIG="$REPO_ROOT/configs/run_configs/100m_o200k_chinchilla/tr_gqa_balanced_shared_seed42_2b_b200.yaml"
 
 FULL_ARGS=(
   --batch-size 24
@@ -44,7 +44,7 @@ run_model() {
       ;;
     tr)
       config="$TR_CONFIG"
-      run_name="tr-gqa-fixed-id-100m-o200k-2b-s42-b24"
+      run_name="tr-gqa-balanced-shared-100m-o200k-2b-s42-b24"
       master_port=29602
       ;;
     *)
@@ -75,7 +75,6 @@ run_model() {
     --config "$config" \
     --tokens-path "$DATA_ROOT/train" \
     --eval-tokens-path "$DATA_ROOT/eval" \
-    --expert-initialization gpt_normal \
     --run-name "$run_name" \
     --save-dir "$ARTIFACT_ROOT/checkpoints/$run_name" \
     "${run_args[@]}" \

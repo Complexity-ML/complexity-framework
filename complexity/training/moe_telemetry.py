@@ -39,7 +39,7 @@ def _to_local(t: torch.Tensor) -> torch.Tensor:
 def global_expert_shares(
     model: nn.Module,
     num_experts: Optional[int] = None,
-) -> Tuple[List[float], int]:
+) -> Tuple[List[float], Optional[int]]:
     """
     Aggregate ``expert_counts`` across all TokenRoutedMLP layers AND across
     all distributed ranks, then reset local counters.
@@ -58,12 +58,13 @@ def global_expert_shares(
     Returns:
         shares: list of length ``num_experts``, summing to 1.0 (or NaN if no
             tokens have been seen yet)
-        dead: number of experts with zero tokens in the interval
+        dead: number of experts with zero tokens in the interval, or ``None``
+            when utilization collection is disabled and no counts exist
     """
     if num_experts is None:
         num_experts = detect_num_experts(model)
     if num_experts is None or not any(hasattr(m, "expert_counts") for m in model.modules()):
-        return [], 0
+        return [], None
 
     dev = next(model.parameters()).device
     # MPS doesn't support float64; use float32 on-device and upcast on CPU
@@ -83,7 +84,11 @@ def global_expert_shares(
     total_cpu = total.cpu().to(torch.float64)
     s = total_cpu.sum().item()
     if s <= 0:
-        return [float("nan")] * num_experts, num_experts
+        # Zero counters do not mean that every expert is dead. TokenRoutedMLP
+        # intentionally leaves these counters untouched when the optional
+        # utilization telemetry is disabled. Report the measurement as
+        # unavailable instead of emitting the false "all experts dead" alarm.
+        return [float("nan")] * num_experts, None
     shares = (total_cpu / s).tolist()
     dead = sum(1 for x in total_cpu.tolist() if x == 0)
     return shares, dead
@@ -102,11 +107,12 @@ def global_tr_diagnostics(model: nn.Module, num_experts: Optional[int] = None) -
         return {}
 
     dev = next(model.parameters()).device
-    totals = torch.zeros(8 + num_experts, dtype=torch.float32, device=dev)
+    totals = torch.zeros(10 + num_experts, dtype=torch.float32, device=dev)
     # [0] modules, [1] shared_gate_sum, [2] routed_gate_sum,
     # [3] shared_rms_sum, [4] routed_rms_sum,
     # [5] shared_grad_sq, [6] routed_grad_sq, [7] routed_param_count,
-    # [8:] per-expert grad_sq.
+    # [8] shared_rms_count, [9] routed_rms_count,
+    # [10:] per-expert grad_sq.
     for module in model.modules():
         if not hasattr(module, "gate_proj_w") or not hasattr(module, "down_proj_w"):
             continue
@@ -119,9 +125,15 @@ def global_tr_diagnostics(model: nn.Module, num_experts: Optional[int] = None) -
             totals[2] += float("nan")
 
         if hasattr(module, "last_shared_rms"):
-            totals[3] += torch.nan_to_num(_to_local(module.last_shared_rms).detach().float(), nan=0.0)
+            value = _to_local(module.last_shared_rms).detach().float()
+            finite = torch.isfinite(value)
+            totals[3] += torch.where(finite, value, torch.zeros_like(value))
+            totals[8] += finite.float()
         if hasattr(module, "last_routed_rms"):
-            totals[4] += torch.nan_to_num(_to_local(module.last_routed_rms).detach().float(), nan=0.0)
+            value = _to_local(module.last_routed_rms).detach().float()
+            finite = torch.isfinite(value)
+            totals[4] += torch.where(finite, value, torch.zeros_like(value))
+            totals[9] += finite.float()
 
         for name, param in module.named_parameters(recurse=False):
             if param.grad is None:
@@ -130,7 +142,7 @@ def global_tr_diagnostics(model: nn.Module, num_experts: Optional[int] = None) -
             grad_sq = grad.pow(2)
             if name in {"gate_proj_w", "up_proj_w", "down_proj_w"} and grad_sq.ndim >= 1:
                 per_expert = grad_sq.reshape(grad_sq.shape[0], -1).sum(dim=1)
-                totals[8 : 8 + num_experts] += per_expert[:num_experts]
+                totals[10 : 10 + num_experts] += per_expert[:num_experts]
                 totals[6] += per_expert.sum()
                 totals[7] += grad.numel()
             elif name == "routed_output_gate":
@@ -157,12 +169,12 @@ def global_tr_diagnostics(model: nn.Module, num_experts: Optional[int] = None) -
     denom = max(1, modules)
     routed_grad_sq = cpu[6].item()
     shared_grad_sq = cpu[5].item()
-    per_expert = cpu[8 : 8 + num_experts]
+    per_expert = cpu[10 : 10 + num_experts]
     return {
         "shared_gate": _finite_mean(cpu[1].item(), denom),
         "routed_gate": _finite_mean(cpu[2].item(), denom),
-        "shared_rms": cpu[3].item() / denom,
-        "routed_rms": cpu[4].item() / denom,
+        "shared_rms": _finite_ratio(cpu[3].item(), cpu[8].item()),
+        "routed_rms": _finite_ratio(cpu[4].item(), cpu[9].item()),
         "shared_grad_norm": math.sqrt(max(0.0, shared_grad_sq)),
         "routed_grad_norm": math.sqrt(max(0.0, routed_grad_sq)),
         **{
@@ -176,3 +188,9 @@ def _finite_mean(value: float, denom: int) -> float:
     if not math.isfinite(value):
         return float("nan")
     return value / denom
+
+
+def _finite_ratio(value: float, count: float) -> float:
+    if not math.isfinite(value) or not math.isfinite(count) or count <= 0:
+        return float("nan")
+    return value / count

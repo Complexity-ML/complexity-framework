@@ -354,11 +354,12 @@ class TrainRunner:
             ppl = math.exp(min(loss_val, 20))
             lr = trainer_obj.optimizer.param_groups[0]["lr"]
             shares = getattr(tqdm_cb, "last_shares", [float("nan")] * config.num_experts)
-            dead = getattr(tqdm_cb, "last_dead", config.num_experts)
+            dead = getattr(tqdm_cb, "last_dead", None)
             csv_writer.writerow([
                 step, f"{loss_val:.6f}", f"{ppl:.2f}",
                 f"{lr:.6e}", step * tokens_per_step,
-                *[f"{s:.4f}" for s in shares], dead,
+                *[f"{s:.4f}" for s in shares],
+                "nan" if dead is None else dead,
                 f"{time.time() - t_start:.1f}",
             ])
             if step % 100 == 0:

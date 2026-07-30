@@ -10,6 +10,12 @@ import yaml
 CONFIG_ROOT = Path("configs/run_configs/100m_o200k_chinchilla")
 DENSE_CONFIG = CONFIG_ROOT / "dense_gqa_seed42_2b_b200.yaml"
 TR_CONFIG = CONFIG_ROOT / "tr_gqa_fixed_id_seed42_2b_b200.yaml"
+PAPER_SCALED_TR_CONFIG = (
+    CONFIG_ROOT / "tr_gqa_paper_scaled_seed42_2b_b200.yaml"
+)
+BALANCED_SHARED_TR_CONFIG = (
+    CONFIG_ROOT / "tr_gqa_balanced_shared_seed42_2b_b200.yaml"
+)
 FREQUENCY_BALANCED_TR_CONFIG = (
     CONFIG_ROOT / "tr_gqa_frequency_balanced_seed42_2b_b200.yaml"
 )
@@ -50,6 +56,64 @@ def test_pair_is_exactly_parameter_matched():
         counts.append(model.num_parameters())
 
     assert counts == [99_487_680, 99_487_680]
+
+
+def test_paper_scaled_pair_preserves_shared_residual_proportions():
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k.profiles import make_config
+
+    dense_args = _load_args(DENSE_CONFIG)
+    routed_args = _load_args(PAPER_SCALED_TR_CONFIG)
+    with torch.device("meta"):
+        dense = ComplexityModel(make_config(dense_args))
+        routed = ComplexityModel(make_config(routed_args))
+
+    dense_run = yaml.safe_load(DENSE_CONFIG.read_text())["run"]
+    routed_run = yaml.safe_load(PAPER_SCALED_TR_CONFIG.read_text())["run"]
+    expert_width = routed_run["intermediate_size"] // 4
+
+    assert routed_run["shared_intermediate_size"] == 1552
+    assert expert_width == 24
+    assert (
+        routed_run["shared_intermediate_size"] + 4 * expert_width
+        == dense_run["intermediate_size"]
+    )
+    assert (
+        routed_run["shared_intermediate_size"] + 2 * expert_width
+        == 1600
+    )
+    assert routed_run["learn_shared_routed_gates"] is True
+    assert routed_run["shared_gate_init"] == 0.5
+    assert routed_run["routed_gate_init"] == 0.5
+    assert routed.num_parameters() - dense.num_parameters() == 20
+
+
+def test_balanced_shared_pair_reproduces_the_winning_recipe_at_fixed_budget():
+    from complexity.models import ComplexityModel
+    from complexity.training.o200k.profiles import make_config
+
+    dense_args = _load_args(DENSE_CONFIG)
+    routed_args = _load_args(BALANCED_SHARED_TR_CONFIG)
+    with torch.device("meta"):
+        dense = ComplexityModel(make_config(dense_args))
+        routed = ComplexityModel(make_config(routed_args))
+
+    dense_run = yaml.safe_load(DENSE_CONFIG.read_text())["run"]
+    routed_run = yaml.safe_load(BALANCED_SHARED_TR_CONFIG.read_text())["run"]
+
+    assert routed_run["shared_intermediate_size"] == 816
+    assert routed_run["intermediate_size"] == 832
+    assert routed_run["intermediate_size"] // 4 == 208
+    assert (
+        routed_run["shared_intermediate_size"] + routed_run["intermediate_size"]
+        == dense_run["intermediate_size"]
+    )
+    assert routed_run["routing_strategy"] == "modulo_balanced_secondary"
+    assert routed_run["expert_initialization"] == "legacy_kaiming"
+    assert routed_run["learn_shared_routed_gates"] is True
+    assert routed_run["shared_gate_init"] == 1.0
+    assert routed_run["routed_gate_init"] == 0.5
+    assert routed.num_parameters() - dense.num_parameters() == 20
 
 
 def test_frequency_balanced_pair_is_exactly_parameter_matched():
