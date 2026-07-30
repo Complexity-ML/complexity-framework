@@ -584,6 +584,7 @@ if HAS_TRITON:
         stride_x_row, stride_x_col,
         stride_g_row, stride_g_col,
         stride_w_exp, stride_w_in, stride_w_out,
+        SPLIT_K: tl.constexpr,
         BLOCK_M: tl.constexpr,   # tokens per reduction step
         BLOCK_N: tl.constexpr,   # in_dim tile
         BLOCK_O: tl.constexpr,   # out_dim tile
@@ -593,22 +594,33 @@ if HAS_TRITON:
         per expert WITHOUT padding. Each kernel instance owns one
         (expert, in_tile, out_tile) and reduces over the expert's token range.
 
-        Output shape: [num_experts, in_dim, out_dim] = same layout as forward
-        weights so it can be used directly as the grad in .backward().
+        Output shape: [num_experts * SPLIT_K, in_dim, out_dim]. The host
+        reduces the fp32 partials across SPLIT_K after this kernel.
         """
         pid_n = tl.program_id(0)   # in_dim tile
         pid_o = tl.program_id(1)   # out_dim tile
-        pid_e = tl.program_id(2)   # expert id
+        pid_expert_split = tl.program_id(2)
+        pid_e = pid_expert_split // SPLIT_K
+        pid_split = pid_expert_split % SPLIT_K
 
-        expert_start = tl.load(offsets_ptr + pid_e)
-        expert_end = tl.load(offsets_ptr + pid_e + 1)
+        full_expert_start = tl.load(offsets_ptr + pid_e)
+        full_expert_end = tl.load(offsets_ptr + pid_e + 1)
+        split_tokens = tl.cdiv(
+            full_expert_end - full_expert_start,
+            SPLIT_K,
+        )
+        expert_start = full_expert_start + pid_split * split_tokens
+        expert_end = tl.minimum(
+            full_expert_end,
+            expert_start + split_tokens,
+        )
         if expert_end == expert_start:
-            # Still write zeros so grad_W[e] is defined
+            # Still write zeros so every split partial is defined.
             n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
             o_offs = pid_o * BLOCK_O + tl.arange(0, BLOCK_O)
             n_mask = n_offs < in_dim
             o_mask = o_offs < out_dim
-            w_ptrs = (grad_w_ptr + pid_e * stride_w_exp
+            w_ptrs = (grad_w_ptr + pid_expert_split * stride_w_exp
                       + n_offs[:, None] * stride_w_in
                       + o_offs[None, :] * stride_w_out)
             tl.store(w_ptrs, tl.zeros([BLOCK_N, BLOCK_O], dtype=grad_w_ptr.dtype.element_ty),
@@ -643,7 +655,7 @@ if HAS_TRITON:
             # Native bf16×bf16→fp32 acc (Tensor Cores).
             acc += tl.dot(tl.trans(x_blk), g_blk)
 
-        w_ptrs = (grad_w_ptr + pid_e * stride_w_exp
+        w_ptrs = (grad_w_ptr + pid_expert_split * stride_w_exp
                   + n_offs[:, None] * stride_w_in
                   + o_offs[None, :] * stride_w_out)
         tl.store(w_ptrs, acc.to(grad_w_ptr.dtype.element_ty),
@@ -670,6 +682,7 @@ if HAS_TRITON:
         stride_w_exp,
         stride_w_in,
         stride_w_out,
+        SPLIT_K: tl.constexpr,
         BLOCK_M: tl.constexpr,
         BLOCK_N: tl.constexpr,
         BLOCK_O: tl.constexpr,
@@ -678,9 +691,20 @@ if HAS_TRITON:
 
         pid_n = tl.program_id(0)
         pid_o = tl.program_id(1)
-        pid_e = tl.program_id(2)
-        expert_start = tl.load(offsets_ptr + pid_e)
-        expert_end = tl.load(offsets_ptr + pid_e + 1)
+        pid_expert_split = tl.program_id(2)
+        pid_e = pid_expert_split // SPLIT_K
+        pid_split = pid_expert_split % SPLIT_K
+        full_expert_start = tl.load(offsets_ptr + pid_e)
+        full_expert_end = tl.load(offsets_ptr + pid_e + 1)
+        split_tokens = tl.cdiv(
+            full_expert_end - full_expert_start,
+            SPLIT_K,
+        )
+        expert_start = full_expert_start + pid_split * split_tokens
+        expert_end = tl.minimum(
+            full_expert_end,
+            expert_start + split_tokens,
+        )
 
         n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
         o_offs = pid_o * BLOCK_O + tl.arange(0, BLOCK_O)
@@ -690,7 +714,7 @@ if HAS_TRITON:
         if expert_end == expert_start:
             w_ptrs = (
                 grad_w_ptr
-                + pid_e * stride_w_exp
+                + pid_expert_split * stride_w_exp
                 + n_offs[:, None] * stride_w_in
                 + o_offs[None, :] * stride_w_out
             )
@@ -738,7 +762,7 @@ if HAS_TRITON:
 
         w_ptrs = (
             grad_w_ptr
-            + pid_e * stride_w_exp
+            + pid_expert_split * stride_w_exp
             + n_offs[:, None] * stride_w_in
             + o_offs[None, :] * stride_w_out
         )
@@ -758,22 +782,40 @@ if HAS_TRITON:
         """Compute grad_W [E, in_dim, out_dim] without padding."""
         in_dim = sorted_x.shape[1]
         out_dim = grad_output.shape[1]
-        grad_W = torch.empty(num_experts, in_dim, out_dim,
-                             device=sorted_x.device, dtype=sorted_x.dtype)
+        split_k = 4 if int(sorted_x.shape[0]) >= 8192 else 1
+        partial_grad_w = torch.empty(
+            num_experts * split_k,
+            in_dim,
+            out_dim,
+            device=sorted_x.device,
+            dtype=torch.float32,
+        )
 
         grid = lambda META: (
             triton.cdiv(in_dim, META["BLOCK_N"]),
             triton.cdiv(out_dim, META["BLOCK_O"]),
-            num_experts,
+            num_experts * split_k,
         )
         _cggr_grad_w_kernel[grid](
-            sorted_x, grad_output, expert_offsets, grad_W,
+            sorted_x, grad_output, expert_offsets, partial_grad_w,
             in_dim, out_dim,
             sorted_x.stride(0), sorted_x.stride(1),
             grad_output.stride(0), grad_output.stride(1),
-            grad_W.stride(0), grad_W.stride(1), grad_W.stride(2),
+            partial_grad_w.stride(0),
+            partial_grad_w.stride(1),
+            partial_grad_w.stride(2),
+            SPLIT_K=split_k,
         )
-        return grad_W
+        return (
+            partial_grad_w.view(
+                num_experts,
+                split_k,
+                in_dim,
+                out_dim,
+            )
+            .sum(dim=1)
+            .to(sorted_x.dtype)
+        )
 
     def hash_cggr_grad_w_triton(
         tokens: torch.Tensor,
@@ -786,24 +828,25 @@ if HAS_TRITON:
 
         source_rows, in_dim = tokens.shape
         out_dim = grad_output.shape[1]
-        grad_w = torch.empty(
-            num_experts,
+        split_k = 4 if int(sorted_indices.numel()) >= 8192 else 1
+        partial_grad_w = torch.empty(
+            num_experts * split_k,
             in_dim,
             out_dim,
             device=tokens.device,
-            dtype=tokens.dtype,
+            dtype=torch.float32,
         )
         grid = lambda META: (
             triton.cdiv(in_dim, META["BLOCK_N"]),
             triton.cdiv(out_dim, META["BLOCK_O"]),
-            num_experts,
+            num_experts * split_k,
         )
         _hash_cggr_grad_w_kernel[grid](
             tokens,
             sorted_indices,
             grad_output,
             expert_offsets,
-            grad_w,
+            partial_grad_w,
             source_rows,
             in_dim,
             out_dim,
@@ -811,11 +854,21 @@ if HAS_TRITON:
             tokens.stride(1),
             grad_output.stride(0),
             grad_output.stride(1),
-            grad_w.stride(0),
-            grad_w.stride(1),
-            grad_w.stride(2),
+            partial_grad_w.stride(0),
+            partial_grad_w.stride(1),
+            partial_grad_w.stride(2),
+            SPLIT_K=split_k,
         )
-        return grad_w
+        return (
+            partial_grad_w.view(
+                num_experts,
+                split_k,
+                in_dim,
+                out_dim,
+            )
+            .sum(dim=1)
+            .to(tokens.dtype)
+        )
 
 
     @triton.autotune(configs=_CGGR_CONFIGS, key=["in_dim", "out_dim"])
@@ -827,7 +880,7 @@ if HAS_TRITON:
         output_ptr,
         in_dim,
         out_dim,
-        num_experts,
+        num_experts: tl.constexpr,
         total_tokens,
         stride_t_row,
         stride_t_col,
@@ -849,21 +902,38 @@ if HAS_TRITON:
         Keeps bf16/fp16 inputs native to tl.dot so Tensor Cores are used;
         accumulator stays fp32, output is cast back to the buffer dtype.
         """
-        pid_m = tl.program_id(0)
+        pid_block = tl.program_id(0).to(tl.int64)
         pid_n = tl.program_id(1)
-        pid_expert = tl.program_id(2)
+        pid_expert = pid_n - pid_n
+        local_block = pid_block - pid_block
+        block_base = pid_block - pid_block
+        active = pid_block < 0
+        for expert_idx in range(num_experts):
+            candidate_start = tl.load(offsets_ptr + expert_idx)
+            candidate_end = tl.load(offsets_ptr + expert_idx + 1)
+            expert_blocks = tl.cdiv(
+                candidate_end - candidate_start,
+                BLOCK_M,
+            )
+            selected = (
+                (pid_block >= block_base)
+                & (pid_block < block_base + expert_blocks)
+            )
+            pid_expert = tl.where(selected, expert_idx, pid_expert)
+            local_block = tl.where(
+                selected,
+                pid_block - block_base,
+                local_block,
+            )
+            active = active | selected
+            block_base += expert_blocks
 
-        # Expert boundaries
+        if not active:
+            return
+
         expert_start = tl.load(offsets_ptr + pid_expert)
         expert_end = tl.load(offsets_ptr + pid_expert + 1)
-        n_tokens_expert = expert_end - expert_start
-
-        if n_tokens_expert == 0:
-            return
-
-        token_start = expert_start + pid_m * BLOCK_M
-        if token_start >= expert_end:
-            return
+        token_start = expert_start + local_block * BLOCK_M
 
         token_offs = token_start + tl.arange(0, BLOCK_M)
         token_mask = token_offs < expert_end
@@ -904,7 +974,7 @@ if HAS_TRITON:
         source_rows,
         in_dim,
         out_dim,
-        num_experts,
+        num_experts: tl.constexpr,
         total_assignments,
         stride_t_row,
         stride_t_col,
@@ -919,17 +989,38 @@ if HAS_TRITON:
     ):
         """CGGR projection reading token rows through the compact hash order."""
 
-        pid_m = tl.program_id(0)
+        pid_block = tl.program_id(0).to(tl.int64)
         pid_n = tl.program_id(1)
-        pid_expert = tl.program_id(2)
-        expert_start = tl.load(offsets_ptr + pid_expert)
-        expert_end = tl.load(offsets_ptr + pid_expert + 1)
-        if expert_end == expert_start:
+        pid_expert = pid_n - pid_n
+        local_block = pid_block - pid_block
+        block_base = pid_block - pid_block
+        active = pid_block < 0
+        for expert_idx in range(num_experts):
+            candidate_start = tl.load(offsets_ptr + expert_idx)
+            candidate_end = tl.load(offsets_ptr + expert_idx + 1)
+            expert_blocks = tl.cdiv(
+                candidate_end - candidate_start,
+                BLOCK_M,
+            )
+            selected = (
+                (pid_block >= block_base)
+                & (pid_block < block_base + expert_blocks)
+            )
+            pid_expert = tl.where(selected, expert_idx, pid_expert)
+            local_block = tl.where(
+                selected,
+                pid_block - block_base,
+                local_block,
+            )
+            active = active | selected
+            block_base += expert_blocks
+
+        if not active:
             return
 
-        sorted_start = expert_start + pid_m * BLOCK_M
-        if sorted_start >= expert_end:
-            return
+        expert_start = tl.load(offsets_ptr + pid_expert)
+        expert_end = tl.load(offsets_ptr + pid_expert + 1)
+        sorted_start = expert_start + local_block * BLOCK_M
 
         sorted_rows = sorted_start + tl.arange(0, BLOCK_M)
         row_mask = sorted_rows < expert_end
@@ -1016,24 +1107,22 @@ if HAS_TRITON:
         CGGR Grouped GEMM using Triton.
 
         BLOCK_M/N/K are picked by @triton.autotune per (in_dim, out_dim) key,
-        cached across calls. The grid uses total_tokens as a safe upper bound
-        on the M axis — blocks outside an expert's range early-return (line
-        ~155). This avoids a CPU sync on `max(expert_counts).item()` every
-        step; a handful of no-op SM launches is cheaper than a sync on
-        modern GPUs.
+        cached across calls. The compact grid is the exact upper bound for
+        the sum of all rounded per-expert block counts. The kernel resolves
+        each compact block ID from the device offsets, avoiding both a CPU
+        synchronization and the former E-times oversized launch grid.
         """
         total_tokens, in_dim = sorted_tokens.shape
         num_experts, _, out_dim = expert_weights.shape
 
         output = torch.empty(total_tokens, out_dim, device=sorted_tokens.device, dtype=sorted_tokens.dtype)
 
-        # Grid: (ceil_div(total_tokens, BLOCK_M), ceil_div(out_dim, BLOCK_N), num_experts).
+        # At most E - 1 programs exceed the exact useful block count.
         # Autotune picks BLOCK_M / BLOCK_N; we pass the grid as a lambda so
         # it re-evaluates once autotune has chosen the config.
         grid = lambda META: (
-            triton.cdiv(total_tokens, META["BLOCK_M"]),
+            triton.cdiv(total_tokens, META["BLOCK_M"]) + num_experts - 1,
             triton.cdiv(out_dim, META["BLOCK_N"]),
-            num_experts,
         )
 
         _cggr_grouped_gemm_kernel[grid](
@@ -1065,9 +1154,10 @@ if HAS_TRITON:
             dtype=tokens.dtype,
         )
         grid = lambda META: (
-            triton.cdiv(total_assignments, META["BLOCK_M"]),
+            triton.cdiv(total_assignments, META["BLOCK_M"])
+            + num_experts
+            - 1,
             triton.cdiv(out_dim, META["BLOCK_N"]),
-            num_experts,
         )
         _hash_cggr_grouped_gemm_kernel[grid](
             tokens,
