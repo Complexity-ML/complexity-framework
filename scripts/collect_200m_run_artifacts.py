@@ -14,11 +14,19 @@ import argparse
 import hashlib
 import json
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
 from safetensors.torch import save_file
+
+# Direct execution places ``scripts/`` rather than the repository root on
+# sys.path. Keep the documented ``python scripts/...`` entry point reliable
+# without requiring an editable package install.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from complexity.utils.local_checkpoint import CHECKPOINT_FILE, resolve_checkpoint_path
 

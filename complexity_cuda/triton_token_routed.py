@@ -2510,79 +2510,6 @@ class TokenRoutedMLPTriton(nn.Module):
 
 
 # =============================================================================
-# BENCHMARK
-# =============================================================================
-
-def benchmark_token_routed_mlp(
-    batch_size: int = 32,
-    seq_len: int = 512,
-    hidden_size: int = 1024,
-    intermediate_size: int = 4096,
-    num_experts: int = 4,
-    vocab_size: int = 100000,
-    n_iter: int = 100
-):
-    """Benchmark CGGR vs bmm Token-Routed MLP."""
-    import time
-
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    if not torch.cuda.is_available():
-        print("CUDA not available")
-        return
-
-    # Create modules
-    cggr_mlp = TokenRoutedMLPTriton(
-        hidden_size=hidden_size,
-        intermediate_size=intermediate_size,
-        num_experts=num_experts,
-        vocab_size=vocab_size,
-        use_cggr=True,
-    ).to(device).eval()
-
-    bmm_mlp = TokenRoutedMLPTriton(
-        hidden_size=hidden_size,
-        intermediate_size=intermediate_size,
-        num_experts=num_experts,
-        vocab_size=vocab_size,
-        use_cggr=False,
-    ).to(device).eval()
-
-    # Test inputs
-    hidden = torch.randn(batch_size, seq_len, hidden_size, device=device)
-    token_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
-
-    # Warmup
-    for _ in range(10):
-        _ = cggr_mlp(hidden, token_ids)
-        _ = bmm_mlp(hidden, token_ids)
-    torch.cuda.synchronize()
-
-    # Benchmark CGGR
-    start = time.perf_counter()
-    for _ in range(n_iter):
-        _ = cggr_mlp(hidden, token_ids)
-    torch.cuda.synchronize()
-    cggr_time = (time.perf_counter() - start) / n_iter * 1000
-
-    # Benchmark bmm
-    start = time.perf_counter()
-    for _ in range(n_iter):
-        _ = bmm_mlp(hidden, token_ids)
-    torch.cuda.synchronize()
-    bmm_time = (time.perf_counter() - start) / n_iter * 1000
-
-    print(f"\nToken-Routed MLP Benchmark (batch={batch_size}, seq={seq_len}, h={hidden_size})")
-    print(f"=" * 60)
-    print(f"  BMM:      {bmm_time:.3f} ms (v1)")
-    print(f"  CGGR:     {cggr_time:.3f} ms (v2)")
-    print(f"  Speedup:  {bmm_time / cggr_time:.2f}x")
-    print(f"=" * 60)
-
-    return cggr_time, bmm_time
-
-
-# =============================================================================
 # FUSED RMSNORM KERNEL
 # =============================================================================
 
@@ -2735,71 +2662,10 @@ def fused_token_route_residual(
     return residual + x
 
 
-class RoboticsTokenRoutedLayer(torch.nn.Module):
-    """
-    Robotics-inspired Token-Routed layer with fused CUDA operations.
-
-    Control loop pattern:
-        1. SENSE:    RMSNorm (observe state)
-        2. PROCESS:  Token routing (select expert per token)
-        3. ACTUATE:  Expert MLP + Residual (apply specialized action)
-
-    Uses CGGR optimization for expert computation.
-    """
-
-    def __init__(
-        self,
-        hidden_size: int,
-        intermediate_size: int,
-        num_experts: int = 8,
-        vocab_size: int = 32000,
-        eps: float = 1e-6,
-    ):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.intermediate_size = intermediate_size
-        self.num_experts = num_experts
-        self.eps = eps
-
-        # RMSNorm weight
-        self.norm_weight = torch.nn.Parameter(torch.ones(hidden_size))
-
-        # Token-Routed MLP (uses CGGR if available)
-        self.mlp = TokenRoutedMLPTriton(
-            hidden_size=hidden_size,
-            intermediate_size=intermediate_size,
-            num_experts=num_experts,
-            vocab_size=vocab_size,
-            use_cggr=True,
-        )
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        token_ids: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Forward pass with robotics control loop.
-
-        Args:
-            x: [batch, seq, dim]
-            token_ids: [batch, seq] token IDs for routing
-
-        Returns:
-            out: [batch, seq, dim]
-        """
-        residual = x
-
-        # === SENSE: RMSNorm ===
-        x_normed = fused_rmsnorm(x, _to_local(self.norm_weight), self.eps)
-
-        # === PROCESS + ACTUATE: Token-Routed MLP ===
-        mlp_out = self.mlp(x_normed, token_ids=token_ids)
-
-        # Residual
-        out = residual + mlp_out
-
-        return out
+from .token_routed_extras import (
+    RoboticsTokenRoutedLayer,
+    benchmark_token_routed_mlp,
+)
 
 
 if __name__ == "__main__":

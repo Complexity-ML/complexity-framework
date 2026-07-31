@@ -337,20 +337,18 @@ class TestI64Model:
             out_int8 = model(ids)
         assert out_int8["logits"].shape == out_float["logits"].shape
 
-    def test_generate(self):
+    def test_generate_requires_external_serving_backend(self):
         model = self._make_model()
         ids = torch.randint(0, 1000, (1, 8))
-        with torch.no_grad():
-            generated = model.generate(input_ids=ids, max_new_tokens=10, do_sample=False)
-        assert generated.shape[1] == 18  # 8 + 10
+        with pytest.raises(RuntimeError, match="use vLLM or SGLang"):
+            model.generate(input_ids=ids, max_new_tokens=10, do_sample=False)
 
-    def test_generate_quantized(self):
+    def test_generate_quantized_requires_external_serving_backend(self):
         model = self._make_model()
         model.quantize_all()
         ids = torch.randint(0, 1000, (1, 8))
-        with torch.no_grad():
-            generated = model.generate(input_ids=ids, max_new_tokens=5, do_sample=False)
-        assert generated.shape[1] == 13  # 8 + 5
+        with pytest.raises(RuntimeError, match="use vLLM or SGLang"):
+            model.generate(input_ids=ids, max_new_tokens=5, do_sample=False)
 
 
 # =========================================================================

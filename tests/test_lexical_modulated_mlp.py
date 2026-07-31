@@ -94,8 +94,9 @@ def test_100m_o200k_lexical_object_is_tied_and_parameter_matched():
         )
     )
 
-    first_table = lexical.layers[0].mlp.token_scale
-    assert all(layer.mlp.token_scale is first_table for layer in lexical.layers)
+    first_table = lexical.lexical_token_scale
+    assert first_table.weight.shape == (200019, 16)
+    assert all(not hasattr(layer.mlp, "token_scale") for layer in lexical.layers)
     assert abs(lexical.num_parameters() - 98_197_440) / 98_197_440 < 0.0001
 
 

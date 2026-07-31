@@ -26,6 +26,14 @@ import torch.nn.functional as F
 
 from .base import MLPBase, MLPConfig
 from .fused_activations import fused_silu_mul
+from .token_routing import (
+    cggr_dispatch_decision as _cggr_dispatch_decision,
+    create_pair_coverage_hash_metadata as _create_pair_coverage_hash_metadata,
+    create_pair_coverage_hash_routes as _create_pair_coverage_hash_routes,
+    encode_pair_coverage_hash_routes as _encode_pair_coverage_hash_routes,
+    normalize_cggr_policy as _normalize_cggr_policy,
+    pair_coverage_hash_routes_from_metadata as _pair_coverage_hash_routes_from_metadata,
+)
 from ..registry import register_mlp
 from ...tr_hash.engine import reference_topk_swiglu
 from ...utils.device import supports_custom_triton
@@ -95,167 +103,6 @@ def _to_local(t: torch.Tensor) -> torch.Tensor:
     return t
 
 
-def _normalize_cggr_policy(policy: object) -> str:
-    """Normalize CGGR policy values accepted by configs and CLIs."""
-    if isinstance(policy, str):
-        value = policy.strip().lower()
-        if value in {"auto", "true", "false"}:
-            return value
-    if policy is True:
-        return "true"
-    if policy is False:
-        return "false"
-    return "auto"
-
-
-def _create_pair_coverage_hash_metadata(
-    vocab_size: int,
-    num_experts: int,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Build the compact, layer-independent state for pair-coverage hashing.
-
-    ``token_rank`` is the seeded permutation hash of token identity. The other
-    two tensors are tiny decode tables shared conceptually by every layer:
-    canonical unordered expert pairs and the 120 possible six-pair schedules.
-    Model construction uses them to compile the per-layer uint8 hash codes
-    consumed by CUDA instead of two full int64 expert-ID tables.
-    """
-
-    pairs = torch.combinations(
-        torch.arange(num_experts, dtype=torch.int32, device="cpu"),
-        r=2,
-    )
-    pair_count = int(pairs.size(0))
-    if num_experts < 2 or num_experts > 4:
-        raise ValueError(
-            "token_id_pair_coverage_hash supports two to four experts"
-        )
-
-    token_generator = torch.Generator().manual_seed(0xC04E2A63)
-    token_order = torch.randperm(
-        vocab_size, generator=token_generator, device="cpu"
-    )
-    token_rank = torch.empty(vocab_size, dtype=torch.int32, device="cpu")
-    token_rank[token_order] = torch.arange(
-        vocab_size, dtype=torch.int32, device="cpu"
-    )
-
-    # Every permutation has one unique cyclic rotation beginning with pair
-    # zero. Assign one such base order to each six-token rank group, then
-    # rotate it by the token's rank inside that group. Consequently:
-    #   * every token sees every unordered pair once in the first six layers;
-    #   * every complete rank group uses every pair once in every layer;
-    #   * all pair loads differ by at most one for an incomplete last group;
-    #   * the 120 base orders x six rotations retain all 720 early-layer
-    #     route signatures instead of collapsing tokens onto six schedules.
-    base_orders = torch.tensor(
-        [
-            (0, *tail)
-            for tail in itertools.permutations(range(1, pair_count))
-        ],
-        dtype=torch.int32,
-        device="cpu",
-    )
-    base_generator = torch.Generator().manual_seed(0xC04E2A63 ^ 0x51A7)
-    base_orders = base_orders[
-        torch.randperm(
-            base_orders.size(0),
-            generator=base_generator,
-            device="cpu",
-        )
-    ]
-    return token_rank, pairs, base_orders
-
-
-def _pair_coverage_hash_routes_from_metadata(
-    token_rank: torch.Tensor,
-    pairs: torch.Tensor,
-    base_orders: torch.Tensor,
-    layer_idx: int,
-) -> torch.Tensor:
-    """Decode one layer's equal-weight expert pair from compact hash state."""
-
-    pair_count = int(pairs.size(0))
-    group_rank = torch.div(token_rank, pair_count, rounding_mode="floor")
-    rotation = token_rank.remainder(pair_count)
-
-    if layer_idx < pair_count:
-        base_idx = group_rank.remainder(base_orders.size(0))
-        position = (rotation + layer_idx).remainder(pair_count)
-        pair_idx = base_orders[base_idx, position]
-    else:
-        # The remaining layers encode the quotient left after selecting one
-        # of the canonical base orders. Four base-6 digits plus the 720 early
-        # schedules provide 933,120 distinct ten-layer signatures, enough for
-        # the 200,019-token vocabulary. Rotation keeps every layer balanced
-        # within each six-token group while the full signature remains
-        # collision-free.
-        route_code = torch.div(
-            group_rank,
-            base_orders.size(0),
-            rounding_mode="floor",
-        )
-        digit_place = pair_count ** (layer_idx - pair_count)
-        route_digit = torch.div(
-            route_code,
-            digit_place,
-            rounding_mode="floor",
-        ).remainder(pair_count)
-        pair_idx = (rotation + route_digit).remainder(pair_count)
-
-    selected = pairs[pair_idx.long()].long()
-    # Pair weights are exactly 0.5/0.5, so orientation does not change the
-    # function. Still alternate it deterministically to keep primary and
-    # secondary telemetry approximately symmetric without a second V-entry
-    # lookup table in the CUDA planner.
-    swap = (token_rank.long() + int(layer_idx)).remainder(2).bool()
-    primary = torch.where(swap, selected[:, 1], selected[:, 0])
-    secondary = torch.where(swap, selected[:, 0], selected[:, 1])
-    return torch.stack((primary, secondary), dim=0)
-
-
-def _create_pair_coverage_hash_routes(
-    vocab_size: int,
-    num_experts: int,
-    layer_idx: int,
-) -> torch.Tensor:
-    """Return two token-ID routes with full pair coverage across early layers.
-
-    For four experts there are six unordered expert pairs. Each token receives
-    a deterministic permutation of those six pairs over the first six layers,
-    so it visits every pair exactly once before any pair can repeat. The
-    compact metadata is also consumed directly by the hash-aware CGGR planner.
-    """
-
-    metadata = _create_pair_coverage_hash_metadata(vocab_size, num_experts)
-    return _pair_coverage_hash_routes_from_metadata(*metadata, layer_idx)
-
-
-def _encode_pair_coverage_hash_routes(
-    routes: torch.Tensor,
-    expert_pairs: torch.Tensor,
-) -> torch.Tensor:
-    """Compile two expert routes into one byte per vocabulary entry.
-
-    Bits 0..2 store the unordered pair index and bit 3 stores orientation.
-    Keeping orientation makes the CUDA planner bit-identical to the reference
-    lookup even though equal 0.5/0.5 weights make it functionally irrelevant.
-    """
-
-    if routes.ndim != 2 or routes.size(0) != 2:
-        raise ValueError("routes must be shaped [2, vocab_size]")
-    unordered = torch.sort(routes.long(), dim=0).values
-    pair_matches = (
-        (unordered[0].unsqueeze(0) == expert_pairs[:, 0].long().unsqueeze(1))
-        & (unordered[1].unsqueeze(0) == expert_pairs[:, 1].long().unsqueeze(1))
-    )
-    if not torch.all(pair_matches.any(dim=0)):
-        raise ValueError("routes contain a pair absent from expert_pairs")
-    pair_indices = pair_matches.to(torch.int64).argmax(dim=0)
-    swap = routes[0].long().eq(unordered[1]).to(torch.int64)
-    return (pair_indices | (swap << 3)).to(torch.uint8)
-
-
 def cggr_dispatch_decision(
     *,
     cggr_policy: object,
@@ -265,24 +112,16 @@ def cggr_dispatch_decision(
     has_autograd: bool,
     static_dispatch: bool = False,
 ) -> tuple[bool, list[str]]:
-    """Return whether Token-Routed should use CGGR and why it may not."""
-    mode = _normalize_cggr_policy(cggr_policy)
-    reasons: list[str] = []
-
-    if mode == "false":
-        reasons.append("config.use_cggr=False")
-    if static_dispatch:
-        reasons.append("static_expert_capacity=True")
-    if not supports_custom_triton(kernel_policy):
-        reasons.append(f"supports_custom_triton(policy={kernel_policy!r})=False")
-    if not has_cggr:
-        reasons.append("HAS_CGGR=False (complexity_cuda triton import failed)")
-    if not is_cuda:
-        reasons.append("flat_x.is_cuda=False")
-    if not has_autograd:
-        reasons.append("cggr_grouped_gemm_autograd=None")
-
-    return mode != "false" and not reasons, reasons
+    """Compatibility facade for historical imports and monkeypatches."""
+    return _cggr_dispatch_decision(
+        cggr_policy=cggr_policy,
+        kernel_policy=kernel_policy,
+        is_cuda=is_cuda,
+        has_cggr=has_cggr,
+        has_autograd=has_autograd,
+        static_dispatch=static_dispatch,
+        supports_triton_fn=supports_custom_triton,
+    )
 
 
 @register_mlp("token_routed")
