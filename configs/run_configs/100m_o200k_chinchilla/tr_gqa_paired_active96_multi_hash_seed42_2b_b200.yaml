@@ -30,10 +30,11 @@ run:
   top_k: 2
   top_k_primary_weight: 0.5
   top_k_primary_weight_final: 0.5
-  # Hash 2: six learned pair-mixture scalars per layer.
-  learn_hash_pair_gates: true
+  # Keep the pair mean fixed: learned pair gates retain a large [2N, hidden]
+  # tensor per layer for six scalars and exceed the 96 GiB batch-48 budget.
+  learn_hash_pair_gates: false
   hash_pair_gate_init: 0.5
-  # Hash 3: token/expert/channel signs modulate 128 tiny gains per layer.
+  # Hash 2: token/expert/channel signs modulate 128 tiny gains per layer.
   # Zero initialization exactly preserves the reference at step zero.
   learn_hash_channel_modulation: true
   hash_channel_scale_init: 0.0
