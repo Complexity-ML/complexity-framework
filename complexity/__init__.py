@@ -137,6 +137,12 @@ from complexity.core.position import (
     apply_rotary_pos_emb,
 )
 
+# General deterministic token-ID routed execution engine
+from complexity.tr_hash import (
+    TRHashEngine,
+    TRHashEngineConfig,
+)
+
 # Parallel training (submodule - import as needed)
 # from complexity.parallel import wrap_model_fsdp, ShardingMode, PrecisionMode
 
@@ -180,6 +186,8 @@ __all__ = [
     "StandardMLP",
     "SwiGLUMLP",
     "TokenRoutedMLP",
+    "TRHashEngine",
+    "TRHashEngineConfig",
     # Normalization
     "RMSNorm",
     "LayerNorm",

@@ -27,6 +27,7 @@ import torch.nn.functional as F
 from .base import MLPBase, MLPConfig
 from .fused_activations import fused_silu_mul
 from ..registry import register_mlp
+from ...tr_hash.engine import reference_topk_swiglu
 from ...utils.device import supports_custom_triton
 
 logger = logging.getLogger(__name__)
@@ -1153,7 +1154,6 @@ class TokenRoutedMLP(MLPBase):
                 "route expert IDs must match the flattened token count"
             )
 
-        routed_out = torch.zeros_like(flat_x)
         if primary_weights is None:
             route_weights = torch.full(
                 route_expert_ids.shape,
@@ -1166,34 +1166,31 @@ class TokenRoutedMLP(MLPBase):
                 (primary_weights, 1.0 - primary_weights),
                 dim=0,
             ).to(flat_x.dtype)
-        for expert_idx in range(self.num_experts):
-            route_weight = (
-                route_expert_ids.eq(expert_idx).to(flat_x.dtype)
-                * route_weights
-            ).sum(dim=0)
-            active = route_weight.ne(0).unsqueeze(-1).to(flat_x.dtype)
-            expert_x = flat_x * active
-            gate = expert_x @ gate_w[expert_idx]
-            up = expert_x @ up_w[expert_idx]
-            intermediate = fused_silu_mul(gate, up)
-            if self.learn_hash_channel_modulation:
-                if flat_token_ids is None:
-                    raise ValueError(
-                        "hashed channel modulation requires token IDs"
-                    )
-                intermediate = self._hash_modulate_dense_channels(
-                    intermediate,
-                    flat_token_ids,
-                    expert_idx,
-                )
-            expert_out = (intermediate @ down_w[expert_idx]).to(
-                routed_out.dtype
+        if self.learn_hash_channel_modulation and flat_token_ids is None:
+            raise ValueError("hashed channel modulation requires token IDs")
+
+        def transform(
+            intermediate: torch.Tensor,
+            expert_idx: int,
+        ) -> torch.Tensor:
+            if not self.learn_hash_channel_modulation:
+                return intermediate
+            return self._hash_modulate_dense_channels(
+                intermediate,
+                flat_token_ids,
+                expert_idx,
             )
-            routed_out = (
-                routed_out
-                + expert_out * route_weight.unsqueeze(-1)
-            )
-        return routed_out
+
+        return reference_topk_swiglu(
+            flat_x,
+            route_expert_ids,
+            gate_w,
+            up_w,
+            down_w,
+            route_weights,
+            activation=fused_silu_mul,
+            intermediate_transform=transform,
+        )
 
     def _hash_modulate_dense_channels(
         self,

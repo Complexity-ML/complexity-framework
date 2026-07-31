@@ -12,6 +12,7 @@ Token-Routed Mixture-of-Experts (TR-MoE) language models.
 5. [Run configurations](run_configs.md)
 6. [GPU and dispatch paths](cuda.md)
 7. [API reference](api.md)
+8. [TR-Hash execution engine](tr-hash-engine.md)
 
 ## Architecture vocabulary
 

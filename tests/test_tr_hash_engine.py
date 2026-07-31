@@ -1,0 +1,304 @@
+import pytest
+import torch
+import torch.nn.functional as F
+
+from complexity.tr_hash import (
+    AttentionBackbone,
+    GraphBucket,
+    GraphBucketPlanner,
+    TRHashBackend,
+    TRHashEngine,
+    TRHashEngineConfig,
+    TRHashPhase,
+    TRHashPrecision,
+    TRHashStrategy,
+    build_route_table,
+    select_backend,
+)
+
+
+@pytest.mark.parametrize("num_experts", [2, 4, 8, 16])
+@pytest.mark.parametrize("top_k", [1, 2, 4])
+def test_supported_expert_and_topk_matrix(num_experts, top_k):
+    if top_k > num_experts:
+        with pytest.raises(ValueError, match="top_k cannot exceed"):
+            TRHashEngineConfig(
+                hidden_size=8,
+                vocab_size=97,
+                num_experts=num_experts,
+                top_k=top_k,
+                expert_width=4,
+            )
+        return
+
+    config = TRHashEngineConfig(
+        hidden_size=8,
+        vocab_size=97,
+        num_experts=num_experts,
+        top_k=top_k,
+        shared_width=12,
+        expert_width=4,
+    )
+    assert config.stored_routed_width == num_experts * 4
+    assert config.active_routed_width == top_k * 4
+    assert config.stored_mlp_width == 12 + num_experts * 4
+    assert config.active_mlp_width == 12 + top_k * 4
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [
+        TRHashStrategy.MODULO_CYCLIC,
+        TRHashStrategy.BALANCED_HASH,
+        TRHashStrategy.AFFINE_HASH,
+    ],
+)
+@pytest.mark.parametrize("num_experts,top_k", [(2, 1), (4, 2), (8, 4), (16, 4)])
+def test_route_tables_are_deterministic_distinct_and_balanced_enough(
+    strategy,
+    num_experts,
+    top_k,
+):
+    config = TRHashEngineConfig(
+        hidden_size=8,
+        vocab_size=997,
+        num_experts=num_experts,
+        top_k=top_k,
+        expert_width=4,
+        routing_strategy=strategy,
+        layer_index=3,
+    )
+    first = build_route_table(config)
+    second = build_route_table(config)
+
+    assert torch.equal(first, second)
+    assert first.shape == (top_k, 997)
+    for token_routes in first.T:
+        assert len(set(token_routes.tolist())) == top_k
+    for route_index in range(top_k):
+        counts = torch.bincount(first[route_index], minlength=num_experts)
+        # Exact route-table balancing for modulo/balanced; affine is a stable
+        # hash and therefore only expected to avoid pathological collapse.
+        tolerance = 1 if strategy is not TRHashStrategy.AFFINE_HASH else 80
+        assert int(counts.max() - counts.min()) <= tolerance
+
+
+def test_balanced_hash_varies_by_layer_without_changing_loads():
+    common = dict(
+        hidden_size=8,
+        vocab_size=1_009,
+        num_experts=8,
+        top_k=4,
+        expert_width=4,
+        routing_strategy=TRHashStrategy.BALANCED_HASH,
+    )
+    layer_zero = build_route_table(TRHashEngineConfig(**common, layer_index=0))
+    layer_one = build_route_table(TRHashEngineConfig(**common, layer_index=1))
+
+    assert not torch.equal(layer_zero, layer_one)
+    for route_index in range(4):
+        counts_zero = torch.bincount(layer_zero[route_index], minlength=8)
+        counts_one = torch.bincount(layer_one[route_index], minlength=8)
+        assert int(counts_zero.max() - counts_zero.min()) <= 1
+        assert int(counts_one.max() - counts_one.min()) <= 1
+
+
+def _naive_engine_output(engine, hidden, token_ids):
+    config = engine.config
+    output = torch.empty_like(hidden)
+    routes = engine.route_table[:, token_ids]
+    for batch_index in range(hidden.size(0)):
+        for token_index in range(hidden.size(1)):
+            x = hidden[batch_index, token_index]
+            if engine.shared_gate is None:
+                shared = torch.zeros_like(x)
+            else:
+                shared = engine.shared_down(F.silu(engine.shared_gate(x)) * engine.shared_up(x))
+            routed = torch.zeros_like(x)
+            for route_index in range(config.top_k):
+                expert = int(routes[route_index, batch_index, token_index])
+                intermediate = F.silu(x @ engine.expert_gate[expert]) * (
+                    x @ engine.expert_up[expert]
+                )
+                routed = routed + (
+                    config.route_weights[route_index] * (intermediate @ engine.expert_down[expert])
+                )
+            output[batch_index, token_index] = (
+                config.shared_output_scale * shared + config.routed_output_scale * routed
+            )
+    return output
+
+
+@pytest.mark.parametrize("num_experts,top_k", [(2, 1), (4, 2), (8, 4), (16, 4)])
+def test_reference_engine_matches_token_by_token_definition_and_gradients(
+    num_experts,
+    top_k,
+):
+    torch.manual_seed(7)
+    config = TRHashEngineConfig(
+        hidden_size=8,
+        vocab_size=101,
+        num_experts=num_experts,
+        top_k=top_k,
+        shared_width=12,
+        expert_width=4,
+        precision=TRHashPrecision.FP32,
+        backend=TRHashBackend.PYTORCH,
+    )
+    engine = TRHashEngine(config)
+    hidden = torch.randn(2, 3, 8, requires_grad=True)
+    token_ids = torch.randint(0, config.vocab_size, (2, 3))
+
+    actual = engine(hidden, token_ids)
+    expected = _naive_engine_output(engine, hidden, token_ids)
+    assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
+
+    actual.square().mean().backward()
+    assert hidden.grad is not None
+    assert torch.isfinite(hidden.grad).all()
+    for parameter in engine.parameters():
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()
+
+
+def test_token_routed_legacy_top2_fallback_is_bitwise_compatible():
+    from complexity.core.mlp import MLPConfig, TokenRoutedMLP
+    from complexity.core.mlp.fused_activations import fused_silu_mul
+
+    torch.manual_seed(19)
+    mlp = TokenRoutedMLP(
+        MLPConfig(
+            hidden_size=8,
+            intermediate_size=16,
+            vocab_size=101,
+            num_experts=4,
+            top_k=2,
+            top_k_primary_weight=0.5,
+            shared_expert=False,
+            use_cggr=False,
+        )
+    )
+    flat_x = torch.randn(17, 8)
+    token_ids = torch.randint(0, 101, (17,))
+    routes = mlp.topk_token_to_expert[:, token_ids]
+
+    actual = mlp._dispatch_equal_top2_pair(
+        flat_x,
+        routes,
+        mlp.gate_proj_w,
+        mlp.up_proj_w,
+        mlp.down_proj_w,
+    )
+
+    route_weights = torch.full(
+        routes.shape,
+        0.5,
+        dtype=flat_x.dtype,
+        device=flat_x.device,
+    )
+    legacy = torch.zeros_like(flat_x)
+    for expert_index in range(mlp.num_experts):
+        token_weight = (routes.eq(expert_index).to(flat_x.dtype) * route_weights).sum(dim=0)
+        active = token_weight.ne(0).unsqueeze(-1).to(flat_x.dtype)
+        expert_x = flat_x * active
+        intermediate = fused_silu_mul(
+            expert_x @ mlp.gate_proj_w[expert_index],
+            expert_x @ mlp.up_proj_w[expert_index],
+        )
+        expert_output = (intermediate @ mlp.down_proj_w[expert_index]).to(legacy.dtype)
+        legacy = legacy + expert_output * token_weight.unsqueeze(-1)
+
+    assert torch.equal(actual, legacy)
+
+
+def test_attention_backbone_is_metadata_not_a_different_mlp_function():
+    common = dict(
+        hidden_size=8,
+        vocab_size=101,
+        num_experts=4,
+        top_k=2,
+        shared_width=12,
+        expert_width=4,
+        precision=TRHashPrecision.FP32,
+        backend=TRHashBackend.PYTORCH,
+    )
+    gqa = TRHashEngine(TRHashEngineConfig(**common, attention_backbone=AttentionBackbone.GQA))
+    mha = TRHashEngine(TRHashEngineConfig(**common, attention_backbone=AttentionBackbone.MHA))
+    mha.load_state_dict(gqa.state_dict())
+    hidden = torch.randn(2, 3, 8)
+    token_ids = torch.randint(0, 101, (2, 3))
+
+    assert torch.equal(gqa(hidden, token_ids), mha(hidden, token_ids))
+
+
+def test_auto_backend_reports_cpu_fallback_and_multi_gpu_contract():
+    config = TRHashEngineConfig(
+        hidden_size=8,
+        vocab_size=101,
+        world_size=4,
+        precision=TRHashPrecision.FP32,
+    )
+    engine = TRHashEngine(config)
+    summary = engine.capability_summary("cpu")
+
+    assert summary["selected_backend"] == "pytorch"
+    assert summary["parallelism"] == "replicated_ddp"
+    assert "CGGR requires CUDA" in summary["backend_reasons"]
+
+
+def test_backend_selection_prefers_cggr_when_cuda_kernel_is_available():
+    config = TRHashEngineConfig(
+        hidden_size=8,
+        vocab_size=101,
+        precision=TRHashPrecision.FP16,
+    )
+    decision = select_backend(
+        config,
+        device_type="cuda",
+        cggr_available=True,
+    )
+    assert decision.selected is TRHashBackend.CGGR
+
+
+@pytest.mark.parametrize("precision", [TRHashPrecision.FP8, TRHashPrecision.INT8])
+def test_quantized_modes_fail_explicitly_until_phase_two_kernel(precision):
+    config = TRHashEngineConfig(
+        hidden_size=8,
+        vocab_size=101,
+        precision=precision,
+    )
+    with pytest.raises(NotImplementedError, match="phase-2"):
+        select_backend(config, device_type="cuda", cggr_available=True)
+
+
+def test_cuda_graph_bucket_selection_is_smallest_containing_shape():
+    planner = GraphBucketPlanner(
+        [
+            GraphBucket(1, 128),
+            GraphBucket(2, 128),
+            GraphBucket(4, 256),
+            GraphBucket(1, 512),
+        ]
+    )
+    assert planner.select(1, 80) == GraphBucket(1, 128)
+    assert planner.select(2, 80) == GraphBucket(2, 128)
+    assert planner.select(3, 200) == GraphBucket(4, 256)
+    with pytest.raises(ValueError, match="no CUDA Graph bucket"):
+        planner.select(8, 512)
+
+
+def test_cuda_graph_config_is_inference_only_and_requires_buckets():
+    with pytest.raises(ValueError, match="inference-only"):
+        TRHashEngineConfig(
+            hidden_size=8,
+            vocab_size=101,
+            backend=TRHashBackend.CUDA_GRAPH,
+            graph_buckets=(GraphBucket(1, 128),),
+        )
+    with pytest.raises(ValueError, match="requires at least one"):
+        TRHashEngineConfig(
+            hidden_size=8,
+            vocab_size=101,
+            phase=TRHashPhase.INFERENCE,
+            backend=TRHashBackend.CUDA_GRAPH,
+        )
