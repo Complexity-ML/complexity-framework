@@ -751,6 +751,59 @@ def test_hash_pair_gates_preserve_equal_mix_then_learn_without_rerouting():
         original_routes,
     )
 
+def test_hash_channel_modulation_is_neutral_then_learns_without_rerouting():
+    from complexity.core.mlp.base import MLPConfig
+    from complexity.core.mlp.token_routed import TokenRoutedMLP
+
+    torch.manual_seed(31)
+    common = dict(
+        hidden_size=12,
+        intermediate_size=32,
+        num_experts=4,
+        vocab_size=128,
+        shared_expert=False,
+        routing_strategy="token_id_balanced_hash",
+        top_k=2,
+        top_k_primary_weight=0.5,
+        use_cggr=False,
+    )
+    reference = TokenRoutedMLP(MLPConfig(**common))
+    hashed = TokenRoutedMLP(
+        MLPConfig(
+            **common,
+            learn_hash_channel_modulation=True,
+            hash_channel_scale_init=0.0,
+            layer_idx=3,
+        )
+    )
+    missing, unexpected = hashed.load_state_dict(
+        reference.state_dict(),
+        strict=False,
+    )
+    assert missing == ["hash_channel_scale"]
+    assert unexpected == []
+    assert hashed.hash_channel_scale.shape == (4, 8)
+
+    token_ids = torch.randint(0, 128, (3, 7))
+    hidden = torch.randn(3, 7, 12)
+    original_routes = hashed.topk_token_to_expert[:, token_ids].clone()
+    reference_out = reference(hidden, token_ids=token_ids)
+    hashed_out = hashed(hidden, token_ids=token_ids)
+    assert torch.allclose(hashed_out, reference_out, atol=1e-6, rtol=1e-5)
+
+    hashed_out.square().mean().backward()
+    assert hashed.hash_channel_scale.grad is not None
+    assert hashed.hash_channel_scale.grad.abs().sum() > 0
+
+    with torch.no_grad():
+        hashed.hash_channel_scale[0, 0] = 0.25
+    changed_out = hashed(hidden, token_ids=token_ids)
+    assert not torch.allclose(changed_out, reference_out)
+    assert torch.equal(
+        hashed.topk_token_to_expert[:, token_ids],
+        original_routes,
+    )
+
 
 def test_unequal_top2_weights_keep_the_generic_dispatch():
     from complexity.core.mlp.base import MLPConfig

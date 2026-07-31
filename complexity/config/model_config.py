@@ -119,6 +119,8 @@ class ModelConfig:
     top_k_primary_weight: Optional[float] = None  # K>1 blend weight for primary expert (default: 0.95)
     learn_hash_pair_gates: bool = False  # Learn one mixture scalar per fixed unordered hash pair
     hash_pair_gate_init: float = 0.5  # Expert-a weight; 0.5 preserves the equal-route initialization
+    learn_hash_channel_modulation: bool = False  # Fixed token-ID hash selects signs for learned expert/channel gains
+    hash_channel_scale_init: float = 0.0  # Zero preserves the baseline exactly at initialization
     static_expert_capacity: bool = False  # Use fixed per-expert dispatch capacity for torch.export / pipeline tracing
     use_custom_kernels: Any = "auto"  # "auto", True, or False. ROCm defaults to PyTorch fallback in auto mode.
     collect_moe_telemetry: bool = False  # Per-layer expert/RMS diagnostics. Disabled by default for throughput.
@@ -292,6 +294,8 @@ class ModelConfig:
             raise ValueError("top_k_primary_weight must be in [0, 1]")
         if not 0.0 < self.hash_pair_gate_init < 1.0:
             raise ValueError("hash_pair_gate_init must be strictly between 0 and 1")
+        if abs(self.hash_channel_scale_init) > 1.0:
+            raise ValueError("hash_channel_scale_init must be in [-1, 1]")
         if self.routing_strategy not in {
             "zipf",
             "modulo",

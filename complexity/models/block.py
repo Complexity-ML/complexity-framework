@@ -235,6 +235,12 @@ class TransformerBlock(nn.Module):
             top_k_primary_weight=getattr(config, 'top_k_primary_weight', None),
             learn_hash_pair_gates=getattr(config, 'learn_hash_pair_gates', False),
             hash_pair_gate_init=getattr(config, 'hash_pair_gate_init', 0.5),
+            learn_hash_channel_modulation=getattr(
+                config, 'learn_hash_channel_modulation', False
+            ),
+            hash_channel_scale_init=getattr(
+                config, 'hash_channel_scale_init', 0.0
+            ),
             layer_idx=layer_idx,
             static_expert_capacity=getattr(config, 'static_expert_capacity', False),
             collect_moe_telemetry=getattr(config, 'collect_moe_telemetry', False),

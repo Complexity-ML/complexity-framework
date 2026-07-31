@@ -237,6 +237,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--learn-hash-channel-modulation",
+        action="store_true",
+        help=(
+            "Modulate routed SwiGLU channels with a fixed token/expert/channel "
+            "hash and tiny learned gains. Routing remains deterministic."
+        ),
+    )
+    parser.add_argument(
+        "--hash-channel-scale-init",
+        type=float,
+        default=0.0,
+        help=(
+            "Initial hashed channel gain. Zero exactly preserves the existing "
+            "hash-routed model at initialization."
+        ),
+    )
+    parser.add_argument(
         "--top-k-primary-weight-final",
         type=float,
         default=0.85,

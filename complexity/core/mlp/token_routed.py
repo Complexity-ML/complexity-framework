@@ -42,6 +42,7 @@ try:
         hash_cggr_grouped_gemm_autograd,
         pair_hash_reduce_autograd,
         pair_hash_weighted_reduce_autograd,
+        hash_channel_modulation_autograd,
         grouped_gemm_pytorch,
         fused_swiglu_triton,
         HAS_TRITON,
@@ -53,6 +54,7 @@ except Exception:
     hash_cggr_grouped_gemm_autograd = None
     pair_hash_reduce_autograd = None
     pair_hash_weighted_reduce_autograd = None
+    hash_channel_modulation_autograd = None
     try:
         from complexity_cuda.triton_token_routed import (
             pair_coverage_hash_expert_ids,
@@ -60,6 +62,7 @@ except Exception:
             hash_cggr_grouped_gemm_autograd,
             pair_hash_reduce_autograd,
             pair_hash_weighted_reduce_autograd,
+            hash_channel_modulation_autograd,
             grouped_gemm_pytorch,
         )
     except Exception:
@@ -68,6 +71,7 @@ except Exception:
         hash_cggr_grouped_gemm_autograd = None
         pair_hash_reduce_autograd = None
         pair_hash_weighted_reduce_autograd = None
+        hash_channel_modulation_autograd = None
         grouped_gemm_pytorch = None
 
     def sort_tokens_by_expert(tokens, expert_ids, num_experts):
@@ -405,12 +409,31 @@ class TokenRoutedMLP(MLPBase):
         self.learn_hash_pair_gates = bool(
             getattr(config, "learn_hash_pair_gates", False)
         )
+        self.learn_hash_channel_modulation = bool(
+            getattr(config, "learn_hash_channel_modulation", False)
+        )
         if self.learn_hash_pair_gates and (
             not self.has_compact_pair_hash or self.top_k != 2
         ):
             raise ValueError(
                 "learn_hash_pair_gates requires a compact token-ID hash "
                 "routing strategy with top_k=2"
+            )
+        if self.learn_hash_channel_modulation and (
+            not self.has_compact_pair_hash or self.top_k != 2
+        ):
+            raise ValueError(
+                "learn_hash_channel_modulation requires a compact token-ID "
+                "hash routing strategy with top_k=2"
+            )
+        if self.learn_hash_channel_modulation:
+            self.hash_channel_scale = nn.Parameter(
+                torch.full(
+                    (self.num_experts, self.expert_intermediate_size),
+                    float(getattr(config, "hash_channel_scale_init", 0.0)),
+                    dtype=torch.float32,
+                    device=self.gate_proj_w.device,
+                )
             )
         if self.has_compact_pair_hash:
             pair_count = self.num_experts * (self.num_experts - 1) // 2
@@ -809,6 +832,10 @@ class TokenRoutedMLP(MLPBase):
                 not self.learn_hash_pair_gates
                 or pair_hash_weighted_reduce_autograd is not None
             )
+            and (
+                not self.learn_hash_channel_modulation
+                or hash_channel_modulation_autograd is not None
+            )
         )
         if hash_cggr_candidate:
             # Defer the route entirely: the hash-aware CGGR counting partition
@@ -1020,6 +1047,7 @@ class TokenRoutedMLP(MLPBase):
                 up_w,
                 down_w,
                 primary_weights=primary_weights,
+                flat_token_ids=token_ids_clamped.view(-1),
             )
         elif static_dispatch:
             if self.top_k == 1:
@@ -1099,6 +1127,7 @@ class TokenRoutedMLP(MLPBase):
         down_w: torch.Tensor,
         *,
         primary_weights: Optional[torch.Tensor] = None,
+        flat_token_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Dispatch an equal-weight top-2 pair with one pass per expert.
 
@@ -1142,14 +1171,64 @@ class TokenRoutedMLP(MLPBase):
             expert_x = flat_x * active
             gate = expert_x @ gate_w[expert_idx]
             up = expert_x @ up_w[expert_idx]
-            expert_out = (
-                fused_silu_mul(gate, up) @ down_w[expert_idx]
-            ).to(routed_out.dtype)
+            intermediate = fused_silu_mul(gate, up)
+            if self.learn_hash_channel_modulation:
+                if flat_token_ids is None:
+                    raise ValueError(
+                        "hashed channel modulation requires token IDs"
+                    )
+                intermediate = self._hash_modulate_dense_channels(
+                    intermediate,
+                    flat_token_ids,
+                    expert_idx,
+                )
+            expert_out = (intermediate @ down_w[expert_idx]).to(
+                routed_out.dtype
+            )
             routed_out = (
                 routed_out
                 + expert_out * route_weight.unsqueeze(-1)
             )
         return routed_out
+
+    def _hash_modulate_dense_channels(
+        self,
+        values: torch.Tensor,
+        flat_token_ids: torch.Tensor,
+        expert_idx: int,
+    ) -> torch.Tensor:
+        """PyTorch reference for one unsorted expert's hashed channel gains."""
+
+        token_ids = flat_token_ids.to(torch.int64)[:, None]
+        channels = torch.arange(
+            values.shape[1],
+            device=values.device,
+            dtype=torch.int64,
+        )[None, :]
+        hashed = (
+            token_ids * 0x9E3779B1
+            + int(expert_idx) * 0x85EBCA77
+            + channels * 0xC2B2AE3D
+            + self._hash_channel_layer_seed()
+        ).bitwise_and(0xFFFFFFFF)
+        hashed = (hashed ^ (hashed >> 16)).bitwise_and(0xFFFFFFFF)
+        hashed = (hashed * 0x7FEB352D).bitwise_and(0xFFFFFFFF)
+        hashed = hashed ^ (hashed >> 15)
+        sign = torch.where(
+            hashed.bitwise_and(1).ne(0),
+            torch.ones((), device=values.device, dtype=values.dtype),
+            -torch.ones((), device=values.device, dtype=values.dtype),
+        )
+        scale = self.hash_channel_scale[expert_idx].to(values.dtype)
+        return values * (1.0 + sign * scale)
+
+    def _hash_channel_layer_seed(self) -> int:
+        """Stable layer salt for token/expert/channel feature hashes."""
+
+        return (
+            0xA511E9B3
+            + int(getattr(self.config, "layer_idx", 0)) * 0x63D83595
+        ) & 0xFFFFFFFF
 
     def _dispatch_equal_top2_pair_cggr(
         self,
@@ -1285,6 +1364,16 @@ class TokenRoutedMLP(MLPBase):
             inverse_indices,
         )
         intermediate = fused_silu_mul(gate_out, up_out)
+        if self.learn_hash_channel_modulation:
+            intermediate = hash_channel_modulation_autograd(
+                intermediate,
+                assignment_indices,
+                flat_token_ids,
+                expert_offsets,
+                self.hash_channel_scale,
+                token_count,
+                self._hash_channel_layer_seed(),
+            )
         if use_cggr and cggr_grouped_gemm_autograd is not None:
             sorted_routed = cggr_grouped_gemm_autograd(
                 intermediate,

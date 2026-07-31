@@ -33,6 +33,7 @@ def build_optimizer(args, raw_model):
                     "up_proj_w",
                     "down_proj_w",
                     "hash_pair_gate_logits",
+                    "hash_channel_scale",
                 )
             )
             is_shared_expert = ".mlp.shared_" in name

@@ -166,6 +166,12 @@ def make_config(args) -> ModelConfig:
         hash_pair_gate_init=float(
             getattr(args, "hash_pair_gate_init", 0.5)
         ),
+        learn_hash_channel_modulation=bool(
+            getattr(args, "learn_hash_channel_modulation", False)
+        ),
+        hash_channel_scale_init=float(
+            getattr(args, "hash_channel_scale_init", 0.0)
+        ),
         use_custom_kernels=getattr(args, "use_custom_kernels", "auto"),
         use_cggr=getattr(args, "cggr", getattr(args, "use_cggr", "auto")),
         static_expert_capacity=bool(getattr(args, "static_expert_capacity", False)),

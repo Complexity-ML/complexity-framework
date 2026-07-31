@@ -520,6 +520,160 @@ if HAS_TRITON:
             tl.sum(grad * (primary - secondary), axis=0),
         )
 
+    @triton.jit
+    def _hash_channel_modulation_kernel(
+        values_ptr,
+        sorted_indices_ptr,
+        token_ids_ptr,
+        expert_offsets_ptr,
+        channel_scale_ptr,
+        output_ptr,
+        assignment_count: tl.constexpr,
+        token_count: tl.constexpr,
+        feature_count: tl.constexpr,
+        num_experts: tl.constexpr,
+        layer_seed: tl.constexpr,
+        stride_v_row,
+        stride_v_col,
+        stride_s_expert,
+        stride_s_feature,
+        stride_o_row,
+        stride_o_col,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Apply a deterministic token/expert/channel sign to learned gains."""
+
+        linear = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        total = assignment_count * feature_count
+        mask = linear < total
+        sorted_rows = linear // feature_count
+        feature_cols = linear % feature_count
+        assignment_rows = tl.load(
+            sorted_indices_ptr + sorted_rows,
+            mask=mask,
+            other=0,
+        )
+        token_rows = assignment_rows % token_count
+        token_ids = tl.load(
+            token_ids_ptr + token_rows,
+            mask=mask,
+            other=0,
+        ).to(tl.uint32)
+
+        expert_ids = tl.zeros((BLOCK_SIZE,), dtype=tl.int32)
+        for expert_idx in range(1, num_experts):
+            boundary = tl.load(expert_offsets_ptr + expert_idx)
+            expert_ids += (sorted_rows >= boundary).to(tl.int32)
+
+        hashed = (
+            token_ids * 0x9E3779B1
+            + expert_ids.to(tl.uint32) * 0x85EBCA77
+            + feature_cols.to(tl.uint32) * 0xC2B2AE3D
+            + layer_seed
+        )
+        hashed ^= hashed >> 16
+        hashed *= 0x7FEB352D
+        hashed ^= hashed >> 15
+        sign = tl.where((hashed & 1) != 0, 1.0, -1.0)
+        scale = tl.load(
+            channel_scale_ptr
+            + expert_ids * stride_s_expert
+            + feature_cols * stride_s_feature,
+            mask=mask,
+            other=0.0,
+        ).to(tl.float32)
+        values = tl.load(
+            values_ptr
+            + sorted_rows * stride_v_row
+            + feature_cols * stride_v_col,
+            mask=mask,
+            other=0.0,
+        ).to(tl.float32)
+        tl.store(
+            output_ptr
+            + sorted_rows * stride_o_row
+            + feature_cols * stride_o_col,
+            values * (1.0 + scale * sign),
+            mask=mask,
+        )
+
+    @triton.jit
+    def _hash_channel_scale_grad_kernel(
+        values_ptr,
+        grad_output_ptr,
+        sorted_indices_ptr,
+        token_ids_ptr,
+        expert_offsets_ptr,
+        grad_scale_ptr,
+        token_count: tl.constexpr,
+        feature_count: tl.constexpr,
+        num_experts: tl.constexpr,
+        layer_seed: tl.constexpr,
+        stride_v_row,
+        stride_v_col,
+        stride_g_row,
+        stride_g_col,
+        stride_s_expert,
+        stride_s_feature,
+        BLOCK_ROWS: tl.constexpr,
+    ):
+        """Reduce dL/d(scale) directly over one expert/channel partition."""
+
+        program = tl.program_id(0)
+        expert_id = program // feature_count
+        feature_col = program % feature_count
+        start = tl.load(expert_offsets_ptr + expert_id)
+        end = tl.load(expert_offsets_ptr + expert_id + 1)
+        row_start = start
+        rows_lane = tl.arange(0, BLOCK_ROWS)
+        partial = tl.zeros((BLOCK_ROWS,), dtype=tl.float32)
+        while row_start < end:
+            sorted_rows = row_start + rows_lane
+            mask = sorted_rows < end
+            assignment_rows = tl.load(
+                sorted_indices_ptr + sorted_rows,
+                mask=mask,
+                other=0,
+            )
+            token_rows = assignment_rows % token_count
+            token_ids = tl.load(
+                token_ids_ptr + token_rows,
+                mask=mask,
+                other=0,
+            ).to(tl.uint32)
+            hashed = (
+                token_ids * 0x9E3779B1
+                + expert_id.to(tl.uint32) * 0x85EBCA77
+                + feature_col.to(tl.uint32) * 0xC2B2AE3D
+                + layer_seed
+            )
+            hashed ^= hashed >> 16
+            hashed *= 0x7FEB352D
+            hashed ^= hashed >> 15
+            sign = tl.where((hashed & 1) != 0, 1.0, -1.0)
+            values = tl.load(
+                values_ptr
+                + sorted_rows * stride_v_row
+                + feature_col * stride_v_col,
+                mask=mask,
+                other=0.0,
+            ).to(tl.float32)
+            grad = tl.load(
+                grad_output_ptr
+                + sorted_rows * stride_g_row
+                + feature_col * stride_g_col,
+                mask=mask,
+                other=0.0,
+            ).to(tl.float32)
+            partial += values * grad * sign
+            row_start += BLOCK_ROWS
+        tl.store(
+            grad_scale_ptr
+            + expert_id * stride_s_expert
+            + feature_col * stride_s_feature,
+            tl.sum(partial, axis=0),
+        )
+
     # Autotune configs cover the MoE shapes we actually run:
     #   hidden ∈ {640, 1024}, expert_inter ∈ {448, 502, 2008}, shared_inter ∈ {..., 2008}
     # Tuning keys are the matmul dims (in_dim, out_dim); num_experts is
@@ -1352,6 +1506,88 @@ if HAS_TRITON:
         )
         return grad_weights
 
+    def hash_channel_modulation_triton(
+        values: torch.Tensor,
+        sorted_indices: torch.Tensor,
+        token_ids: torch.Tensor,
+        expert_offsets: torch.Tensor,
+        channel_scale: torch.Tensor,
+        token_count: int,
+        layer_seed: int,
+    ) -> torch.Tensor:
+        """Apply learned channel gains through a fixed token-ID hash."""
+
+        assignment_count, feature_count = values.shape
+        num_experts = int(channel_scale.shape[0])
+        if tuple(channel_scale.shape) != (num_experts, feature_count):
+            raise ValueError(
+                "hash channel scale must have shape [num_experts, feature_count]"
+            )
+        output = torch.empty_like(values)
+        block_size = 256
+        total = int(assignment_count) * int(feature_count)
+        _hash_channel_modulation_kernel[
+            (triton.cdiv(total, block_size),)
+        ](
+            values,
+            sorted_indices,
+            token_ids,
+            expert_offsets,
+            channel_scale,
+            output,
+            assignment_count=int(assignment_count),
+            token_count=int(token_count),
+            feature_count=int(feature_count),
+            num_experts=num_experts,
+            layer_seed=int(layer_seed) & 0xFFFFFFFF,
+            stride_v_row=values.stride(0),
+            stride_v_col=values.stride(1),
+            stride_s_expert=channel_scale.stride(0),
+            stride_s_feature=channel_scale.stride(1),
+            stride_o_row=output.stride(0),
+            stride_o_col=output.stride(1),
+            BLOCK_SIZE=block_size,
+        )
+        return output
+
+    def hash_channel_scale_grad_triton(
+        values: torch.Tensor,
+        grad_output: torch.Tensor,
+        sorted_indices: torch.Tensor,
+        token_ids: torch.Tensor,
+        expert_offsets: torch.Tensor,
+        channel_scale: torch.Tensor,
+        token_count: int,
+        layer_seed: int,
+    ) -> torch.Tensor:
+        """Compute gradients for the tiny expert/channel gain table."""
+
+        feature_count = int(values.shape[1])
+        num_experts = int(channel_scale.shape[0])
+        grad_scale = torch.empty_like(channel_scale, dtype=torch.float32)
+        _hash_channel_scale_grad_kernel[
+            (num_experts * feature_count,)
+        ](
+            values,
+            grad_output,
+            sorted_indices,
+            token_ids,
+            expert_offsets,
+            grad_scale,
+            token_count=int(token_count),
+            feature_count=feature_count,
+            num_experts=num_experts,
+            layer_seed=int(layer_seed) & 0xFFFFFFFF,
+            stride_v_row=values.stride(0),
+            stride_v_col=values.stride(1),
+            stride_g_row=grad_output.stride(0),
+            stride_g_col=grad_output.stride(1),
+            stride_s_expert=grad_scale.stride(0),
+            stride_s_feature=grad_scale.stride(1),
+            BLOCK_ROWS=256,
+        )
+        return grad_scale
+
 
     def fused_swiglu_triton(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
         """Fused SwiGLU activation."""
@@ -1589,6 +1825,82 @@ if HAS_TRITON:
                 None,
             )
 
+    class HashChannelModulation(torch.autograd.Function):
+        """Autograd wrapper for deterministic hashed channel modulation."""
+
+        @staticmethod
+        def forward(
+            ctx,
+            values: torch.Tensor,
+            sorted_indices: torch.Tensor,
+            token_ids: torch.Tensor,
+            expert_offsets: torch.Tensor,
+            channel_scale: torch.Tensor,
+            token_count: int,
+            layer_seed: int,
+        ) -> torch.Tensor:
+            ctx.token_count = int(token_count)
+            ctx.layer_seed = int(layer_seed)
+            ctx.save_for_backward(
+                values,
+                sorted_indices,
+                token_ids,
+                expert_offsets,
+                channel_scale,
+            )
+            return hash_channel_modulation_triton(
+                values,
+                sorted_indices,
+                token_ids,
+                expert_offsets,
+                channel_scale,
+                ctx.token_count,
+                ctx.layer_seed,
+            )
+
+        @staticmethod
+        def backward(ctx, grad_output: torch.Tensor):
+            (
+                values,
+                sorted_indices,
+                token_ids,
+                expert_offsets,
+                channel_scale,
+            ) = ctx.saved_tensors
+            grad_output = grad_output.contiguous()
+            grad_values = None
+            grad_scale = None
+            if ctx.needs_input_grad[0]:
+                grad_values = hash_channel_modulation_triton(
+                    grad_output,
+                    sorted_indices,
+                    token_ids,
+                    expert_offsets,
+                    channel_scale,
+                    ctx.token_count,
+                    ctx.layer_seed,
+                )
+            if ctx.needs_input_grad[4]:
+                grad_scale = hash_channel_scale_grad_triton(
+                    values,
+                    grad_output,
+                    sorted_indices,
+                    token_ids,
+                    expert_offsets,
+                    channel_scale,
+                    ctx.token_count,
+                    ctx.layer_seed,
+                ).to(channel_scale.dtype)
+            return (
+                grad_values,
+                None,
+                None,
+                None,
+                grad_scale,
+                None,
+                None,
+            )
+
 
     def cggr_grouped_gemm_autograd(
         sorted_x: torch.Tensor,
@@ -1649,6 +1961,27 @@ if HAS_TRITON:
             inverse_indices,
             primary_weights,
             int(token_count),
+        )
+
+    def hash_channel_modulation_autograd(
+        values: torch.Tensor,
+        sorted_indices: torch.Tensor,
+        token_ids: torch.Tensor,
+        expert_offsets: torch.Tensor,
+        channel_scale: torch.Tensor,
+        token_count: int,
+        layer_seed: int,
+    ) -> torch.Tensor:
+        """Autograd-aware fixed-hash channel modulation."""
+
+        return HashChannelModulation.apply(
+            values,
+            sorted_indices,
+            token_ids,
+            expert_offsets,
+            channel_scale,
+            int(token_count),
+            int(layer_seed),
         )
 
 else:
@@ -1739,6 +2072,52 @@ else:
             primary * primary_weights
             + secondary * (1.0 - primary_weights)
         )
+
+    def hash_channel_modulation_autograd(
+        values: torch.Tensor,
+        sorted_indices: torch.Tensor,
+        token_ids: torch.Tensor,
+        expert_offsets: torch.Tensor,
+        channel_scale: torch.Tensor,
+        token_count: int,
+        layer_seed: int,
+    ) -> torch.Tensor:
+        """PyTorch reference for fixed-hash expert/channel modulation."""
+
+        assignment_rows = sorted_indices.long()
+        token_rows = assignment_rows.remainder(int(token_count))
+        sorted_token_ids = token_ids[token_rows].to(torch.int64)
+        sorted_rows = torch.arange(
+            assignment_rows.numel(),
+            device=values.device,
+            dtype=torch.long,
+        )
+        expert_ids = torch.bucketize(
+            sorted_rows,
+            expert_offsets[1:-1].long(),
+            right=True,
+        )
+        feature_cols = torch.arange(
+            values.shape[1],
+            device=values.device,
+            dtype=torch.int64,
+        )
+        hashed = (
+            sorted_token_ids[:, None] * 0x9E3779B1
+            + expert_ids[:, None].to(torch.int64) * 0x85EBCA77
+            + feature_cols[None, :] * 0xC2B2AE3D
+            + (int(layer_seed) & 0xFFFFFFFF)
+        ).bitwise_and(0xFFFFFFFF)
+        hashed = (hashed ^ (hashed >> 16)).bitwise_and(0xFFFFFFFF)
+        hashed = (hashed * 0x7FEB352D).bitwise_and(0xFFFFFFFF)
+        hashed = hashed ^ (hashed >> 15)
+        sign = torch.where(
+            hashed.bitwise_and(1).ne(0),
+            torch.ones((), device=values.device, dtype=values.dtype),
+            -torch.ones((), device=values.device, dtype=values.dtype),
+        )
+        scale = channel_scale[expert_ids].to(values.dtype)
+        return values * (1.0 + scale * sign)
 
 
 def pair_coverage_hash_expert_ids(
