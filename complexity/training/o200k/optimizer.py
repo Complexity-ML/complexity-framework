@@ -45,7 +45,10 @@ def build_optimizer(args, raw_model):
                 else "base"
             )
             use_decay = not (
-                p.ndim < 2 or "bias" in name or "norm" in name
+                p.ndim < 2
+                or "bias" in name
+                or "norm" in name
+                or name.endswith("hash_channel_scale")
             )
             buckets[(kind, use_decay)].append(p)
 

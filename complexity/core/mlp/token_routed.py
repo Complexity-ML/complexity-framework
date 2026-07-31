@@ -546,6 +546,10 @@ class TokenRoutedMLP(MLPBase):
 
     def training_telemetry(self) -> dict[str, float]:
         values = {"topk_w": float(self._primary_weight)}
+        if self.learn_hash_channel_modulation:
+            values["hash_channel_abs"] = float(
+                self.hash_channel_scale.detach().float().abs().mean().item()
+            )
         if self.use_shared_routed_gates:
             values.update(
                 shared_gate=float(self.shared_output_gate.detach().float().item()),
