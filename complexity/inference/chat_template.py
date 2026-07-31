@@ -21,6 +21,7 @@ REQUIRED_FIELDS = (
     "turn_separator",
     "eos_token",
     "assistant_only_loss",
+    "training_projection",
 )
 
 
@@ -35,6 +36,7 @@ def default_chat_template() -> dict[str, Any]:
         "turn_separator": "\n\n",
         "eos_token": "<|endoftext|>",
         "assistant_only_loss": True,
+        "training_projection": "merge_user_turns_target_final_assistant",
     }
 
 
@@ -46,6 +48,13 @@ def validate_chat_template(template: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"Unsupported chat template: {template['id']}")
     if not template["assistant_only_loss"]:
         raise ValueError("Complexity SFT requires assistant_only_loss=true")
+    if template["training_projection"] != (
+        "merge_user_turns_target_final_assistant"
+    ):
+        raise ValueError(
+            "Unsupported SFT training projection: "
+            f"{template['training_projection']}"
+        )
     for field in ("system_format", "user_format"):
         if "{content}" not in template[field]:
             raise ValueError(f"Chat template {field} must contain {{content}}")
