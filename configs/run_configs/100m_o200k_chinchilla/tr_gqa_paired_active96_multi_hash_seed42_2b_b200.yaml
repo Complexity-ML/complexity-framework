@@ -7,8 +7,8 @@ run:
   tokenizer: ./tokenizer-o200k
   eval_ratio: 0.0
 
-  steps: 5086
-  batch_size: 48
+  steps: 10172
+  batch_size: 24
   seq_len: 2048
   hidden_size: 384
   num_hidden_layers: 10
@@ -63,11 +63,11 @@ run:
   compile: false
 
   log_steps: 10
-  eval_steps: 250
+  eval_steps: 500
   eval_batches: 32
   num_workers: 0
   empty_cache_every: 0
-  save_steps: 1000
+  save_steps: 2000
   save_total_limit: 2
   seed: 42
   run_name: tr-gqa-paired-active96-multi-hash-100m-o200k-2b-s42
