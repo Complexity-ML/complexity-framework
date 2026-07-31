@@ -16,7 +16,7 @@ learned contextual Mixtral router.
 | Phase | training and inference |
 | Dense precision | FP32, BF16, FP16 |
 | Parallelism | one device or replicated DDP |
-| CUDA | universal PyTorch reference or CGGR/Triton |
+| CUDA | hash-native fused top-2, general CGGR/Triton, or PyTorch |
 | CUDA Graph | inference buckets with persistent static buffers |
 
 FP8 and INT8 are named in the public precision contract but intentionally fail
@@ -71,9 +71,17 @@ engine manifest; it does not change route identity.
 
 ## Backend selection
 
-`backend="auto"` uses CGGR/Triton when CUDA and the autograd-aware kernel are
-available. Otherwise it selects the universal PyTorch path and reports the
-reason in `capability_summary()`.
+`backend="auto"` first selects the hash-native fused CUDA path for top-2 with
+two to four experts. That path compiles each vocabulary route into one byte,
+fuses hash decoding with the counting partition, reads the original hidden
+states indirectly for both input projections, keeps the down projection
+expert-contiguous, and fuses route unpermutation with the weighted reduction.
+Training uses the autograd-aware grouped projections; inference additionally
+uses the fused Triton SwiGLU activation.
+
+Other supported expert/top-k shapes use general CGGR/Triton when available.
+CPU, MPS, and CUDA installations without the custom kernels select the
+universal PyTorch reference and report the reason in `capability_summary()`.
 
 The universal implementation is the numerical reference for every expert and
 top-k combination. Optimized kernels must match it before being enabled.
@@ -89,9 +97,10 @@ Inference graphs require:
 
 The runner selects the smallest containing bucket, copies the request into
 persistent buffers, replays the captured graph, and returns the unpadded slice.
-This keeps graph shapes and memory addresses stable. The graph currently
-captures the fixed expert-loop reference path; the next kernel milestone is a
-fully fused hash/partition/SwiGLU/reduction graph.
+This keeps graph shapes and memory addresses stable. Graph capture currently
+uses the allocation-free fixed expert loop; capture of the hash-native
+partition pipeline remains a separate optimization because its temporary
+partition buffers require a persistent workspace.
 
 ```python
 from complexity.tr_hash import GraphBucket, TRHashBackend, TRHashPhase
@@ -113,8 +122,11 @@ config = TRHashEngineConfig(
 
 1. **Implemented:** general reference, arbitrary supported E/top-k, autograd,
    route validation, CGGR selection and combined top-k grouped dispatch.
-2. **Implemented:** static CUDA Graph bucket manager using persistent buffers.
-3. **Next:** fuse token hash, expert partition, two SwiGLU input projections,
-   down projection and weighted reduction for all supported E/top-k shapes.
-4. **Then:** FP8 and INT8 grouped-GEMM specializations.
-5. **Then:** expert-parallel all-to-all; replicated multi-GPU already uses DDP.
+2. **Implemented:** hash-native fused CUDA path for top-2 and up to four
+   experts, including compact routes, linear partition, indirect projections,
+   fused inference SwiGLU, and fused weighted route reduction.
+3. **Implemented:** static CUDA Graph bucket manager using persistent buffers.
+4. **Next:** generalize the hash-native partition workspace to 8/16 experts
+   and top-1/top-4, then capture it inside CUDA Graph buckets.
+5. **Then:** FP8 and INT8 grouped-GEMM specializations.
+6. **Then:** expert-parallel all-to-all; replicated multi-GPU already uses DDP.

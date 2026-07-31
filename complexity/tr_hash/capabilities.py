@@ -36,16 +36,48 @@ def _custom_cggr_available() -> bool:
         return False
 
 
+def _fused_cuda_available() -> bool:
+    try:
+        from complexity_cuda.triton_token_routed import (
+            HAS_TRITON,
+            fused_swiglu_triton,
+            hash_cggr_grouped_gemm_autograd,
+            pair_hash_reduce_autograd,
+            pair_hash_weighted_reduce_autograd,
+            sort_pair_hash_by_expert,
+        )
+
+        return bool(
+            HAS_TRITON
+            and fused_swiglu_triton is not None
+            and hash_cggr_grouped_gemm_autograd is not None
+            and pair_hash_reduce_autograd is not None
+            and pair_hash_weighted_reduce_autograd is not None
+            and sort_pair_hash_by_expert is not None
+        )
+    except Exception:
+        return False
+
+
+def supports_fused_cuda(config: TRHashEngineConfig) -> bool:
+    """Return whether a shape has a hash-native fused CUDA implementation."""
+
+    return config.top_k == 2 and 2 <= config.num_experts <= 4
+
+
 def select_backend(
     config: TRHashEngineConfig,
     *,
     device_type: str,
     cggr_available: Optional[bool] = None,
+    fused_cuda_available: Optional[bool] = None,
 ) -> BackendDecision:
     """Resolve a runtime backend without silently claiming unsupported modes."""
 
     if cggr_available is None:
         cggr_available = _custom_cggr_available()
+    if fused_cuda_available is None:
+        fused_cuda_available = _fused_cuda_available()
     reasons = []
 
     if config.precision in {TRHashPrecision.FP8, TRHashPrecision.INT8}:
@@ -77,6 +109,26 @@ def select_backend(
             quantized=False,
         )
 
+    if requested is TRHashBackend.FUSED_CUDA:
+        if device_type != "cuda":
+            raise RuntimeError("fused CUDA backend requires a CUDA device")
+        if not supports_fused_cuda(config):
+            raise RuntimeError(
+                "fused CUDA backend requires top_k=2 and two to four experts"
+            )
+        if not fused_cuda_available:
+            raise RuntimeError(
+                "fused CUDA backend requested but hash-native Triton kernels "
+                "are unavailable"
+            )
+        return BackendDecision(
+            requested=requested,
+            selected=TRHashBackend.FUSED_CUDA,
+            reasons=(),
+            graph_safe=False,
+            quantized=False,
+        )
+
     if requested is TRHashBackend.CGGR:
         if device_type != "cuda":
             raise RuntimeError("CGGR backend requires a CUDA device")
@@ -90,6 +142,18 @@ def select_backend(
             quantized=False,
         )
 
+    if (
+        device_type == "cuda"
+        and fused_cuda_available
+        and supports_fused_cuda(config)
+    ):
+        return BackendDecision(
+            requested=requested,
+            selected=TRHashBackend.FUSED_CUDA,
+            reasons=(),
+            graph_safe=False,
+            quantized=False,
+        )
     if device_type != "cuda":
         reasons.append("CGGR requires CUDA")
     elif not cggr_available:

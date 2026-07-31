@@ -1,7 +1,12 @@
 """Public TR-Hash execution-engine API."""
 
 from .buckets import GraphBucketPlanner
-from .capabilities import BackendDecision, precision_to_torch_dtype, select_backend
+from .capabilities import (
+    BackendDecision,
+    precision_to_torch_dtype,
+    select_backend,
+    supports_fused_cuda,
+)
 from .config import (
     SUPPORTED_EXPERT_COUNTS,
     SUPPORTED_TOP_K,
@@ -14,7 +19,11 @@ from .config import (
     TRHashStrategy,
 )
 from .engine import TRHashEngine, reference_topk_swiglu
-from .routing import build_route_table
+from .routing import (
+    build_route_table,
+    compile_top2_pair_metadata,
+    decode_top2_pair_metadata,
+)
 
 __all__ = [
     "AttentionBackbone",
@@ -30,7 +39,10 @@ __all__ = [
     "TRHashPrecision",
     "TRHashStrategy",
     "build_route_table",
+    "compile_top2_pair_metadata",
+    "decode_top2_pair_metadata",
     "precision_to_torch_dtype",
     "reference_topk_swiglu",
     "select_backend",
+    "supports_fused_cuda",
 ]

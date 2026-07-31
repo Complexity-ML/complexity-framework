@@ -16,6 +16,7 @@ class TRHashBackend(str, Enum):
     AUTO = "auto"
     PYTORCH = "pytorch"
     CGGR = "cggr"
+    FUSED_CUDA = "fused_cuda"
     CUDA_GRAPH = "cuda_graph"
 
 

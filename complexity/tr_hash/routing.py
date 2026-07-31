@@ -138,3 +138,77 @@ def build_route_table(config: TRHashEngineConfig) -> torch.Tensor:
         if torch.any(sorted_routes[1:] == sorted_routes[:-1]):
             raise RuntimeError("route builder selected one expert twice")
     return routes
+
+
+def compile_top2_pair_metadata(
+    routes: torch.Tensor,
+    *,
+    num_experts: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compile a top-2 route table into compact CUDA dispatch metadata.
+
+    The current hash-native CUDA partition encodes one unordered expert-pair
+    index in bits 0..2 and the primary/secondary orientation in bit 3. This
+    covers all pairs for two, three, or four experts without storing two
+    integer expert IDs per vocabulary item.
+    """
+
+    if routes.ndim != 2 or routes.size(0) != 2:
+        raise ValueError("routes must be shaped [2, vocab_size]")
+    if not 2 <= num_experts <= 4:
+        raise ValueError("compact pair metadata supports two to four experts")
+    if routes.numel() and (
+        routes.min().item() < 0 or routes.max().item() >= num_experts
+    ):
+        raise ValueError("routes contain an invalid expert index")
+
+    expert_pairs = torch.combinations(
+        torch.arange(num_experts, dtype=torch.int32, device="cpu"),
+        r=2,
+    )
+    if expert_pairs.size(0) > 8:
+        raise ValueError("compact pair encoding supports at most eight pairs")
+
+    routes_cpu = routes.detach().to(device="cpu", dtype=torch.long)
+    unordered = routes_cpu.sort(dim=0).values
+    if torch.any(unordered[0] == unordered[1]):
+        raise ValueError("top-2 pair routes must select two distinct experts")
+    pair_matches = (
+        unordered[0].unsqueeze(0)
+        == expert_pairs[:, 0].long().unsqueeze(1)
+    ) & (
+        unordered[1].unsqueeze(0)
+        == expert_pairs[:, 1].long().unsqueeze(1)
+    )
+    if not torch.all(pair_matches.any(dim=0)):
+        raise ValueError("routes contain an expert pair that cannot be encoded")
+
+    pair_indices = pair_matches.to(torch.int64).argmax(dim=0)
+    swap = routes_cpu[0].eq(unordered[1]).to(torch.int64)
+    route_codes = (pair_indices | (swap << 3)).to(torch.uint8)
+    return route_codes, expert_pairs
+
+
+def decode_top2_pair_metadata(
+    route_codes: torch.Tensor,
+    expert_pairs: torch.Tensor,
+) -> torch.Tensor:
+    """Decode compact pair metadata to the authoritative ``[2, vocab]`` form."""
+
+    if route_codes.ndim != 1 or route_codes.dtype != torch.uint8:
+        raise ValueError("route_codes must be a one-dimensional uint8 tensor")
+    if expert_pairs.ndim != 2 or expert_pairs.size(1) != 2:
+        raise ValueError("expert_pairs must be shaped [pair_count, 2]")
+    codes = route_codes.to(torch.int64)
+    pair_indices = codes.bitwise_and(0x7)
+    if pair_indices.numel() and pair_indices.max().item() >= expert_pairs.size(0):
+        raise ValueError("route_codes reference an unavailable expert pair")
+    selected = expert_pairs[pair_indices.long()].long()
+    swap = codes.bitwise_and(0x8).ne(0)
+    return torch.stack(
+        (
+            torch.where(swap, selected[:, 1], selected[:, 0]),
+            torch.where(swap, selected[:, 0], selected[:, 1]),
+        ),
+        dim=0,
+    )

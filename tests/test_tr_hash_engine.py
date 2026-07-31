@@ -13,7 +13,10 @@ from complexity.tr_hash import (
     TRHashPrecision,
     TRHashStrategy,
     build_route_table,
+    compile_top2_pair_metadata,
+    decode_top2_pair_metadata,
     select_backend,
+    supports_fused_cuda,
 )
 
 
@@ -101,6 +104,51 @@ def test_balanced_hash_varies_by_layer_without_changing_loads():
         counts_one = torch.bincount(layer_one[route_index], minlength=8)
         assert int(counts_zero.max() - counts_zero.min()) <= 1
         assert int(counts_one.max() - counts_one.min()) <= 1
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [
+        TRHashStrategy.MODULO_CYCLIC,
+        TRHashStrategy.BALANCED_HASH,
+        TRHashStrategy.AFFINE_HASH,
+    ],
+)
+@pytest.mark.parametrize("num_experts", [2, 4])
+def test_compact_top2_pair_metadata_round_trips(strategy, num_experts):
+    config = TRHashEngineConfig(
+        hidden_size=8,
+        vocab_size=997,
+        num_experts=num_experts,
+        top_k=2,
+        expert_width=4,
+        routing_strategy=strategy,
+        layer_index=3,
+    )
+    routes = build_route_table(config)
+    route_codes, expert_pairs = compile_top2_pair_metadata(
+        routes,
+        num_experts=num_experts,
+    )
+
+    assert route_codes.dtype is torch.uint8
+    assert route_codes.shape == (config.vocab_size,)
+    assert expert_pairs.shape == (num_experts * (num_experts - 1) // 2, 2)
+    assert torch.equal(
+        decode_top2_pair_metadata(route_codes, expert_pairs),
+        routes,
+    )
+
+
+def test_compact_pair_metadata_rejects_unsupported_shape():
+    routes = torch.tensor([[0, 1], [1, 2]])
+    with pytest.raises(ValueError, match="two to four"):
+        compile_top2_pair_metadata(routes, num_experts=8)
+    with pytest.raises(ValueError, match="distinct"):
+        compile_top2_pair_metadata(
+            torch.tensor([[0, 1], [0, 2]]),
+            num_experts=4,
+        )
 
 
 def _naive_engine_output(engine, hidden, token_ids):
@@ -246,7 +294,7 @@ def test_auto_backend_reports_cpu_fallback_and_multi_gpu_contract():
     assert "CGGR requires CUDA" in summary["backend_reasons"]
 
 
-def test_backend_selection_prefers_cggr_when_cuda_kernel_is_available():
+def test_backend_selection_prefers_fused_cuda_for_supported_pair_shape():
     config = TRHashEngineConfig(
         hidden_size=8,
         vocab_size=101,
@@ -256,8 +304,118 @@ def test_backend_selection_prefers_cggr_when_cuda_kernel_is_available():
         config,
         device_type="cuda",
         cggr_available=True,
+        fused_cuda_available=True,
+    )
+    assert decision.selected is TRHashBackend.FUSED_CUDA
+    assert supports_fused_cuda(config)
+
+
+def test_backend_selection_falls_back_to_general_cggr_shape():
+    config = TRHashEngineConfig(
+        hidden_size=8,
+        vocab_size=101,
+        num_experts=8,
+        top_k=4,
+        precision=TRHashPrecision.FP16,
+    )
+    decision = select_backend(
+        config,
+        device_type="cuda",
+        cggr_available=True,
+        fused_cuda_available=True,
     )
     assert decision.selected is TRHashBackend.CGGR
+    assert not supports_fused_cuda(config)
+
+
+def test_explicit_fused_cuda_rejects_unsupported_shape():
+    config = TRHashEngineConfig(
+        hidden_size=8,
+        vocab_size=101,
+        num_experts=8,
+        top_k=4,
+        precision=TRHashPrecision.FP16,
+        backend=TRHashBackend.FUSED_CUDA,
+    )
+    with pytest.raises(RuntimeError, match="top_k=2"):
+        select_backend(
+            config,
+            device_type="cuda",
+            cggr_available=True,
+            fused_cuda_available=True,
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_fused_cuda_matches_reference_forward_and_gradients():
+    from complexity.tr_hash.engine import HAS_FUSED_CUDA
+
+    if not HAS_FUSED_CUDA:
+        pytest.skip("hash-native Triton kernels are unavailable")
+
+    torch.manual_seed(29)
+    common = dict(
+        hidden_size=16,
+        vocab_size=257,
+        num_experts=4,
+        top_k=2,
+        shared_width=24,
+        expert_width=8,
+        precision=TRHashPrecision.FP32,
+    )
+    fused = TRHashEngine(
+        TRHashEngineConfig(
+            **common,
+            backend=TRHashBackend.FUSED_CUDA,
+        )
+    ).cuda()
+    reference = TRHashEngine(
+        TRHashEngineConfig(
+            **common,
+            backend=TRHashBackend.PYTORCH,
+        )
+    ).cuda()
+    reference.load_state_dict(fused.state_dict())
+
+    token_ids = torch.randint(0, 257, (2, 11), device="cuda")
+    fused_hidden = torch.randn(
+        2,
+        11,
+        16,
+        device="cuda",
+        requires_grad=True,
+    )
+    reference_hidden = fused_hidden.detach().clone().requires_grad_(True)
+    fused_output = fused(fused_hidden, token_ids)
+    reference_output = reference(reference_hidden, token_ids)
+    assert torch.allclose(
+        fused_output,
+        reference_output,
+        atol=2e-3,
+        rtol=2e-3,
+    )
+
+    output_gradient = torch.randn_like(fused_output)
+    fused_output.backward(output_gradient)
+    reference_output.backward(output_gradient)
+    assert torch.allclose(
+        fused_hidden.grad,
+        reference_hidden.grad,
+        atol=3e-3,
+        rtol=3e-3,
+    )
+    for fused_parameter, reference_parameter in zip(
+        fused.parameters(),
+        reference.parameters(),
+    ):
+        assert fused_parameter.grad is not None
+        assert reference_parameter.grad is not None
+        assert torch.allclose(
+            fused_parameter.grad,
+            reference_parameter.grad,
+            atol=3e-3,
+            rtol=3e-3,
+        )
 
 
 @pytest.mark.parametrize("precision", [TRHashPrecision.FP8, TRHashPrecision.INT8])

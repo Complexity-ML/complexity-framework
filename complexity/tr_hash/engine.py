@@ -1,7 +1,8 @@
 """General TR-Hash SwiGLU engine.
 
-The universal PyTorch path is the correctness contract. CUDA CGGR and CUDA
-Graph paths are optional execution strategies selected from the same config.
+The universal PyTorch path is the correctness contract. Hash-native fused
+CUDA, general CGGR, and CUDA Graph paths are execution strategies selected
+from the same config.
 """
 
 from __future__ import annotations
@@ -14,9 +15,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .buckets import GraphBucketPlanner
-from .capabilities import BackendDecision, select_backend
+from .capabilities import BackendDecision, select_backend, supports_fused_cuda
 from .config import GraphBucket, TRHashBackend, TRHashEngineConfig, TRHashPhase
-from .routing import build_route_table
+from .routing import build_route_table, compile_top2_pair_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +25,31 @@ try:
     from complexity_cuda.triton_token_routed import (
         HAS_TRITON,
         cggr_grouped_gemm_autograd,
+        fused_swiglu_triton,
+        hash_cggr_grouped_gemm_autograd,
+        pair_hash_reduce_autograd,
+        pair_hash_weighted_reduce_autograd,
+        sort_pair_hash_by_expert,
         sort_tokens_by_expert,
     )
 except Exception:
     HAS_TRITON = False
     cggr_grouped_gemm_autograd = None
+    fused_swiglu_triton = None
+    hash_cggr_grouped_gemm_autograd = None
+    pair_hash_reduce_autograd = None
+    pair_hash_weighted_reduce_autograd = None
+    sort_pair_hash_by_expert = None
     sort_tokens_by_expert = None
+
+HAS_FUSED_CUDA = bool(
+    HAS_TRITON
+    and fused_swiglu_triton is not None
+    and hash_cggr_grouped_gemm_autograd is not None
+    and pair_hash_reduce_autograd is not None
+    and pair_hash_weighted_reduce_autograd is not None
+    and sort_pair_hash_by_expert is not None
+)
 
 
 def _silu_mul(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
@@ -88,6 +108,16 @@ class TRHashEngine(nn.Module):
         super().__init__()
         self.config = config
         self.register_buffer("route_table", build_route_table(config))
+        if supports_fused_cuda(config):
+            route_codes, expert_pairs = compile_top2_pair_metadata(
+                self.route_table,
+                num_experts=config.num_experts,
+            )
+        else:
+            route_codes = torch.empty(0, dtype=torch.uint8)
+            expert_pairs = torch.empty((0, 2), dtype=torch.int32)
+        self.register_buffer("fused_route_codes", route_codes)
+        self.register_buffer("fused_expert_pairs", expert_pairs)
 
         self.expert_gate = nn.Parameter(
             torch.empty(
@@ -230,6 +260,92 @@ class TRHashEngine(nn.Module):
         ).view(self.config.top_k, 1, 1)
         return (expanded_output * weights).sum(dim=0)
 
+    def _fused_cuda_routed(
+        self,
+        flat_x: torch.Tensor,
+        flat_token_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        """Hash-native CUDA dispatch for the common top-2 expert pair.
+
+        The planner decodes compact token-ID pair metadata while it performs a
+        linear counting partition. Gate and up projections read the original
+        token matrix indirectly, so no duplicated ``[2*N, hidden]`` input is
+        materialized. The down projection stays expert-contiguous and the
+        final Triton reduction combines both routes directly in token order.
+        """
+
+        if not HAS_FUSED_CUDA:
+            raise RuntimeError(
+                "fused CUDA selected but hash-native Triton kernels are unavailable"
+            )
+        if flat_x.device.type != "cuda":
+            raise RuntimeError("fused CUDA routing requires CUDA tensors")
+        if not supports_fused_cuda(self.config):
+            raise RuntimeError(
+                "fused CUDA routing requires top_k=2 and two to four experts"
+            )
+
+        token_count = int(flat_x.size(0))
+        (
+            sorted_indices,
+            inverse_indices,
+            expert_offsets,
+            _,
+        ) = sort_pair_hash_by_expert(
+            flat_token_ids,
+            self.fused_route_codes,
+            self.fused_expert_pairs,
+            vocab_size=self.config.vocab_size,
+            num_experts=self.config.num_experts,
+            return_inverse=True,
+        )
+        gate = hash_cggr_grouped_gemm_autograd(
+            flat_x,
+            self.expert_gate,
+            expert_offsets,
+            sorted_indices,
+            inverse_indices,
+        )
+        up = hash_cggr_grouped_gemm_autograd(
+            flat_x,
+            self.expert_up,
+            expert_offsets,
+            sorted_indices,
+            inverse_indices,
+        )
+        if self.training or torch.is_grad_enabled():
+            intermediate = _silu_mul(gate, up)
+        else:
+            intermediate = fused_swiglu_triton(gate, up)
+        sorted_output = cggr_grouped_gemm_autograd(
+            intermediate,
+            self.expert_down,
+            expert_offsets,
+        )
+
+        primary_weight, secondary_weight = self.config.route_weights
+        if abs(primary_weight - secondary_weight) <= 1e-12:
+            return pair_hash_reduce_autograd(
+                sorted_output,
+                sorted_indices,
+                inverse_indices,
+                token_count,
+                scale=float(primary_weight),
+            )
+        primary_weights = torch.full(
+            (token_count,),
+            float(primary_weight),
+            dtype=flat_x.dtype,
+            device=flat_x.device,
+        )
+        return pair_hash_weighted_reduce_autograd(
+            sorted_output,
+            sorted_indices,
+            inverse_indices,
+            primary_weights,
+            token_count,
+        )
+
     def _forward_eager(
         self,
         hidden_states: torch.Tensor,
@@ -247,12 +363,21 @@ class TRHashEngine(nn.Module):
 
         batch, sequence, hidden = hidden_states.shape
         flat_x = hidden_states.reshape(-1, hidden)
-        routes = self._routes(token_ids).reshape(self.config.top_k, -1)
         shared = self._shared(flat_x)
-        if backend is TRHashBackend.CGGR:
-            routed = self._cggr_routed(flat_x, routes)
+        if backend is TRHashBackend.FUSED_CUDA:
+            routed = self._fused_cuda_routed(
+                flat_x,
+                token_ids.reshape(-1),
+            )
         else:
-            routed = self._reference_routed(flat_x, routes)
+            routes = self._routes(token_ids).reshape(
+                self.config.top_k,
+                -1,
+            )
+            if backend is TRHashBackend.CGGR:
+                routed = self._cggr_routed(flat_x, routes)
+            else:
+                routed = self._reference_routed(flat_x, routes)
         output = self.config.shared_output_scale * shared + self.config.routed_output_scale * routed
         return output.view(batch, sequence, hidden)
 
@@ -265,6 +390,7 @@ class TRHashEngine(nn.Module):
             self.config,
             device_type=hidden_states.device.type,
             cggr_available=bool(HAS_TRITON and cggr_grouped_gemm_autograd),
+            fused_cuda_available=HAS_FUSED_CUDA,
         )
         self.last_backend = decision
         if decision.selected is TRHashBackend.CUDA_GRAPH:
@@ -297,6 +423,7 @@ class TRHashEngine(nn.Module):
             self.config,
             device_type=device_type,
             cggr_available=bool(HAS_TRITON and cggr_grouped_gemm_autograd),
+            fused_cuda_available=HAS_FUSED_CUDA,
         )
         return {
             "experts": self.config.num_experts,
@@ -315,6 +442,7 @@ class TRHashEngine(nn.Module):
             "requested_backend": decision.requested.value,
             "selected_backend": decision.selected.value,
             "backend_reasons": list(decision.reasons),
+            "fused_cuda_eligible": supports_fused_cuda(self.config),
             "cuda_graph_buckets": [
                 [bucket.batch_size, bucket.sequence_length] for bucket in self.config.graph_buckets
             ],
