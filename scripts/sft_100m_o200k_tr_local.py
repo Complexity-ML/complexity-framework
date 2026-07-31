@@ -29,6 +29,12 @@ from tqdm import tqdm
 
 from complexity.config import ModelConfig
 from complexity.core.losses import causal_lm_loss_from_hidden
+from complexity.inference.chat_template import (
+    default_chat_template,
+    load_chat_template,
+    render_inference_prompt,
+    render_messages_before_assistant,
+)
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
 from complexity.training.o200k_pretrain import init_distributed
@@ -89,7 +95,11 @@ def checkpoint_config(state: dict[str, Any]) -> ModelConfig:
     return ModelConfig.from_dict(state["config"])
 
 
-def format_record(record: dict[str, Any]) -> tuple[str, str]:
+def format_record(
+    record: dict[str, Any],
+    chat_template: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    template = chat_template or default_chat_template()
     if "messages" in record:
         messages = record["messages"]
         if not isinstance(messages, list) or not messages:
@@ -102,13 +112,10 @@ def format_record(record: dict[str, Any]) -> tuple[str, str]:
         if assistant_idx is None:
             raise ValueError("messages record has no assistant message")
 
-        prompt_parts: list[str] = []
-        for msg in messages[:assistant_idx]:
-            role = str(msg.get("role", "user")).strip().title()
-            content = str(msg.get("content", "")).strip()
-            if content:
-                prompt_parts.append(f"{role}:\n{content}")
-        prompt = "\n\n".join(prompt_parts) + "\n\nAssistant:\n"
+        prompt = render_messages_before_assistant(
+            messages[:assistant_idx],
+            template,
+        )
         completion = str(messages[assistant_idx].get("content", "")).strip()
         return prompt, completion
 
@@ -117,7 +124,7 @@ def format_record(record: dict[str, Any]) -> tuple[str, str]:
         extra_input = str(record.get("input", "")).strip()
         output = str(record.get("output", record.get("response", ""))).strip()
         user = instruction if not extra_input else f"{instruction}\n\n{extra_input}"
-        return f"User:\n{user}\n\nAssistant:\n", output
+        return render_inference_prompt(user, template), output
 
     if "prompt" in record and ("completion" in record or "response" in record):
         return str(record["prompt"]), str(record.get("completion", record.get("response", "")))
@@ -130,8 +137,9 @@ def encode_sft_example(
     record: dict[str, Any],
     seq_len: int,
     min_completion_tokens: int,
+    chat_template: dict[str, Any] | None = None,
 ) -> dict[str, torch.Tensor]:
-    prompt, completion = format_record(record)
+    prompt, completion = format_record(record, chat_template)
     prompt_ids = tokenizer.encode(prompt, add_special_tokens=False)
     completion_ids = tokenizer.encode(completion, add_special_tokens=False)
     eos_id = tokenizer.eos_token_id
@@ -181,6 +189,7 @@ class SFTJsonlDataset(IterableDataset):
         rank: int,
         world_size: int,
         min_completion_tokens: int = 32,
+        chat_template: dict[str, Any] | None = None,
     ):
         self.records = load_records(path)
         self.tokenizer_path = tokenizer_path
@@ -189,6 +198,7 @@ class SFTJsonlDataset(IterableDataset):
         self.rank = rank
         self.world_size = world_size
         self.min_completion_tokens = min_completion_tokens
+        self.chat_template = chat_template or default_chat_template()
 
     def __iter__(self):
         tokenizer = Tokenizer.load(self.tokenizer_path)
@@ -200,7 +210,13 @@ class SFTJsonlDataset(IterableDataset):
             for idx, record in enumerate(records):
                 if idx % self.world_size != self.rank:
                     continue
-                yield encode_sft_example(tokenizer, record, self.seq_len, self.min_completion_tokens)
+                yield encode_sft_example(
+                    tokenizer,
+                    record,
+                    self.seq_len,
+                    self.min_completion_tokens,
+                    self.chat_template,
+                )
             epoch += 1
 
 
@@ -217,8 +233,11 @@ class SFTBinDataset(IterableDataset):
         repeat: bool = True,
     ):
         root = Path(root)
+        dataset_root = root
         if (root / "train" / "sft.idx.json").exists():
             root = root / "train"
+        elif (root / "sft.idx.json").exists():
+            dataset_root = root.parent
         index_path = root / "sft.idx.json"
         if not index_path.exists():
             raise FileNotFoundError(
@@ -229,6 +248,13 @@ class SFTBinDataset(IterableDataset):
         self.metadata = json.loads(index_path.read_text())
         if self.metadata.get("format") != "complexity-sft-token-shard-v1":
             raise ValueError(f"Unsupported SFT shard format: {self.metadata.get('format')}")
+        self.chat_template = load_chat_template(dataset_root)
+        metadata_template = self.metadata.get("chat_template_id")
+        if metadata_template and metadata_template != self.chat_template["id"]:
+            raise ValueError(
+                "SFT shard/template mismatch: "
+                f"index={metadata_template} template={self.chat_template['id']}"
+            )
         self.input_ids = np.memmap(root / "input_ids.bin", mode="r", dtype=np.dtype("<u4"))
         self.labels = np.memmap(root / "labels.bin", mode="r", dtype=np.dtype("<i4"))
         if len(self.input_ids) != len(self.labels):
@@ -419,7 +445,18 @@ def evaluate_sft(
     return float((loss_sum / token_count).item()), int(token_count.item())
 
 
-def save_checkpoint(args, raw_model, optimizer, scheduler, config, source_checkpoint: str, step: int, is_main: bool, distributed: bool):
+def save_checkpoint(
+    args,
+    raw_model,
+    optimizer,
+    scheduler,
+    config,
+    source_checkpoint: str,
+    step: int,
+    is_main: bool,
+    distributed: bool,
+    chat_template: dict[str, Any],
+):
     if distributed:
         dist.barrier()
     if not is_main or args.save_steps <= 0:
@@ -432,6 +469,7 @@ def save_checkpoint(args, raw_model, optimizer, scheduler, config, source_checkp
         "config": config.to_dict(),
         "args": vars(args),
         "sft_source_checkpoint": source_checkpoint,
+        "chat_template": chat_template,
         "backend": backend_metadata(kernel_policy=getattr(args, "use_custom_kernels", "auto")),
     }
     if not args.save_model_only:
@@ -588,6 +626,9 @@ def main():
             args.min_completion_tokens,
         )
         eval_ds = None
+    chat_template = train_ds.chat_template
+    if eval_ds is not None and eval_ds.chat_template != chat_template:
+        raise ValueError("Train and eval SFT shards use different chat templates")
     loader_kwargs = {"batch_size": args.batch_size, "pin_memory": False}
     if args.num_workers > 0:
         loader_kwargs.update(num_workers=args.num_workers, persistent_workers=True)
@@ -636,6 +677,7 @@ def main():
             logger.info("Dataset: built-in toy SFT records")
         else:
             logger.info(f"Dataset: {args.jsonl} ({len(train_ds.records)} records)")
+        logger.info(f"Chat template: {chat_template['id']}")
         csv_file = (run_dir / "metrics.csv").open("w", newline="")
         writer = csv.writer(csv_file)
         writer.writerow([
@@ -756,10 +798,32 @@ def main():
         if args.empty_cache_every > 0 and step % args.empty_cache_every == 0:
             empty_cache(device)
         if args.save_steps > 0 and step % args.save_steps == 0:
-            save_checkpoint(args, raw_model, optimizer, scheduler, config, str(ckpt_dir), step, is_main, distributed)
+            save_checkpoint(
+                args,
+                raw_model,
+                optimizer,
+                scheduler,
+                config,
+                str(ckpt_dir),
+                step,
+                is_main,
+                distributed,
+                chat_template,
+            )
 
     if args.save_steps > 0 and last_step > 0 and last_step % args.save_steps != 0:
-        save_checkpoint(args, raw_model, optimizer, scheduler, config, str(ckpt_dir), last_step, is_main, distributed)
+        save_checkpoint(
+            args,
+            raw_model,
+            optimizer,
+            scheduler,
+            config,
+            str(ckpt_dir),
+            last_step,
+            is_main,
+            distributed,
+            chat_template,
+        )
     if pbar is not None:
         pbar.close()
     if csv_file is not None:

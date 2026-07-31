@@ -11,6 +11,11 @@ from pathlib import Path
 import torch
 from safetensors.torch import save_file
 
+from complexity.inference.chat_template import (
+    default_chat_template,
+    validate_chat_template,
+)
+
 DROP_SUFFIXES = (
     "rotary_emb.inv_freq",
     "pair_hash_route_codes",
@@ -18,10 +23,10 @@ DROP_SUFFIXES = (
 )
 
 
-def build_config(raw: dict) -> dict:
+def build_config(raw: dict, chat_template: dict | None = None) -> dict:
     """Translate the training configuration to the DeepConfig contract."""
 
-    return {
+    config = {
         "architectures": ["DeepForCausalLM"],
         "model_type": "deep",
         "hidden_size": raw["hidden_size"],
@@ -58,6 +63,10 @@ def build_config(raw: dict) -> dict:
         "tie_word_embeddings": raw.get("tie_word_embeddings", True),
         "torch_dtype": "bfloat16",
     }
+    if chat_template is not None:
+        config["chat_template_id"] = chat_template["id"]
+        config["chat_template_file"] = "chat_template.json"
+    return config
 
 
 def main() -> None:
@@ -91,7 +100,10 @@ def main() -> None:
             tensor = tensor.to(target_dtype)
         state[name] = tensor.contiguous()
     save_file(state, str(output / "model.safetensors"))
-    config = build_config(dict(checkpoint["config"]))
+    chat_template = validate_chat_template(
+        checkpoint.get("chat_template", default_chat_template())
+    )
+    config = build_config(dict(checkpoint["config"]), chat_template)
     config["torch_dtype"] = args.dtype
     (output / "config.json").write_text(
         json.dumps(config, indent=2) + "\n",
@@ -99,6 +111,10 @@ def main() -> None:
     )
     (output / "generation_config.json").write_text(
         json.dumps({"do_sample": True, "max_new_tokens": 128}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (output / "chat_template.json").write_text(
+        json.dumps(chat_template, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     if args.tokenizer:

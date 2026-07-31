@@ -5,12 +5,25 @@ from pathlib import Path
 
 import numpy as np
 
-from scripts.sft_100m_o200k_tr_local import SFTBinDataset, build_parser
+from complexity.inference.chat_template import (
+    CHAT_TEMPLATE_ID,
+    default_chat_template,
+    render_inference_prompt,
+)
+from scripts.sft_100m_o200k_tr_local import (
+    SFTBinDataset,
+    build_parser,
+    format_record,
+)
 
 
 def _write_shard(root: Path) -> None:
     train = root / "train"
     train.mkdir(parents=True)
+    (root / "chat_template.json").write_text(
+        json.dumps(default_chat_template()) + "\n",
+        encoding="utf-8",
+    )
     input_ids = np.asarray([10, 11, 12, 13, 20, 21], dtype="<u4")
     labels = np.asarray([-100, -100, 12, 13, -100, 21], dtype="<i4")
     input_ids.tofile(train / "input_ids.bin")
@@ -38,6 +51,7 @@ def _write_shard(root: Path) -> None:
         json.dumps(
             {
                 "format": "complexity-sft-token-shard-v1",
+                "chat_template_id": CHAT_TEMPLATE_ID,
                 "examples": 2,
                 "num_tokens": 6,
                 "supervised_tokens": 3,
@@ -53,6 +67,22 @@ def test_sft_bin_dataset_reads_and_pads_indexed_examples(tmp_path: Path) -> None
     first = dataset._tensor_example(dataset.examples[0])
     assert first["input_ids"].tolist() == [10, 11, 12, 13, 199999]
     assert first["labels"].tolist() == [-100, -100, 12, 13, -100]
+    assert dataset.chat_template["id"] == CHAT_TEMPLATE_ID
+
+
+def test_messages_use_the_canonical_chat_template() -> None:
+    template = default_chat_template()
+    prompt, completion = format_record(
+        {
+            "messages": [
+                {"role": "user", "content": "What is a hash route?"},
+                {"role": "assistant", "content": "A fixed mapping."},
+            ]
+        },
+        template,
+    )
+    assert prompt == render_inference_prompt("What is a hash route?", template)
+    assert completion == "A fixed mapping."
 
 
 def test_sft_bin_dataset_truncates_from_left_to_keep_response(tmp_path: Path) -> None:

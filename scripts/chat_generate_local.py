@@ -13,10 +13,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from complexity.models import ComplexityModel
-from complexity.tokenizer import Tokenizer
-from complexity.utils.device import configure_torch_acceleration
-from scripts.sft_100m_o200k_tr_local import checkpoint_config, load_checkpoint_state
+from complexity.inference.chat_template import (  # noqa: E402
+    default_chat_template,
+    render_inference_prompt,
+    validate_chat_template,
+)
+from complexity.models import ComplexityModel  # noqa: E402
+from complexity.tokenizer import Tokenizer  # noqa: E402
+from complexity.utils.device import configure_torch_acceleration  # noqa: E402
+from scripts.sft_100m_o200k_tr_local import (  # noqa: E402
+    checkpoint_config,
+    load_checkpoint_state,
+)
 
 
 def pick_device(name: str) -> torch.device:
@@ -29,7 +37,11 @@ def pick_device(name: str) -> torch.device:
     return torch.device("cpu")
 
 
-def load_model(checkpoint: Path, tokenizer_path: Path, device: torch.device) -> tuple[ComplexityModel, Tokenizer]:
+def load_model(
+    checkpoint: Path,
+    tokenizer_path: Path,
+    device: torch.device,
+) -> tuple[ComplexityModel, Tokenizer, dict]:
     configure_torch_acceleration(kernel_policy=False, log=False)
     _, state = load_checkpoint_state(checkpoint, map_location="cpu")
     config = checkpoint_config(state)
@@ -39,7 +51,10 @@ def load_model(checkpoint: Path, tokenizer_path: Path, device: torch.device) -> 
     if missing or unexpected:
         raise RuntimeError(f"Checkpoint mismatch: missing={missing}, unexpected={unexpected}")
     model.eval()
-    return model, Tokenizer.load(str(tokenizer_path))
+    chat_template = validate_chat_template(
+        state.get("chat_template", default_chat_template())
+    )
+    return model, Tokenizer.load(str(tokenizer_path)), chat_template
 
 
 @torch.no_grad()
@@ -72,10 +87,10 @@ def generate_chat(
     return text.strip()
 
 
-def build_prompt(user_text: str, raw: bool) -> str:
+def build_prompt(user_text: str, raw: bool, chat_template: dict) -> str:
     if raw:
         return user_text
-    return f"User:\n{user_text}\n\nAssistant:\n"
+    return render_inference_prompt(user_text, chat_template)
 
 
 def main() -> None:
@@ -92,8 +107,12 @@ def main() -> None:
     args = parser.parse_args()
 
     device = pick_device(args.device)
-    model, tokenizer = load_model(args.checkpoint, args.tokenizer, device)
-    prompt = build_prompt(args.prompt, args.raw)
+    model, tokenizer, chat_template = load_model(
+        args.checkpoint,
+        args.tokenizer,
+        device,
+    )
+    prompt = build_prompt(args.prompt, args.raw, chat_template)
     if args.show_prompt:
         print("=== prompt ===")
         print(prompt)
