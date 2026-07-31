@@ -9,7 +9,6 @@ Advanced optimization for Token-Routed MLP:
 
 Performance: ~10-15% faster than standard CGGR
 
-Author: Pacific Prime, Huggingface: @Wilba
 """
 
 import torch

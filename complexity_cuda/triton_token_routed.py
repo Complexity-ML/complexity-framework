@@ -13,7 +13,6 @@ Performance:
 - Batched bmm: 3.3x speedup
 - CGGR Triton: 5-6x speedup
 
-Author: Boris Peyriguere
 """
 
 import torch
@@ -2572,7 +2571,7 @@ def fused_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> t
 
 
 # =============================================================================
-# ROBOTICS CONTROL LOOP KERNEL - Pacific Prime Pattern (Token-Routed Variant)
+# ROBOTICS CONTROL LOOP KERNEL (TOKEN-ROUTED VARIANT)
 # =============================================================================
 # Inspired by real-time robotics control: sense -> process -> actuate
 # Adapted for Token-Routed MLP with per-token expert routing

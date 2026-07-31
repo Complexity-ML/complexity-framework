@@ -9,7 +9,6 @@ Combines all CUDA optimizations into a single high-performance layer:
 
 Total expected speedup: ~40-60% over baseline
 
-Author: Pacific Prime
 """
 
 import torch

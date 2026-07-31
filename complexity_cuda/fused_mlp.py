@@ -8,7 +8,6 @@ Optimizations:
 
 Performance: ~20-30% faster than separate operations
 
-Author: Pacific Prime
 """
 
 import torch

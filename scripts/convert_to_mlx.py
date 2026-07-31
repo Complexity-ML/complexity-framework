@@ -10,12 +10,20 @@ import argparse
 import json
 from pathlib import Path
 
+import mlx.core as mx
 import numpy as np
 import torch
-import mlx.core as mx
 
 # Buffers present in the torch state_dict that the MLX model does not hold.
-DROP = ("rotary_emb.inv_freq", "expert_counts", "last_shared_rms", "last_routed_rms", "lsh_bit_values")
+DROP = (
+    "rotary_emb.inv_freq",
+    "expert_counts",
+    "last_shared_rms",
+    "last_routed_rms",
+    "lsh_bit_values",
+    "pair_hash_route_codes",
+    "pair_hash_expert_pairs",
+)
 
 
 def main() -> None:
@@ -68,6 +76,13 @@ def main() -> None:
         "tie_word_embeddings": c.get("tie_word_embeddings", True),
         "top_k": c.get("top_k", 2),
         "top_k_primary_weight": float(pw),
+        "shared_output_scale": float(c.get("shared_output_scale", 1.0)),
+        "routed_output_scale": float(c.get("routed_output_scale", 1.0)),
+        "learn_hash_channel_modulation": bool(
+            c.get("learn_hash_channel_modulation", False)
+        ),
+        "hash_channel_scale_init": float(c.get("hash_channel_scale_init", 0.0)),
+        "mlp_type": c.get("mlp_type", "token_routed"),
         "routing_strategy": c.get("routing_strategy", "modulo_cyclic"),
         "lsh_routing": bool(c.get("lsh_routing", False)),
         "lsh_bits": int(c.get("lsh_bits", 0)),

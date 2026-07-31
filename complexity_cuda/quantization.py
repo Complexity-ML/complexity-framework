@@ -9,7 +9,6 @@ Optimizations:
 
 Performance: ~40-50% throughput improvement, ~50% memory reduction
 
-Author: Pacific Prime
 """
 
 import torch

@@ -15,7 +15,6 @@ Performance gains:
 - INT8 Quantization: ~40-50% throughput, 50% memory
 - Fused Residual + Norm: ~5-10% faster
 
-Author: Pacific Prime
 """
 
 # Check for Triton availability

@@ -246,6 +246,35 @@ cf-o200k-pretrain \
 YAML settings, CLI overrides, resume validation, token accounting, and cluster
 plans are documented in [`docs/run_configs.md`](docs/run_configs.md).
 
+## Instruction fine-tuning from binary shards
+
+The SFT runner accepts pre-tokenized, indexed o200k shards with separate
+`input_ids.bin` (`uint32`) and `labels.bin` (`int32`) files. Prompt and padding
+labels must be `-100`; only assistant tokens contribute to the causal loss.
+The held-out `eval` shard is finite and is never repeated during evaluation.
+
+```bash
+python -m scripts.sft_100m_o200k_tr_local \
+  --checkpoint /path/to/pretrained/checkpoint.pt \
+  --sft-bin /path/to/atlas-instruct-o200k \
+  --tokenizer ./tokenizer-o200k \
+  --steps 500 \
+  --batch-size 32 \
+  --seq-len 512 \
+  --lr 2e-5 \
+  --bf16 \
+  --eval-steps 100 \
+  --eval-batches 0 \
+  --save-steps 100 \
+  --save-model-only \
+  --run-name sft-atlas-instruct \
+  --save-dir checkpoints/sft-atlas-instruct
+```
+
+`--save-model-only` omits AdamW and scheduler state for compact evaluation and
+inference checkpoints. Select the checkpoint with the lowest held-out SFT NLL,
+not automatically the final training step.
+
 ## Inference boundary
 
 The framework owns model definition, training, evaluation, conversion, and

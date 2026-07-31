@@ -19,7 +19,6 @@ from pathlib import Path
 import torch
 from safetensors.torch import save_file
 
-
 _MLX_CONFIG_FIELDS = {
     "hidden_size",
     "num_hidden_layers",
@@ -41,6 +40,12 @@ _MLX_CONFIG_FIELDS = {
     "tie_word_embeddings",
     "top_k",
     "top_k_primary_weight",
+    "shared_output_scale",
+    "routed_output_scale",
+    "routing_strategy",
+    "learn_hash_channel_modulation",
+    "hash_channel_scale_init",
+    "mlp_type",
 }
 
 
@@ -53,17 +58,18 @@ def build_mlx_config(pt_config: dict) -> dict:
     return cfg
 
 
-def remap_state_dict(model_sd: dict) -> dict:
+def remap_state_dict(model_sd: dict, *, dtype: str) -> dict:
     """Add 'model.' prefix, drop rope buffers, cast token_to_expert to int32."""
     out = {}
     for k, v in model_sd.items():
-        if k.endswith("rotary_emb.inv_freq"):
+        if k.endswith("rotary_emb.inv_freq") or k.endswith(
+            ("pair_hash_route_codes", "pair_hash_expert_pairs")
+        ):
             continue
         new_key = f"model.{k}"
         if k.endswith("token_to_expert") and v.dtype != torch.int32:
             v = v.to(torch.int32)
-        # Cast fp32 weights to fp16 for storage (MLX upcasts as needed).
-        if v.dtype == torch.float32:
+        if dtype == "float16" and v.dtype == torch.float32:
             v = v.to(torch.float16)
         out[new_key] = v.contiguous()
     return out
@@ -75,6 +81,12 @@ def main():
     ap.add_argument("output", type=Path)
     ap.add_argument("--tokenizer", type=Path, default=None,
                     help="Tokenizer directory to copy into output (e.g. ./tokenizer-o200k)")
+    ap.add_argument(
+        "--dtype",
+        choices=("float16", "float32"),
+        default="float16",
+        help="Floating-point storage dtype (float32 is useful for parity checks)",
+    )
     args = ap.parse_args()
 
     print(f"Loading {args.checkpoint} ...")
@@ -91,7 +103,7 @@ def main():
         json.dump(mlx_config, f, indent=2)
     print(f"Wrote {args.output / 'config.json'}")
 
-    remapped = remap_state_dict(model_sd)
+    remapped = remap_state_dict(model_sd, dtype=args.dtype)
     save_file(remapped, str(args.output / "model.safetensors"))
     n_bytes = (args.output / "model.safetensors").stat().st_size
     print(f"Wrote {args.output / 'model.safetensors'} ({n_bytes / 1e6:.1f} MB, {len(remapped)} tensors)")

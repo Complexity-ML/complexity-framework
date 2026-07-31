@@ -8,7 +8,6 @@ Optimizations:
 
 Performance: ~15-20% faster than separate QK Norm + SDPA
 
-Author: Pacific Prime
 """
 
 import torch

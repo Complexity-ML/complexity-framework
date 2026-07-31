@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""SFT runner for local o200k Token-Routed checkpoints."""
+"""SFT runner for local o200k Complexity checkpoints.
+
+Supports inspectable JSONL records and pre-tokenized SFT shards containing
+causally aligned ``input_ids.bin`` / ``labels.bin`` pairs. The binary format
+uses ``-100`` labels for prompt tokens so only assistant responses contribute
+to the supervised loss.
+"""
 
 from __future__ import annotations
 
@@ -8,12 +14,12 @@ import csv
 import json
 import logging
 import math
-import os
 import random
 import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -26,10 +32,9 @@ from complexity.core.losses import causal_lm_loss_from_hidden
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
 from complexity.training.o200k_pretrain import init_distributed
-from complexity.utils import autocast, autocast_dtype, empty_cache, setup_mps, synchronize
+from complexity.utils import autocast, autocast_dtype, empty_cache, synchronize
 from complexity.utils.device import backend_metadata, configure_torch_acceleration
 from complexity.utils.local_checkpoint import save_local_checkpoint
-
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -187,14 +192,95 @@ class SFTJsonlDataset(IterableDataset):
 
     def __iter__(self):
         tokenizer = Tokenizer.load(self.tokenizer_path)
-        rng = random.Random(self.seed)
         records = list(self.records)
+        epoch = 0
         while True:
+            rng = random.Random(self.seed + epoch)
             rng.shuffle(records)
             for idx, record in enumerate(records):
                 if idx % self.world_size != self.rank:
                     continue
                 yield encode_sft_example(tokenizer, record, self.seq_len, self.min_completion_tokens)
+            epoch += 1
+
+
+class SFTBinDataset(IterableDataset):
+    """Stream independent, indexed SFT examples from memory-mapped shards."""
+
+    def __init__(
+        self,
+        root: str | Path,
+        seq_len: int,
+        seed: int,
+        rank: int,
+        world_size: int,
+        repeat: bool = True,
+    ):
+        root = Path(root)
+        if (root / "train" / "sft.idx.json").exists():
+            root = root / "train"
+        index_path = root / "sft.idx.json"
+        if not index_path.exists():
+            raise FileNotFoundError(
+                f"SFT shard index not found: {index_path}. Pass the tokenized "
+                "dataset root or its train partition."
+            )
+        self.root = root
+        self.metadata = json.loads(index_path.read_text())
+        if self.metadata.get("format") != "complexity-sft-token-shard-v1":
+            raise ValueError(f"Unsupported SFT shard format: {self.metadata.get('format')}")
+        self.input_ids = np.memmap(root / "input_ids.bin", mode="r", dtype=np.dtype("<u4"))
+        self.labels = np.memmap(root / "labels.bin", mode="r", dtype=np.dtype("<i4"))
+        if len(self.input_ids) != len(self.labels):
+            raise ValueError("SFT input and label shards have different lengths")
+        if len(self.input_ids) != int(self.metadata["num_tokens"]):
+            raise ValueError("SFT shard length does not match sft.idx.json")
+        with (root / "examples.jsonl").open(encoding="utf-8") as handle:
+            self.examples = [json.loads(line) for line in handle if line.strip()]
+        if len(self.examples) != int(self.metadata["examples"]):
+            raise ValueError("SFT example index count does not match sft.idx.json")
+        self.seq_len = seq_len
+        self.seed = seed
+        self.rank = rank
+        self.world_size = world_size
+        self.repeat = repeat
+        self.pad_id = int(self.metadata["eos_token_id"])
+
+    def _tensor_example(self, example: dict[str, Any]) -> dict[str, torch.Tensor]:
+        start = int(example["offset"])
+        length = int(example["num_tokens"])
+        end = start + length
+        if start < 0 or length <= 0 or end > len(self.input_ids):
+            raise ValueError(f"Invalid SFT example bounds: {example}")
+        input_ids = np.asarray(self.input_ids[start:end], dtype=np.int64)
+        labels = np.asarray(self.labels[start:end], dtype=np.int64)
+        if length > self.seq_len:
+            # Retain the final assistant response and its EOS target.
+            input_ids = input_ids[-self.seq_len :]
+            labels = labels[-self.seq_len :]
+        elif length < self.seq_len:
+            padding = self.seq_len - length
+            input_ids = np.pad(input_ids, (0, padding), constant_values=self.pad_id)
+            labels = np.pad(labels, (0, padding), constant_values=-100)
+        if not np.any(labels != -100):
+            raise ValueError(f"SFT example has no supervised assistant tokens: {example['example_id']}")
+        return {
+            "input_ids": torch.from_numpy(input_ids.copy()),
+            "labels": torch.from_numpy(labels.copy()),
+        }
+
+    def __iter__(self):
+        epoch = 0
+        indices = list(range(len(self.examples)))
+        while True:
+            random.Random(self.seed + epoch).shuffle(indices)
+            for position, example_index in enumerate(indices):
+                if position % self.world_size != self.rank:
+                    continue
+                yield self._tensor_example(self.examples[example_index])
+            if not self.repeat:
+                break
+            epoch += 1
 
 
 def load_records(path: str | None) -> list[dict[str, Any]]:
@@ -282,6 +368,57 @@ def sft_loss_from_hidden(
     return total / denom
 
 
+@torch.no_grad()
+def evaluate_sft(
+    model,
+    raw_model,
+    loader,
+    *,
+    device: torch.device,
+    amp_dtype,
+    fp32_loss: bool,
+    chunk_tokens: int,
+    distributed: bool,
+    max_batches: int,
+) -> tuple[float, int]:
+    model.eval()
+    loss_sum = torch.zeros((), dtype=torch.float64, device=device)
+    token_count = torch.zeros((), dtype=torch.float64, device=device)
+    for batch_index, batch in enumerate(loader):
+        if max_batches > 0 and batch_index >= max_batches:
+            break
+        input_ids = batch["input_ids"].to(device, non_blocking=True)
+        labels = batch["labels"].to(device, non_blocking=True)
+        supervised = int((labels != -100).sum().item())
+        if supervised == 0:
+            continue
+        with autocast(device, dtype=amp_dtype, enabled=amp_dtype is not None):
+            outputs = model(input_ids, return_logits=False)
+            if fp32_loss:
+                loss = sft_loss_from_hidden(
+                    outputs["last_hidden_state"],
+                    raw_model.embed_tokens.weight,
+                    labels,
+                    chunk_tokens=chunk_tokens,
+                )
+            else:
+                loss, _ = causal_lm_loss_from_hidden(
+                    outputs["last_hidden_state"],
+                    raw_model.embed_tokens.weight,
+                    labels,
+                    chunk_tokens=chunk_tokens,
+                )
+        loss_sum += loss.detach().double() * supervised
+        token_count += supervised
+    if distributed:
+        dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(token_count, op=dist.ReduceOp.SUM)
+    model.train()
+    if token_count.item() == 0:
+        raise ValueError("SFT evaluation contains no supervised assistant tokens")
+    return float((loss_sum / token_count).item()), int(token_count.item())
+
+
 def save_checkpoint(args, raw_model, optimizer, scheduler, config, source_checkpoint: str, step: int, is_main: bool, distributed: bool):
     if distributed:
         dist.barrier()
@@ -289,20 +426,22 @@ def save_checkpoint(args, raw_model, optimizer, scheduler, config, source_checkp
         if distributed:
             dist.barrier()
         return
+    checkpoint_state = {
+        "step": step,
+        "model": {k: v.detach().cpu() for k, v in raw_model.state_dict().items()},
+        "config": config.to_dict(),
+        "args": vars(args),
+        "sft_source_checkpoint": source_checkpoint,
+        "backend": backend_metadata(kernel_policy=getattr(args, "use_custom_kernels", "auto")),
+    }
+    if not args.save_model_only:
+        checkpoint_state["optimizer"] = optimizer.state_dict()
+        checkpoint_state["scheduler"] = scheduler.state_dict()
     ckpt_dir = save_local_checkpoint(
         args.save_dir,
         step=step,
         total_limit=args.save_total_limit,
-        state={
-            "step": step,
-            "model": {k: v.detach().cpu() for k, v in raw_model.state_dict().items()},
-            "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(),
-            "config": config.to_dict(),
-            "args": vars(args),
-            "sft_source_checkpoint": source_checkpoint,
-            "backend": backend_metadata(kernel_policy=getattr(args, "use_custom_kernels", "auto")),
-        },
+        state=checkpoint_state,
     )
     logger.info(f"Checkpoint saved: {ckpt_dir}")
     if distributed:
@@ -310,10 +449,16 @@ def save_checkpoint(args, raw_model, optimizer, scheduler, config, source_checkp
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="SFT local o200k Token-Routed checkpoint")
+    parser = argparse.ArgumentParser(description="SFT a local o200k Complexity checkpoint")
     parser.add_argument("--checkpoint", required=True, help="Checkpoint dir or checkpoint.pt to fine-tune")
     parser.add_argument("--tokenizer", default="./tokenizer-o200k")
-    parser.add_argument("--jsonl", default=None, help="SFT JSONL. If omitted, uses a tiny toy dataset.")
+    dataset = parser.add_mutually_exclusive_group()
+    dataset.add_argument("--jsonl", default=None, help="Inspectable SFT JSONL.")
+    dataset.add_argument(
+        "--sft-bin",
+        default=None,
+        help="Tokenized SFT root containing train/input_ids.bin and train/labels.bin.",
+    )
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--seq-len", type=int, default=512)
@@ -345,9 +490,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use the generic causal_lm_loss_from_hidden path.",
     )
     parser.add_argument("--log-steps", type=int, default=10)
+    parser.add_argument(
+        "--eval-steps",
+        type=int,
+        default=500,
+        help="Evaluate every N steps for SFT bin datasets; 0 disables evaluation.",
+    )
+    parser.add_argument(
+        "--eval-batches",
+        type=int,
+        default=0,
+        help="Maximum eval batches; 0 evaluates the complete held-out shard.",
+    )
     parser.add_argument("--save-steps", type=int, default=100)
     parser.add_argument("--save-dir", default="checkpoints/sft-100m-o200k-tr")
     parser.add_argument("--save-total-limit", type=int, default=3)
+    parser.add_argument(
+        "--save-model-only",
+        action="store_true",
+        help="Omit optimizer and scheduler state from checkpoints used for evaluation/inference.",
+    )
     parser.add_argument("--run-name", default="sft-100m-o200k-tr")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -394,19 +556,43 @@ def main():
             find_unused_parameters=False,
         )
 
-    train_ds = SFTJsonlDataset(
-        args.jsonl,
-        args.tokenizer,
-        args.seq_len,
-        args.seed + rank,
-        rank,
-        world_size,
-        args.min_completion_tokens,
-    )
+    if args.sft_bin is not None:
+        train_ds = SFTBinDataset(
+            args.sft_bin,
+            args.seq_len,
+            args.seed,
+            rank,
+            world_size,
+        )
+        eval_ds = SFTBinDataset(
+            Path(args.sft_bin) / "eval"
+            if (Path(args.sft_bin) / "eval" / "sft.idx.json").exists()
+            else Path(args.sft_bin),
+            args.seq_len,
+            args.seed,
+            rank,
+            world_size,
+            repeat=False,
+        ) if (
+            (Path(args.sft_bin) / "eval" / "sft.idx.json").exists()
+            or Path(args.sft_bin).name == "eval"
+        ) else None
+    else:
+        train_ds = SFTJsonlDataset(
+            args.jsonl,
+            args.tokenizer,
+            args.seq_len,
+            args.seed,
+            rank,
+            world_size,
+            args.min_completion_tokens,
+        )
+        eval_ds = None
     loader_kwargs = {"batch_size": args.batch_size, "pin_memory": False}
     if args.num_workers > 0:
         loader_kwargs.update(num_workers=args.num_workers, persistent_workers=True)
     train_loader = DataLoader(train_ds, **loader_kwargs)
+    eval_loader = DataLoader(eval_ds, **loader_kwargs) if eval_ds is not None else None
 
     optimizer = build_optimizer(args, raw_model)
     warmup = max(1, int(args.steps * args.warmup_ratio))
@@ -440,14 +626,20 @@ def main():
             f"GQA={config.num_attention_heads}/{config.num_key_value_heads}, "
             f"TR experts={config.num_experts}, top_k={config.top_k}, use_mu={config.use_mu_guidance}"
         )
-        if args.jsonl is None:
+        if args.sft_bin is not None:
+            logger.info(
+                f"Dataset: SFT bin {train_ds.root} "
+                f"({len(train_ds.examples):,} examples, "
+                f"{train_ds.metadata['supervised_tokens']:,} supervised tokens)"
+            )
+        elif args.jsonl is None:
             logger.info("Dataset: built-in toy SFT records")
         else:
             logger.info(f"Dataset: {args.jsonl} ({len(train_ds.records)} records)")
         csv_file = (run_dir / "metrics.csv").open("w", newline="")
         writer = csv.writer(csv_file)
         writer.writerow([
-            "step", "train_loss", "train_ppl", "lr", "tok_s",
+            "step", "train_loss", "train_ppl", "eval_loss", "eval_ppl", "lr", "tok_s",
             "supervised_tokens", "min_label", "max_label", "bad_labels",
         ])
         csv_file.flush()
@@ -510,7 +702,30 @@ def main():
         if pbar is not None:
             pbar.update(1)
 
-        should_log = step == 1 or step % args.log_steps == 0
+        should_eval = (
+            eval_loader is not None
+            and args.eval_steps > 0
+            and (step % args.eval_steps == 0 or step == args.steps)
+        )
+        should_log = step == 1 or step % args.log_steps == 0 or should_eval
+        eval_loss = None
+        if should_eval:
+            eval_loss, eval_tokens = evaluate_sft(
+                model,
+                raw_model,
+                eval_loader,
+                device=device,
+                amp_dtype=amp_dtype,
+                fp32_loss=args.sft_fp32_loss,
+                chunk_tokens=args.loss_chunk_tokens,
+                distributed=distributed,
+                max_batches=args.eval_batches,
+            )
+            if is_main:
+                logger.info(
+                    f"SFT eval step={step}: loss={eval_loss:.6f} "
+                    f"ppl={math.exp(min(eval_loss, 20)):.2f} tokens={eval_tokens:,}"
+                )
         if should_log:
             synchronize(device)
             now = time.perf_counter()
@@ -524,7 +739,13 @@ def main():
             lr_now = scheduler.get_last_lr()[0]
             if is_main:
                 writer.writerow([
-                    step, f"{train_loss:.6f}", f"{train_ppl:.2f}", f"{lr_now:.6e}", f"{tok_s:.0f}",
+                    step,
+                    f"{train_loss:.6f}",
+                    f"{train_ppl:.2f}",
+                    "" if eval_loss is None else f"{eval_loss:.6f}",
+                    "" if eval_loss is None else f"{math.exp(min(eval_loss, 20)):.2f}",
+                    f"{lr_now:.6e}",
+                    f"{tok_s:.0f}",
                     stats["supervised_tokens"], stats["min_label"], stats["max_label"], stats["bad_labels"],
                 ])
                 csv_file.flush()
