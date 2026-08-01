@@ -12,7 +12,7 @@ from scripts.export_tr_hash_vllm import build_config
 def test_template_renders_single_turn_exactly() -> None:
     template = default_chat_template()
     assert template["training_projection"] == (
-        "naturalize_card_hand_target_final_assistant"
+        "naturalize_card_hand_preserve_assistant_turns"
     )
     assert render_inference_prompt("Hello", template) == (
         "System:\n"
@@ -51,3 +51,13 @@ def test_vllm_config_declares_exported_template() -> None:
     )
     assert config["chat_template_id"] == CHAT_TEMPLATE_ID
     assert config["chat_template_file"] == "chat_template.json"
+
+
+def test_legacy_single_target_projection_remains_loadable() -> None:
+    from complexity.inference.chat_template import validate_chat_template
+
+    template = default_chat_template()
+    template["training_projection"] = (
+        "naturalize_card_hand_target_final_assistant"
+    )
+    assert validate_chat_template(template) == template
