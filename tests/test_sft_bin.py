@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import torch
 
 from complexity.inference.chat_template import (
     CHAT_TEMPLATE_ID,
@@ -13,7 +14,9 @@ from complexity.inference.chat_template import (
 from scripts.sft_100m_o200k_tr_local import (
     SFTBinDataset,
     build_parser,
+    configure_trainable_parameters,
     format_record,
+    update_early_stopping,
 )
 
 
@@ -123,3 +126,61 @@ def test_sft_parser_rejects_two_dataset_sources() -> None:
         assert error.code == 2
     else:
         raise AssertionError("JSONL and SFT bin inputs must be mutually exclusive")
+
+
+def test_sft_can_freeze_token_input_and_output_parameters() -> None:
+    class ToyModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.embed_tokens = torch.nn.Embedding(16, 8)
+            self.layers = torch.nn.Linear(8, 8)
+            self.lm_head = torch.nn.Linear(8, 16, bias=False)
+
+    model = ToyModel()
+    stats = configure_trainable_parameters(model, freeze_token_io=True)
+
+    assert model.embed_tokens.weight.requires_grad is False
+    assert model.lm_head.weight.requires_grad is False
+    assert model.layers.weight.requires_grad is True
+    assert stats["token_io_frozen"] is True
+    assert stats["frozen"] == 16 * 8 * 2
+    assert stats["trainable"] > 0
+
+
+def test_sft_early_stopping_state_resets_only_on_real_improvement() -> None:
+    improved, best, misses = update_early_stopping(
+        4.0,
+        2,
+        3.98,
+        min_delta=0.01,
+    )
+    assert improved is True
+    assert best == 3.98
+    assert misses == 0
+
+    improved, best, misses = update_early_stopping(
+        best,
+        misses,
+        3.975,
+        min_delta=0.01,
+    )
+    assert improved is False
+    assert best == 3.98
+    assert misses == 1
+
+
+def test_sft_parser_exposes_conservative_training_controls() -> None:
+    args = build_parser().parse_args(
+        [
+            "--checkpoint",
+            "checkpoint",
+            "--freeze-token-io",
+            "--save-best",
+            "--early-stopping-patience",
+            "3",
+        ]
+    )
+    assert args.freeze_token_io is True
+    assert args.eval_at_start is True
+    assert args.save_best is True
+    assert args.early_stopping_patience == 3

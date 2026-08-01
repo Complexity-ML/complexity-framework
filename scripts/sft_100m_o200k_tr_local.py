@@ -343,6 +343,48 @@ def build_optimizer(args, raw_model):
     )
 
 
+def configure_trainable_parameters(raw_model, *, freeze_token_io: bool) -> dict[str, int | bool]:
+    """Optionally freeze the large token embedding/output parameter tables.
+
+    The o200k 100M profile stores most parameters in ``embed_tokens``. Because
+    the output projection is tied to the same tensor, freezing it preserves
+    both token input and token output geometry while gradients still flow
+    through the fixed output projection into the transformer hidden states.
+    Untied ``lm_head`` parameters are frozen as well.
+    """
+
+    if freeze_token_io:
+        raw_model.embed_tokens.requires_grad_(False)
+        if raw_model.lm_head is not None:
+            raw_model.lm_head.requires_grad_(False)
+
+    total = sum(param.numel() for param in raw_model.parameters())
+    trainable = sum(
+        param.numel() for param in raw_model.parameters() if param.requires_grad
+    )
+    return {
+        "total": total,
+        "trainable": trainable,
+        "frozen": total - trainable,
+        "token_io_frozen": bool(freeze_token_io),
+    }
+
+
+def update_early_stopping(
+    best_loss: float,
+    evaluations_without_improvement: int,
+    current_loss: float,
+    *,
+    min_delta: float,
+) -> tuple[bool, float, int]:
+    """Update deterministic validation tracking state."""
+
+    improved = current_loss < best_loss - min_delta
+    if improved:
+        return True, current_loss, 0
+    return False, best_loss, evaluations_without_improvement + 1
+
+
 def label_stats(labels: torch.Tensor, vocab_size: int) -> dict[str, int]:
     valid = labels != -100
     if not valid.any():
@@ -458,10 +500,14 @@ def save_checkpoint(
     is_main: bool,
     distributed: bool,
     chat_template: dict[str, Any],
+    *,
+    force: bool = False,
+    save_dir: str | Path | None = None,
+    eval_loss: float | None = None,
 ):
     if distributed:
         dist.barrier()
-    if not is_main or args.save_steps <= 0:
+    if not is_main or (args.save_steps <= 0 and not force):
         if distributed:
             dist.barrier()
         return
@@ -474,11 +520,13 @@ def save_checkpoint(
         "chat_template": chat_template,
         "backend": backend_metadata(kernel_policy=getattr(args, "use_custom_kernels", "auto")),
     }
+    if eval_loss is not None:
+        checkpoint_state["sft_eval_loss"] = float(eval_loss)
     if not args.save_model_only:
         checkpoint_state["optimizer"] = optimizer.state_dict()
         checkpoint_state["scheduler"] = scheduler.state_dict()
     ckpt_dir = save_local_checkpoint(
-        args.save_dir,
+        save_dir or args.save_dir,
         step=step,
         total_limit=args.save_total_limit,
         state=checkpoint_state,
@@ -486,6 +534,52 @@ def save_checkpoint(
     logger.info(f"Checkpoint saved: {ckpt_dir}")
     if distributed:
         dist.barrier()
+    return ckpt_dir
+
+
+def save_best_checkpoint(
+    args,
+    raw_model,
+    optimizer,
+    scheduler,
+    config,
+    source_checkpoint: str,
+    step: int,
+    eval_loss: float,
+    eval_tokens: int,
+    is_main: bool,
+    distributed: bool,
+    chat_template: dict[str, Any],
+) -> None:
+    """Save a validation-selected checkpoint independently of periodic saves."""
+
+    best_root = Path(args.save_dir) / "best"
+    checkpoint_dir = save_checkpoint(
+        args,
+        raw_model,
+        optimizer,
+        scheduler,
+        config,
+        source_checkpoint,
+        step,
+        is_main,
+        distributed,
+        chat_template,
+        force=True,
+        save_dir=best_root,
+        eval_loss=eval_loss,
+    )
+    if is_main and checkpoint_dir is not None:
+        metadata = {
+            "step": step,
+            "eval_loss": eval_loss,
+            "eval_tokens": eval_tokens,
+            "checkpoint": str(checkpoint_dir),
+        }
+        (Path(args.save_dir) / "best.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -509,6 +603,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
     parser.add_argument("--min-completion-tokens", type=int, default=32)
     parser.add_argument("--bf16", action="store_true")
+    parser.add_argument(
+        "--freeze-token-io",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Freeze token embeddings and the tied/untied LM head during SFT.",
+    )
     parser.add_argument(
         "--use-custom-kernels",
         choices=["auto", "true", "false"],
@@ -541,6 +641,30 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Maximum eval batches; 0 evaluates the complete held-out shard.",
+    )
+    parser.add_argument(
+        "--eval-at-start",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Measure the held-out SFT loss before the first optimizer step.",
+    )
+    parser.add_argument(
+        "--save-best",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Save checkpoints only when held-out SFT loss improves.",
+    )
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=0,
+        help="Stop after this many non-improving evaluations; 0 disables it.",
+    )
+    parser.add_argument(
+        "--early-stopping-min-delta",
+        type=float,
+        default=0.0,
+        help="Minimum held-out loss decrease counted as an improvement.",
     )
     parser.add_argument("--save-steps", type=int, default=100)
     parser.add_argument("--save-dir", default="checkpoints/sft-100m-o200k-tr")
@@ -586,6 +710,12 @@ def main():
         raise RuntimeError(f"Checkpoint mismatch: missing={missing}, unexpected={unexpected}")
     if args.grad_ckpt:
         raw_model.gradient_checkpointing_enable()
+    parameter_stats = configure_trainable_parameters(
+        raw_model,
+        freeze_token_io=args.freeze_token_io,
+    )
+    if parameter_stats["trainable"] == 0:
+        raise ValueError("SFT configuration froze every model parameter")
 
     model = raw_model
     if distributed:
@@ -656,6 +786,12 @@ def main():
         run_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"SFT source: {ckpt_dir} (pretrain step={state.get('step', 'unknown')})")
         logger.info(f"Model: {raw_model.num_parameters() / 1e6:.1f}M params")
+        logger.info(
+            "Parameters: "
+            f"trainable={parameter_stats['trainable'] / 1e6:.1f}M "
+            f"frozen={parameter_stats['frozen'] / 1e6:.1f}M "
+            f"token_io_frozen={parameter_stats['token_io_frozen']}"
+        )
         backend = backend_metadata(kernel_policy=kernel_policy)
         logger.info(
             "Backend: "
@@ -675,6 +811,18 @@ def main():
                 f"({len(train_ds.examples):,} examples, "
                 f"{train_ds.metadata['supervised_tokens']:,} supervised tokens)"
             )
+            if train_ds.metadata["supervised_tokens"] < 3_000_000:
+                logger.warning(
+                    "Training shard contains fewer than 3,000,000 supervised "
+                    "tokens; use held-out early stopping and treat the run as "
+                    "a small-data adaptation."
+                )
+            if eval_ds is not None and len(eval_ds.examples) < 500:
+                logger.warning(
+                    "Held-out SFT evaluation contains fewer than 500 examples; "
+                    "loss is useful for early stopping but not a stable general "
+                    "capability estimate."
+                )
         elif args.jsonl is None:
             logger.info("Dataset: built-in toy SFT records")
         else:
@@ -687,6 +835,42 @@ def main():
             "supervised_tokens", "min_label", "max_label", "bad_labels",
         ])
         csv_file.flush()
+
+    best_eval_loss = math.inf
+    evaluations_without_improvement = 0
+    if eval_loader is not None and args.eval_steps > 0 and args.eval_at_start:
+        initial_eval_loss, initial_eval_tokens = evaluate_sft(
+            model,
+            raw_model,
+            eval_loader,
+            device=device,
+            amp_dtype=amp_dtype,
+            fp32_loss=args.sft_fp32_loss,
+            chunk_tokens=args.loss_chunk_tokens,
+            distributed=distributed,
+            max_batches=args.eval_batches,
+        )
+        best_eval_loss = initial_eval_loss
+        if is_main:
+            logger.info(
+                f"SFT eval step=0: loss={initial_eval_loss:.6f} "
+                f"ppl={math.exp(min(initial_eval_loss, 20)):.2f} "
+                f"tokens={initial_eval_tokens:,}"
+            )
+            writer.writerow([
+                0,
+                "",
+                "",
+                f"{initial_eval_loss:.6f}",
+                f"{math.exp(min(initial_eval_loss, 20)):.2f}",
+                f"{optimizer.param_groups[0]['lr']:.6e}",
+                "",
+                initial_eval_tokens,
+                "",
+                "",
+                0,
+            ])
+            csv_file.flush()
 
     model.train()
     pbar = tqdm(total=args.steps, desc="SFT o200k TR", unit="step", dynamic_ncols=True) if is_main else None
@@ -753,6 +937,7 @@ def main():
         )
         should_log = step == 1 or step % args.log_steps == 0 or should_eval
         eval_loss = None
+        stop_training = False
         if should_eval:
             eval_loss, eval_tokens = evaluate_sft(
                 model,
@@ -770,6 +955,32 @@ def main():
                     f"SFT eval step={step}: loss={eval_loss:.6f} "
                     f"ppl={math.exp(min(eval_loss, 20)):.2f} tokens={eval_tokens:,}"
                 )
+            improved, best_eval_loss, evaluations_without_improvement = update_early_stopping(
+                best_eval_loss,
+                evaluations_without_improvement,
+                eval_loss,
+                min_delta=args.early_stopping_min_delta,
+            )
+            if improved and args.save_best:
+                save_best_checkpoint(
+                    args,
+                    raw_model,
+                    optimizer,
+                    scheduler,
+                    config,
+                    str(ckpt_dir),
+                    step,
+                    eval_loss,
+                    eval_tokens,
+                    is_main,
+                    distributed,
+                    chat_template,
+                )
+            if (
+                args.early_stopping_patience > 0
+                and evaluations_without_improvement >= args.early_stopping_patience
+            ):
+                stop_training = True
         if should_log:
             synchronize(device)
             now = time.perf_counter()
@@ -812,6 +1023,13 @@ def main():
                 distributed,
                 chat_template,
             )
+        if stop_training:
+            if is_main:
+                logger.info(
+                    f"Early stopping at step={step}: best_eval_loss={best_eval_loss:.6f}, "
+                    f"evaluations_without_improvement={evaluations_without_improvement}"
+                )
+            break
 
     if args.save_steps > 0 and last_step > 0 and last_step % args.save_steps != 0:
         save_checkpoint(

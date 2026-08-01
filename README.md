@@ -258,22 +258,33 @@ python -m scripts.sft_100m_o200k_tr_local \
   --checkpoint /path/to/pretrained/checkpoint.pt \
   --sft-bin /path/to/atlas-instruct-o200k \
   --tokenizer ./tokenizer-o200k \
-  --steps 500 \
+  --steps 900 \
   --batch-size 32 \
   --seq-len 512 \
-  --lr 2e-5 \
+  --lr 1e-5 \
   --bf16 \
-  --eval-steps 100 \
+  --freeze-token-io \
+  --eval-at-start \
+  --eval-steps 10 \
   --eval-batches 0 \
-  --save-steps 100 \
+  --save-best \
+  --early-stopping-patience 3 \
+  --early-stopping-min-delta 0.001 \
+  --save-steps 0 \
   --save-model-only \
   --run-name sft-atlas-instruct \
   --save-dir checkpoints/sft-atlas-instruct
 ```
 
+For small o200k instruction corpora, `--freeze-token-io` preserves the large
+token embedding and tied output table while adapting the transformer and
+TR-Hash blocks. Evaluation at step zero establishes the pretrained baseline;
+`--save-best` writes validation-selected checkpoints under `SAVE_DIR/best`, and
+patience stops the run after consecutive non-improving evaluations.
 `--save-model-only` omits AdamW and scheduler state for compact evaluation and
-inference checkpoints. Select the checkpoint with the lowest held-out SFT NLL,
-not automatically the final training step.
+inference checkpoints. The held-out shard should contain at least 500
+independently authored examples before its NLL is treated as a stable capability
+estimate.
 
 ## Inference boundary
 
