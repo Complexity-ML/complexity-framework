@@ -785,7 +785,7 @@ def main():
     if is_main:
         run_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"SFT source: {ckpt_dir} (pretrain step={state.get('step', 'unknown')})")
-        logger.info(f"Model: {raw_model.num_parameters() / 1e6:.1f}M params")
+        logger.info(f"Model: {parameter_stats['total'] / 1e6:.1f}M params")
         logger.info(
             "Parameters: "
             f"trainable={parameter_stats['trainable'] / 1e6:.1f}M "
