@@ -13,9 +13,11 @@ from complexity.inference.chat_template import (
 )
 from scripts.sft_100m_o200k_tr_local import (
     SFTBinDataset,
+    SFTJsonlDataset,
     build_parser,
     configure_trainable_parameters,
     format_record,
+    load_model_state_compat,
     update_early_stopping,
 )
 
@@ -126,6 +128,55 @@ def test_sft_parser_rejects_two_dataset_sources() -> None:
         assert error.code == 2
     else:
         raise AssertionError("JSONL and SFT bin inputs must be mutually exclusive")
+
+
+def test_sft_jsonl_eval_iterator_is_finite(tmp_path: Path) -> None:
+    path = tmp_path / "eval.jsonl"
+    path.write_text(
+        json.dumps({"instruction": "Answer.", "output": "Done."}) + "\n",
+        encoding="utf-8",
+    )
+    dataset = SFTJsonlDataset(
+        str(path),
+        "unused-tokenizer",
+        seq_len=32,
+        seed=42,
+        rank=0,
+        world_size=1,
+        repeat=False,
+    )
+
+    # The tokenizer is loaded lazily, so the finite-dataset contract can be
+    # tested independently through the stored records and flag.
+    assert len(dataset.records) == 1
+    assert dataset.repeat is False
+
+
+def test_historical_topk_route_buffer_is_the_only_tolerated_missing_key() -> None:
+    class HistoricalRouteModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(1))
+            self.register_buffer("topk_token_to_expert", torch.zeros(2, 4))
+
+    model = HistoricalRouteModel()
+    load_model_state_compat(model, {"weight": torch.tensor([2.0])})
+    assert model.weight.item() == 2.0
+
+
+def test_sft_parser_accepts_jsonl_evaluation_source() -> None:
+    args = build_parser().parse_args(
+        [
+            "--checkpoint",
+            "checkpoint",
+            "--jsonl",
+            "train.jsonl",
+            "--eval-jsonl",
+            "eval.jsonl",
+        ]
+    )
+    assert args.jsonl == "train.jsonl"
+    assert args.eval_jsonl == "eval.jsonl"
 
 
 def test_sft_can_freeze_token_input_and_output_parameters() -> None:

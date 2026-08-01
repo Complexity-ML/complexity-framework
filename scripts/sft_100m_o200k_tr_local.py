@@ -190,6 +190,7 @@ class SFTJsonlDataset(IterableDataset):
         world_size: int,
         min_completion_tokens: int = 32,
         chat_template: dict[str, Any] | None = None,
+        repeat: bool = True,
     ):
         self.records = load_records(path)
         self.tokenizer_path = tokenizer_path
@@ -199,6 +200,7 @@ class SFTJsonlDataset(IterableDataset):
         self.world_size = world_size
         self.min_completion_tokens = min_completion_tokens
         self.chat_template = chat_template or default_chat_template()
+        self.repeat = repeat
 
     def __iter__(self):
         tokenizer = Tokenizer.load(self.tokenizer_path)
@@ -217,7 +219,34 @@ class SFTJsonlDataset(IterableDataset):
                     self.min_completion_tokens,
                     self.chat_template,
                 )
+            if not self.repeat:
+                return
             epoch += 1
+
+
+def load_model_state_compat(
+    model: torch.nn.Module,
+    state_dict: dict[str, torch.Tensor],
+) -> None:
+    """Load current and historical checkpoints without changing their routes.
+
+    Historical top-2 checkpoints persist the primary ``token_to_expert`` table
+    but predate the derived ``topk_token_to_expert`` buffer.  The current model
+    reconstructs that secondary table deterministically from the same config,
+    so this one missing buffer is safe to tolerate.  Every parameter and every
+    other buffer remains strict.
+    """
+
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    tolerated_suffix = "topk_token_to_expert"
+    unexpected_missing = [
+        key for key in missing if not key.endswith(tolerated_suffix)
+    ]
+    if unexpected_missing or unexpected:
+        raise RuntimeError(
+            "Checkpoint mismatch: "
+            f"missing={unexpected_missing}, unexpected={list(unexpected)}"
+        )
 
 
 class SFTBinDataset(IterableDataset):
@@ -593,6 +622,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Tokenized SFT root containing train/input_ids.bin and train/labels.bin.",
     )
+    parser.add_argument(
+        "--eval-jsonl",
+        default=None,
+        help="Finite held-out JSONL evaluated during JSONL-based SFT.",
+    )
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--seq-len", type=int, default=512)
@@ -705,9 +739,7 @@ def main():
     config = checkpoint_config(state)
     config.use_custom_kernels = kernel_policy
     raw_model = ComplexityModel(config).to(device)
-    missing, unexpected = raw_model.load_state_dict(state["model"], strict=True)
-    if missing or unexpected:
-        raise RuntimeError(f"Checkpoint mismatch: missing={missing}, unexpected={unexpected}")
+    load_model_state_compat(raw_model, state["model"])
     if args.grad_ckpt:
         raw_model.gradient_checkpointing_enable()
     parameter_stats = configure_trainable_parameters(
@@ -757,7 +789,20 @@ def main():
             world_size,
             args.min_completion_tokens,
         )
-        eval_ds = None
+        eval_ds = (
+            SFTJsonlDataset(
+                args.eval_jsonl,
+                args.tokenizer,
+                args.seq_len,
+                args.seed,
+                rank,
+                world_size,
+                args.min_completion_tokens,
+                repeat=False,
+            )
+            if args.eval_jsonl is not None
+            else None
+        )
     chat_template = train_ds.chat_template
     if eval_ds is not None and eval_ds.chat_template != chat_template:
         raise ValueError("Train and eval SFT shards use different chat templates")
@@ -827,6 +872,11 @@ def main():
             logger.info("Dataset: built-in toy SFT records")
         else:
             logger.info(f"Dataset: {args.jsonl} ({len(train_ds.records)} records)")
+            if eval_ds is not None:
+                logger.info(
+                    f"Evaluation: {args.eval_jsonl} "
+                    f"({len(eval_ds.records)} held-out records)"
+                )
         logger.info(f"Chat template: {chat_template['id']}")
         csv_file = (run_dir / "metrics.csv").open("w", newline="")
         writer = csv.writer(csv_file)
