@@ -12,7 +12,7 @@ from scripts.export_tr_hash_vllm import build_config
 def test_template_renders_single_turn_exactly() -> None:
     template = default_chat_template()
     assert template["training_projection"] == (
-        "merge_user_turns_target_final_assistant"
+        "naturalize_card_hand_target_final_assistant"
     )
     assert render_inference_prompt("Hello", template) == (
         "System:\n"

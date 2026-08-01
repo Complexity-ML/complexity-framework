@@ -36,7 +36,7 @@ def default_chat_template() -> dict[str, Any]:
         "turn_separator": "\n\n",
         "eos_token": "<|endoftext|>",
         "assistant_only_loss": True,
-        "training_projection": "merge_user_turns_target_final_assistant",
+        "training_projection": "naturalize_card_hand_target_final_assistant",
     }
 
 
@@ -49,7 +49,7 @@ def validate_chat_template(template: dict[str, Any]) -> dict[str, Any]:
     if not template["assistant_only_loss"]:
         raise ValueError("Complexity SFT requires assistant_only_loss=true")
     if template["training_projection"] != (
-        "merge_user_turns_target_final_assistant"
+        "naturalize_card_hand_target_final_assistant"
     ):
         raise ValueError(
             "Unsupported SFT training projection: "
