@@ -6,7 +6,7 @@ from complexity.inference.chat_template import (
     render_inference_prompt,
     render_messages_before_assistant,
 )
-from scripts.export_tr_hash_vllm import build_config
+from scripts.export_tr_hash_vllm import build_config, copy_tokenizer_files
 
 
 def test_template_renders_single_turn_exactly() -> None:
@@ -78,3 +78,22 @@ def test_vllm_export_preserves_legacy_modulo_cyclic_routing() -> None:
 
     assert legacy["routing_strategy"] == "modulo_cyclic"
     assert current["routing_strategy"] == "token_id_pair_coverage_hash"
+
+
+def test_export_copies_only_tokenizer_assets(tmp_path) -> None:
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    source.mkdir()
+    output.mkdir()
+    (source / "tokenizer.json").write_text("tokenizer")
+    (source / "tokenizer_config.json").write_text("tokenizer config")
+    (source / "model.safetensors").write_text("base weights")
+    (source / "config.json").write_text("base config")
+    (output / "model.safetensors").write_text("fine-tuned weights")
+    (output / "config.json").write_text("export config")
+
+    copied = copy_tokenizer_files(source, output)
+
+    assert copied == ["tokenizer.json", "tokenizer_config.json"]
+    assert (output / "model.safetensors").read_text() == "fine-tuned weights"
+    assert (output / "config.json").read_text() == "export config"

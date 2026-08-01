@@ -22,6 +22,35 @@ DROP_SUFFIXES = (
     "pair_hash_expert_pairs",
 )
 
+TOKENIZER_FILENAMES = frozenset(
+    {
+        "added_tokens.json",
+        "merges.txt",
+        "sentencepiece.bpe.model",
+        "special_tokens_map.json",
+        "spiece.model",
+        "tokenizer.json",
+        "tokenizer.model",
+        "tokenizer.tiktoken",
+        "tokenizer_config.json",
+        "vocab.json",
+        "vocab.txt",
+    }
+)
+
+
+def copy_tokenizer_files(source: Path, output: Path) -> list[str]:
+    """Copy tokenizer assets without overwriting model export artifacts."""
+
+    copied = []
+    for path in source.iterdir():
+        if path.is_file() and path.name in TOKENIZER_FILENAMES:
+            shutil.copy2(path, output / path.name)
+            copied.append(path.name)
+    if not copied:
+        raise FileNotFoundError(f"No recognized tokenizer files found in {source}")
+    return sorted(copied)
+
 
 def build_config(raw: dict, chat_template: dict | None = None) -> dict:
     """Translate the training configuration to the DeepConfig contract."""
@@ -121,9 +150,7 @@ def main() -> None:
         encoding="utf-8",
     )
     if args.tokenizer:
-        for source in args.tokenizer.iterdir():
-            if source.is_file():
-                shutil.copy2(source, output / source.name)
+        copy_tokenizer_files(args.tokenizer, output)
 
     print(
         f"exported step={checkpoint.get('step')} tensors={len(state)} "
