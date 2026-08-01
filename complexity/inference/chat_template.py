@@ -48,9 +48,11 @@ def validate_chat_template(template: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"Unsupported chat template: {template['id']}")
     if not template["assistant_only_loss"]:
         raise ValueError("Complexity SFT requires assistant_only_loss=true")
-    if template["training_projection"] != (
-        "naturalize_card_hand_target_final_assistant"
-    ):
+    supported_projections = {
+        "naturalize_card_hand_preserve_assistant_turns",
+        "naturalize_card_hand_target_final_assistant",
+    }
+    if template["training_projection"] not in supported_projections:
         raise ValueError(
             "Unsupported SFT training projection: "
             f"{template['training_projection']}"

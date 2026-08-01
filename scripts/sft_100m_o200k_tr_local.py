@@ -408,8 +408,10 @@ def evaluate_sft(
     max_batches: int,
 ) -> tuple[float, int]:
     model.eval()
-    loss_sum = torch.zeros((), dtype=torch.float64, device=device)
-    token_count = torch.zeros((), dtype=torch.float64, device=device)
+    # Metal does not implement float64 tensors. Float32 is sufficient for
+    # aggregating per-batch validation loss and supervised-token counts.
+    loss_sum = torch.zeros((), dtype=torch.float32, device=device)
+    token_count = torch.zeros((), dtype=torch.float32, device=device)
     for batch_index, batch in enumerate(loader):
         if max_batches > 0 and batch_index >= max_batches:
             break
@@ -434,7 +436,7 @@ def evaluate_sft(
                     labels,
                     chunk_tokens=chunk_tokens,
                 )
-        loss_sum += loss.detach().double() * supervised
+        loss_sum += loss.detach().float() * supervised
         token_count += supervised
     if distributed:
         dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
