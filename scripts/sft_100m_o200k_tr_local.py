@@ -408,11 +408,8 @@ def evaluate_sft(
     max_batches: int,
 ) -> tuple[float, int]:
     model.eval()
-    # MPS does not implement float64 tensors. Float32 is ample for the bounded
-    # held-out SFT shards and keeps the reduction portable across CPU, CUDA,
-    # ROCm, and Apple Metal.
-    loss_sum = torch.zeros((), dtype=torch.float32, device=device)
-    token_count = torch.zeros((), dtype=torch.float32, device=device)
+    loss_sum = torch.zeros((), dtype=torch.float64, device=device)
+    token_count = torch.zeros((), dtype=torch.float64, device=device)
     for batch_index, batch in enumerate(loader):
         if max_batches > 0 and batch_index >= max_batches:
             break
@@ -437,7 +434,7 @@ def evaluate_sft(
                     labels,
                     chunk_tokens=chunk_tokens,
                 )
-        loss_sum += loss.detach().float() * supervised
+        loss_sum += loss.detach().double() * supervised
         token_count += supervised
     if distributed:
         dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)

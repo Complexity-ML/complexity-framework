@@ -7,14 +7,6 @@ from pathlib import Path
 from typing import Any, Iterable
 
 CHAT_TEMPLATE_ID = "complexity-chat-v1"
-SUPPORTED_TRAINING_PROJECTIONS = frozenset(
-    {
-        # Legacy single-target shards remain loadable for reproducibility.
-        "naturalize_card_hand_target_final_assistant",
-        # Current corpus projection supervises every preserved assistant turn.
-        "naturalize_card_hand_preserve_assistant_turns",
-    }
-)
 DEFAULT_SYSTEM_PROMPT = (
     "You are Complexity, a concise and grounded assistant. Answer the user "
     "directly. Use provided evidence when present and do not invent missing facts."
@@ -44,7 +36,7 @@ def default_chat_template() -> dict[str, Any]:
         "turn_separator": "\n\n",
         "eos_token": "<|endoftext|>",
         "assistant_only_loss": True,
-        "training_projection": "naturalize_card_hand_preserve_assistant_turns",
+        "training_projection": "naturalize_card_hand_target_final_assistant",
     }
 
 
@@ -56,7 +48,9 @@ def validate_chat_template(template: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"Unsupported chat template: {template['id']}")
     if not template["assistant_only_loss"]:
         raise ValueError("Complexity SFT requires assistant_only_loss=true")
-    if template["training_projection"] not in SUPPORTED_TRAINING_PROJECTIONS:
+    if template["training_projection"] != (
+        "naturalize_card_hand_target_final_assistant"
+    ):
         raise ValueError(
             "Unsupported SFT training projection: "
             f"{template['training_projection']}"
