@@ -50,7 +50,10 @@ def build_config(raw: dict, chat_template: dict | None = None) -> dict:
         "routed_output_scale": raw.get("routed_output_scale", 1.0),
         "top_k": raw.get("top_k", 2),
         "top_k_primary_weight": raw.get("top_k_primary_weight", 0.5),
-        "routing_strategy": raw.get("routing_strategy", "token_id_balanced_hash"),
+        # Historical TR-MOE checkpoints predate the explicit strategy field.
+        # Their persisted primary table uses the modulo/cyclic top-2 contract;
+        # defaulting them to the newer compact hash engine changes inference.
+        "routing_strategy": raw.get("routing_strategy", "modulo_cyclic"),
         "learn_hash_channel_modulation": raw.get(
             "learn_hash_channel_modulation", False
         ),

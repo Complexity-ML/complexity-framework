@@ -51,3 +51,30 @@ def test_vllm_config_declares_exported_template() -> None:
     )
     assert config["chat_template_id"] == CHAT_TEMPLATE_ID
     assert config["chat_template_file"] == "chat_template.json"
+
+
+def test_vllm_export_preserves_legacy_modulo_cyclic_routing() -> None:
+    legacy = build_config(
+        {
+            "hidden_size": 64,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "intermediate_size": 128,
+            "vocab_size": 256,
+        }
+    )
+    current = build_config(
+        {
+            "hidden_size": 64,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "intermediate_size": 128,
+            "vocab_size": 256,
+            "routing_strategy": "token_id_pair_coverage_hash",
+        }
+    )
+
+    assert legacy["routing_strategy"] == "modulo_cyclic"
+    assert current["routing_strategy"] == "token_id_pair_coverage_hash"
