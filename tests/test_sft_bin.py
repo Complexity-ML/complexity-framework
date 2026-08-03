@@ -113,6 +113,21 @@ def test_sft_bin_eval_iterator_is_finite(tmp_path: Path) -> None:
     assert len(list(dataset)) == 2
 
 
+def test_sft_bin_epoch_budget_visits_every_example_exactly_three_times(
+    tmp_path: Path,
+) -> None:
+    _write_shard(tmp_path)
+    dataset = SFTBinDataset(
+        tmp_path,
+        seq_len=5,
+        seed=42,
+        rank=0,
+        world_size=1,
+        epochs=3,
+    )
+    assert len(list(dataset)) == 6
+
+
 def test_sft_parser_rejects_two_dataset_sources() -> None:
     parser = build_parser()
     try:
@@ -265,3 +280,10 @@ def test_sft_parser_exposes_conservative_training_controls() -> None:
     assert args.eval_at_start is True
     assert args.save_best is True
     assert args.early_stopping_patience == 3
+
+
+def test_sft_parser_supports_a_finite_epoch_budget() -> None:
+    args = build_parser().parse_args(
+        ["--checkpoint", "checkpoint", "--epochs", "3"]
+    )
+    assert args.epochs == 3

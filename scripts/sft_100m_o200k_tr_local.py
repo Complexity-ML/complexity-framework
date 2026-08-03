@@ -204,6 +204,7 @@ class SFTJsonlDataset(IterableDataset):
         min_completion_tokens: int = 32,
         chat_template: dict[str, Any] | None = None,
         repeat: bool = True,
+        epochs: int | None = None,
     ):
         self.records = load_records(path)
         self.tokenizer_path = tokenizer_path
@@ -214,6 +215,7 @@ class SFTJsonlDataset(IterableDataset):
         self.min_completion_tokens = min_completion_tokens
         self.chat_template = chat_template or default_chat_template()
         self.repeat = repeat
+        self.epochs = epochs
 
     def __iter__(self):
         tokenizer = Tokenizer.load(self.tokenizer_path)
@@ -235,6 +237,8 @@ class SFTJsonlDataset(IterableDataset):
             if not self.repeat:
                 return
             epoch += 1
+            if self.epochs is not None and epoch >= self.epochs:
+                return
 
 
 def load_model_state_compat(
@@ -278,6 +282,7 @@ class SFTBinDataset(IterableDataset):
         rank: int,
         world_size: int,
         repeat: bool = True,
+        epochs: int | None = None,
     ):
         root = Path(root)
         dataset_root = root
@@ -317,6 +322,7 @@ class SFTBinDataset(IterableDataset):
         self.rank = rank
         self.world_size = world_size
         self.repeat = repeat
+        self.epochs = epochs
         self.pad_id = int(self.metadata["eos_token_id"])
 
     def _tensor_example(self, example: dict[str, Any]) -> dict[str, torch.Tensor]:
@@ -354,6 +360,8 @@ class SFTBinDataset(IterableDataset):
             if not self.repeat:
                 break
             epoch += 1
+            if self.epochs is not None and epoch >= self.epochs:
+                break
 
 
 def load_records(path: str | None) -> list[dict[str, Any]]:
@@ -646,6 +654,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Finite held-out JSONL evaluated during JSONL-based SFT.",
     )
     parser.add_argument("--steps", type=int, default=100)
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=0,
+        help="Consume the complete training dataset this many times; 0 keeps the step-limited stream.",
+    )
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--seq-len", type=int, default=512)
     parser.add_argument("--lr", type=float, default=2e-5)
@@ -783,6 +797,8 @@ def main():
             args.seed,
             rank,
             world_size,
+            repeat=True,
+            epochs=args.epochs or None,
         )
         eval_ds = SFTBinDataset(
             Path(args.sft_bin) / "eval"
@@ -806,6 +822,8 @@ def main():
             rank,
             world_size,
             args.min_completion_tokens,
+            repeat=True,
+            epochs=args.epochs or None,
         )
         eval_ds = (
             SFTJsonlDataset(
