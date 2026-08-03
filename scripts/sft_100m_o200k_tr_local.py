@@ -23,6 +23,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+from safetensors.torch import load_file as load_safetensors
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, IterableDataset
 from tqdm import tqdm
@@ -86,7 +87,19 @@ def load_checkpoint_state(path: str | Path, map_location: str | torch.device = "
         target = latest.read_text(encoding="utf-8").strip()
         if target:
             return load_checkpoint_state(ckpt / target, map_location=map_location)
-    raise FileNotFoundError(f"No checkpoint.pt found under {ckpt}")
+    config_file = ckpt / "config.json"
+    weights_file = ckpt / "model.safetensors"
+    if config_file.exists() and weights_file.exists():
+        config = json.loads(config_file.read_text(encoding="utf-8"))
+        device = str(map_location)
+        return ckpt, {
+            "config": config,
+            "model": load_safetensors(str(weights_file), device=device),
+            "export_format": "huggingface_safetensors",
+        }
+    raise FileNotFoundError(
+        f"No checkpoint.pt or config.json + model.safetensors found under {ckpt}"
+    )
 
 
 def checkpoint_config(state: dict[str, Any]) -> ModelConfig:
@@ -238,9 +251,14 @@ def load_model_state_compat(
     """
 
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    tolerated_suffix = "topk_token_to_expert"
+    tolerated_suffixes = (
+        "topk_token_to_expert",
+        "rotary_emb.inv_freq",
+        "pair_hash_route_codes",
+        "pair_hash_expert_pairs",
+    )
     unexpected_missing = [
-        key for key in missing if not key.endswith(tolerated_suffix)
+        key for key in missing if not key.endswith(tolerated_suffixes)
     ]
     if unexpected_missing or unexpected:
         raise RuntimeError(

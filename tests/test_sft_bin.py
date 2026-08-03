@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from safetensors.torch import save_file as save_safetensors
 
 from complexity.inference.chat_template import (
     CHAT_TEMPLATE_ID,
@@ -17,6 +18,7 @@ from scripts.sft_100m_o200k_tr_local import (
     build_parser,
     configure_trainable_parameters,
     format_record,
+    load_checkpoint_state,
     load_model_state_compat,
     update_early_stopping,
 )
@@ -152,16 +154,44 @@ def test_sft_jsonl_eval_iterator_is_finite(tmp_path: Path) -> None:
     assert dataset.repeat is False
 
 
-def test_historical_topk_route_buffer_is_the_only_tolerated_missing_key() -> None:
+def test_derived_route_buffers_are_tolerated_when_loading_exported_weights() -> None:
     class HistoricalRouteModel(torch.nn.Module):
         def __init__(self) -> None:
             super().__init__()
             self.weight = torch.nn.Parameter(torch.ones(1))
             self.register_buffer("topk_token_to_expert", torch.zeros(2, 4))
+            self.register_buffer("pair_hash_route_codes", torch.zeros(2, 4))
+            self.register_buffer("pair_hash_expert_pairs", torch.zeros(2, 4))
 
     model = HistoricalRouteModel()
     load_model_state_compat(model, {"weight": torch.tensor([2.0])})
     assert model.weight.item() == 2.0
+
+
+def test_sft_loads_huggingface_safetensors_export(tmp_path: Path) -> None:
+    config = {
+        "hidden_size": 16,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 1,
+        "intermediate_size": 8,
+        "vocab_size": 32,
+    }
+    (tmp_path / "config.json").write_text(
+        json.dumps(config),
+        encoding="utf-8",
+    )
+    save_safetensors(
+        {"weight": torch.arange(4, dtype=torch.float32)},
+        str(tmp_path / "model.safetensors"),
+    )
+
+    checkpoint_dir, state = load_checkpoint_state(tmp_path)
+
+    assert checkpoint_dir == tmp_path
+    assert state["config"] == config
+    assert state["export_format"] == "huggingface_safetensors"
+    assert state["model"]["weight"].tolist() == [0.0, 1.0, 2.0, 3.0]
 
 
 def test_sft_parser_accepts_jsonl_evaluation_source() -> None:
