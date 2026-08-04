@@ -413,6 +413,10 @@ def main():
             device_ids=[local_rank],
             output_device=local_rank,
             find_unused_parameters=False,
+            # Route tables and other model buffers are constructed
+            # deterministically on every rank. Re-broadcasting them before
+            # every forward adds large collectives and provides no safety.
+            broadcast_buffers=False,
         )
 
     # Optional torch.compile wrap — applied AFTER DDP so the compiled graph
