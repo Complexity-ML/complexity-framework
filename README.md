@@ -286,6 +286,13 @@ inference checkpoints. The held-out shard should contain at least 500
 independently authored examples before its NLL is treated as a stable capability
 estimate.
 
+For conversational adaptation, `configs/sft_conversation_v13.yaml` provides
+two runtime-only stages. `casual-only` selects 420 source-pair-distinct
+multi-turn casual dialogues. `conversation-blend` retains the first stage and targets a final
+70% casual / 20% empathy / 10% practical mixture. Weighted selection is
+deterministic, accounts for rows retained from the previous stage, and never
+duplicates or rewrites the canonical dataset.
+
 ## Inference boundary
 
 The framework owns model definition, training, evaluation, conversion, and

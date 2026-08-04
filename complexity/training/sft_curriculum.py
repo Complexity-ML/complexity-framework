@@ -25,6 +25,22 @@ def _string_tuple(value: Any, field_name: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _task_weights(value: Any, stage_name: str) -> tuple[tuple[str, float], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, dict) or not value:
+        raise ValueError(f"stage {stage_name}: task_weights must be a non-empty object")
+    result: list[tuple[str, float]] = []
+    for task, weight in value.items():
+        task = str(task).strip()
+        if not task or not isinstance(weight, (int, float)) or weight <= 0:
+            raise ValueError(
+                f"stage {stage_name}: every task weight must have a name and be positive"
+            )
+        result.append((task, float(weight)))
+    return tuple(sorted(result))
+
+
 @dataclass(frozen=True)
 class CurriculumFilters:
     tasks: tuple[str, ...] = ()
@@ -118,6 +134,7 @@ class CurriculumStage:
     lr: float
     include_previous: bool = True
     balance_by: str = "task"
+    task_weights: tuple[tuple[str, float], ...] = ()
     filters: CurriculumFilters = field(default_factory=CurriculumFilters)
     batch_size: int | None = None
     seq_len: int | None = None
@@ -141,8 +158,19 @@ class CurriculumStage:
         if not isinstance(lr, (int, float)) or lr <= 0:
             raise ValueError(f"stage {name}: lr must be positive")
         balance_by = str(raw.get("balance_by", "task"))
-        if balance_by not in {"task", "none"}:
-            raise ValueError(f"stage {name}: balance_by must be 'task' or 'none'")
+        if balance_by not in {"task", "weighted_task", "none"}:
+            raise ValueError(
+                f"stage {name}: balance_by must be 'task', 'weighted_task', or 'none'"
+            )
+        task_weights = _task_weights(raw.get("task_weights"), name)
+        if balance_by == "weighted_task" and not task_weights:
+            raise ValueError(
+                f"stage {name}: weighted_task balancing requires task_weights"
+            )
+        if balance_by != "weighted_task" and task_weights:
+            raise ValueError(
+                f"stage {name}: task_weights require balance_by=weighted_task"
+            )
 
         optional_positive: dict[str, int | None] = {}
         for key in ("batch_size", "seq_len", "eval_steps", "save_steps"):
@@ -157,6 +185,7 @@ class CurriculumStage:
             lr=float(lr),
             include_previous=bool(raw.get("include_previous", True)),
             balance_by=balance_by,
+            task_weights=task_weights,
             filters=CurriculumFilters.from_dict(raw.get("filters")),
             **optional_positive,
         )
@@ -346,8 +375,11 @@ def _balanced_limit(
     limit: int,
     seed: int,
     balance_by: str,
+    task_weights: tuple[tuple[str, float], ...] = (),
+    retained: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    if len(examples) <= limit:
+    retained = retained or []
+    if len(examples) <= limit and balance_by != "weighted_task":
         return sorted(examples, key=lambda item: _score(item, seed))
     if balance_by == "none":
         return sorted(examples, key=lambda item: _score(item, seed))[:limit]
@@ -357,6 +389,41 @@ def _balanced_limit(
         groups.setdefault(str(example.get("task", "unknown")), []).append(example)
     for group in groups.values():
         group.sort(key=lambda item: _score(item, seed))
+
+    if balance_by == "weighted_task":
+        weights = dict(task_weights)
+        groups = {name: group for name, group in groups.items() if name in weights}
+        retained_counts: dict[str, int] = {
+            name: sum(str(row.get("task", "unknown")) == name for row in retained)
+            for name in weights
+        }
+        total_weight = sum(weights.values())
+        selected_counts = dict(retained_counts)
+        selected: list[dict[str, Any]] = []
+        while len(selected) < limit:
+            active = [
+                name
+                for name, group in groups.items()
+                if selected_counts.get(name, 0) - retained_counts.get(name, 0)
+                < len(group)
+            ]
+            if not active:
+                break
+            total_after = len(retained) + len(selected) + 1
+            # Select the task furthest below its weighted target. Stable task
+            # names make ties deterministic across machines and input order.
+            task = max(
+                active,
+                key=lambda name: (
+                    weights[name] * total_after / total_weight
+                    - selected_counts.get(name, 0),
+                    name,
+                ),
+            )
+            consumed = selected_counts.get(task, 0) - retained_counts.get(task, 0)
+            selected.append(groups[task][consumed])
+            selected_counts[task] = selected_counts.get(task, 0) + 1
+        return selected
 
     selected: list[dict[str, Any]] = []
     ordered_groups = sorted(groups)
@@ -430,6 +497,8 @@ def select_stage_examples(
             remaining,
             curriculum.seed,
             stage.balance_by,
+            stage.task_weights,
+            retained,
         )
     if not selected:
         raise ValueError(f"curriculum stage {stage.name!r} selected zero examples")

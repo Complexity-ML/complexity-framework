@@ -93,6 +93,157 @@ def test_full_stage_is_dynamic_instead_of_using_a_fixed_cap() -> None:
     assert len(select_stage_examples(_examples(119), curriculum, "full")) == 119
 
 
+def test_weighted_task_stage_makes_casual_conversation_majority() -> None:
+    examples = [
+        {
+            "example_id": f"{task}-{index:04d}",
+            "task": task,
+            "mode": "chat",
+            "num_tokens": 96,
+            "supervised_tokens": 32,
+        }
+        for task in (
+            "casual_conversation",
+            "conversation_empathy",
+            "practical_action",
+        )
+        for index in range(200)
+    ]
+    curriculum = SFTCurriculum(
+        seed=42,
+        stages=(
+            CurriculumStage(
+                name="conversation-blend",
+                max_examples=100,
+                epochs=1,
+                lr=1e-7,
+                balance_by="weighted_task",
+                task_weights=(
+                    ("casual_conversation", 0.70),
+                    ("conversation_empathy", 0.20),
+                    ("practical_action", 0.10),
+                ),
+                filters=CurriculumFilters(modes=("chat",)),
+            ),
+        ),
+    )
+
+    selected = select_stage_examples(examples, curriculum, "conversation-blend")
+    counts = {
+        task: sum(row["task"] == task for row in selected)
+        for task in (
+            "casual_conversation",
+            "conversation_empathy",
+            "practical_action",
+        )
+    }
+
+    assert counts == {
+        "casual_conversation": 70,
+        "conversation_empathy": 20,
+        "practical_action": 10,
+    }
+
+
+def test_weighted_task_stage_preserves_target_after_retaining_casual_stage() -> None:
+    examples = [
+        {
+            "example_id": f"{task}-{index:04d}",
+            "task": task,
+            "mode": "chat",
+            "num_tokens": 96,
+            "supervised_tokens": 32,
+        }
+        for task in (
+            "casual_conversation",
+            "conversation_empathy",
+            "practical_action",
+        )
+        for index in range(300)
+    ]
+    curriculum = SFTCurriculum(
+        seed=42,
+        stages=(
+            CurriculumStage(
+                name="casual-only",
+                max_examples=50,
+                epochs=1,
+                lr=2e-7,
+                filters=CurriculumFilters(tasks=("casual_conversation",)),
+            ),
+            CurriculumStage(
+                name="conversation-blend",
+                max_examples=100,
+                epochs=1,
+                lr=1e-7,
+                balance_by="weighted_task",
+                task_weights=(
+                    ("casual_conversation", 0.70),
+                    ("conversation_empathy", 0.20),
+                    ("practical_action", 0.10),
+                ),
+                filters=CurriculumFilters(modes=("chat",)),
+            ),
+        ),
+    )
+
+    selected = select_stage_examples(examples, curriculum, "conversation-blend")
+
+    assert sum(row["task"] == "casual_conversation" for row in selected) == 70
+    assert sum(row["task"] == "conversation_empathy" for row in selected) == 20
+    assert sum(row["task"] == "practical_action" for row in selected) == 10
+
+
+def test_weighted_task_stage_keeps_weights_when_retained_group_is_exhausted() -> None:
+    examples = [
+        {
+            "example_id": f"casual-{index:04d}",
+            "task": "casual_conversation",
+            "mode": "chat",
+        }
+        for index in range(70)
+    ] + [
+        {
+            "example_id": f"{task}-{index:04d}",
+            "task": task,
+            "mode": "chat",
+        }
+        for task in ("conversation_empathy", "practical_action")
+        for index in range(100)
+    ]
+    curriculum = SFTCurriculum(
+        seed=42,
+        stages=(
+            CurriculumStage(
+                name="casual-only",
+                max_examples=70,
+                epochs=1,
+                lr=2e-7,
+                filters=CurriculumFilters(tasks=("casual_conversation",)),
+            ),
+            CurriculumStage(
+                name="conversation-blend",
+                max_examples=100,
+                epochs=1,
+                lr=1e-7,
+                balance_by="weighted_task",
+                task_weights=(
+                    ("casual_conversation", 0.70),
+                    ("conversation_empathy", 0.20),
+                    ("practical_action", 0.10),
+                ),
+                filters=CurriculumFilters(modes=("chat",)),
+            ),
+        ),
+    )
+
+    selected = select_stage_examples(examples, curriculum, "conversation-blend")
+
+    assert sum(row["task"] == "casual_conversation" for row in selected) == 70
+    assert sum(row["task"] == "conversation_empathy" for row in selected) == 20
+    assert sum(row["task"] == "practical_action" for row in selected) == 10
+
+
 def test_curriculum_uses_projected_metadata_for_difficulty() -> None:
     examples = _examples(30)
     metadata = {
@@ -228,3 +379,32 @@ stages:
     assert curriculum.seed == 7
     assert curriculum.stages[0].filters.tasks == ("qa",)
     assert curriculum.stages[1].max_examples is None
+
+
+def test_curriculum_yaml_loads_weighted_task_profile(tmp_path: Path) -> None:
+    path = tmp_path / "curriculum.yaml"
+    path.write_text(
+        """\
+version: 1
+seed: 7
+stages:
+  - name: conversational
+    max_examples: 100
+    epochs: 1
+    lr: 1.0e-7
+    balance_by: weighted_task
+    task_weights:
+      casual_conversation: 0.7
+      conversation_empathy: 0.2
+      practical_action: 0.1
+""",
+        encoding="utf-8",
+    )
+
+    curriculum = load_curriculum(path)
+
+    assert curriculum.stages[0].task_weights == (
+        ("casual_conversation", 0.7),
+        ("conversation_empathy", 0.2),
+        ("practical_action", 0.1),
+    )
