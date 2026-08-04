@@ -47,10 +47,17 @@ def _strategy(value: str) -> TRHashStrategy:
 
 
 def _backend(config: MLPConfig) -> TRHashBackend:
-    policy = config.use_custom_kernels
-    if isinstance(policy, str):
-        policy = policy.strip().lower()
-    return TRHashBackend.PYTORCH if policy in {False, "false"} else TRHashBackend.AUTO
+    kernel_policy = config.use_custom_kernels
+    cggr_policy = config.use_cggr
+    if isinstance(kernel_policy, str):
+        kernel_policy = kernel_policy.strip().lower()
+    if isinstance(cggr_policy, str):
+        cggr_policy = cggr_policy.strip().lower()
+    if kernel_policy in {False, "false"}:
+        return TRHashBackend.PYTORCH
+    if cggr_policy in {True, "true"}:
+        return TRHashBackend.CGGR
+    return TRHashBackend.AUTO
 
 
 @register_mlp("tr_hash_engine")

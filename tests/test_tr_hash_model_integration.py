@@ -5,6 +5,7 @@ import torch
 from complexity import ComplexityModel, ModelConfig
 from complexity.core.mlp.tr_hash_engine import TRHashEngineMLP
 from complexity.training.o200k.optimizer import build_optimizer
+from complexity.tr_hash import TRHashBackend
 
 
 def _config() -> ModelConfig:
@@ -32,6 +33,27 @@ def test_model_blocks_use_canonical_tr_hash_engine():
     assert not torch.equal(
         model.layers[0].mlp.engine.route_table,
         model.layers[1].mlp.engine.route_table,
+    )
+
+
+def test_canonical_engine_honors_explicit_cggr_policy():
+    config = _config()
+    config.use_cggr = "true"
+    model = ComplexityModel(config)
+    assert all(
+        layer.mlp.engine.config.backend is TRHashBackend.CGGR
+        for layer in model.layers
+    )
+
+
+def test_disabling_custom_kernels_forces_reference_backend():
+    config = _config()
+    config.use_custom_kernels = "false"
+    config.use_cggr = "true"
+    model = ComplexityModel(config)
+    assert all(
+        layer.mlp.engine.config.backend is TRHashBackend.PYTORCH
+        for layer in model.layers
     )
 
 
