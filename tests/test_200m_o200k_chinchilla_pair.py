@@ -96,7 +96,14 @@ def test_four_billion_token_budget_matches_frozen_shard_target():
     assert predicted_tokens == 3_999_793_152
     prepare_script = Path("scripts/prepare_fineweb_o200k_shards.py").read_text()
     assert "default=3_999_793_153" in prepare_script
-    assert 'DTYPE = np.dtype("<u4")' in prepare_script
+    assert 'choices=("auto", "uint16", "uint32")' in prepare_script
+
+
+def test_frozen_shard_dtype_tracks_tokenizer_vocabulary():
+    from scripts.prepare_fineweb_o200k_shards import select_token_dtype
+
+    assert select_token_dtype("auto", 32_000).str == "<u2"
+    assert select_token_dtype("auto", 200_019).str == "<u4"
 
 
 def test_sequential_token_shard_partitions_ddp_and_resumes_exactly(tmp_path):

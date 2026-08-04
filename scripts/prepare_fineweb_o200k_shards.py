@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Freeze FineWeb-Edu into disjoint o200k train/eval token shards.
+"""Freeze FineWeb-Edu into disjoint train/eval token shards.
 
 The script is intended to run on the training server before ``torchrun``. It
-downloads one pinned Parquet file at a time to local NVMe, tokenizes it with the
-repository's cached o200k tokenizer, appends EOS between documents, writes
-memory-mapped uint32 token streams, and deletes the raw Parquet file. Training
-therefore performs no network I/O.
+downloads one pinned Parquet file at a time to local NVMe, tokenizes it with a
+frozen tokenizer, appends EOS between documents, writes a compact token stream,
+and deletes the raw Parquet file. Training therefore performs no network I/O,
+and raw source files never need to coexist on disk.
 """
 
 from __future__ import annotations
@@ -28,14 +28,13 @@ from huggingface_hub import HfApi, hf_hub_url
 
 from complexity.tokenizer import Tokenizer
 
-REPO_ID = "HuggingFaceFW/fineweb-edu"
-DATASET_PREFIX = "sample/10BT/"
+DEFAULT_REPO_ID = "HuggingFaceFW/fineweb-edu"
+DEFAULT_DATASET_PREFIX = "sample/10BT/"
 # This is the FineWeb-Edu revision cached before the historical 306.5M runs.
 # Keeping it explicit prevents a later dataset update from silently changing
 # the new matched pair.
 DEFAULT_REVISION = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
 FORMAT = "complexity-token-shard-v1"
-DTYPE = np.dtype("<u4")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,6 +42,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--tokenizer", type=Path, default=Path("./tokenizer-o200k"))
     parser.add_argument("--revision", default=DEFAULT_REVISION)
+    parser.add_argument("--repo-id", default=DEFAULT_REPO_ID)
+    parser.add_argument("--dataset-prefix", default=DEFAULT_DATASET_PREFIX)
+    parser.add_argument("--source-subset", default="sample-10BT")
+    parser.add_argument(
+        "--max-source-files",
+        type=int,
+        default=0,
+        help="Limit the sorted Parquet source list; zero keeps every matching file.",
+    )
+    parser.add_argument(
+        "--dtype",
+        choices=("auto", "uint16", "uint32"),
+        default="auto",
+        help="Token storage type. Auto selects uint16 when the vocabulary fits.",
+    )
     parser.add_argument(
         "--train-tokens",
         type=int,
@@ -70,6 +84,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--force", action="store_true")
     return parser
+
+
+def select_token_dtype(requested: str, vocab_size: int) -> np.dtype:
+    if requested == "auto":
+        requested = "uint16" if vocab_size <= np.iinfo(np.uint16).max + 1 else "uint32"
+    dtype = np.dtype("<u2" if requested == "uint16" else "<u4")
+    if vocab_size - 1 > np.iinfo(dtype).max:
+        raise ValueError(
+            f"Tokenizer vocabulary {vocab_size:,} does not fit {requested}"
+        )
+    return dtype
 
 
 def file_sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
@@ -132,6 +157,7 @@ class TokenWriter:
     vocab_size: int
     tokenizer_label: str
     tokenizer_sha256: str
+    dtype: np.dtype
 
     def __post_init__(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -162,9 +188,11 @@ class TokenWriter:
                 f"{self.name}: token id outside vocabulary: min={minimum}, max={maximum}, "
                 f"vocab={self.vocab_size}"
             )
-        if maximum > np.iinfo(np.uint32).max:
-            raise ValueError(f"{self.name}: token id {maximum} does not fit uint32")
-        array = array64.astype(DTYPE, copy=False)
+        if maximum > np.iinfo(self.dtype).max:
+            raise ValueError(
+                f"{self.name}: token id {maximum} does not fit {self.dtype.name}"
+            )
+        array = array64.astype(self.dtype, copy=False)
         payload = array.tobytes()
         self.handle.write(payload)
         self.digest.update(payload)
@@ -184,7 +212,7 @@ class TokenWriter:
         metadata = {
             "format": FORMAT,
             "bin": "tokens.bin",
-            "dtype": DTYPE.str,
+            "dtype": self.dtype.str,
             "num_tokens": self.num_tokens,
             "max_token_id": self.max_token_id,
             "vocab_size": self.vocab_size,
@@ -241,6 +269,8 @@ def main() -> None:
         raise ValueError("document-batch-size must be positive")
     if args.tokenizer_threads <= 0:
         raise ValueError("tokenizer-threads must be positive")
+    if args.max_source_files < 0:
+        raise ValueError("max-source-files cannot be negative")
 
     output_root = args.output_root.resolve()
     if output_root.exists():
@@ -253,18 +283,16 @@ def main() -> None:
     download_root = output_root / ".download"
     download_root.mkdir()
 
-    required_bytes = (args.train_tokens + args.eval_tokens) * DTYPE.itemsize
-    free_bytes = shutil.disk_usage(output_root).free
-    if free_bytes < required_bytes + 10 * 1024**3:
-        raise OSError(
-            f"Insufficient free space: need at least {(required_bytes + 10 * 1024**3) / 1e9:.1f} GB, "
-            f"have {free_bytes / 1e9:.1f} GB"
-        )
-
     tokenizer = Tokenizer.load(str(args.tokenizer))
-    if tokenizer.vocab_size > np.iinfo(np.uint32).max:
-        raise ValueError(
-            f"Tokenizer vocabulary {tokenizer.vocab_size:,} does not fit uint32"
+    token_dtype = select_token_dtype(args.dtype, tokenizer.vocab_size)
+    required_bytes = (args.train_tokens + args.eval_tokens) * token_dtype.itemsize
+    free_bytes = shutil.disk_usage(output_root).free
+    disk_guard_bytes = 10 * 1024**3
+    if free_bytes < required_bytes + disk_guard_bytes:
+        raise OSError(
+            f"Insufficient free space: need at least "
+            f"{(required_bytes + disk_guard_bytes) / 1e9:.1f} GB, "
+            f"have {free_bytes / 1e9:.1f} GB"
         )
     tokenizer_files = sorted(path for path in args.tokenizer.rglob("*") if path.is_file())
     if not tokenizer_files:
@@ -281,7 +309,8 @@ def main() -> None:
         raise ValueError("Tokenizer must expose an EOS token")
     print(
         f"tokenization workers={args.tokenizer_threads} "
-        f"document_batch_size={args.document_batch_size}",
+        f"document_batch_size={args.document_batch_size} "
+        f"dtype={token_dtype.str} output={required_bytes / 1e9:.2f} GB",
         flush=True,
     )
 
@@ -289,15 +318,17 @@ def main() -> None:
     files = sorted(
         filename
         for filename in api.list_repo_files(
-            REPO_ID,
+            args.repo_id,
             repo_type="dataset",
             revision=args.revision,
         )
-        if filename.startswith(DATASET_PREFIX) and filename.endswith(".parquet")
+        if filename.startswith(args.dataset_prefix) and filename.endswith(".parquet")
     )
+    if args.max_source_files:
+        files = files[: args.max_source_files]
     if not files:
         raise RuntimeError(
-            f"No Parquet files found under {DATASET_PREFIX} at {args.revision}"
+            f"No Parquet files found under {args.dataset_prefix} at {args.revision}"
         )
 
     train_writer = TokenWriter(
@@ -307,6 +338,7 @@ def main() -> None:
         tokenizer.vocab_size,
         str(args.tokenizer),
         tokenizer_digest,
+        token_dtype,
     )
     eval_writer = TokenWriter(
         "eval",
@@ -315,6 +347,7 @@ def main() -> None:
         tokenizer.vocab_size,
         str(args.tokenizer),
         tokenizer_digest,
+        token_dtype,
     )
     source_files: list[dict] = []
     source_documents = 0
@@ -325,7 +358,7 @@ def main() -> None:
                 break
             local_path = download_root / Path(filename).name
             url = hf_hub_url(
-                REPO_ID,
+                args.repo_id,
                 filename=filename,
                 repo_type="dataset",
                 revision=args.revision,
@@ -409,9 +442,9 @@ def main() -> None:
         shutil.rmtree(download_root, ignore_errors=True)
 
     common_metadata = {
-        "source_repo": REPO_ID,
+        "source_repo": args.repo_id,
         "source_revision": args.revision,
-        "source_subset": "sample-10BT",
+        "source_subset": args.source_subset,
         "source_files": [entry["path"] for entry in source_files],
         "eval_document_rule": f"source_document_index % {args.eval_stride} == 0",
         "eos_token_id": int(eos_id),
@@ -421,15 +454,15 @@ def main() -> None:
     manifest = {
         "schema_version": 1,
         "created_utc": datetime.now(timezone.utc).isoformat(),
-        "source_repo": REPO_ID,
+        "source_repo": args.repo_id,
         "source_revision": args.revision,
-        "source_subset": "sample-10BT",
+        "source_subset": args.source_subset,
         "source_files": source_files,
         "source_documents_scanned": source_documents,
         "tokenizer": str(args.tokenizer),
         "tokenizer_sha256": tokenizer_digest,
         "vocab_size": tokenizer.vocab_size,
-        "dtype": DTYPE.str,
+        "dtype": token_dtype.str,
         "eval_stride": args.eval_stride,
         "train": {
             "path": "train",
