@@ -32,11 +32,16 @@ def build_optimizer(args, raw_model):
                     "gate_proj_w",
                     "up_proj_w",
                     "down_proj_w",
+                    "engine.expert_gate",
+                    "engine.expert_up",
+                    "engine.expert_down",
                     "hash_pair_gate_logits",
                     "hash_channel_scale",
                 )
             )
-            is_shared_expert = ".mlp.shared_" in name
+            is_shared_expert = (
+                ".mlp.shared_" in name or ".mlp.engine.shared_" in name
+            )
             kind = (
                 "expert"
                 if is_routed_expert

@@ -231,6 +231,15 @@ class ComplexityModel(nn.Module):
             # Shared expert down projection (TokenRoutedMLP with shared=True)
             if hasattr(mlp, 'shared_down') and isinstance(mlp.shared_down, nn.Linear):
                 nn.init.normal_(mlp.shared_down.weight, mean=0.0, std=residual_std)
+            # Canonical TRHashEngine is nested by the model-block adapter.
+            tr_hash_engine = getattr(mlp, "engine", None)
+            if tr_hash_engine is not None:
+                expert_down = getattr(tr_hash_engine, "expert_down", None)
+                if isinstance(expert_down, nn.Parameter):
+                    nn.init.normal_(expert_down, mean=0.0, std=residual_std)
+                shared_down = getattr(tr_hash_engine, "shared_down", None)
+                if isinstance(shared_down, nn.Linear):
+                    nn.init.normal_(shared_down.weight, mean=0.0, std=residual_std)
             if hasattr(mlp, 'object_down') and isinstance(mlp.object_down, nn.Linear):
                 nn.init.normal_(mlp.object_down.weight, mean=0.0, std=residual_std)
             if hasattr(mlp, 'micro_down') and isinstance(mlp.micro_down, nn.Parameter):

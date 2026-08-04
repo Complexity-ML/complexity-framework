@@ -191,7 +191,14 @@ class ModelConfig:
         """Validate and set defaults."""
         # Auto-compute intermediate_size
         if self.intermediate_size is None:
-            if self.mlp_type in ["swiglu", "silu", "geglu", "token_routed"]:
+            if self.mlp_type in [
+                "swiglu",
+                "silu",
+                "geglu",
+                "token_routed",
+                "tr_hash_engine",
+                "tr_hash_moe",
+            ]:
                 # SwiGLU uses 8/3 ratio (rounded to multiple of 256)
                 self.intermediate_size = int(self.hidden_size * 8 / 3)
                 self.intermediate_size = ((self.intermediate_size + 255) // 256) * 256

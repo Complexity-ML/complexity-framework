@@ -29,6 +29,7 @@ Usage:
 from .base import MLPBase, MLPConfig
 from .standard import StandardMLP, SwiGLUMLP, GeGLUMLP
 from .token_routed import TokenRoutedMLP
+from .tr_hash_engine import TRHashEngineMLP
 from .mixtral_moe import MixtralMoE
 from .i64_mlp import I64SwiGLUMLP, I64TokenRoutedMLP
 from .dense_deterministic import DenseDeterministicMLP
@@ -44,6 +45,7 @@ __all__ = [
     "SwiGLUMLP",
     "GeGLUMLP",
     "TokenRoutedMLP",
+    "TRHashEngineMLP",
     "MixtralMoE",
     "I64SwiGLUMLP",
     "I64TokenRoutedMLP",

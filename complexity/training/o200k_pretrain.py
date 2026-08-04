@@ -139,6 +139,11 @@ def token_routed_config_summary(args) -> str:
         f"{1.0 - args.top_k_primary_weight:.2f}",
         f"grad_ckpt={args.grad_ckpt}",
     ]
+    if getattr(args, "mlp_type", "token_routed") in {
+        "tr_hash_engine",
+        "tr_hash_moe",
+    }:
+        parts.append("engine=TRHashEngine")
     if getattr(args, "learn_hash_pair_gates", False):
         parts.append(
             "hash_pair_gates=learned"
