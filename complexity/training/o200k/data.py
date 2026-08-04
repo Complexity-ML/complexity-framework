@@ -57,6 +57,7 @@ class FineWebDataset(IterableDataset):
         world_size: int,
         split: str = "train",
         eval_stride: int = 20,
+        start_sequence: int = 0,
     ):
         from datasets import load_dataset
 
@@ -66,6 +67,9 @@ class FineWebDataset(IterableDataset):
         self.world_size = world_size
         self.split = split
         self.eval_stride = eval_stride
+        self.start_sequence = int(start_sequence)
+        if self.start_sequence < 0:
+            raise ValueError("start_sequence must be non-negative")
         local_parquet = os.environ.get("FINEWEB_PARQUET_PATH")
         self.local_parquet_directory = (
             Path(local_parquet) if local_parquet and Path(local_parquet).is_dir() else None
@@ -125,6 +129,7 @@ class FineWebDataset(IterableDataset):
 
     def __iter__(self):
         buffer: list[int] = []
+        sequences_to_skip = self.start_sequence
         for idx, example in self._examples():
             if not self._uses_document(idx):
                 continue
@@ -139,6 +144,9 @@ class FineWebDataset(IterableDataset):
             while len(buffer) >= self.seq_len + 1:
                 chunk = buffer[: self.seq_len + 1]
                 buffer = buffer[self.seq_len :]
+                if sequences_to_skip:
+                    sequences_to_skip -= 1
+                    continue
                 yield {
                     "input_ids": torch.tensor(chunk[:-1], dtype=torch.long),
                     "labels": torch.tensor(chunk[1:], dtype=torch.long),
@@ -247,7 +255,12 @@ def build_loaders(args, config, rank: int, world_size: int, *, start_step: int =
         if rank == 0:
             logger.info("Dataset: FineWeb-Edu sample-10BT streaming")
         train_ds = FineWebDataset(
-            tokenizer, args.seq_len, rank, world_size, split="train"
+            tokenizer,
+            args.seq_len,
+            rank,
+            world_size,
+            split="train",
+            start_sequence=int(start_step) * int(args.batch_size),
         )
         eval_ds = (
             FineWebDataset(tokenizer, args.seq_len, rank, world_size, split="eval")
