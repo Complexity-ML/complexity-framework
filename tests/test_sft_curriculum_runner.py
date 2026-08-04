@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from complexity.training.sft_curriculum import CurriculumStage
-from scripts.run_sft_curriculum import stage_plan
+from scripts.run_sft_curriculum import selected_checkpoint, stage_plan
 
 
 def test_stage_plan_covers_every_example_before_early_stopping() -> None:
@@ -35,3 +35,36 @@ def test_stage_plan_scales_steps_by_world_size() -> None:
 
     assert plan["steps_per_epoch"] == 782
     assert plan["total_steps"] == 2346
+
+
+def test_stage_without_validation_improvement_keeps_its_source(tmp_path) -> None:
+    stage_root = tmp_path / "stage"
+    source = tmp_path / "source"
+    stage_root.mkdir()
+    source.mkdir()
+    periodic = stage_root / "step_000938"
+    periodic.mkdir()
+
+    assert selected_checkpoint(
+        stage_root,
+        source_checkpoint=source,
+    ) == source
+
+
+def test_stage_with_validation_improvement_selects_trained_checkpoint(
+    tmp_path,
+) -> None:
+    stage_root = tmp_path / "stage"
+    source = tmp_path / "source"
+    best = stage_root / "best" / "step_000313"
+    best.mkdir(parents=True)
+    source.mkdir()
+    (stage_root / "best.json").write_text(
+        '{"checkpoint": "' + str(best) + '"}\n',
+        encoding="utf-8",
+    )
+
+    assert selected_checkpoint(
+        stage_root,
+        source_checkpoint=source,
+    ) == best

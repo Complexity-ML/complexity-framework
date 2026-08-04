@@ -21,8 +21,10 @@ from scripts.sft_100m_o200k_tr_local import (
     format_record,
     load_checkpoint_state,
     load_model_state_compat,
+    pad_epoch_items,
     resolve_sft_bin_evaluation_partitions,
     update_early_stopping,
+    validation_baseline,
 )
 
 
@@ -197,6 +199,45 @@ def test_sft_bin_epoch_budget_visits_every_example_exactly_three_times(
     assert len(list(dataset)) == 6
 
 
+def test_sft_bin_epoch_padding_preserves_every_batch_boundary(
+    tmp_path: Path,
+) -> None:
+    _write_shard(tmp_path)
+    dataset = SFTBinDataset(
+        tmp_path,
+        seq_len=5,
+        seed=42,
+        rank=0,
+        world_size=1,
+        epochs=3,
+        epoch_batch_size=3,
+    )
+
+    # Two examples become one complete three-example batch per epoch. The
+    # epochs are not concatenated into only two batches.
+    assert len(list(dataset)) == 9
+
+
+def test_epoch_padding_gives_sparse_distributed_ranks_equal_batch_counts() -> None:
+    all_items = [0, 1, 2]
+    first_rank = pad_epoch_items(
+        [0, 2],
+        all_items=all_items,
+        rank=0,
+        world_size=2,
+        batch_size=2,
+    )
+    second_rank = pad_epoch_items(
+        [1],
+        all_items=all_items,
+        rank=1,
+        world_size=2,
+        batch_size=2,
+    )
+
+    assert len(first_rank) == len(second_rank) == 2
+
+
 def test_sft_parser_rejects_two_dataset_sources() -> None:
     parser = build_parser()
     try:
@@ -331,6 +372,20 @@ def test_sft_early_stopping_state_resets_only_on_real_improvement() -> None:
     )
     assert improved is False
     assert best == 3.98
+    assert misses == 1
+
+
+def test_initial_validation_is_the_stage_checkpoint_baseline() -> None:
+    best = validation_baseline(3.356103)
+    improved, best, misses = update_early_stopping(
+        best,
+        0,
+        3.390597,
+        min_delta=0.0,
+    )
+
+    assert improved is False
+    assert best == 3.356103
     assert misses == 1
 
 

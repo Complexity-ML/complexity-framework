@@ -197,6 +197,44 @@ def encode_sft_example(
     }
 
 
+def pad_epoch_items(
+    rank_items: list[Any],
+    *,
+    all_items: list[Any],
+    rank: int,
+    world_size: int,
+    batch_size: int,
+) -> list[Any]:
+    """Pad one rank to complete batches without crossing epoch boundaries.
+
+    ``DataLoader`` batches an ``IterableDataset`` as one continuous stream. If
+    consecutive epochs are simply concatenated, the last partial batch of one
+    epoch is merged with the first examples of the next one. That makes
+    ``epochs * ceil(examples / batch_size)`` disagree with the number of
+    batches actually produced and can skip the final evaluation boundary.
+
+    Repeating at most one partial batch per rank keeps every epoch independent
+    and gives every distributed rank the same deterministic batch count.
+    """
+
+    if batch_size < 1:
+        raise ValueError("epoch batch size must be positive")
+    if world_size < 1:
+        raise ValueError("world size must be positive")
+    if not all_items:
+        raise ValueError("cannot pad an empty epoch")
+
+    examples_per_rank = math.ceil(len(all_items) / world_size)
+    target = math.ceil(examples_per_rank / batch_size) * batch_size
+    padded = list(rank_items)
+    if not padded:
+        padded.append(all_items[rank % len(all_items)])
+    source = list(padded)
+    while len(padded) < target:
+        padded.extend(source[: target - len(padded)])
+    return padded
+
+
 class SFTJsonlDataset(IterableDataset):
     def __init__(
         self,
@@ -210,6 +248,7 @@ class SFTJsonlDataset(IterableDataset):
         chat_template: dict[str, Any] | None = None,
         repeat: bool = True,
         epochs: int | None = None,
+        epoch_batch_size: int | None = None,
     ):
         self.records = load_records(path)
         self.tokenizer_path = tokenizer_path
@@ -221,6 +260,7 @@ class SFTJsonlDataset(IterableDataset):
         self.chat_template = chat_template or default_chat_template()
         self.repeat = repeat
         self.epochs = epochs
+        self.epoch_batch_size = epoch_batch_size
 
     def __iter__(self):
         tokenizer = Tokenizer.load(self.tokenizer_path)
@@ -229,9 +269,16 @@ class SFTJsonlDataset(IterableDataset):
         while True:
             rng = random.Random(self.seed + epoch)
             rng.shuffle(records)
-            for idx, record in enumerate(records):
-                if idx % self.world_size != self.rank:
-                    continue
+            rank_records = records[self.rank :: self.world_size]
+            if self.epoch_batch_size is not None:
+                rank_records = pad_epoch_items(
+                    rank_records,
+                    all_items=records,
+                    rank=self.rank,
+                    world_size=self.world_size,
+                    batch_size=self.epoch_batch_size,
+                )
+            for record in rank_records:
                 yield encode_sft_example(
                     tokenizer,
                     record,
@@ -288,6 +335,7 @@ class SFTBinDataset(IterableDataset):
         world_size: int,
         repeat: bool = True,
         epochs: int | None = None,
+        epoch_batch_size: int | None = None,
         curriculum_config: str | Path | None = None,
         curriculum_stage: str | None = None,
     ):
@@ -347,6 +395,7 @@ class SFTBinDataset(IterableDataset):
         self.world_size = world_size
         self.repeat = repeat
         self.epochs = epochs
+        self.epoch_batch_size = epoch_batch_size
         self.pad_id = int(self.metadata["eos_token_id"])
 
     def _tensor_example(self, example: dict[str, Any]) -> dict[str, torch.Tensor]:
@@ -377,9 +426,16 @@ class SFTBinDataset(IterableDataset):
         indices = list(range(len(self.examples)))
         while True:
             random.Random(self.seed + epoch).shuffle(indices)
-            for position, example_index in enumerate(indices):
-                if position % self.world_size != self.rank:
-                    continue
+            rank_indices = indices[self.rank :: self.world_size]
+            if self.epoch_batch_size is not None:
+                rank_indices = pad_epoch_items(
+                    rank_indices,
+                    all_items=indices,
+                    rank=self.rank,
+                    world_size=self.world_size,
+                    batch_size=self.epoch_batch_size,
+                )
+            for example_index in rank_indices:
                 yield self._tensor_example(self.examples[example_index])
             if not self.repeat:
                 break
@@ -488,6 +544,12 @@ def update_early_stopping(
     if improved:
         return True, current_loss, 0
     return False, best_loss, evaluations_without_improvement + 1
+
+
+def validation_baseline(initial_eval_loss: float | None) -> float:
+    """Make the stage-entry checkpoint the validation baseline when measured."""
+
+    return math.inf if initial_eval_loss is None else float(initial_eval_loss)
 
 
 def early_stopping_is_eligible(
@@ -894,6 +956,7 @@ def main():
             world_size,
             repeat=True,
             epochs=args.epochs or None,
+            epoch_batch_size=args.batch_size,
             curriculum_config=args.curriculum_config,
             curriculum_stage=args.curriculum_stage,
         )
@@ -935,6 +998,7 @@ def main():
             args.min_completion_tokens,
             repeat=True,
             epochs=args.epochs or None,
+            epoch_batch_size=args.batch_size,
         )
         matched_eval_ds = (
             SFTJsonlDataset(
@@ -1079,7 +1143,7 @@ def main():
         ])
         csv_file.flush()
 
-    best_eval_loss = math.inf
+    best_eval_loss = validation_baseline(None)
     evaluations_without_improvement = 0
     if matched_eval_loader is not None and args.eval_steps > 0 and args.eval_at_start:
         initial_eval_loss, initial_eval_tokens = evaluate_sft(
@@ -1107,6 +1171,10 @@ def main():
                 distributed=distributed,
                 max_batches=args.eval_batches,
             )
+        # The source checkpoint is a real candidate for this stage.  Recording
+        # its held-out loss prevents the first completed epoch from becoming
+        # "best" merely because no trained checkpoint has been considered yet.
+        best_eval_loss = validation_baseline(initial_eval_loss)
         if is_main:
             logger.info(
                 f"SFT matched eval step=0: loss={initial_eval_loss:.6f} "

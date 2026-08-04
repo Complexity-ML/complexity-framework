@@ -73,13 +73,22 @@ def stage_plan(
     }
 
 
-def selected_checkpoint(stage_root: Path) -> Path:
+def selected_checkpoint(
+    stage_root: Path,
+    *,
+    source_checkpoint: Path | None = None,
+) -> Path:
     best_file = stage_root / "best.json"
     if best_file.exists():
         best = json.loads(best_file.read_text(encoding="utf-8"))
         checkpoint = Path(best["checkpoint"])
         if checkpoint.exists():
             return checkpoint
+    # No trained checkpoint improved the held-out loss measured at stage
+    # entry. Preserve that source checkpoint instead of silently advancing to
+    # a worse periodic/final checkpoint.
+    if source_checkpoint is not None and source_checkpoint.exists():
+        return source_checkpoint
     latest = stage_root / "latest"
     if latest.exists():
         target = latest.read_text(encoding="utf-8").strip()
@@ -127,12 +136,13 @@ def main() -> None:
     if args.dry_run:
         return
 
-    trainer = Path(__file__).with_name("sft_100m_o200k_tr_local.py")
+    trainer = Path(__file__).with_name("sft_tr.py")
     checkpoint = Path(args.checkpoint).resolve()
     state_path = output_root / "curriculum-state.json"
     completed: list[dict[str, Any]] = []
 
     for stage, plan in zip(stages, plans, strict=True):
+        stage_source_checkpoint = checkpoint
         stage_root = output_root / stage.name
         stage_root.mkdir(parents=True, exist_ok=True)
         command = [
@@ -191,13 +201,18 @@ def main() -> None:
         print(f"\n=== {stage.name} ===", flush=True)
         print(" ".join(command), flush=True)
         subprocess.run(command, check=True)
-        checkpoint = selected_checkpoint(stage_root)
+        checkpoint = selected_checkpoint(
+            stage_root,
+            source_checkpoint=stage_source_checkpoint,
+        )
         completed.append(
             {
                 "stage": stage.name,
                 "plan": plan,
                 "stage_config": asdict(stage),
+                "source_checkpoint": str(stage_source_checkpoint),
                 "selected_checkpoint": str(checkpoint),
+                "stage_improved": checkpoint != stage_source_checkpoint,
             }
         )
         state_path.write_text(
