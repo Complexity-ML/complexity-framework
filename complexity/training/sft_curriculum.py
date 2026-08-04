@@ -1,9 +1,10 @@
 """Deterministic, runtime-only curriculum selection for SFT shards.
 
 The curriculum never rewrites or republishes a dataset.  It selects examples
-from the existing ``examples.jsonl`` index when a stage starts.  Optional row
-metadata (difficulty and interaction mode) is read from the projected Parquet
-stored beside the token shards.
+from the existing ``examples.jsonl`` index when a stage starts. Optional row
+metadata is read from the projected Parquet stored beside the token shards.
+Text and structural signatures are loaded only so a stage can reject known
+boilerplate and cap repeated response surfaces.
 """
 
 from __future__ import annotations
@@ -33,6 +34,11 @@ class CurriculumFilters:
     training_representations: tuple[str, ...] = ()
     max_num_tokens: int | None = None
     max_supervised_tokens: int | None = None
+    exclude_response_substrings: tuple[str, ...] = ()
+    max_structure_occurrences_per_task: int | None = None
+    max_opening_occurrences_per_task: int | None = None
+    opening_words: int = 6
+    opening_cap_exempt_tasks: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "CurriculumFilters":
@@ -45,6 +51,11 @@ class CurriculumFilters:
             "training_representations",
             "max_num_tokens",
             "max_supervised_tokens",
+            "exclude_response_substrings",
+            "max_structure_occurrences_per_task",
+            "max_opening_occurrences_per_task",
+            "opening_words",
+            "opening_cap_exempt_tasks",
         }
         unknown = set(raw).difference(supported)
         if unknown:
@@ -54,6 +65,15 @@ class CurriculumFilters:
         for name, value in (
             ("max_num_tokens", max_num_tokens),
             ("max_supervised_tokens", max_supervised_tokens),
+            (
+                "max_structure_occurrences_per_task",
+                raw.get("max_structure_occurrences_per_task"),
+            ),
+            (
+                "max_opening_occurrences_per_task",
+                raw.get("max_opening_occurrences_per_task"),
+            ),
+            ("opening_words", raw.get("opening_words", 6)),
         ):
             if value is not None and (not isinstance(value, int) or value < 1):
                 raise ValueError(f"curriculum {name} must be a positive integer")
@@ -72,6 +92,21 @@ class CurriculumFilters:
             ),
             max_num_tokens=max_num_tokens,
             max_supervised_tokens=max_supervised_tokens,
+            exclude_response_substrings=_string_tuple(
+                raw.get("exclude_response_substrings"),
+                "filters.exclude_response_substrings",
+            ),
+            max_structure_occurrences_per_task=raw.get(
+                "max_structure_occurrences_per_task"
+            ),
+            max_opening_occurrences_per_task=raw.get(
+                "max_opening_occurrences_per_task"
+            ),
+            opening_words=raw.get("opening_words", 6),
+            opening_cap_exempt_tasks=_string_tuple(
+                raw.get("opening_cap_exempt_tasks"),
+                "filters.opening_cap_exempt_tasks",
+            ),
         )
 
 
@@ -165,7 +200,7 @@ def load_curriculum(path: str | Path) -> SFTCurriculum:
 
 
 def load_projected_metadata(path: str | Path | None) -> dict[str, dict[str, Any]]:
-    """Load only routing metadata; prompt and response text are never scanned."""
+    """Load metadata used by runtime curriculum routing and quality filters."""
 
     if path is None:
         return {}
@@ -179,7 +214,14 @@ def load_projected_metadata(path: str | Path | None) -> dict[str, dict[str, Any]
     schema_names = set(pq.read_schema(path).names)
     columns = [
         name
-        for name in ("example_id", "difficulty", "mode", "domain")
+        for name in (
+            "example_id",
+            "difficulty",
+            "mode",
+            "domain",
+            "response",
+            "structure_signature",
+        )
         if name in schema_names
     ]
     if "example_id" not in columns:
@@ -231,12 +273,72 @@ def _eligible(example: dict[str, Any], filters: CurriculumFilters) -> bool:
         and int(example.get("supervised_tokens", 0)) > filters.max_supervised_tokens
     ):
         return False
+    response = str(example.get("response", "")).casefold()
+    if filters.exclude_response_substrings and any(
+        phrase.casefold() in response for phrase in filters.exclude_response_substrings
+    ):
+        return False
     return True
 
 
 def _score(example: dict[str, Any], seed: int) -> bytes:
     example_id = str(example.get("example_id", ""))
     return hashlib.sha256(f"{seed}:{example_id}".encode("utf-8")).digest()
+
+
+def _response_opening(response: str, words: int) -> str:
+    normalized = "".join(
+        character.casefold() if character.isalnum() else " "
+        for character in response
+    )
+    return " ".join(normalized.split()[:words])
+
+
+def _limit_repeated_surfaces(
+    examples: list[dict[str, Any]],
+    filters: CurriculumFilters,
+    seed: int,
+) -> list[dict[str, Any]]:
+    """Cap repeated structures and openings independently inside each task."""
+
+    structure_cap = filters.max_structure_occurrences_per_task
+    opening_cap = filters.max_opening_occurrences_per_task
+    if structure_cap is None and opening_cap is None:
+        return examples
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for example in examples:
+        groups.setdefault(str(example.get("task", "unknown")), []).append(example)
+
+    selected: list[dict[str, Any]] = []
+    exempt_openings = set(filters.opening_cap_exempt_tasks)
+    for task, group in sorted(groups.items()):
+        structure_counts: dict[str, int] = {}
+        opening_counts: dict[str, int] = {}
+        for example in sorted(group, key=lambda item: _score(item, seed)):
+            structure = str(example.get("structure_signature", "")).strip()
+            opening = _response_opening(
+                str(example.get("response", "")), filters.opening_words
+            )
+            if (
+                structure_cap is not None
+                and structure
+                and structure_counts.get(structure, 0) >= structure_cap
+            ):
+                continue
+            if (
+                opening_cap is not None
+                and task not in exempt_openings
+                and opening
+                and opening_counts.get(opening, 0) >= opening_cap
+            ):
+                continue
+            selected.append(example)
+            if structure:
+                structure_counts[structure] = structure_counts.get(structure, 0) + 1
+            if opening:
+                opening_counts[opening] = opening_counts.get(opening, 0) + 1
+    return selected
 
 
 def _balanced_limit(
@@ -296,14 +398,19 @@ def select_stage_examples(
         previous_ids = {str(item["example_id"]) for item in previous}
 
     stage = curriculum.stages[stage_index]
-    eligible = [
-        example
-        for example in material
-        if _eligible(_merged_example(example, metadata), stage.filters)
-    ]
+    eligible = []
+    for example in material:
+        merged = _merged_example(example, metadata)
+        if _eligible(merged, stage.filters):
+            eligible.append(merged)
+    eligible = _limit_repeated_surfaces(
+        eligible,
+        stage.filters,
+        curriculum.seed,
+    )
     by_id = {str(example["example_id"]): example for example in eligible}
     retained = [
-        example
+        _merged_example(example, metadata)
         for example in material
         if str(example.get("example_id")) in previous_ids
     ]
@@ -327,4 +434,3 @@ def select_stage_examples(
     if not selected:
         raise ValueError(f"curriculum stage {stage.name!r} selected zero examples")
     return selected
-

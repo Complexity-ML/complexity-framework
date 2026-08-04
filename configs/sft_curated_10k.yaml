@@ -1,0 +1,30 @@
+version: 1
+seed: 42
+
+# One runtime-filtered validation run. The original V12 shards remain intact.
+stages:
+  - name: curated-10k
+    max_examples: 10000
+    epochs: 1
+    lr: 1.0e-6
+    batch_size: 32
+    seq_len: 320
+    balance_by: task
+    filters:
+      max_num_tokens: 320
+      max_supervised_tokens: 144
+      max_structure_occurrences_per_task: 4
+      max_opening_occurrences_per_task: 32
+      opening_words: 6
+      opening_cap_exempt_tasks: [extraction_classification]
+      exclude_response_substrings:
+        - "what should carry forward is"
+        - "this also makes explicit that"
+        - "the answer stays useful only"
+        - "a useful final check confirms"
+        - "completion should follow the next"
+        - "the practical implication is that"
+        - "this distinction matters because"
+        - "the supported takeaway is that"
+        - "the conclusion remains bounded"
+        - "the next reader can verify"

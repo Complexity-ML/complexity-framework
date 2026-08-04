@@ -120,6 +120,88 @@ def test_curriculum_uses_projected_metadata_for_difficulty() -> None:
     assert all(metadata[row["example_id"]]["difficulty"] == "low" for row in selected)
 
 
+def test_curriculum_caps_repeated_surfaces_per_task() -> None:
+    examples = [
+        {
+            "example_id": f"example-{index:03d}",
+            "task": "qa" if index < 20 else "writing",
+            "training_representation": "natural_instruction",
+            "num_tokens": 64,
+            "supervised_tokens": 16,
+        }
+        for index in range(40)
+    ]
+    metadata = {
+        row["example_id"]: {
+            "response": "Common opening words repeat here " + row["example_id"],
+            "structure_signature": f"signature-{index % 3}",
+        }
+        for index, row in enumerate(examples)
+    }
+    curriculum = SFTCurriculum(
+        seed=9,
+        stages=(
+            CurriculumStage(
+                name="curated",
+                max_examples=None,
+                epochs=1,
+                lr=1e-6,
+                filters=CurriculumFilters(
+                    max_structure_occurrences_per_task=2,
+                    max_opening_occurrences_per_task=4,
+                    opening_words=3,
+                ),
+            ),
+        ),
+    )
+
+    selected = select_stage_examples(examples, curriculum, "curated", metadata)
+
+    for task in ("qa", "writing"):
+        task_rows = [row for row in selected if row["task"] == task]
+        assert len(task_rows) == 4
+        signature_counts = {
+            signature: sum(
+                row["structure_signature"] == signature for row in task_rows
+            )
+            for signature in {row["structure_signature"] for row in task_rows}
+        }
+        assert max(signature_counts.values()) <= 2
+
+
+def test_curriculum_rejects_configured_boilerplate() -> None:
+    examples = _examples(12)
+    metadata = {
+        row["example_id"]: {
+            "response": (
+                "The answer stays useful only while the record is current."
+                if index % 2 == 0
+                else "Use the current record and state its date."
+            )
+        }
+        for index, row in enumerate(examples)
+    }
+    curriculum = SFTCurriculum(
+        seed=3,
+        stages=(
+            CurriculumStage(
+                name="curated",
+                max_examples=None,
+                epochs=1,
+                lr=1e-6,
+                filters=CurriculumFilters(
+                    exclude_response_substrings=("answer stays useful only",),
+                ),
+            ),
+        ),
+    )
+
+    selected = select_stage_examples(examples, curriculum, "curated", metadata)
+
+    assert len(selected) == 6
+    assert all("stays useful" not in row["response"] for row in selected)
+
+
 def test_curriculum_yaml_loads_all_stages(tmp_path: Path) -> None:
     path = tmp_path / "curriculum.yaml"
     path.write_text(
