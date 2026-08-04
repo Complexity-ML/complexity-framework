@@ -1,24 +1,24 @@
 version: 1
 seed: 42
 
-# Diagnostic curriculum: determine whether one narrowly defined capability can
-# be learned before increasing the number of task families.
+# One-epoch diagnostic for general instruction following. The runtime selector
+# draws evenly from all 14 task families in the existing V12 32k shard; it
+# does not create or publish a derivative dataset.
 stages:
-  - name: extraction-2k
+  - name: generalist-2k
     max_examples: 2000
-    epochs: 5
+    epochs: 1
     lr: 1.0e-6
     batch_size: 32
     seq_len: 320
     balance_by: task
     filters:
-      tasks: [extraction_classification]
       max_num_tokens: 320
       max_supervised_tokens: 144
-      # The corrected extraction projection exposes enough canonical JSON
-      # structures to fill the diagnostic budget while keeping every single
-      # structure below one percent of the 2k stage.
-      max_structure_occurrences_per_task: 17
+      max_structure_occurrences_per_task: 1
+      max_opening_occurrences_per_task: 7
+      opening_words: 6
+      opening_cap_exempt_tasks: [extraction_classification]
       exclude_response_substrings:
         - "what should carry forward is"
         - "this also makes explicit that"

@@ -977,50 +977,31 @@ if HAS_TRITON:
         expert_offsets: torch.Tensor,
         num_experts: int,
     ) -> torch.Tensor:
-        """Compute CGGR weight gradients without materializing sorted input."""
+        """Compute hash-routed weight gradients through stable CGGR.
 
-        source_rows, in_dim = tokens.shape
-        out_dim = grad_output.shape[1]
-        split_k = 4 if int(sorted_indices.numel()) >= 8192 else 1
-        partial_grad_w = torch.empty(
-            num_experts * split_k,
-            in_dim,
-            out_dim,
-            device=tokens.device,
-            dtype=torch.float32,
-        )
-        grid = lambda META: (
-            triton.cdiv(in_dim, META["BLOCK_N"]),
-            triton.cdiv(out_dim, META["BLOCK_O"]),
-            num_experts * split_k,
-        )
-        _hash_cggr_grad_w_kernel[grid](
-            tokens,
-            sorted_indices,
+        The former indirect grad-W Triton kernel occasionally issued an
+        illegal global-memory read after long BF16 training runs.  Keep the
+        compact hash-native forward, but materialize its sorted input once in
+        backward and hand the reduction to the extensively exercised CGGR
+        grad-W kernel.  ``remainder`` also makes the assignment encoding
+        explicit instead of duplicating pointer arithmetic inside Triton.
+        """
+
+        source_rows = int(tokens.shape[0])
+        if source_rows <= 0:
+            raise ValueError("hash CGGR requires at least one source row")
+        if int(sorted_indices.numel()) != int(grad_output.shape[0]):
+            raise ValueError(
+                "sorted hash assignments and output gradients must have "
+                "the same row count"
+            )
+        source_indices = torch.remainder(sorted_indices, source_rows)
+        sorted_tokens = tokens.index_select(0, source_indices)
+        return cggr_grad_w_triton(
+            sorted_tokens,
             grad_output,
             expert_offsets,
-            partial_grad_w,
-            source_rows,
-            in_dim,
-            out_dim,
-            tokens.stride(0),
-            tokens.stride(1),
-            grad_output.stride(0),
-            grad_output.stride(1),
-            partial_grad_w.stride(0),
-            partial_grad_w.stride(1),
-            partial_grad_w.stride(2),
-            SPLIT_K=split_k,
-        )
-        return (
-            partial_grad_w.view(
-                num_experts,
-                split_k,
-                in_dim,
-                out_dim,
-            )
-            .sum(dim=1)
-            .to(tokens.dtype)
+            num_experts,
         )
 
 
