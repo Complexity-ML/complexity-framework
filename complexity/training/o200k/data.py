@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import string
+import time
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -65,13 +67,46 @@ class FineWebDataset(IterableDataset):
         self.split = split
         self.eval_stride = eval_stride
         local_parquet = os.environ.get("FINEWEB_PARQUET_PATH")
-        if local_parquet:
+        self.local_parquet_directory = (
+            Path(local_parquet) if local_parquet and Path(local_parquet).is_dir() else None
+        )
+        if self.local_parquet_directory is not None:
+            self.dataset = None
+        elif local_parquet:
             self.dataset = load_dataset(
                 "parquet",
                 data_files={"train": local_parquet},
                 split="train",
                 streaming=True,
             )
+
+    def _examples(self):
+        if self.local_parquet_directory is None:
+            yield from enumerate(self.dataset)
+            return
+
+        import pyarrow.parquet as pq
+
+        seen: set[Path] = set()
+        document_offset = 0
+        while True:
+            ready = [
+                path
+                for path in sorted(self.local_parquet_directory.glob("*.parquet"))
+                if path not in seen
+            ]
+            if not ready:
+                time.sleep(1.0)
+                continue
+            for path in ready:
+                local_index = 0
+                parquet = pq.ParquetFile(path)
+                for batch in parquet.iter_batches(batch_size=2048, columns=["text"]):
+                    for text in batch.column(0).to_pylist():
+                        yield document_offset + local_index, {"text": text}
+                        local_index += 1
+                document_offset += local_index
+                seen.add(path)
         else:
             self.dataset = load_dataset(
                 "HuggingFaceFW/fineweb-edu",
@@ -90,7 +125,7 @@ class FineWebDataset(IterableDataset):
 
     def __iter__(self):
         buffer: list[int] = []
-        for idx, example in enumerate(self.dataset):
+        for idx, example in self._examples():
             if not self._uses_document(idx):
                 continue
             if idx % self.world_size != self.rank:

@@ -38,6 +38,23 @@ def test_open_ended_streaming_cli_contract():
     assert args.warmup_steps is None
 
 
+def test_fineweb_local_cache_ignores_incomplete_parquet_files(tmp_path, monkeypatch):
+    from complexity.training.o200k.data import FineWebDataset
+
+    (tmp_path / "000.parquet.part").write_bytes(b"incomplete")
+    monkeypatch.setenv("FINEWEB_PARQUET_PATH", str(tmp_path))
+
+    dataset = FineWebDataset(
+        tokenizer=object(),
+        seq_len=8,
+        rank=0,
+        world_size=1,
+    )
+
+    assert dataset.local_parquet_directory == tmp_path
+    assert list(tmp_path.glob("*.parquet")) == []
+
+
 def test_chunked_hidden_loss_can_skip_metric_sync():
     from complexity.core.losses import causal_lm_loss_from_hidden
 
