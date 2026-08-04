@@ -1,0 +1,57 @@
+version: 1
+seed: 42
+
+# Filters are applied in memory by the SFT loader. No derivative dataset or
+# stage-specific shard is written. Each stage keeps every example selected by
+# the preceding stage, then adds a balanced deterministic sample.
+stages:
+  - name: direct-10k
+    max_examples: 10000
+    epochs: 3
+    lr: 1.0e-6
+    batch_size: 32
+    seq_len: 192
+    balance_by: task
+    filters:
+      training_representations: [natural_instruction]
+      max_num_tokens: 192
+      max_supervised_tokens: 72
+
+  - name: structured-30k
+    max_examples: 30000
+    epochs: 3
+    lr: 5.0e-7
+    batch_size: 32
+    seq_len: 256
+    balance_by: task
+    filters:
+      max_num_tokens: 256
+      max_supervised_tokens: 112
+
+  - name: balanced-100k
+    max_examples: 100000
+    epochs: 3
+    lr: 2.0e-7
+    batch_size: 32
+    seq_len: 320
+    balance_by: task
+    filters: {}
+
+  - name: extended-200k
+    max_examples: 200000
+    epochs: 1
+    lr: 1.0e-7
+    batch_size: 32
+    seq_len: 384
+    balance_by: task
+    filters:
+      difficulties: [low, medium, high]
+
+  - name: full
+    max_examples: all
+    epochs: 1
+    lr: 5.0e-8
+    batch_size: 32
+    seq_len: 384
+    balance_by: none
+    filters: {}

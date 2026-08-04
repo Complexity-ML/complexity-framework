@@ -13,6 +13,7 @@ from safetensors.torch import save_file
 
 from complexity.inference.chat_template import (
     default_chat_template,
+    huggingface_chat_template,
     validate_chat_template,
 )
 
@@ -50,6 +51,22 @@ def copy_tokenizer_files(source: Path, output: Path) -> list[str]:
     if not copied:
         raise FileNotFoundError(f"No recognized tokenizer files found in {source}")
     return sorted(copied)
+
+
+def write_tokenizer_chat_template(output: Path, chat_template: dict) -> Path:
+    """Synchronize AutoTokenizer chat rendering with the SFT contract."""
+
+    path = output / "tokenizer_config.json"
+    if not path.exists():
+        raise FileNotFoundError(f"Tokenizer config not found after export: {path}")
+    config = json.loads(path.read_text(encoding="utf-8"))
+    config["chat_template"] = huggingface_chat_template(chat_template)
+    config["chat_template_id"] = chat_template["id"]
+    path.write_text(
+        json.dumps(config, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def build_config(raw: dict, chat_template: dict | None = None) -> dict:
@@ -151,6 +168,7 @@ def main() -> None:
     )
     if args.tokenizer:
         copy_tokenizer_files(args.tokenizer, output)
+        write_tokenizer_chat_template(output, chat_template)
 
     print(
         f"exported step={checkpoint.get('step')} tensors={len(state)} "

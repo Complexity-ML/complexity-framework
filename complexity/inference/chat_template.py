@@ -110,9 +110,36 @@ def render_messages_before_assistant(
             parts.append(
                 template["assistant_prefix"]
                 + content
-                + template["turn_separator"]
+                + template["eos_token"]
             )
         else:
             raise ValueError(f"Unsupported chat role: {role}")
     parts.append(template["assistant_prefix"])
     return "".join(parts)
+
+
+def huggingface_chat_template(template: dict[str, Any]) -> str:
+    """Build a Jinja template that is byte-for-byte aligned with SFT prompts."""
+
+    template = validate_chat_template(template)
+    user_prefix, user_suffix = template["user_format"].split("{content}", 1)
+    literals = {
+        "system": json.dumps(render_system_prefix(template)),
+        "user_prefix": json.dumps(user_prefix),
+        "user_suffix": json.dumps(user_suffix),
+        "assistant": json.dumps(template["assistant_prefix"]),
+    }
+    return (
+        f"{{{{- {literals['system']} -}}}}"
+        "{%- for message in messages -%}"
+        "{%- if message['role'] == 'user' -%}"
+        f"{{{{- {literals['user_prefix']} + (message['content'] | trim) + "
+        f"{literals['user_suffix']} -}}}}"
+        "{%- elif message['role'] == 'assistant' -%}"
+        f"{{{{- {literals['assistant']} + (message['content'] | trim) + eos_token -}}}}"
+        "{%- endif -%}"
+        "{%- endfor -%}"
+        "{%- if add_generation_prompt -%}"
+        f"{{{{- {literals['assistant']} -}}}}"
+        "{%- endif -%}"
+    )

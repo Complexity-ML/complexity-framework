@@ -17,9 +17,11 @@ from scripts.sft_100m_o200k_tr_local import (
     SFTJsonlDataset,
     build_parser,
     configure_trainable_parameters,
+    early_stopping_is_eligible,
     format_record,
     load_checkpoint_state,
     load_model_state_compat,
+    resolve_sft_bin_evaluation_partitions,
     update_early_stopping,
 )
 
@@ -111,6 +113,73 @@ def test_sft_bin_eval_iterator_is_finite(tmp_path: Path) -> None:
         repeat=False,
     )
     assert len(list(dataset)) == 2
+
+
+def test_early_stopping_waits_for_a_complete_epoch() -> None:
+    assert not early_stopping_is_eligible(
+        312,
+        steps_per_epoch=313,
+        minimum_epochs=1,
+    )
+    assert early_stopping_is_eligible(
+        313,
+        steps_per_epoch=313,
+        minimum_epochs=1,
+    )
+
+
+def test_early_stopping_can_require_multiple_complete_epochs() -> None:
+    assert not early_stopping_is_eligible(
+        625,
+        steps_per_epoch=313,
+        minimum_epochs=2,
+    )
+    assert early_stopping_is_eligible(
+        626,
+        steps_per_epoch=313,
+        minimum_epochs=2,
+    )
+
+
+def test_sft_bin_resolves_matched_and_natural_eval_partitions(
+    tmp_path: Path,
+) -> None:
+    _write_shard(tmp_path)
+    train = tmp_path / "train"
+    for partition in ("diagnostic", "eval"):
+        target = tmp_path / partition
+        target.mkdir()
+        for name in (
+            "input_ids.bin",
+            "labels.bin",
+            "examples.jsonl",
+            "sft.idx.json",
+        ):
+            (target / name).write_bytes((train / name).read_bytes())
+
+    matched, natural = resolve_sft_bin_evaluation_partitions(tmp_path)
+
+    assert matched == tmp_path / "diagnostic"
+    assert natural == tmp_path / "eval"
+
+
+def test_sft_bin_legacy_eval_remains_the_selection_metric(tmp_path: Path) -> None:
+    _write_shard(tmp_path)
+    train = tmp_path / "train"
+    target = tmp_path / "eval"
+    target.mkdir()
+    for name in (
+        "input_ids.bin",
+        "labels.bin",
+        "examples.jsonl",
+        "sft.idx.json",
+    ):
+        (target / name).write_bytes((train / name).read_bytes())
+
+    matched, natural = resolve_sft_bin_evaluation_partitions(tmp_path)
+
+    assert matched == target
+    assert natural is None
 
 
 def test_sft_bin_epoch_budget_visits_every_example_exactly_three_times(

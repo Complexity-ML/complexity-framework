@@ -19,6 +19,11 @@ from pathlib import Path
 import torch
 from safetensors.torch import save_file
 
+from complexity.inference.chat_template import (
+    default_chat_template,
+    validate_chat_template,
+)
+
 _MLX_CONFIG_FIELDS = {
     "hidden_size",
     "num_hidden_layers",
@@ -75,6 +80,19 @@ def remap_state_dict(model_sd: dict, *, dtype: str) -> dict:
     return out
 
 
+def write_chat_template(checkpoint: dict, output: Path) -> dict:
+    """Preserve the exact SFT prompt contract in the MLX model directory."""
+
+    template = validate_chat_template(
+        checkpoint.get("chat_template", default_chat_template())
+    )
+    (output / "chat_template.json").write_text(
+        json.dumps(template, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return template
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("checkpoint", type=Path)
@@ -102,6 +120,12 @@ def main():
     with (args.output / "config.json").open("w") as f:
         json.dump(mlx_config, f, indent=2)
     print(f"Wrote {args.output / 'config.json'}")
+
+    template = write_chat_template(ckpt, args.output)
+    print(
+        f"Wrote {args.output / 'chat_template.json'} "
+        f"({template['id']})"
+    )
 
     remapped = remap_state_dict(model_sd, dtype=args.dtype)
     save_file(remapped, str(args.output / "model.safetensors"))

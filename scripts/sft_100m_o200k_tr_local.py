@@ -38,6 +38,11 @@ from complexity.inference.chat_template import (
 )
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
+from complexity.training.sft_curriculum import (
+    load_curriculum,
+    load_projected_metadata,
+    select_stage_examples,
+)
 from complexity.training.o200k_pretrain import init_distributed
 from complexity.utils import autocast, autocast_dtype, empty_cache, synchronize
 from complexity.utils.device import backend_metadata, configure_torch_acceleration
@@ -283,6 +288,8 @@ class SFTBinDataset(IterableDataset):
         world_size: int,
         repeat: bool = True,
         epochs: int | None = None,
+        curriculum_config: str | Path | None = None,
+        curriculum_stage: str | None = None,
     ):
         root = Path(root)
         dataset_root = root
@@ -317,6 +324,23 @@ class SFTBinDataset(IterableDataset):
             self.examples = [json.loads(line) for line in handle if line.strip()]
         if len(self.examples) != int(self.metadata["examples"]):
             raise ValueError("SFT example index count does not match sft.idx.json")
+        if (curriculum_config is None) != (curriculum_stage is None):
+            raise ValueError(
+                "curriculum_config and curriculum_stage must be provided together"
+            )
+        self.curriculum_stage = None
+        if curriculum_config is not None and curriculum_stage is not None:
+            curriculum = load_curriculum(curriculum_config)
+            projected_metadata = load_projected_metadata(
+                dataset_root / "projected.parquet"
+            )
+            self.examples = select_stage_examples(
+                self.examples,
+                curriculum,
+                curriculum_stage,
+                projected_metadata,
+            )
+            self.curriculum_stage = curriculum_stage
         self.seq_len = seq_len
         self.seed = seed
         self.rank = rank
@@ -362,6 +386,32 @@ class SFTBinDataset(IterableDataset):
             epoch += 1
             if self.epochs is not None and epoch >= self.epochs:
                 break
+
+
+def resolve_sft_bin_evaluation_partitions(
+    root: str | Path,
+) -> tuple[Path | None, Path | None]:
+    """Return matched-distribution and separately-authored eval partitions.
+
+    New corpus packages expose ``diagnostic`` for source-separated examples
+    drawn from the same card distribution as training and ``eval`` for the
+    smaller, separately-authored natural set.  Legacy packages with only an
+    ``eval`` partition retain their historical single-evaluation behavior.
+    """
+
+    root = Path(root)
+    if (root / "sft.idx.json").exists():
+        return (root, None) if root.name in {"diagnostic", "eval"} else (None, None)
+
+    diagnostic = root / "diagnostic"
+    natural = root / "eval"
+    diagnostic_exists = (diagnostic / "sft.idx.json").exists()
+    natural_exists = (natural / "sft.idx.json").exists()
+    if diagnostic_exists:
+        return diagnostic, natural if natural_exists else None
+    if natural_exists:
+        return natural, None
+    return None, None
 
 
 def load_records(path: str | None) -> list[dict[str, Any]]:
@@ -438,6 +488,21 @@ def update_early_stopping(
     if improved:
         return True, current_loss, 0
     return False, best_loss, evaluations_without_improvement + 1
+
+
+def early_stopping_is_eligible(
+    step: int,
+    *,
+    steps_per_epoch: int,
+    minimum_epochs: int,
+) -> bool:
+    """Do not select or stop before every selected example was seen once."""
+
+    if steps_per_epoch < 1:
+        raise ValueError("steps_per_epoch must be positive")
+    if minimum_epochs < 0:
+        raise ValueError("minimum_epochs cannot be negative")
+    return step >= steps_per_epoch * minimum_epochs
 
 
 def label_stats(labels: torch.Tensor, vocab_size: int) -> dict[str, int]:
@@ -576,6 +641,8 @@ def save_checkpoint(
         "backend": backend_metadata(kernel_policy=getattr(args, "use_custom_kernels", "auto")),
     }
     if eval_loss is not None:
+        checkpoint_state["sft_matched_eval_loss"] = float(eval_loss)
+        # Kept for compatibility with earlier exported SFT checkpoints.
         checkpoint_state["sft_eval_loss"] = float(eval_loss)
     if not args.save_model_only:
         checkpoint_state["optimizer"] = optimizer.state_dict()
@@ -627,8 +694,9 @@ def save_best_checkpoint(
     if is_main and checkpoint_dir is not None:
         metadata = {
             "step": step,
-            "eval_loss": eval_loss,
-            "eval_tokens": eval_tokens,
+            "selection_metric": "matched_eval_loss",
+            "matched_eval_loss": eval_loss,
+            "matched_eval_tokens": eval_tokens,
             "checkpoint": str(checkpoint_dir),
         }
         (Path(args.save_dir) / "best.json").write_text(
@@ -652,6 +720,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--eval-jsonl",
         default=None,
         help="Finite held-out JSONL evaluated during JSONL-based SFT.",
+    )
+    parser.add_argument(
+        "--curriculum-config",
+        default=None,
+        help="Runtime-only curriculum YAML; does not create derivative shards.",
+    )
+    parser.add_argument(
+        "--curriculum-stage",
+        default=None,
+        help="Stage name selected from --curriculum-config.",
     )
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument(
@@ -732,6 +810,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="Minimum held-out loss decrease counted as an improvement.",
     )
+    parser.add_argument(
+        "--early-stopping-min-epochs",
+        type=int,
+        default=1,
+        help=(
+            "Minimum complete passes over the selected examples before best "
+            "checkpoint selection and early stopping become active."
+        ),
+    )
     parser.add_argument("--save-steps", type=int, default=100)
     parser.add_argument("--save-dir", default="checkpoints/sft-100m-o200k-tr")
     parser.add_argument("--save-total-limit", type=int, default=3)
@@ -750,6 +837,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main():
     args = build_parser().parse_args()
+    if (args.curriculum_config is None) != (args.curriculum_stage is None):
+        raise ValueError(
+            "--curriculum-config and --curriculum-stage must be provided together"
+        )
+    if args.curriculum_stage is not None and args.sft_bin is None:
+        raise ValueError("runtime curriculum selection requires --sft-bin")
+    if args.early_stopping_min_epochs < 0:
+        raise ValueError("--early-stopping-min-epochs cannot be negative")
     if args.cpu:
         device = torch.device("cpu")
         distributed = False
@@ -799,20 +894,36 @@ def main():
             world_size,
             repeat=True,
             epochs=args.epochs or None,
+            curriculum_config=args.curriculum_config,
+            curriculum_stage=args.curriculum_stage,
         )
-        eval_ds = SFTBinDataset(
-            Path(args.sft_bin) / "eval"
-            if (Path(args.sft_bin) / "eval" / "sft.idx.json").exists()
-            else Path(args.sft_bin),
-            args.seq_len,
-            args.seed,
-            rank,
-            world_size,
-            repeat=False,
-        ) if (
-            (Path(args.sft_bin) / "eval" / "sft.idx.json").exists()
-            or Path(args.sft_bin).name == "eval"
-        ) else None
+        matched_eval_path, natural_eval_path = resolve_sft_bin_evaluation_partitions(
+            args.sft_bin
+        )
+        matched_eval_ds = (
+            SFTBinDataset(
+                matched_eval_path,
+                args.seq_len,
+                args.seed,
+                rank,
+                world_size,
+                repeat=False,
+            )
+            if matched_eval_path is not None
+            else None
+        )
+        natural_eval_ds = (
+            SFTBinDataset(
+                natural_eval_path,
+                args.seq_len,
+                args.seed,
+                rank,
+                world_size,
+                repeat=False,
+            )
+            if natural_eval_path is not None
+            else None
+        )
     else:
         train_ds = SFTJsonlDataset(
             args.jsonl,
@@ -825,7 +936,7 @@ def main():
             repeat=True,
             epochs=args.epochs or None,
         )
-        eval_ds = (
+        matched_eval_ds = (
             SFTJsonlDataset(
                 args.eval_jsonl,
                 args.tokenizer,
@@ -839,14 +950,42 @@ def main():
             if args.eval_jsonl is not None
             else None
         )
+        natural_eval_ds = None
     chat_template = train_ds.chat_template
-    if eval_ds is not None and eval_ds.chat_template != chat_template:
-        raise ValueError("Train and eval SFT shards use different chat templates")
+    for evaluation_dataset in (matched_eval_ds, natural_eval_ds):
+        if (
+            evaluation_dataset is not None
+            and evaluation_dataset.chat_template != chat_template
+        ):
+            raise ValueError("Train and eval SFT shards use different chat templates")
     loader_kwargs = {"batch_size": args.batch_size, "pin_memory": False}
     if args.num_workers > 0:
         loader_kwargs.update(num_workers=args.num_workers, persistent_workers=True)
     train_loader = DataLoader(train_ds, **loader_kwargs)
-    eval_loader = DataLoader(eval_ds, **loader_kwargs) if eval_ds is not None else None
+    matched_eval_loader = (
+        DataLoader(matched_eval_ds, **loader_kwargs)
+        if matched_eval_ds is not None
+        else None
+    )
+    natural_eval_loader = (
+        DataLoader(natural_eval_ds, **loader_kwargs)
+        if natural_eval_ds is not None
+        else None
+    )
+
+    if args.sft_bin is not None:
+        examples_per_rank = math.ceil(len(train_ds.examples) / world_size)
+        steps_per_epoch = math.ceil(examples_per_rank / args.batch_size)
+    else:
+        examples_per_rank = math.ceil(len(train_ds.records) / world_size)
+        steps_per_epoch = math.ceil(examples_per_rank / args.batch_size)
+    minimum_selection_step = steps_per_epoch * args.early_stopping_min_epochs
+    if args.early_stopping_patience > 0 and args.steps < minimum_selection_step:
+        raise ValueError(
+            "early stopping cannot become active before this run ends: "
+            f"steps={args.steps}, required={minimum_selection_step} "
+            f"({args.early_stopping_min_epochs} complete epoch(s))"
+        )
 
     optimizer = build_optimizer(args, raw_model)
     warmup = max(1, int(args.steps * args.warmup_ratio))
@@ -890,7 +1029,12 @@ def main():
             logger.info(
                 f"Dataset: SFT bin {train_ds.root} "
                 f"({len(train_ds.examples):,} examples, "
-                f"{train_ds.metadata['supervised_tokens']:,} supervised tokens)"
+                f"stage={train_ds.curriculum_stage or 'full-shard'})"
+            )
+            logger.info(
+                "Coverage: "
+                f"{steps_per_epoch:,} steps/epoch; best-checkpoint selection "
+                f"and early stopping start at step {minimum_selection_step:,}"
             )
             if train_ds.metadata["supervised_tokens"] < 3_000_000:
                 logger.warning(
@@ -898,37 +1042,50 @@ def main():
                     "tokens; use held-out early stopping and treat the run as "
                     "a small-data adaptation."
                 )
-            if eval_ds is not None and len(eval_ds.examples) < 500:
+            if matched_eval_ds is not None:
+                logger.info(
+                    "Matched evaluation: "
+                    f"{matched_eval_ds.root} ({len(matched_eval_ds.examples):,} examples)"
+                )
+            if natural_eval_ds is not None:
+                logger.info(
+                    "Natural-gold evaluation: "
+                    f"{natural_eval_ds.root} ({len(natural_eval_ds.examples):,} examples)"
+                )
+            if natural_eval_ds is not None and len(natural_eval_ds.examples) < 500:
                 logger.warning(
-                    "Held-out SFT evaluation contains fewer than 500 examples; "
-                    "loss is useful for early stopping but not a stable general "
-                    "capability estimate."
+                    "Natural-gold SFT evaluation contains fewer than 500 examples; "
+                    "report it separately as a transfer diagnostic, not as the "
+                    "checkpoint-selection metric."
                 )
         elif args.jsonl is None:
             logger.info("Dataset: built-in toy SFT records")
         else:
             logger.info(f"Dataset: {args.jsonl} ({len(train_ds.records)} records)")
-            if eval_ds is not None:
+            if matched_eval_ds is not None:
                 logger.info(
                     f"Evaluation: {args.eval_jsonl} "
-                    f"({len(eval_ds.records)} held-out records)"
+                    f"({len(matched_eval_ds.records)} held-out records)"
                 )
         logger.info(f"Chat template: {chat_template['id']}")
         csv_file = (run_dir / "metrics.csv").open("w", newline="")
         writer = csv.writer(csv_file)
         writer.writerow([
-            "step", "train_loss", "train_ppl", "eval_loss", "eval_ppl", "lr", "tok_s",
-            "supervised_tokens", "min_label", "max_label", "bad_labels",
+            "step", "train_loss", "train_ppl", "matched_eval_loss",
+            "matched_eval_ppl", "lr", "tok_s", "supervised_tokens", "min_label",
+            "max_label", "bad_labels",
+            "matched_eval_tokens", "natural_eval_loss", "natural_eval_ppl",
+            "natural_eval_tokens",
         ])
         csv_file.flush()
 
     best_eval_loss = math.inf
     evaluations_without_improvement = 0
-    if eval_loader is not None and args.eval_steps > 0 and args.eval_at_start:
+    if matched_eval_loader is not None and args.eval_steps > 0 and args.eval_at_start:
         initial_eval_loss, initial_eval_tokens = evaluate_sft(
             model,
             raw_model,
-            eval_loader,
+            matched_eval_loader,
             device=device,
             amp_dtype=amp_dtype,
             fp32_loss=args.sft_fp32_loss,
@@ -936,13 +1093,33 @@ def main():
             distributed=distributed,
             max_batches=args.eval_batches,
         )
-        best_eval_loss = initial_eval_loss
+        initial_natural_eval_loss = None
+        initial_natural_eval_tokens = 0
+        if natural_eval_loader is not None:
+            initial_natural_eval_loss, initial_natural_eval_tokens = evaluate_sft(
+                model,
+                raw_model,
+                natural_eval_loader,
+                device=device,
+                amp_dtype=amp_dtype,
+                fp32_loss=args.sft_fp32_loss,
+                chunk_tokens=args.loss_chunk_tokens,
+                distributed=distributed,
+                max_batches=args.eval_batches,
+            )
         if is_main:
             logger.info(
-                f"SFT eval step=0: loss={initial_eval_loss:.6f} "
+                f"SFT matched eval step=0: loss={initial_eval_loss:.6f} "
                 f"ppl={math.exp(min(initial_eval_loss, 20)):.2f} "
                 f"tokens={initial_eval_tokens:,}"
             )
+            if initial_natural_eval_loss is not None:
+                logger.info(
+                    "SFT natural-gold eval step=0: "
+                    f"loss={initial_natural_eval_loss:.6f} "
+                    f"ppl={math.exp(min(initial_natural_eval_loss, 20)):.2f} "
+                    f"tokens={initial_natural_eval_tokens:,}"
+                )
             writer.writerow([
                 0,
                 "",
@@ -951,10 +1128,22 @@ def main():
                 f"{math.exp(min(initial_eval_loss, 20)):.2f}",
                 f"{optimizer.param_groups[0]['lr']:.6e}",
                 "",
-                initial_eval_tokens,
+                "",
                 "",
                 "",
                 0,
+                initial_eval_tokens,
+                (
+                    ""
+                    if initial_natural_eval_loss is None
+                    else f"{initial_natural_eval_loss:.6f}"
+                ),
+                (
+                    ""
+                    if initial_natural_eval_loss is None
+                    else f"{math.exp(min(initial_natural_eval_loss, 20)):.2f}"
+                ),
+                initial_natural_eval_tokens,
             ])
             csv_file.flush()
 
@@ -1017,18 +1206,21 @@ def main():
             pbar.update(1)
 
         should_eval = (
-            eval_loader is not None
+            matched_eval_loader is not None
             and args.eval_steps > 0
             and (step % args.eval_steps == 0 or step == args.steps)
         )
         should_log = step == 1 or step % args.log_steps == 0 or should_eval
         eval_loss = None
+        eval_tokens = 0
+        natural_eval_loss = None
+        natural_eval_tokens = 0
         stop_training = False
         if should_eval:
             eval_loss, eval_tokens = evaluate_sft(
                 model,
                 raw_model,
-                eval_loader,
+                matched_eval_loader,
                 device=device,
                 amp_dtype=amp_dtype,
                 fp32_loss=args.sft_fp32_loss,
@@ -1038,35 +1230,69 @@ def main():
             )
             if is_main:
                 logger.info(
-                    f"SFT eval step={step}: loss={eval_loss:.6f} "
+                    f"SFT matched eval step={step}: loss={eval_loss:.6f} "
                     f"ppl={math.exp(min(eval_loss, 20)):.2f} tokens={eval_tokens:,}"
                 )
-            improved, best_eval_loss, evaluations_without_improvement = update_early_stopping(
-                best_eval_loss,
-                evaluations_without_improvement,
-                eval_loss,
-                min_delta=args.early_stopping_min_delta,
-            )
-            if improved and args.save_best:
-                save_best_checkpoint(
-                    args,
+            if natural_eval_loader is not None:
+                natural_eval_loss, natural_eval_tokens = evaluate_sft(
+                    model,
                     raw_model,
-                    optimizer,
-                    scheduler,
-                    config,
-                    str(ckpt_dir),
-                    step,
-                    eval_loss,
-                    eval_tokens,
-                    is_main,
-                    distributed,
-                    chat_template,
+                    natural_eval_loader,
+                    device=device,
+                    amp_dtype=amp_dtype,
+                    fp32_loss=args.sft_fp32_loss,
+                    chunk_tokens=args.loss_chunk_tokens,
+                    distributed=distributed,
+                    max_batches=args.eval_batches,
                 )
-            if (
-                args.early_stopping_patience > 0
-                and evaluations_without_improvement >= args.early_stopping_patience
-            ):
-                stop_training = True
+                if is_main:
+                    logger.info(
+                        f"SFT natural-gold eval step={step}: "
+                        f"loss={natural_eval_loss:.6f} "
+                        f"ppl={math.exp(min(natural_eval_loss, 20)):.2f} "
+                        f"tokens={natural_eval_tokens:,}"
+                    )
+            selection_eligible = early_stopping_is_eligible(
+                step,
+                steps_per_epoch=steps_per_epoch,
+                minimum_epochs=args.early_stopping_min_epochs,
+            )
+            if selection_eligible:
+                improved, best_eval_loss, evaluations_without_improvement = (
+                    update_early_stopping(
+                        best_eval_loss,
+                        evaluations_without_improvement,
+                        eval_loss,
+                        min_delta=args.early_stopping_min_delta,
+                    )
+                )
+                if improved and args.save_best:
+                    save_best_checkpoint(
+                        args,
+                        raw_model,
+                        optimizer,
+                        scheduler,
+                        config,
+                        str(ckpt_dir),
+                        step,
+                        eval_loss,
+                        eval_tokens,
+                        is_main,
+                        distributed,
+                        chat_template,
+                    )
+                if (
+                    args.early_stopping_patience > 0
+                    and evaluations_without_improvement
+                    >= args.early_stopping_patience
+                ):
+                    stop_training = True
+            elif is_main:
+                logger.info(
+                    "Checkpoint selection deferred until the selected stage "
+                    f"has completed {args.early_stopping_min_epochs} full "
+                    f"epoch(s) at step {minimum_selection_step}."
+                )
         if should_log:
             synchronize(device)
             now = time.perf_counter()
@@ -1087,7 +1313,18 @@ def main():
                     "" if eval_loss is None else f"{math.exp(min(eval_loss, 20)):.2f}",
                     f"{lr_now:.6e}",
                     f"{tok_s:.0f}",
-                    stats["supervised_tokens"], stats["min_label"], stats["max_label"], stats["bad_labels"],
+                    stats["supervised_tokens"],
+                    stats["min_label"],
+                    stats["max_label"],
+                    stats["bad_labels"],
+                    eval_tokens if eval_loss is not None else "",
+                    "" if natural_eval_loss is None else f"{natural_eval_loss:.6f}",
+                    (
+                        ""
+                        if natural_eval_loss is None
+                        else f"{math.exp(min(natural_eval_loss, 20)):.2f}"
+                    ),
+                    natural_eval_tokens if natural_eval_loss is not None else "",
                 ])
                 csv_file.flush()
                 pbar.set_postfix(loss=f"{train_loss:.4f}", tok_s=f"{tok_s:.0f}")
