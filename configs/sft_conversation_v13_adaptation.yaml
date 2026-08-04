@@ -1,0 +1,42 @@
+version: 1
+seed: 42
+
+# Stronger V13 adaptation profile. The source projection remains unchanged;
+# stages select examples at runtime and evaluate after every complete epoch.
+stages:
+  - name: casual-only
+    max_examples: 398
+    epochs: 5
+    lr: 2.0e-6
+    include_previous: false
+    balance_by: task
+    batch_size: 32
+    seq_len: 384
+    filters:
+      tasks: [casual_conversation]
+      modes: [chat]
+      max_structure_occurrences_per_task: 500
+      max_opening_occurrences_per_task: 500
+      opening_words: 6
+
+  - name: conversation-blend
+    max_examples: 568
+    epochs: 3
+    lr: 1.0e-6
+    include_previous: true
+    balance_by: weighted_task
+    task_weights:
+      casual_conversation: 0.70
+      conversation_empathy: 0.20
+      practical_action: 0.10
+    batch_size: 32
+    seq_len: 384
+    filters:
+      tasks:
+        - casual_conversation
+        - conversation_empathy
+        - practical_action
+      modes: [chat]
+      max_structure_occurrences_per_task: 1000
+      max_opening_occurrences_per_task: 1000
+      opening_words: 6
