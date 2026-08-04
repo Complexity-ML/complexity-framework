@@ -29,6 +29,15 @@ def test_chunked_hidden_loss_matches_full_loss():
     assert torch.allclose(full_loss, chunked_loss, atol=1e-6)
 
 
+def test_open_ended_streaming_cli_contract():
+    from complexity.training.o200k_pretrain import build_parser
+
+    args = build_parser().parse_args(["--dataset", "fineweb", "--steps", "0"])
+
+    assert args.steps == 0
+    assert args.warmup_steps is None
+
+
 def test_chunked_hidden_loss_can_skip_metric_sync():
     from complexity.core.losses import causal_lm_loss_from_hidden
 

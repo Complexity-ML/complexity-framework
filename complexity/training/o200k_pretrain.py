@@ -466,11 +466,18 @@ def main():
                 f"expert={optimizer_stats.get('adamw_expert_params', 0) / 1e6:.1f}M "
                 f"impl={optimizer_stats.get('adamw_impl', 'default')}"
             )
-    warmup = max(1, int(args.steps * 0.05))
+    open_ended = int(args.steps) == 0
+    warmup = (
+        max(1, int(args.warmup_steps))
+        if args.warmup_steps is not None
+        else (100 if open_ended else max(1, int(args.steps * 0.05)))
+    )
 
     def lr_lambda(step):
         if step < warmup:
             return step / warmup
+        if open_ended:
+            return 1.0
         progress = (step - warmup) / max(1, args.steps - warmup)
         return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
 
@@ -513,7 +520,7 @@ def main():
     progress_description = architecture_label(args, active_controls)
     pbar = (
         tqdm(
-            total=args.steps,
+            total=None if open_ended else args.steps,
             initial=start_step,
             desc=progress_description,
             unit="step",
@@ -527,7 +534,7 @@ def main():
     last_step = start_step
 
     for step, batch in enumerate(train_loader, start=start_step + 1):
-        if step > args.steps:
+        if not open_ended and step > args.steps:
             break
         last_step = step
         should_eval = args.eval_steps > 0 and step % args.eval_steps == 0
@@ -538,7 +545,7 @@ def main():
         if "topk_primary_weight" in active_controls.capabilities:
             topk_primary_weight = scheduled_topk_primary_weight(
                 step - 1,
-                args.steps,
+                max(1, args.steps),
                 args.top_k_primary_weight,
                 args.top_k_primary_weight_final,
                 args.top_k_primary_weight_schedule_ratio,
@@ -547,7 +554,7 @@ def main():
         shared_gate = (
             scheduled_value(
                 step - 1,
-                args.steps,
+                max(1, args.steps),
                 args.shared_gate_init,
                 args.shared_gate_final,
                 args.gate_schedule_ratio,
@@ -559,7 +566,7 @@ def main():
         routed_gate = (
             scheduled_value(
                 step - 1,
-                args.steps,
+                max(1, args.steps),
                 args.routed_gate_init,
                 args.routed_gate_final,
                 args.gate_schedule_ratio,
@@ -572,7 +579,7 @@ def main():
         optimizer.zero_grad(set_to_none=True)
         diversity_lambda = scheduled_value(
             step - 1,
-            args.steps,
+            max(1, args.steps),
             0.0,
             args.expert_diversity_lambda,
             args.expert_diversity_schedule_ratio,

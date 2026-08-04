@@ -39,7 +39,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--tokenizer", type=str, default="./tokenizer-o200k")
     parser.add_argument("--vocab-size", type=int, default=None)
-    parser.add_argument("--steps", type=int, default=100)
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=100,
+        help="Training steps. Set 0 to consume a streaming dataset until it is exhausted or interrupted.",
+    )
+    parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=None,
+        help=(
+            "Explicit LR warmup. Finite runs default to 5%% of --steps; "
+            "open-ended --steps 0 runs default to 100 steps and then keep a constant LR."
+        ),
+    )
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument("--lr", type=float, default=3e-4)

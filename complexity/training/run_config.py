@@ -87,7 +87,8 @@ def args_to_run_config(
 ) -> dict[str, Any]:
     args_dict = vars(args).copy()
     tokens_per_step = int(args_dict["batch_size"]) * int(args_dict["seq_len"]) * int(world_size)
-    total_tokens = tokens_per_step * int(args_dict["steps"])
+    steps = int(args_dict["steps"])
+    total_tokens = tokens_per_step * steps if steps > 0 else None
     run_config = {
         "schema_version": 1,
         "git_commit": current_git_commit(),
@@ -199,8 +200,13 @@ def format_run_summary(run_config: dict[str, Any]) -> list[str]:
         f"Data: dataset={args['dataset']}, tokenizer={args['tokenizer']}, vocab={args['vocab_size']}",
         (
             "Tokens: "
-            f"{run_config['tokens_per_step']:,}/step "
-            f"x {args['steps']:,} steps = {run_config['total_tokens']:,}"
+            f"{run_config['tokens_per_step']:,}/step x streaming until exhaustion/interruption"
+            if int(args["steps"]) == 0
+            else (
+                "Tokens: "
+                f"{run_config['tokens_per_step']:,}/step "
+                f"x {args['steps']:,} steps = {run_config['total_tokens']:,}"
+            )
         ),
         (
             "Schedule: "

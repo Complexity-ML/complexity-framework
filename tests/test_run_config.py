@@ -118,6 +118,34 @@ def test_run_config_summary_includes_backend():
     assert any("rocBLAS/hipBLASLt" in line for line in summary)
 
 
+def test_run_config_summary_supports_open_ended_streaming():
+    from complexity.training.run_config import format_run_summary
+
+    summary = format_run_summary({
+        "params": 100_000_000,
+        "world_size": 8,
+        "tokens_per_step": 1_048_576,
+        "total_tokens": None,
+        "args": {
+            "run_name": "fineweb-stream",
+            "profile": "100m",
+            "dataset": "fineweb",
+            "tokenizer": "./tokenizer",
+            "vocab_size": 32000,
+            "steps": 0,
+            "lr": 3e-4,
+            "batch_size": 64,
+            "seq_len": 2048,
+            "save_steps": 1000,
+            "save_total_limit": 2,
+            "save_dir": "checkpoints/test",
+        },
+        "backend": {},
+    })
+
+    assert any("streaming until exhaustion/interruption" in line for line in summary)
+
+
 def test_resume_guard_rejects_changed_token_shard(tmp_path):
     from complexity.data.token_shards import write_token_shard
     from complexity.training.run_config import token_shard_fingerprint
