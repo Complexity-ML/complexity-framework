@@ -1,0 +1,29 @@
+version: 1
+seed: 42
+
+# Diagnostic curriculum: determine whether one narrowly defined capability can
+# be learned before increasing the number of task families.
+stages:
+  - name: extraction-2k
+    max_examples: 2000
+    epochs: 5
+    lr: 1.0e-6
+    batch_size: 32
+    seq_len: 320
+    balance_by: task
+    filters:
+      tasks: [extraction_classification]
+      max_num_tokens: 320
+      max_supervised_tokens: 144
+      max_structure_occurrences_per_task: 1
+      exclude_response_substrings:
+        - "what should carry forward is"
+        - "this also makes explicit that"
+        - "the answer stays useful only"
+        - "a useful final check confirms"
+        - "completion should follow the next"
+        - "the practical implication is that"
+        - "this distinction matters because"
+        - "the supported takeaway is that"
+        - "the conclusion remains bounded"
+        - "the next reader can verify"
