@@ -15,7 +15,7 @@ stages:
       tasks: [extraction_classification]
       max_num_tokens: 320
       max_supervised_tokens: 144
-      max_structure_occurrences_per_task: 10
+      max_structure_occurrences_per_task: 11
       exclude_response_substrings:
         - "what should carry forward is"
         - "this also makes explicit that"
