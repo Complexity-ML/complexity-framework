@@ -287,9 +287,10 @@ independently authored examples before its NLL is treated as a stable capability
 estimate.
 
 For conversational adaptation, `configs/sft_conversation_v13.yaml` provides
-two runtime-only stages. `casual-only` selects 420 source-pair-distinct
-multi-turn casual dialogues. `conversation-blend` retains the first stage and targets a final
-70% casual / 20% empathy / 10% practical mixture. Weighted selection is
+two runtime-only stages. `casual-only` selects the 398 source-pair-distinct
+training dialogues while 22 separate pairs remain held out.
+`conversation-blend` retains the first stage and targets a final 568-row,
+approximately 70% casual / 20% empathy / 10% practical mixture. Weighted selection is
 deterministic, accounts for rows retained from the previous stage, and never
 duplicates or rewrites the canonical dataset.
 

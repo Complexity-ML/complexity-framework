@@ -4,7 +4,8 @@ seed: 42
 # Runtime-only selection. The canonical V13 dataset remains intact.
 stages:
   - name: casual-only
-    max_examples: 420
+    # The source has 420 semantic pairs; 22 are held out by the V13 split.
+    max_examples: 398
     epochs: 1
     lr: 2.0e-7
     include_previous: false
@@ -19,7 +20,9 @@ stages:
       opening_words: 6
 
   - name: conversation-blend
-    max_examples: 600
+    # 398 / 568 = 70.1%; weighted selection fills the remainder with an
+    # approximately 20/10 empathy/practical split without duplicating rows.
+    max_examples: 568
     epochs: 1
     lr: 1.0e-7
     include_previous: true
