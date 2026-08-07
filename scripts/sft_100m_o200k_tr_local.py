@@ -1054,19 +1054,28 @@ def main():
     optimizer = build_optimizer(args, raw_model)
     base_lrs = [group["lr"] for group in optimizer.param_groups]
 
-    def epoch_lr_lambda():
-        warmup = max(1, int(steps_per_epoch * args.warmup_ratio))
-        decay_denom = max(1, steps_per_epoch - warmup)
+    def build_epoch_lr_lambda():
+        warmup_steps = max(1, int(steps_per_epoch * args.warmup_ratio))
+        decay_denom = max(1, steps_per_epoch - warmup_steps)
 
-        def lr_lambda(step_in_epoch):
-            if step_in_epoch < warmup:
-                return step_in_epoch / warmup
-            progress = (step_in_epoch - warmup) / decay_denom
+        def lr_lambda(step_in_epoch: int) -> float:
+            step_in_epoch += 1
+            if step_in_epoch <= warmup_steps:
+                return step_in_epoch / warmup_steps
+            progress = (step_in_epoch - warmup_steps) / decay_denom
+            progress = min(1.0, max(0.0, progress))
             return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
 
         return lr_lambda
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, epoch_lr_lambda())
+    def reset_epoch_scheduler() -> torch.optim.lr_scheduler.LambdaLR:
+        return torch.optim.lr_scheduler.LambdaLR(
+            optimizer,
+            build_epoch_lr_lambda(),
+            last_epoch=-1,
+        )
+
+    scheduler = reset_epoch_scheduler()
     amp_dtype = autocast_dtype(device) if args.bf16 else None
 
     run_dir = Path("runs") / args.run_name
@@ -1237,7 +1246,7 @@ def main():
             current_epoch = epoch_idx
             for group, base_lr in zip(optimizer.param_groups, base_lrs):
                 group["lr"] = base_lr
-            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, epoch_lr_lambda())
+            scheduler = reset_epoch_scheduler()
             if is_main:
                 logger.info(
                     f"Resetting LR scheduler for epoch {current_epoch + 1} "
