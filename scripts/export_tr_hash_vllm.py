@@ -21,6 +21,8 @@ DROP_SUFFIXES = (
     "rotary_emb.inv_freq",
     "pair_hash_route_codes",
     "pair_hash_expert_pairs",
+    "fused_route_codes",
+    "fused_expert_pairs",
 )
 
 TOKENIZER_FILENAMES = frozenset(
@@ -112,10 +114,37 @@ def build_config(raw: dict, chat_template: dict | None = None) -> dict:
         "tie_word_embeddings": raw.get("tie_word_embeddings", True),
         "torch_dtype": "bfloat16",
     }
+    if raw.get("mlp_type") == "tr_hash_engine":
+        # The public vLLM runtime represents the same fixed route table and
+        # expert tensors through TokenRoutedMLP.  Serialize that runtime name
+        # while retaining the training architecture as provenance.
+        config["mlp_type"] = "token_routed"
+        config["source_mlp_type"] = "tr_hash_engine"
+        # TRHashEngine uses fixed branch scales and has no learned legacy
+        # shared/routed scalar gates.
+        config["use_shared_routed_gates"] = False
     if chat_template is not None:
         config["chat_template_id"] = chat_template["id"]
         config["chat_template_file"] = "chat_template.json"
     return config
+
+
+def vllm_tensor_name(name: str) -> str:
+    """Translate native TRHashEngine tensor names to the vLLM contract."""
+
+    replacements = (
+        (".mlp.engine.expert_gate", ".mlp.gate_proj_w"),
+        (".mlp.engine.expert_up", ".mlp.up_proj_w"),
+        (".mlp.engine.expert_down", ".mlp.down_proj_w"),
+        (".mlp.engine.route_table", ".mlp.topk_token_to_expert"),
+        (".mlp.engine.shared_gate", ".mlp.shared_gate"),
+        (".mlp.engine.shared_up", ".mlp.shared_up"),
+        (".mlp.engine.shared_down", ".mlp.shared_down"),
+    )
+    for source, target in replacements:
+        if source in name:
+            return name.replace(source, target, 1)
+    return name
 
 
 def main() -> None:
@@ -147,7 +176,7 @@ def main() -> None:
         tensor = tensor.detach()
         if tensor.is_floating_point():
             tensor = tensor.to(target_dtype)
-        state[name] = tensor.contiguous()
+        state[vllm_tensor_name(name)] = tensor.contiguous()
     save_file(state, str(output / "model.safetensors"))
     chat_template = validate_chat_template(
         checkpoint.get("chat_template", default_chat_template())

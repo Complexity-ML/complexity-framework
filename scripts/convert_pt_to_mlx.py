@@ -53,26 +53,81 @@ _MLX_CONFIG_FIELDS = {
     "mlp_type",
 }
 
+_TR_HASH_ENGINE_MLP_TYPES = {"tr_hash_engine", "tr_hash_moe"}
+
+_ENGINE_PARAMETER_NAMES = {
+    "expert_gate": "gate_proj_w",
+    "expert_up": "up_proj_w",
+    "expert_down": "down_proj_w",
+    "shared_gate.weight": "shared_gate.weight",
+    "shared_up.weight": "shared_up.weight",
+    "shared_down.weight": "shared_down.weight",
+}
+
 
 def build_mlx_config(pt_config: dict) -> dict:
     cfg = {"model_type": "complexity"}
     for k in _MLX_CONFIG_FIELDS:
         if k in pt_config and pt_config[k] is not None:
             cfg[k] = pt_config[k]
+    # MLX executes both the historical TokenRoutedMLP and the canonical
+    # TRHashEngine checkpoint through its TokenRoutedMLP implementation.  The
+    # state-dict remapper below preserves the engine's exact per-layer route
+    # table, so this is an execution-layout translation rather than an
+    # architecture change.
+    if cfg.get("mlp_type") in _TR_HASH_ENGINE_MLP_TYPES:
+        cfg["mlp_type"] = "token_routed"
+        # TRHashEngineMLP combines shared and routed outputs with fixed scales;
+        # it does not instantiate the legacy learned scalar output gates even
+        # when an older run config still carries that flag.
+        cfg["use_shared_routed_gates"] = False
     cfg.setdefault("rope_traditional", False)
     return cfg
 
 
 def remap_state_dict(model_sd: dict, *, dtype: str) -> dict:
-    """Add 'model.' prefix, drop rope buffers, cast token_to_expert to int32."""
+    """Translate PyTorch model weights into the MLX module tree.
+
+    Canonical TRHashEngine blocks store parameters under ``mlp.engine`` and
+    persist one exact ``[top_k, vocab]`` route table per layer.  MLX uses the
+    historical TokenRoutedMLP parameter layout, so engine parameters and route
+    tables are translated explicitly instead of being regenerated.
+    """
     out = {}
     for k, v in model_sd.items():
         if k.endswith("rotary_emb.inv_freq") or k.endswith(
-            ("pair_hash_route_codes", "pair_hash_expert_pairs")
+            (
+                "pair_hash_route_codes",
+                "pair_hash_expert_pairs",
+                "fused_route_codes",
+                "fused_expert_pairs",
+            )
         ):
             continue
-        new_key = f"model.{k}"
-        if k.endswith("token_to_expert") and v.dtype != torch.int32:
+
+        if ".mlp.engine." in k:
+            prefix, engine_name = k.split(".mlp.engine.", maxsplit=1)
+            mlx_prefix = f"model.{prefix}.mlp."
+            if engine_name == "route_table":
+                routes = v.to(torch.int32).contiguous()
+                out[f"{mlx_prefix}topk_token_to_expert"] = routes
+                # Clone the primary route: safetensors intentionally rejects
+                # separately named tensors that share the same backing
+                # storage, even when one is only a view of the other.
+                out[f"{mlx_prefix}token_to_expert"] = routes[0].clone()
+                continue
+            mapped_name = _ENGINE_PARAMETER_NAMES.get(engine_name)
+            if mapped_name is None:
+                raise ValueError(
+                    f"Unsupported TRHashEngine checkpoint tensor: {k}"
+                )
+            new_key = f"{mlx_prefix}{mapped_name}"
+        else:
+            new_key = f"model.{k}"
+
+        if new_key.endswith(
+            ("token_to_expert", "topk_token_to_expert")
+        ) and v.dtype != torch.int32:
             v = v.to(torch.int32)
         if dtype == "float16" and v.dtype == torch.float32:
             v = v.to(torch.float16)
@@ -108,7 +163,12 @@ def main():
     args = ap.parse_args()
 
     print(f"Loading {args.checkpoint} ...")
-    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    ckpt = torch.load(
+        args.checkpoint,
+        map_location="cpu",
+        weights_only=False,
+        mmap=True,
+    )
 
     pt_config = ckpt["config"]
     model_sd = ckpt["model"]
