@@ -1052,15 +1052,21 @@ def main():
         )
 
     optimizer = build_optimizer(args, raw_model)
-    warmup = max(1, int(args.steps * args.warmup_ratio))
+    base_lrs = [group["lr"] for group in optimizer.param_groups]
 
-    def lr_lambda(step):
-        if step < warmup:
-            return step / warmup
-        progress = (step - warmup) / max(1, args.steps - warmup)
-        return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
+    def epoch_lr_lambda():
+        warmup = max(1, int(steps_per_epoch * args.warmup_ratio))
+        decay_denom = max(1, steps_per_epoch - warmup)
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        def lr_lambda(step_in_epoch):
+            if step_in_epoch < warmup:
+                return step_in_epoch / warmup
+            progress = (step_in_epoch - warmup) / decay_denom
+            return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+        return lr_lambda
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, epoch_lr_lambda())
     amp_dtype = autocast_dtype(device) if args.bf16 else None
 
     run_dir = Path("runs") / args.run_name
@@ -1221,9 +1227,22 @@ def main():
     tokens_since_log = 0
     last_step = 0
 
+    current_epoch = 0
+
     for step, batch in enumerate(train_loader, start=1):
         if step > args.steps:
             break
+        epoch_idx = (step - 1) // steps_per_epoch
+        if epoch_idx > current_epoch:
+            current_epoch = epoch_idx
+            for group, base_lr in zip(optimizer.param_groups, base_lrs):
+                group["lr"] = base_lr
+            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, epoch_lr_lambda())
+            if is_main:
+                logger.info(
+                    f"Resetting LR scheduler for epoch {current_epoch + 1} "
+                    f"({epoch_idx + 1}/{max(args.epochs or 1, epoch_idx + 1)})"
+                )
         last_step = step
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
