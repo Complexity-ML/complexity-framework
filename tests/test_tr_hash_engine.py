@@ -437,10 +437,10 @@ def test_fused_cuda_accepts_fp32_residuals_with_bf16_expert_weights():
     )
     fused = TRHashEngine(
         TRHashEngineConfig(**common, backend=TRHashBackend.FUSED_CUDA)
-    ).cuda().to(torch.bfloat16)
+    ).cuda().to(torch.bfloat16).eval()
     reference = TRHashEngine(
         TRHashEngineConfig(**common, backend=TRHashBackend.PYTORCH)
-    ).cuda().to(torch.bfloat16)
+    ).cuda().to(torch.bfloat16).eval()
     reference.load_state_dict(fused.state_dict())
 
     token_ids = torch.randint(0, 257, (1, 19), device="cuda")

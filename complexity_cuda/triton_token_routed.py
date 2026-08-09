@@ -1222,14 +1222,18 @@ if HAS_TRITON:
         offsets = block_start + tl.arange(0, BLOCK_SIZE)
         mask = offsets < n_elements
 
-        gate = tl.load(gate_ptr + offsets, mask=mask, other=0.0)
-        up = tl.load(up_ptr + offsets, mask=mask, other=0.0)
+        gate = tl.load(gate_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        up = tl.load(up_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
 
         # SiLU: x * sigmoid(x)
         silu_gate = gate * tl.sigmoid(gate)
         out = silu_gate * up
 
-        tl.store(output_ptr + offsets, out, mask=mask)
+        tl.store(
+            output_ptr + offsets,
+            out.to(output_ptr.dtype.element_ty),
+            mask=mask,
+        )
 
 
     def cggr_grouped_gemm_triton(
