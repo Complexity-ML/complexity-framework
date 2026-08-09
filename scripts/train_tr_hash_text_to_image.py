@@ -21,6 +21,7 @@ from safetensors.torch import load_file, save_file
 from tokenizers import Tokenizer
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from complexity.generative.image import (
     AtlasImageTarDataset,
@@ -193,6 +194,15 @@ def main() -> None:
         LOGGER.info("Dataset: %d shards; world=%d batch/GPU=%d", len(shards), world_size, args.batch_size)
         LOGGER.info("Training: AdamW lr=%g steps=%d epochs=%d", args.lr, total_steps, args.epochs)
 
+    progress = tqdm(
+        total=total_steps,
+        initial=step,
+        desc="TR-Hash image",
+        unit="step",
+        dynamic_ncols=True,
+        disable=rank != 0,
+    )
+
     micro_step = 0
     running_loss = 0.0
     running_samples = 0
@@ -240,15 +250,24 @@ def main() -> None:
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
             step += 1
+            progress.update(1)
             if rank == 0 and step % args.log_steps == 0:
                 elapsed = time.monotonic() - started
+                average_loss = running_loss / args.log_steps
+                throughput = running_samples / max(elapsed, 1e-6)
+                progress.set_postfix(
+                    loss=f"{average_loss:.4f}",
+                    lr=f"{scheduler.get_last_lr()[0]:.2e}",
+                    img_s=f"{throughput:.1f}",
+                    refresh=True,
+                )
                 LOGGER.info(
                     "step=%d/%d loss=%.5f lr=%.3e images/s=%.1f",
                     step,
                     total_steps,
-                    running_loss / args.log_steps,
+                    average_loss,
                     scheduler.get_last_lr()[0],
-                    running_samples / max(elapsed, 1e-6),
+                    throughput,
                 )
                 running_loss = 0.0
             if rank == 0 and args.save_steps and step % args.save_steps == 0:
@@ -281,6 +300,7 @@ def main() -> None:
         )
         if args.save_final:
             save_checkpoint(args.output, raw_model, optimizer, scheduler, config, step)
+    progress.close()
     if world_size > 1:
         dist.barrier()
         dist.destroy_process_group()
