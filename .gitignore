@@ -169,6 +169,7 @@ models/
 *.ggml
 
 # Training outputs
+artifacts/
 runs/
 logs/
 tensorboard/

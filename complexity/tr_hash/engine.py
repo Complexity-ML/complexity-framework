@@ -286,6 +286,14 @@ class TRHashEngine(nn.Module):
             )
 
         token_count = int(flat_x.size(0))
+        output_dtype = flat_x.dtype
+        # Triton's tl.dot requires both operands to have the same dtype.  Most
+        # training calls satisfy that through autocast, but inference can
+        # legitimately retain FP32 residual activations while the checkpoint
+        # itself is materialized as BF16.  Normalize only the expert branch to
+        # its stored weight dtype, then restore the residual-stream dtype.
+        expert_dtype = self.expert_gate.dtype
+        fused_x = flat_x if flat_x.dtype == expert_dtype else flat_x.to(expert_dtype)
         (
             sorted_indices,
             inverse_indices,
@@ -300,14 +308,14 @@ class TRHashEngine(nn.Module):
             return_inverse=True,
         )
         gate = hash_cggr_grouped_gemm_autograd(
-            flat_x,
+            fused_x,
             self.expert_gate,
             expert_offsets,
             sorted_indices,
             inverse_indices,
         )
         up = hash_cggr_grouped_gemm_autograd(
-            flat_x,
+            fused_x,
             self.expert_up,
             expert_offsets,
             sorted_indices,
@@ -325,26 +333,28 @@ class TRHashEngine(nn.Module):
 
         primary_weight, secondary_weight = self.config.route_weights
         if abs(primary_weight - secondary_weight) <= 1e-12:
-            return pair_hash_reduce_autograd(
+            routed = pair_hash_reduce_autograd(
                 sorted_output,
                 sorted_indices,
                 inverse_indices,
                 token_count,
                 scale=float(primary_weight),
             )
-        primary_weights = torch.full(
-            (token_count,),
-            float(primary_weight),
-            dtype=flat_x.dtype,
-            device=flat_x.device,
-        )
-        return pair_hash_weighted_reduce_autograd(
-            sorted_output,
-            sorted_indices,
-            inverse_indices,
-            primary_weights,
-            token_count,
-        )
+        else:
+            primary_weights = torch.full(
+                (token_count,),
+                float(primary_weight),
+                dtype=fused_x.dtype,
+                device=fused_x.device,
+            )
+            routed = pair_hash_weighted_reduce_autograd(
+                sorted_output,
+                sorted_indices,
+                inverse_indices,
+                primary_weights,
+                token_count,
+            )
+        return routed if routed.dtype == output_dtype else routed.to(output_dtype)
 
     def _forward_eager(
         self,

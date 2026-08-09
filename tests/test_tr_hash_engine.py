@@ -418,6 +418,41 @@ def test_fused_cuda_matches_reference_forward_and_gradients():
         )
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_fused_cuda_accepts_fp32_residuals_with_bf16_expert_weights():
+    from complexity.tr_hash.engine import HAS_FUSED_CUDA
+
+    if not HAS_FUSED_CUDA:
+        pytest.skip("hash-native Triton kernels are unavailable")
+
+    torch.manual_seed(31)
+    common = dict(
+        hidden_size=16,
+        vocab_size=257,
+        num_experts=4,
+        top_k=2,
+        shared_width=0,
+        expert_width=8,
+        precision=TRHashPrecision.BF16,
+    )
+    fused = TRHashEngine(
+        TRHashEngineConfig(**common, backend=TRHashBackend.FUSED_CUDA)
+    ).cuda().to(torch.bfloat16)
+    reference = TRHashEngine(
+        TRHashEngineConfig(**common, backend=TRHashBackend.PYTORCH)
+    ).cuda().to(torch.bfloat16)
+    reference.load_state_dict(fused.state_dict())
+
+    token_ids = torch.randint(0, 257, (1, 19), device="cuda")
+    residual = torch.randn(1, 19, 16, device="cuda", dtype=torch.float32)
+    with torch.no_grad():
+        fused_output = fused(residual, token_ids)
+        reference_output = reference(residual.to(torch.bfloat16), token_ids).float()
+
+    assert fused_output.dtype is torch.float32
+    assert torch.allclose(fused_output, reference_output, atol=3e-2, rtol=3e-2)
+
+
 @pytest.mark.parametrize("precision", [TRHashPrecision.FP8, TRHashPrecision.INT8])
 def test_quantized_modes_fail_explicitly_until_phase_two_kernel(precision):
     config = TRHashEngineConfig(
