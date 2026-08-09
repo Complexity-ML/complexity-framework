@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument("--warmup-steps", type=int, default=1_000)
     parser.add_argument("--save-steps", type=int, default=5_000)
+    parser.add_argument("--save-final", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--log-steps", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--bf16", action=argparse.BooleanOptionalAction, default=True)
@@ -255,7 +256,7 @@ def main() -> None:
         if step >= total_steps:
             break
 
-    if rank == 0:
+    if rank == 0 and args.save_final:
         save_checkpoint(args.output, raw_model, optimizer, scheduler, config, step)
     if world_size > 1:
         dist.barrier()
