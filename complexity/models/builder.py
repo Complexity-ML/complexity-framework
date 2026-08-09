@@ -385,18 +385,21 @@ class ComplexityModel(nn.Module):
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[List[Any]] = None,
         use_cache: bool = False,
         return_hidden_states: bool = False,
         return_logits: bool = True,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        routing_ids: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         """
         Forward pass through the model.
 
         Args:
-            input_ids: [batch, seq_len] token IDs
+            input_ids: [batch, seq_len] token IDs. Required unless
+                ``inputs_embeds`` is supplied.
             attention_mask: Optional attention mask
             past_key_values: Optional list of KV caches per layer
             use_cache: Whether to return updated KV caches
@@ -404,6 +407,10 @@ class ComplexityModel(nn.Module):
             return_logits: Whether to compute LM logits. Training loops using
                 fused cross-entropy can set this False and consume
                 last_hidden_state directly.
+            inputs_embeds: Optional externally prepared embeddings. This is the
+                multimodal prefix path; it bypasses ``embed_tokens``.
+            routing_ids: Token IDs used only for deterministic routing and
+                lexical features when ``inputs_embeds`` is supplied.
 
         Returns:
             Dictionary with:
@@ -411,10 +418,30 @@ class ComplexityModel(nn.Module):
                 - past_key_values: Optional list of KV caches
                 - hidden_states: Optional list of hidden states
         """
-        batch_size, seq_len = input_ids.shape
+        if inputs_embeds is None:
+            if input_ids is None:
+                raise ValueError("input_ids or inputs_embeds must be provided")
+            hidden_states = self.embed_tokens(input_ids)
+        else:
+            if inputs_embeds.ndim != 3:
+                raise ValueError("inputs_embeds must have shape [batch, seq, hidden]")
+            if inputs_embeds.size(-1) != self.config.hidden_size:
+                raise ValueError(
+                    "inputs_embeds hidden size does not match the model configuration"
+                )
+            hidden_states = inputs_embeds
 
-        # Get embeddings
-        hidden_states = self.embed_tokens(input_ids)
+        batch_size, seq_len = hidden_states.shape[:2]
+        token_ids = routing_ids if routing_ids is not None else input_ids
+        if token_ids is None:
+            token_ids = torch.zeros(
+                batch_size,
+                seq_len,
+                dtype=torch.long,
+                device=hidden_states.device,
+            )
+        if token_ids.shape != (batch_size, seq_len):
+            raise ValueError("routing_ids must match the embedded sequence shape")
 
         # Store hidden states if requested
         all_hidden_states = [hidden_states] if return_hidden_states else None
@@ -429,12 +456,12 @@ class ComplexityModel(nn.Module):
         if self._has_mu:
             mu_prev = self.mu_init.expand(batch_size, seq_len, -1)
         lexical_token_scale_values = (
-            self.lexical_token_scale(input_ids)
+            self.lexical_token_scale(token_ids)
             if hasattr(self, "lexical_token_scale")
             else None
         )
         lexical_zipf_values = (
-            self.lexical_zipf_weights[input_ids]
+            self.lexical_zipf_weights[token_ids]
             if hasattr(self, "lexical_zipf_weights")
             else None
         )
@@ -448,7 +475,7 @@ class ComplexityModel(nn.Module):
                     attention_mask,
                     past_kv,
                     use_cache,
-                    input_ids,
+                    token_ids,
                     None,  # velocity_state (unused, kept for compat)
                     mu_prev,
                     None,  # sort_idx (computed internally by token_routed)
@@ -462,7 +489,7 @@ class ComplexityModel(nn.Module):
                     attention_mask=attention_mask,
                     past_key_value=past_kv,
                     use_cache=use_cache,
-                    token_ids=input_ids,
+                    token_ids=token_ids,
                     mu_prev=mu_prev,
                     lexical_token_scale_values=lexical_token_scale_values,
                     lexical_zipf_values=lexical_zipf_values,

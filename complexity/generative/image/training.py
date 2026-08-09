@@ -208,7 +208,11 @@ def main() -> None:
     last_loss = float("nan")
     started = time.monotonic()
     optimizer.zero_grad(set_to_none=True)
-    for _epoch in range(args.epochs):
+    # Iterable shard assignments can contain different numbers of samples per
+    # DDP rank. Cycle each local loader until the shared optimizer-step target
+    # is reached; bounding by local iterator passes can strand shorter ranks at
+    # a barrier while longer ranks are still reducing gradients.
+    while step < total_steps:
         for batch in loader:
             pixels = batch["pixel_values"].to(device, non_blocking=True)
             caption_ids, caption_mask = tokenize_captions(
@@ -279,8 +283,6 @@ def main() -> None:
                 save_checkpoint(args.output, raw_model, optimizer, scheduler, config, step)
             if step >= total_steps:
                 break
-        if step >= total_steps:
-            break
 
     if rank == 0:
         elapsed = time.monotonic() - started
