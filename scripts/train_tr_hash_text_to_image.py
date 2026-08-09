@@ -196,6 +196,7 @@ def main() -> None:
     micro_step = 0
     running_loss = 0.0
     running_samples = 0
+    last_loss = float("nan")
     started = time.monotonic()
     optimizer.zero_grad(set_to_none=True)
     for _epoch in range(args.epochs):
@@ -230,6 +231,7 @@ def main() -> None:
             scaled_loss.backward()
             micro_step += 1
             running_loss += float(loss.detach())
+            last_loss = float(loss.detach())
             running_samples += pixels.size(0) * world_size
             if micro_step % args.gradient_accumulation:
                 continue
@@ -256,8 +258,29 @@ def main() -> None:
         if step >= total_steps:
             break
 
-    if rank == 0 and args.save_final:
-        save_checkpoint(args.output, raw_model, optimizer, scheduler, config, step)
+    if rank == 0:
+        elapsed = time.monotonic() - started
+        summary = {
+            "steps": step,
+            "last_loss": last_loss,
+            "elapsed_seconds": elapsed,
+            "images_seen": running_samples,
+            "images_per_second": running_samples / max(elapsed, 1e-6),
+            "world_size": world_size,
+            "batch_size_per_gpu": args.batch_size,
+        }
+        (args.output / "training_summary.json").write_text(
+            json.dumps(summary, indent=2) + "\n"
+        )
+        LOGGER.info(
+            "Training complete: step=%d loss=%.5f elapsed=%.1fs images/s=%.1f",
+            step,
+            last_loss,
+            elapsed,
+            summary["images_per_second"],
+        )
+        if args.save_final:
+            save_checkpoint(args.output, raw_model, optimizer, scheduler, config, step)
     if world_size > 1:
         dist.barrier()
         dist.destroy_process_group()
