@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import Sequence
@@ -47,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument("--warmup-steps", type=int, default=1_000)
     parser.add_argument("--save-steps", type=int, default=5_000)
+    parser.add_argument("--keep-checkpoints", type=int, default=4)
     parser.add_argument("--save-final", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--log-steps", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
@@ -101,6 +103,7 @@ def save_checkpoint(
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     config: TRHashImageConfig,
     step: int,
+    keep_checkpoints: int,
 ) -> None:
     target = output / f"step_{step:07d}"
     target.mkdir(parents=True, exist_ok=True)
@@ -112,6 +115,25 @@ def save_checkpoint(
         target / "training_state.pt",
     )
     LOGGER.info("Checkpoint saved: %s", target)
+    prune_checkpoints(output, keep_checkpoints)
+
+
+def prune_checkpoints(output: Path, keep_checkpoints: int) -> None:
+    """Keep only the newest complete step directories."""
+
+    if keep_checkpoints <= 0:
+        raise ValueError("keep_checkpoints must be positive")
+    checkpoints = sorted(
+        (
+            path
+            for path in output.glob("step_*")
+            if path.is_dir() and path.name.removeprefix("step_").isdigit()
+        ),
+        key=lambda path: int(path.name.removeprefix("step_")),
+    )
+    for stale in checkpoints[:-keep_checkpoints]:
+        shutil.rmtree(stale)
+        LOGGER.info("Pruned checkpoint: %s", stale)
 
 
 def main() -> None:
@@ -280,7 +302,15 @@ def main() -> None:
                     )
                 running_loss = 0.0
             if rank == 0 and args.save_steps and step % args.save_steps == 0:
-                save_checkpoint(args.output, raw_model, optimizer, scheduler, config, step)
+                save_checkpoint(
+                    args.output,
+                    raw_model,
+                    optimizer,
+                    scheduler,
+                    config,
+                    step,
+                    args.keep_checkpoints,
+                )
             if step >= total_steps:
                 break
 
@@ -306,7 +336,15 @@ def main() -> None:
             summary["images_per_second"],
         )
         if args.save_final:
-            save_checkpoint(args.output, raw_model, optimizer, scheduler, config, step)
+            save_checkpoint(
+                args.output,
+                raw_model,
+                optimizer,
+                scheduler,
+                config,
+                step,
+                args.keep_checkpoints,
+            )
     progress.close()
     if world_size > 1:
         dist.barrier()

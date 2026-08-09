@@ -52,7 +52,8 @@ torchrun --standalone --nproc_per_node=4 \
   --shards '/workspace/data/complexity-atlas-images/train/*.tar' \
   --tokenizer tokenizer/tokenizer.json \
   --output /workspace/artifacts/tr-hash-image-200m \
-  --batch-size 2 \
+  --batch-size 8 \
+  --keep-checkpoints 4 \
   --gradient-accumulation 2 \
   --epochs 1 \
   --bf16

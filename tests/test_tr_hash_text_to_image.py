@@ -11,6 +11,7 @@ from complexity.generative.image import (
     TRHashTextToImage,
     collate_atlas_images,
 )
+from complexity.generative.image.training import prune_checkpoints
 
 
 def _tiny_config() -> TRHashImageConfig:
@@ -123,3 +124,19 @@ def test_ddp_rank_keeps_its_shard_when_worker_count_exceeds_rank_shards(tmp_path
         assignments.append(rank_assignment)
 
     assert assignments == [(shards[0],), (shards[1],), (shards[2],), (shards[3],)]
+
+
+def test_checkpoint_retention_keeps_only_the_newest_steps(tmp_path):
+    for step in (2_000, 4_000, 6_000, 8_000, 10_000):
+        (tmp_path / f"step_{step:07d}").mkdir()
+    (tmp_path / "step_incomplete").mkdir()
+
+    prune_checkpoints(tmp_path, keep_checkpoints=4)
+
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "step_0004000",
+        "step_0006000",
+        "step_0008000",
+        "step_0010000",
+        "step_incomplete",
+    ]
