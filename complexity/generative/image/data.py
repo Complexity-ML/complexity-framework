@@ -46,15 +46,19 @@ class AtlasImageTarDataset(IterableDataset):
         if self.world_size <= 0 or not 0 <= self.rank < self.world_size:
             raise ValueError("rank must be in [0, world_size)")
 
+    def _assigned_shards(self, worker_id: int, worker_count: int) -> tuple[Path, ...]:
+        """Partition ranks first so DataLoader workers cannot starve a DDP rank."""
+
+        rank_shards = self.shards[self.rank :: self.world_size]
+        return rank_shards[worker_id::worker_count]
+
     def _worker_shards(self) -> Iterable[Path]:
         worker = get_worker_info()
         if worker is None:
             worker_id, worker_count = 0, 1
         else:
             worker_id, worker_count = worker.id, worker.num_workers
-        consumer_id = self.rank * worker_count + worker_id
-        consumer_count = self.world_size * worker_count
-        return self.shards[consumer_id::consumer_count]
+        return self._assigned_shards(worker_id, worker_count)
 
     def __iter__(self) -> Iterator[Dict[str, object]]:
         for shard in self._worker_shards():

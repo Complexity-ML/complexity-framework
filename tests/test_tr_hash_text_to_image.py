@@ -111,3 +111,15 @@ def test_atlas_tar_dataset_reads_image_caption_and_metadata(tmp_path):
     assert rows[0]["metadata"]["license"] == "CC0"
     assert batch["pixel_values"].shape == (1, 3, 16, 16)
     assert batch["captions"] == ["A small blue study."]
+
+
+def test_ddp_rank_keeps_its_shard_when_worker_count_exceeds_rank_shards(tmp_path):
+    shards = [tmp_path / f"train-{index:05d}.tar" for index in range(4)]
+    assignments = []
+    for rank in range(4):
+        dataset = AtlasImageTarDataset(shards, rank=rank, world_size=4)
+        per_worker = [dataset._assigned_shards(worker, 2) for worker in range(2)]
+        rank_assignment = tuple(path for group in per_worker for path in group)
+        assignments.append(rank_assignment)
+
+    assert assignments == [(shards[0],), (shards[1],), (shards[2],), (shards[3],)]
