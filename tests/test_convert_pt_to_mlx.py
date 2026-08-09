@@ -1,6 +1,12 @@
+import json
+
 import torch
 
-from scripts.convert_pt_to_mlx import build_mlx_config, remap_state_dict
+from scripts.convert_pt_to_mlx import (
+    build_mlx_config,
+    copy_tokenizer_files,
+    remap_state_dict,
+)
 
 
 def test_build_mlx_config_maps_canonical_engine_to_mlx_routed_layout():
@@ -59,3 +65,25 @@ def test_remap_state_dict_preserves_canonical_engine_routes_and_weights():
             "model.layers.0.mlp.topk_token_to_expert"
         ].untyped_storage().data_ptr()
     )
+
+
+def test_copy_tokenizer_files_does_not_overwrite_mlx_config(tmp_path):
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    source.mkdir()
+    output.mkdir()
+    (source / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (source / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+    (source / "config.json").write_text(
+        json.dumps({"model_type": "deep"}), encoding="utf-8"
+    )
+    (output / "config.json").write_text(
+        json.dumps({"model_type": "complexity"}), encoding="utf-8"
+    )
+
+    copied = copy_tokenizer_files(source, output)
+
+    assert copied == ["tokenizer.json", "tokenizer_config.json"]
+    assert json.loads((output / "config.json").read_text(encoding="utf-8")) == {
+        "model_type": "complexity"
+    }

@@ -55,6 +55,22 @@ _MLX_CONFIG_FIELDS = {
 
 _TR_HASH_ENGINE_MLP_TYPES = {"tr_hash_engine", "tr_hash_moe"}
 
+_TOKENIZER_FILENAMES = frozenset(
+    {
+        "added_tokens.json",
+        "merges.txt",
+        "sentencepiece.bpe.model",
+        "special_tokens_map.json",
+        "spiece.model",
+        "tokenizer.json",
+        "tokenizer.model",
+        "tokenizer.tiktoken",
+        "tokenizer_config.json",
+        "vocab.json",
+        "vocab.txt",
+    }
+)
+
 _ENGINE_PARAMETER_NAMES = {
     "expert_gate": "gate_proj_w",
     "expert_up": "up_proj_w",
@@ -148,6 +164,19 @@ def write_chat_template(checkpoint: dict, output: Path) -> dict:
     return template
 
 
+def copy_tokenizer_files(source: Path, output: Path) -> list[str]:
+    """Copy tokenizer assets without overwriting the MLX model config."""
+
+    copied = []
+    for path in source.iterdir():
+        if path.is_file() and path.name in _TOKENIZER_FILENAMES:
+            shutil.copy2(path, output / path.name)
+            copied.append(path.name)
+    if not copied:
+        raise FileNotFoundError(f"No recognized tokenizer files found in {source}")
+    return sorted(copied)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("checkpoint", type=Path)
@@ -195,10 +224,8 @@ def main():
     if args.tokenizer is not None:
         if not args.tokenizer.exists():
             raise SystemExit(f"Tokenizer dir not found: {args.tokenizer}")
-        for f in args.tokenizer.iterdir():
-            if f.is_file():
-                shutil.copy2(f, args.output / f.name)
-        print(f"Copied tokenizer files from {args.tokenizer}")
+        copied = copy_tokenizer_files(args.tokenizer, args.output)
+        print(f"Copied tokenizer files from {args.tokenizer}: {', '.join(copied)}")
 
 
 if __name__ == "__main__":

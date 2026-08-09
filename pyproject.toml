@@ -83,11 +83,17 @@ cpu = []
 fp8 = [
     "torchao>=0.7.0",
 ]
+image = [
+    "Pillow>=10.0.0",
+    "diffusers>=0.30.0",
+    "accelerate>=0.30.0",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "black>=23.0.0",
     "ruff>=0.1.0",
+    "Pillow>=10.0.0",
 ]
 tools = [
     "mcp>=1.0.0; python_version >= '3.10'",
