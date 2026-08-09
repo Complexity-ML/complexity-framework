@@ -193,6 +193,9 @@ def main() -> None:
         LOGGER.info("Model: %.1fM parameters", raw_model.num_parameters() / 1e6)
         LOGGER.info("Dataset: %d shards; world=%d batch/GPU=%d", len(shards), world_size, args.batch_size)
         LOGGER.info("Training: AdamW lr=%g steps=%d epochs=%d", args.lr, total_steps, args.epochs)
+        metrics_path = args.output / "metrics.jsonl"
+    else:
+        metrics_path = None
 
     progress = tqdm(
         total=total_steps,
@@ -261,14 +264,20 @@ def main() -> None:
                     img_s=f"{throughput:.1f}",
                     refresh=True,
                 )
-                LOGGER.info(
-                    "step=%d/%d loss=%.5f lr=%.3e images/s=%.1f",
-                    step,
-                    total_steps,
-                    average_loss,
-                    scheduler.get_last_lr()[0],
-                    throughput,
-                )
+                with metrics_path.open("a") as handle:
+                    handle.write(
+                        json.dumps(
+                            {
+                                "step": step,
+                                "total_steps": total_steps,
+                                "loss": average_loss,
+                                "lr": scheduler.get_last_lr()[0],
+                                "images_per_second": throughput,
+                                "elapsed_seconds": elapsed,
+                            }
+                        )
+                        + "\n"
+                    )
                 running_loss = 0.0
             if rank == 0 and args.save_steps and step % args.save_steps == 0:
                 save_checkpoint(args.output, raw_model, optimizer, scheduler, config, step)
