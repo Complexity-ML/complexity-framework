@@ -47,7 +47,7 @@ Start with batch 2 per 16 GB GPU. Gradient checkpointing is enabled by default.
 
 ```bash
 torchrun --standalone --nproc_per_node=4 \
-  scripts/train_tr_hash_text_to_image.py \
+  -m complexity.generative.image.training \
   --config configs/tr_hash_text_to_image_200m.yaml \
   --shards '/workspace/data/complexity-atlas-images/train/*.tar' \
   --tokenizer tokenizer/tokenizer.json \
