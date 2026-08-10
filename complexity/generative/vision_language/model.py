@@ -9,9 +9,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from complexity.models import ComplexityModel
-from complexity.multimodal.vision import VisionConfig, VisionTransformer
 
 from .config import TRHashVisionLanguageConfig
+from .vision_tower import TRHashVisionTower
 
 
 class VisualTokenResampler(nn.Module):
@@ -63,19 +63,7 @@ class TRHashImageTextToText(nn.Module):
     ):
         super().__init__()
         self.config = config or TRHashVisionLanguageConfig()
-        vision_config = VisionConfig(
-            image_size=self.config.image_size,
-            patch_size=self.config.patch_size,
-            hidden_size=self.config.vision_hidden_size,
-            num_hidden_layers=self.config.vision_layers,
-            num_attention_heads=self.config.vision_heads,
-            intermediate_size=self.config.vision_hidden_size * 4,
-            hidden_dropout_prob=self.config.dropout,
-            attention_dropout_prob=self.config.dropout,
-            use_class_token=False,
-            num_experts=1,
-        )
-        self.vision_tower = VisionTransformer(vision_config)
+        self.vision_tower = TRHashVisionTower(self.config.vision_tower_config())
         self.resampler = VisualTokenResampler(
             self.config.vision_hidden_size,
             self.config.vision_heads,
@@ -98,7 +86,7 @@ class TRHashImageTextToText(nn.Module):
         self.register_buffer("visual_route_ids", visual_route_ids, persistent=True)
 
     def encode_images(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        features = self.vision_tower(pixel_values)["last_hidden_state"]
+        features = self.vision_tower(pixel_values)
         return self.visual_projection(self.resampler(features))
 
     def prepare_multimodal_inputs(

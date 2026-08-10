@@ -7,6 +7,8 @@ from typing import Any, Dict
 
 from complexity.config import ModelConfig
 
+from .vision_tower import TRHashVisionTowerConfig
+
 
 @dataclass(frozen=True)
 class TRHashVisionLanguageConfig:
@@ -17,6 +19,10 @@ class TRHashVisionLanguageConfig:
     vision_hidden_size: int = 384
     vision_layers: int = 6
     vision_heads: int = 6
+    vision_num_experts: int = 4
+    vision_top_k: int = 2
+    vision_shared_width: int = 0
+    vision_expert_width: int = 96
     num_visual_tokens: int = 64
     vocab_size: int = 32_000
     hidden_size: int = 768
@@ -36,6 +42,8 @@ class TRHashVisionLanguageConfig:
             raise ValueError("image_size must be positive and divisible by patch_size")
         if self.vision_hidden_size % self.vision_heads:
             raise ValueError("vision_hidden_size must be divisible by vision_heads")
+        if self.vision_top_k > self.vision_num_experts:
+            raise ValueError("vision_top_k cannot exceed vision_num_experts")
         if self.hidden_size % self.attention_heads:
             raise ValueError("hidden_size must be divisible by attention_heads")
         if self.attention_heads % self.key_value_heads:
@@ -46,6 +54,23 @@ class TRHashVisionLanguageConfig:
             raise ValueError("routed_width must be divisible by num_experts")
         if not 1 <= self.top_k <= self.num_experts:
             raise ValueError("top_k must lie in [1, num_experts]")
+
+    def vision_tower_config(self) -> TRHashVisionTowerConfig:
+        """Build the TR-Hash MoE vision tower configuration."""
+
+        return TRHashVisionTowerConfig(
+            image_size=self.image_size,
+            patch_size=self.patch_size,
+            hidden_size=self.vision_hidden_size,
+            num_hidden_layers=self.vision_layers,
+            num_attention_heads=self.vision_heads,
+            num_experts=self.vision_num_experts,
+            top_k=self.vision_top_k,
+            shared_width=self.vision_shared_width,
+            expert_width=self.vision_expert_width,
+            route_seed=self.route_seed,
+            attention_dropout=self.dropout,
+        )
 
     def decoder_config(self) -> ModelConfig:
         """Build the native causal decoder configuration."""

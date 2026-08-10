@@ -60,6 +60,23 @@ def test_image_and_text_form_one_causal_sequence_and_predict_text_only():
     assert model.decoder.layers[0].mlp.engine.expert_down.grad is not None
 
 
+def test_vision_tower_actually_routes_through_multiple_experts():
+    """The vision tower must not be a plain dense (num_experts=1) pass-through
+    — patches route through real TR-Hash MoE experts, same as the decoder."""
+    config = _tiny_config()
+    model = TRHashImageTextToText(config)
+    assert config.vision_num_experts > 1
+    for block in model.vision_tower.blocks:
+        assert torch.unique(block.mlp.route_table).numel() > 1
+
+    pixels = torch.randn(2, 3, 32, 32)
+    input_ids = torch.randint(0, config.vocab_size, (2, 8))
+    output = model(pixels, input_ids, labels=input_ids.clone())
+    output["loss"].backward()
+    assert model.vision_tower.blocks[0].mlp.expert_gate.grad is not None
+    assert model.vision_tower.blocks[0].mlp.expert_gate.grad.abs().sum() > 0
+
+
 def test_visual_routes_are_stable_and_text_routes_remain_token_ids():
     config = _tiny_config()
     model = TRHashImageTextToText(config).eval()

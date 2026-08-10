@@ -16,9 +16,9 @@ Usage:
     encoder = Video.encoder(num_frames=16, hidden_size=768, num_experts=4)
     features = encoder(video)   # [B, C, T, H, W]
 
-    # Omni — any-to-any (text + image + audio + video)
+    # Omni — image + text -> text
     model = Omni.model(hidden_size=1024, vocab_size=32000)
-    out = model(text_ids=text, pixel_values=images)
+    out = model(pixel_values=images, input_ids=text_ids)
     logits = out["logits"]
 """
 
@@ -54,12 +54,11 @@ from complexity.multimodal import (
     GatedFusion,
     ConcatProjection,
     PerceiverResampler,
-    # Omni
-    OmniModel,
-    OmniConfig,
-    PositionRoutedMLP,
-    Modality,
-    ModalityMLPConfig,
+)
+
+from complexity.generative.vision_language import (
+    TRHashImageTextToText,
+    TRHashVisionLanguageConfig,
 )
 
 
@@ -433,94 +432,51 @@ class Video:
 
 class Omni:
     """
-    Factory pour créer des modèles any-to-any (text + image + audio + video).
+    Factory pour créer des modèles multimodaux (image + texte -> texte).
+
+    Remplace l'ancien ``OmniModel`` (routing par position de séquence,
+    ``pos % num_experts`` — non conforme au routing TR-Hash par ID de
+    token / table de hachage). ``TRHashImageTextToText`` assigne des routes
+    déterministes fixes par patch d'image et les fait passer par le même
+    décodeur TR-Hash MoE que les tokens de texte — voir
+    ``complexity.generative.vision_language``.
+
+    Portée actuelle : image + texte -> texte uniquement (pas encore audio ni
+    vidéo).
 
     Usage:
-        model = Omni.model(hidden_size=1024, vocab_size=32000)
-        out = model(
-            text_ids=text,
-            pixel_values=images,
-            audio_features=mel,
-            video_frames=video,
-        )
+        model = Omni.model(hidden_size=768, vocab_size=32000)
+        out = model(pixel_values=images, input_ids=text_ids, labels=labels)
         logits = out["logits"]
 
         # Avec config complète
-        config = Omni.config(hidden_size=2048, text_num_experts=16)
+        config = Omni.config(hidden_size=2048, num_experts=8)
         model = Omni.from_config(config)
     """
 
     @classmethod
     def model(cls, **kwargs) -> nn.Module:
-        """
-        Modèle OmniModel (any-to-any).
+        """Modèle TRHashImageTextToText (image + texte -> texte).
 
-        Chaque OmniBlock a 2 couches MLP en cascade :
-          1. General MLP  — partagé par tous les tokens (general_num_experts)
-          2. Specialised  — un par modalité, derivé de Modality enum
-
-        Accepts flat kwargs pour les experts par modalité (traduits en dict):
-            text_num_experts, text_intermediate_size
-            image_num_experts, image_intermediate_size
-            audio_num_experts, audio_intermediate_size
-            video_num_experts, video_intermediate_size
-
-        Ou passe directement un modality_mlp dict:
-            modality_mlp={Modality.VIDEO: ModalityMLPConfig(8, 4096)}
+        Accepte les kwargs de ``TRHashVisionLanguageConfig`` (image_size,
+        patch_size, vision_hidden_size, num_visual_tokens, hidden_size,
+        num_experts, top_k, ...).
 
         Exemples:
-            model = Omni.model(hidden_size=1024, vocab_size=32000)
-
-            model = Omni.model(
-                hidden_size=2048,
-                general_num_experts=8,
-                video_num_experts=8,
-                audio_num_experts=8,
-            )
+            model = Omni.model(hidden_size=768, vocab_size=32000)
+            model = Omni.model(hidden_size=1024, num_experts=8, top_k=2)
         """
-        # Build modality_mlp dict from flat kwargs (e.g. text_num_experts=8)
-        modal_cfg = {m: ModalityMLPConfig() for m in Modality}
-        omni_kwargs = {}
-        for key, val in kwargs.items():
-            matched = False
-            for m in Modality:
-                prefix = m.name.lower()
-                if key == f"{prefix}_num_experts":
-                    modal_cfg[m] = ModalityMLPConfig(val, modal_cfg[m].intermediate_size)
-                    matched = True
-                    break
-                elif key == f"{prefix}_intermediate_size":
-                    modal_cfg[m] = ModalityMLPConfig(modal_cfg[m].num_experts, val)
-                    matched = True
-                    break
-            if not matched:
-                omni_kwargs[key] = val
-
-        # Allow explicit modality_mlp dict to override
-        if "modality_mlp" not in omni_kwargs:
-            omni_kwargs["modality_mlp"] = modal_cfg
-
-        return OmniModel(OmniConfig(**omni_kwargs))
+        return TRHashImageTextToText(TRHashVisionLanguageConfig(**kwargs))
 
     @classmethod
-    def config(cls, **kwargs) -> OmniConfig:
-        """Crée un OmniConfig."""
-        return OmniConfig(**kwargs)
+    def config(cls, **kwargs) -> TRHashVisionLanguageConfig:
+        """Crée un TRHashVisionLanguageConfig."""
+        return TRHashVisionLanguageConfig(**kwargs)
 
     @classmethod
-    def from_config(cls, config: OmniConfig) -> nn.Module:
-        """OmniModel depuis un OmniConfig existant."""
-        return OmniModel(config)
-
-    @classmethod
-    def position_routed_mlp(
-        cls,
-        hidden_size: int = 768,
-        intermediate_size: int = 3072,
-        num_experts: int = 4,
-    ) -> nn.Module:
-        """PositionRoutedMLP standalone (réutilisable dans n'importe quel modèle)."""
-        return PositionRoutedMLP(hidden_size, intermediate_size, num_experts)
+    def from_config(cls, config: TRHashVisionLanguageConfig) -> nn.Module:
+        """TRHashImageTextToText depuis un TRHashVisionLanguageConfig existant."""
+        return TRHashImageTextToText(config)
 
 
 # =============================================================================
@@ -560,9 +516,6 @@ __all__ = [
     "ConcatProjection",
     "PerceiverResampler",
     # Direct classes - Omni
-    "OmniModel",
-    "OmniConfig",
-    "PositionRoutedMLP",
-    "Modality",
-    "ModalityMLPConfig",
+    "TRHashImageTextToText",
+    "TRHashVisionLanguageConfig",
 ]

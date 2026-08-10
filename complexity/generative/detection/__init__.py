@@ -1,0 +1,34 @@
+"""TR-Hash single-stage object detector (YOLO-style, anchor-free).
+
+Built on ``TRHashVisionTower`` (real multi-expert MoE routing by patch
+position — see ``complexity.generative.vision_language``), with a detection
+head predicting objectness + box + class directly per grid cell. No
+anchors, no region-proposal stage, no multi-scale feature pyramid (a
+single-scale first pass — see ``TRHashDetectorConfig``'s docstring).
+
+Usage:
+    from complexity.generative.detection import TRHashDetectorConfig, TRHashObjectDetector
+
+    model = TRHashObjectDetector(TRHashDetectorConfig(num_classes=80))
+    raw = model(pixel_values)  # [batch, num_cells, 5 + num_classes]
+
+    # targets: list of [N_i, 5] (cx, cy, w, h, class_id), normalized [0, 1]
+    losses = model.compute_loss(raw, targets)
+    losses["loss"].backward()
+
+    detections = model.predict(pixel_values, objectness_threshold=0.25)
+"""
+
+from .config import TRHashDetectorConfig
+from .data import CocoDetectionDataset, SyntheticShapesDataset, collate_detection
+from .model import TRHashObjectDetector, box_iou, greedy_nms
+
+__all__ = [
+    "TRHashDetectorConfig",
+    "TRHashObjectDetector",
+    "box_iou",
+    "greedy_nms",
+    "CocoDetectionDataset",
+    "SyntheticShapesDataset",
+    "collate_detection",
+]
