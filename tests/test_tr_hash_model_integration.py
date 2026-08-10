@@ -1,10 +1,7 @@
-from types import SimpleNamespace
-
 import torch
 
 from complexity import ComplexityModel, ModelConfig
 from complexity.core.mlp.tr_hash_engine import TRHashEngineMLP
-from complexity.training.o200k.optimizer import build_optimizer
 from complexity.tr_hash import TRHashBackend
 
 
@@ -64,18 +61,3 @@ def test_tr_hash_engine_model_forward_and_backward():
     assert output.shape == (2, 7, 128)
     output.float().square().mean().backward()
     assert model.layers[0].mlp.engine.expert_down.grad is not None
-
-
-def test_optimizer_recognizes_engine_shared_and_expert_parameters():
-    model = ComplexityModel(_config())
-    args = SimpleNamespace(
-        optimizer="adamw",
-        lr=3e-4,
-        weight_decay=0.1,
-        expert_lr_scale=2.0,
-        shared_lr_scale=1.0,
-    )
-    _, metadata = build_optimizer(args, model)
-    assert metadata["adamw_expert_params"] > 0
-    assert metadata["adamw_shared_params"] > 0
-    assert metadata["adamw_params"] == model.num_parameters()

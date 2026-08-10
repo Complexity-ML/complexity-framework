@@ -14,6 +14,7 @@ import csv
 import json
 import logging
 import math
+import os
 import random
 import time
 from pathlib import Path
@@ -43,8 +44,7 @@ from complexity.training.sft_curriculum import (
     load_projected_metadata,
     select_stage_examples,
 )
-from complexity.training.o200k_pretrain import init_distributed
-from complexity.utils import autocast, autocast_dtype, empty_cache, synchronize
+from complexity.utils import autocast, autocast_dtype, empty_cache, setup_mps, synchronize
 from complexity.utils.device import backend_metadata, configure_torch_acceleration
 from complexity.utils.local_checkpoint import save_local_checkpoint
 
@@ -895,6 +895,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--empty-cache-every", type=int, default=50)
     parser.add_argument("--cpu", action="store_true", help="Force CPU for smoke tests")
     return parser
+
+
+def init_distributed(seed: int):
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    distributed = world_size > 1
+
+    if distributed:
+        if not torch.cuda.is_available():
+            raise RuntimeError("DDP training requires CUDA. Run single-process for CPU/MPS.")
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend="nccl")
+        torch.manual_seed(seed + rank)
+        return torch.device("cuda", local_rank), distributed, rank, local_rank, world_size
+
+    device = setup_mps(unlimited_watermark=True, cpu_fallback=True, seed=seed)
+    return device, distributed, rank, local_rank, world_size
 
 
 def main():

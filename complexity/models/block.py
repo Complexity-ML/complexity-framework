@@ -217,7 +217,7 @@ class TransformerBlock(nn.Module):
             ),
             initializer_range=getattr(config, "initializer_range", 0.02),
             vocab_size=config.vocab_size,
-            routing_strategy=getattr(config, 'routing_strategy', 'zipf'),
+            routing_strategy=getattr(config, 'routing_strategy', 'modulo_cyclic'),
             token_frequencies=config.token_frequencies,
             lsh_routing=getattr(config, 'lsh_routing', False),
             lsh_bits=getattr(config, 'lsh_bits', 0),
@@ -251,6 +251,8 @@ class TransformerBlock(nn.Module):
             micro_num_experts=getattr(config, 'micro_num_experts', 4),
             micro_expert_width=getattr(config, 'micro_expert_width', 16),
             micro_expert_gate_init=getattr(config, 'micro_expert_gate_init', 0.1),
+            active_num_experts=getattr(config, 'active_num_experts', None),
+            active_expert_width=getattr(config, 'active_expert_width', None),
         )
         self.mlp = MLP_REGISTRY.build(config.mlp_type, mlp_config)
 

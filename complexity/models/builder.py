@@ -6,6 +6,7 @@ This is the main entry point for creating models in the framework.
 
 import os
 import json
+import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -580,34 +581,6 @@ class ComplexityModel(nn.Module):
         config = ModelConfig.load(config_path)
         return cls(config)
 
-    def quantize_all(self):
-        """
-        Quantize all I64 components to INT8 for inference.
-
-        Converts:
-        - I64Attention: QKV + mu + O projections -> fused INT8
-        - I64SwiGLUMLP: gate+up+down -> fused INT8 with LUT SiLU
-        - I64TokenRoutedMLP: expert weights -> INT8
-        - I64RMSNorm: weights -> Q12 INT16
-
-        Call this after training, before inference.
-        """
-        from complexity.core.attention.i64_attention import I64Attention
-        from complexity.core.mlp.i64_mlp import I64SwiGLUMLP, I64TokenRoutedMLP
-        from complexity.core.normalization.i64_norm import I64RMSNorm
-
-        quantized_count = 0
-        for module in self.modules():
-            if isinstance(module, (I64Attention, I64SwiGLUMLP, I64TokenRoutedMLP)):
-                module.quantize()
-                quantized_count += 1
-            elif isinstance(module, I64RMSNorm):
-                module.quantize_weight()
-                quantized_count += 1
-
-        print(f"Quantized {quantized_count} I64 modules to INT8")
-        return self
-
     def num_parameters(self, trainable_only: bool = True) -> int:
         """Count number of parameters."""
         if trainable_only:
@@ -761,7 +734,21 @@ class ComplexityModel(nn.Module):
                 f"No model weights found. Expected {safetensors_path} or {pytorch_path}"
             )
 
-        model.load_state_dict(state_dict)
+        # strict=False: deterministic buffers (RoPE inv_freq, TokenRoutedMLP's
+        # token_to_expert/pair_hash_* routing tables) are pure functions of
+        # config and are already correct on the freshly constructed model —
+        # some checkpoint export paths omit them. Any missing key that isn't
+        # one of those is a real problem, so it's still surfaced loudly.
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        deterministic_buffer = re.compile(
+            r"\.(inv_freq|token_to_expert|pair_hash_route_codes|pair_hash_expert_pairs)$"
+        )
+        unexplained_missing = [k for k in missing if not deterministic_buffer.search(k)]
+        if unexplained_missing or unexpected:
+            raise RuntimeError(
+                "Error(s) in loading state_dict for ComplexityModel: "
+                f"missing={unexplained_missing}, unexpected={unexpected}"
+            )
 
         # Move to device/dtype if specified
         if device is not None:

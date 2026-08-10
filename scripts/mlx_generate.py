@@ -13,7 +13,7 @@ import argparse
 from pathlib import Path
 
 from mlx_lm.generate import generate
-from mlx_lm.utils import load
+from mlx_lm.utils import load, load_model, load_tokenizer
 from mlx_lm.sample_utils import make_sampler
 
 
@@ -24,12 +24,27 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=64)
     ap.add_argument("--temperature", type=float, default=0.8)
     ap.add_argument("--top-p", type=float, default=0.95)
+    ap.add_argument("--top-k", type=int, default=0)
     args = ap.parse_args()
 
     print(f"Loading model from {args.model_dir} ...")
-    model, tokenizer = load(args.model_dir.as_posix())
+    try:
+        model, tokenizer = load(args.model_dir.as_posix())
+    except ValueError as error:
+        # Public TR-Hash exports may omit the primary token-to-expert table:
+        # it is a deterministic runtime buffer, not a learned weight. Preserve
+        # the table initialized by the MLX model while still surfacing every
+        # unrelated checkpoint mismatch.
+        if "mlp.token_to_expert" not in str(error):
+            raise
+        model, _ = load_model(args.model_dir, strict=False)
+        tokenizer = load_tokenizer(args.model_dir)
     print(f"Ready. eos_token_id={tokenizer.eos_token_id}\n")
-    sampler = make_sampler(temp=args.temperature, top_p=args.top_p)
+    sampler = make_sampler(
+        temp=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k,
+    )
 
     generate(
         model,

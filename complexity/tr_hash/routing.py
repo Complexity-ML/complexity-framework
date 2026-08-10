@@ -21,6 +21,13 @@ def _balanced_hash_routes(config: TRHashEngineConfig) -> torch.Tensor:
     power-of-two expert counts.
     """
 
+    if config.num_experts == 1:
+        # A single expert has no stride/tuple geometry to vary — every route
+        # position trivially selects expert 0.
+        return torch.zeros(
+            config.top_k, config.vocab_size, dtype=torch.long, device="cpu"
+        )
+
     token_generator = torch.Generator(device="cpu").manual_seed(
         int(config.route_seed) + 104729 * int(config.layer_index)
     )

@@ -4,7 +4,13 @@ Telemetry helpers for Token-Routed MoE training.
 Distributed-safe utilities for logging MoE internals from training scripts:
 
 - global_expert_shares(model) — all-reduced expert utilization shares + dead count
-- detect_num_experts(model)   — auto-detect num_experts from first TokenRoutedMLP
+- detect_num_experts(model)   — auto-detect num_experts from the first MLP with an expert_counts buffer
+
+These are duck-typed against the historical TokenRoutedMLP's attribute names
+(expert_counts, gate_proj_w, ...). That class was removed in favor of the
+canonical TRHashEngineMLP, which doesn't expose equivalents yet — for any
+TRHashEngineMLP-based model these helpers always return empty/None (by
+design, not a crash; see tests/test_moe_telemetry.py).
 
 These helpers are meant to be called from a training callback registered on
 ALL ranks (the all_reduce is collective). The caller decides whether to write

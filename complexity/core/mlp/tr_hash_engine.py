@@ -94,6 +94,7 @@ class TRHashEngineMLP(MLPBase):
                 top_k=self.top_k,
                 shared_width=shared_width,
                 expert_width=config.intermediate_size // config.num_experts,
+                initializer_range=float(config.initializer_range),
                 routing_strategy=_strategy(config.routing_strategy),
                 layer_index=int(config.layer_idx),
                 route_weights=_route_weights(
@@ -108,6 +109,11 @@ class TRHashEngineMLP(MLPBase):
                 backend=_backend(config),
             )
         )
+        if config.active_num_experts is not None or config.active_expert_width is not None:
+            self.engine.set_active_capacity(
+                num_experts=config.active_num_experts,
+                expert_width=config.active_expert_width,
+            )
 
     def forward(self, hidden_states, token_ids=None, **kwargs):
         if token_ids is None:
@@ -124,11 +130,23 @@ class TRHashEngineMLP(MLPBase):
             route_weights=_route_weights(self.top_k, self._primary_weight),
         )
 
+    def set_active_experts(self, num_experts: int) -> None:
+        """Shrink to a smaller deterministic ID/hash-routed expert pool at runtime."""
+        self.engine.set_active_capacity(num_experts=num_experts)
+
+    def set_active_expert_width(self, width: int) -> None:
+        """Shrink each active expert's intermediate width at runtime."""
+        self.engine.set_active_capacity(expert_width=width)
+
     def training_control_capabilities(self) -> frozenset[str]:
-        return frozenset({"topk_primary_weight"})
+        return frozenset({"topk_primary_weight", "active_num_experts", "active_expert_width"})
 
     def training_telemetry(self) -> dict[str, float]:
-        return {"topk_w": float(self._primary_weight)}
+        return {
+            "topk_w": float(self._primary_weight),
+            "active_num_experts": float(self.engine.active_num_experts),
+            "active_expert_width": float(self.engine.active_expert_width),
+        }
 
     def capability_summary(self, device_type: str = "cpu") -> dict:
         return self.engine.capability_summary(device_type)

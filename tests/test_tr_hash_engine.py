@@ -209,56 +209,6 @@ def test_reference_engine_matches_token_by_token_definition_and_gradients(
         assert torch.isfinite(parameter.grad).all()
 
 
-def test_token_routed_legacy_top2_fallback_is_bitwise_compatible():
-    from complexity.core.mlp import MLPConfig, TokenRoutedMLP
-    from complexity.core.mlp.fused_activations import fused_silu_mul
-
-    torch.manual_seed(19)
-    mlp = TokenRoutedMLP(
-        MLPConfig(
-            hidden_size=8,
-            intermediate_size=16,
-            vocab_size=101,
-            num_experts=4,
-            top_k=2,
-            top_k_primary_weight=0.5,
-            shared_expert=False,
-            use_cggr=False,
-        )
-    )
-    flat_x = torch.randn(17, 8)
-    token_ids = torch.randint(0, 101, (17,))
-    routes = mlp.topk_token_to_expert[:, token_ids]
-
-    actual = mlp._dispatch_equal_top2_pair(
-        flat_x,
-        routes,
-        mlp.gate_proj_w,
-        mlp.up_proj_w,
-        mlp.down_proj_w,
-    )
-
-    route_weights = torch.full(
-        routes.shape,
-        0.5,
-        dtype=flat_x.dtype,
-        device=flat_x.device,
-    )
-    legacy = torch.zeros_like(flat_x)
-    for expert_index in range(mlp.num_experts):
-        token_weight = (routes.eq(expert_index).to(flat_x.dtype) * route_weights).sum(dim=0)
-        active = token_weight.ne(0).unsqueeze(-1).to(flat_x.dtype)
-        expert_x = flat_x * active
-        intermediate = fused_silu_mul(
-            expert_x @ mlp.gate_proj_w[expert_index],
-            expert_x @ mlp.up_proj_w[expert_index],
-        )
-        expert_output = (intermediate @ mlp.down_proj_w[expert_index]).to(legacy.dtype)
-        legacy = legacy + expert_output * token_weight.unsqueeze(-1)
-
-    assert torch.equal(actual, legacy)
-
-
 def test_attention_backbone_is_metadata_not_a_different_mlp_function():
     common = dict(
         hidden_size=8,

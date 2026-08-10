@@ -8,6 +8,7 @@ from the same config.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Callable, Dict, Optional
 
 import torch
@@ -16,7 +17,13 @@ import torch.nn.functional as F
 
 from .buckets import GraphBucketPlanner
 from .capabilities import BackendDecision, select_backend, supports_fused_cuda
-from .config import GraphBucket, TRHashBackend, TRHashEngineConfig, TRHashPhase
+from .config import (
+    SUPPORTED_EXPERT_COUNTS,
+    GraphBucket,
+    TRHashBackend,
+    TRHashEngineConfig,
+    TRHashPhase,
+)
 from .routing import build_route_table, compile_top2_pair_metadata
 
 logger = logging.getLogger(__name__)
@@ -108,14 +115,7 @@ class TRHashEngine(nn.Module):
         super().__init__()
         self.config = config
         self.register_buffer("route_table", build_route_table(config))
-        if supports_fused_cuda(config):
-            route_codes, expert_pairs = compile_top2_pair_metadata(
-                self.route_table,
-                num_experts=config.num_experts,
-            )
-        else:
-            route_codes = torch.empty(0, dtype=torch.uint8)
-            expert_pairs = torch.empty((0, 2), dtype=torch.int32)
+        route_codes, expert_pairs = self._compile_fused_metadata(self.route_table)
         self.register_buffer("fused_route_codes", route_codes)
         self.register_buffer("fused_expert_pairs", expert_pairs)
 
@@ -168,16 +168,153 @@ class TRHashEngine(nn.Module):
             GraphBucketPlanner(config.graph_buckets) if config.graph_buckets else None
         )
 
+        # Dynamic capacity: the module is allocated at (config.num_experts,
+        # config.expert_width) but can be shrunk at runtime to a smaller,
+        # still fully deterministic ID/hash-routed sub-network via
+        # ``set_active_capacity``. Nothing changes unless that is called.
+        self._active_num_experts = config.num_experts
+        self._active_expert_width = config.expert_width
+        self._active_route_table = self.route_table
+
+    def _apply(self, fn, recurse: bool = True):
+        # ``_active_route_table`` is a plain attribute (sometimes just an
+        # alias of the ``route_table`` buffer, sometimes an independently
+        # built reduced-capacity table from ``set_active_capacity``), so the
+        # base ``_apply`` -- which only walks parameters/buffers -- does not
+        # move it. Without this it silently stays on the old device after
+        # ``.to(device)``/``.cuda()``/etc., and every ``_routes`` lookup
+        # against the (now-moved) route_ids raises a cross-device index error.
+        was_aliased = self._active_route_table is self.route_table
+        super()._apply(fn, recurse=recurse)
+        self._active_route_table = self.route_table if was_aliased else fn(self._active_route_table)
+        return self
+
+    @property
+    def active_num_experts(self) -> int:
+        return self._active_num_experts
+
+    @property
+    def active_expert_width(self) -> int:
+        return self._active_expert_width
+
+    def set_active_capacity(
+        self,
+        *,
+        num_experts: Optional[int] = None,
+        expert_width: Optional[int] = None,
+    ) -> None:
+        """Shrink the engine to a smaller deterministic sub-network at runtime.
+
+        Both knobs only ever select a fixed-size prefix of the allocated
+        experts/width — routing stays token-ID / hash-table based (re-derived
+        for the reduced expert count with :func:`build_route_table`, the same
+        deterministic construction used at ``__init__``), so this never turns
+        into a learned or contextual router. Pass ``None`` for a knob to leave
+        it unchanged. Call with no arguments (or both back at the allocated
+        max) to restore full capacity.
+        """
+
+        if num_experts is not None:
+            if num_experts not in SUPPORTED_EXPERT_COUNTS:
+                raise ValueError(
+                    f"num_experts must be one of {SUPPORTED_EXPERT_COUNTS}, got {num_experts}"
+                )
+            if num_experts > self.config.num_experts:
+                raise ValueError(
+                    f"active num_experts ({num_experts}) cannot exceed the "
+                    f"allocated capacity ({self.config.num_experts})"
+                )
+            if num_experts == self.config.num_experts:
+                self._active_route_table = self.route_table
+            else:
+                active_config = replace(self.config, num_experts=num_experts)
+                self._active_route_table = build_route_table(active_config).to(
+                    device=self.route_table.device
+                )
+            self._active_num_experts = num_experts
+
+        if expert_width is not None:
+            if not 0 < expert_width <= self.config.expert_width:
+                raise ValueError(
+                    f"active expert_width must be in (0, {self.config.expert_width}], "
+                    f"got {expert_width}"
+                )
+            self._active_expert_width = expert_width
+
+        if num_experts is not None or expert_width is not None:
+            # Any previously captured CUDA graph baked in the prior capacity's
+            # weights/routes; it would silently replay stale results.
+            self._graph_pool.clear()
+
+    def _compile_fused_metadata(
+        self, route_table: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if supports_fused_cuda(self.config):
+            return compile_top2_pair_metadata(
+                route_table,
+                num_experts=self.config.num_experts,
+            )
+        return (
+            torch.empty(0, dtype=torch.uint8),
+            torch.empty((0, 2), dtype=torch.int32),
+        )
+
+    def load_route_table(self, route_table: torch.Tensor) -> None:
+        """Install an externally-provided ``[top_k, vocab_size]`` route table.
+
+        For loading checkpoints whose token->expert assignment was decided by
+        a different (but still deterministic, token-ID/hash-table based)
+        construction — e.g. converted from :class:`TokenRoutedMLP` — so the
+        expert weights stay paired with the exact routing they were trained
+        against, instead of the routing this engine's own config would
+        otherwise regenerate at ``__init__``. Keeps fused-CUDA pair metadata
+        and any captured CUDA graphs in sync with the new table.
+        """
+
+        if tuple(route_table.shape) != tuple(self.route_table.shape):
+            raise ValueError(
+                f"route_table shape {tuple(route_table.shape)} does not match "
+                f"the engine's {tuple(self.route_table.shape)} ([top_k, vocab_size])"
+            )
+        if route_table.min().item() < 0 or route_table.max().item() >= self.config.num_experts:
+            raise ValueError("route_table contains an out-of-range expert index")
+        self.route_table.copy_(route_table.to(device=self.route_table.device))
+        route_codes, expert_pairs = self._compile_fused_metadata(self.route_table)
+        self.fused_route_codes = route_codes.to(device=self.fused_route_codes.device)
+        self.fused_expert_pairs = expert_pairs.to(device=self.fused_expert_pairs.device)
+        if self._active_num_experts == self.config.num_experts:
+            self._active_route_table = self.route_table
+        else:
+            active_config = replace(self.config, num_experts=self._active_num_experts)
+            self._active_route_table = build_route_table(active_config).to(
+                device=self.route_table.device
+            )
+        self._graph_pool.clear()
+
     def reset_parameters(self) -> None:
+        std = self.config.initializer_range
         for parameter in (self.expert_gate, self.expert_up, self.expert_down):
-            nn.init.normal_(parameter, mean=0.0, std=0.02)
+            nn.init.normal_(parameter, mean=0.0, std=std)
         for module in (self.shared_gate, self.shared_up, self.shared_down):
             if module is not None:
-                nn.init.normal_(module.weight, mean=0.0, std=0.02)
+                nn.init.normal_(module.weight, mean=0.0, std=std)
 
     def _routes(self, token_ids: torch.Tensor) -> torch.Tensor:
         clamped = token_ids.clamp(0, self.config.vocab_size - 1)
-        return self.route_table[:, clamped]
+        return self._active_route_table[:, clamped]
+
+    def _active_expert_weights(self):
+        """Return (gate, up, down) views truncated to the active capacity."""
+
+        num_experts = self._active_num_experts
+        width = self._active_expert_width
+        if num_experts == self.config.num_experts and width == self.config.expert_width:
+            return self.expert_gate, self.expert_up, self.expert_down
+        return (
+            self.expert_gate[:num_experts, :, :width].contiguous(),
+            self.expert_up[:num_experts, :, :width].contiguous(),
+            self.expert_down[:num_experts, :width, :].contiguous(),
+        )
 
     def _shared(self, flat_x: torch.Tensor) -> torch.Tensor:
         if self.shared_gate is None:
@@ -196,12 +333,13 @@ class TRHashEngine(nn.Module):
             dtype=flat_x.dtype,
             device=flat_x.device,
         )[:, None].expand_as(routes)
+        gate, up, down = self._active_expert_weights()
         return reference_topk_swiglu(
             flat_x,
             routes,
-            self.expert_gate,
-            self.expert_up,
-            self.expert_down,
+            gate,
+            up,
+            down,
             route_weights,
         )
 
@@ -225,25 +363,26 @@ class TRHashEngine(nn.Module):
             .reshape(-1, hidden_size)
         )
         flat_routes = routes.reshape(-1)
+        gate_w, up_w, down_w = self._active_expert_weights()
         sorted_x, sorted_indices, expert_offsets, _ = sort_tokens_by_expert(
             expanded_x,
             flat_routes,
-            self.config.num_experts,
+            self._active_num_experts,
         )
         gate = cggr_grouped_gemm_autograd(
             sorted_x,
-            self.expert_gate,
+            gate_w,
             expert_offsets,
         )
         up = cggr_grouped_gemm_autograd(
             sorted_x,
-            self.expert_up,
+            up_w,
             expert_offsets,
         )
         intermediate = _silu_mul(gate, up)
         sorted_output = cggr_grouped_gemm_autograd(
             intermediate,
-            self.expert_down,
+            down_w,
             expert_offsets,
         )
         expanded_output = torch.empty_like(sorted_output)
@@ -372,6 +511,18 @@ class TRHashEngine(nn.Module):
             )
 
         batch, sequence, hidden = hidden_states.shape
+        is_reduced_capacity = (
+            self._active_num_experts != self.config.num_experts
+            or self._active_expert_width != self.config.expert_width
+        )
+        if is_reduced_capacity and backend is TRHashBackend.FUSED_CUDA:
+            raise RuntimeError(
+                "FUSED_CUDA requires the full allocated capacity: its "
+                "precompiled pair metadata is tied to config.num_experts. "
+                "Use TRHashBackend.PYTORCH or CGGR while active capacity is "
+                f"reduced (active={self._active_num_experts}/{self.config.num_experts} "
+                f"experts, {self._active_expert_width}/{self.config.expert_width} width)."
+            )
         flat_x = hidden_states.reshape(-1, hidden)
         shared = self._shared(flat_x)
         if backend is TRHashBackend.FUSED_CUDA:
@@ -443,6 +594,15 @@ class TRHashEngine(nn.Module):
             "stored_width": self.config.stored_mlp_width,
             "active_width": self.config.active_mlp_width,
             "active_width_fraction": self.config.active_width_fraction,
+            # Runtime dynamic capacity (see set_active_capacity): a prefix of
+            # the allocated experts/width actually used right now, distinct
+            # from the top_k-driven sparsity fields above.
+            "active_num_experts": self._active_num_experts,
+            "active_expert_width": self._active_expert_width,
+            "is_reduced_capacity": (
+                self._active_num_experts != self.config.num_experts
+                or self._active_expert_width != self.config.expert_width
+            ),
             "attention": self.config.attention_backbone.value,
             "routing": self.config.routing_strategy.value,
             "phase": self.config.phase.value,

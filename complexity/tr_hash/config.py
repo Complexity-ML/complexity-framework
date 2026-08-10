@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterable, Tuple
 
-SUPPORTED_EXPERT_COUNTS = (2, 4, 8, 16)
+SUPPORTED_EXPERT_COUNTS = (1, 2, 4, 8, 16)  # 1 = degenerate single-route case (no dense/standalone fallback exists anymore)
 SUPPORTED_TOP_K = (1, 2, 4)
 
 
@@ -92,6 +92,7 @@ class TRHashEngineConfig:
     top_k: int = 2
     shared_width: int = 0
     expert_width: int = 64
+    initializer_range: float = 0.02
     routing_strategy: TRHashStrategy = TRHashStrategy.BALANCED_HASH
     layer_index: int = 0
     route_seed: int = 0x71D5A17
@@ -141,6 +142,8 @@ class TRHashEngineConfig:
             raise ValueError("shared_width must be non-negative")
         if self.expert_width <= 0:
             raise ValueError("expert_width must be positive")
+        if self.initializer_range <= 0:
+            raise ValueError("initializer_range must be positive")
         if self.layer_index < 0:
             raise ValueError("layer_index must be non-negative")
         if self.shared_output_scale < 0:
