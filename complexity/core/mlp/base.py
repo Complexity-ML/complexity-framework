@@ -54,6 +54,13 @@ class MLPConfig:
     layer_idx: int = 0  # Layer index propagated from the block; used for the built-in per-layer routing permutation.
     static_expert_capacity: bool = False  # Fixed capacity for torch.export / pipeline tracing.
     collect_moe_telemetry: bool = False  # Per-layer expert/RMS diagnostics. Off by default for throughput.
+    # Dynamic TR-Hash capacity (tr_hash_engine/tr_hash_moe only): start the
+    # engine already shrunk to a smaller deterministic ID/hash-routed
+    # sub-network. None keeps the full allocated (num_experts, routed width)
+    # capacity. Can also be changed later at runtime via the MLP's
+    # set_active_experts()/set_active_expert_width().
+    active_num_experts: Optional[int] = None
+    active_expert_width: Optional[int] = None
     use_custom_kernels: object = "auto"  # "auto", True, or False. Controls optional Triton paths.
     use_cggr: object = "auto"  # "auto", True, or False. Use CGGR grouped-GEMM when the backend policy allows custom Triton.
 
@@ -90,23 +97,32 @@ class MLPConfig:
             raise ValueError("hash_pair_gate_init must be strictly between 0 and 1")
         if abs(self.hash_channel_scale_init) > 1.0:
             raise ValueError("hash_channel_scale_init must be in [-1, 1]")
-        if self.routing_strategy not in {
+        _removed_routing_strategies = {
             "zipf",
+            "round_robin",
+            "random",
+            "lsh_hidden",
+        }
+        if self.routing_strategy in _removed_routing_strategies:
+            raise ValueError(
+                f"routing_strategy={self.routing_strategy!r} was removed: this "
+                "framework is scoped to deterministic token-ID / hash-table "
+                "routing only. Use one of modulo_cyclic, token_id_balanced_hash, "
+                "token_id_pair_coverage_hash (legacy aliases: modulo, "
+                "modulo_balanced_secondary, modulo_frequency_balanced_secondary)."
+            )
+        if self.routing_strategy not in {
             "modulo",
             "modulo_cyclic",
             "modulo_balanced_secondary",
             "modulo_frequency_balanced_secondary",
             "token_id_balanced_hash",
             "token_id_pair_coverage_hash",
-            "round_robin",
-            "random",
-            "lsh_hidden",
         }:
             raise ValueError(
-                "routing_strategy must be one of modulo_cyclic, zipf, "
+                "routing_strategy must be one of modulo_cyclic, "
                 "modulo_frequency_balanced_secondary, token_id_balanced_hash, "
-                "token_id_pair_coverage_hash, "
-                "round_robin, random, lsh_hidden "
+                "token_id_pair_coverage_hash "
                 "(legacy aliases: modulo, modulo_balanced_secondary)"
             )
         if self.lsh_threshold_mode not in {"batch_median", "zero"}:
@@ -127,6 +143,23 @@ class MLPConfig:
             raise ValueError("micro_num_experts must be positive")
         if self.micro_expert_width <= 0:
             raise ValueError("micro_expert_width must be positive")
+        if self.active_num_experts is not None:
+            if self.active_num_experts <= 0:
+                raise ValueError("active_num_experts must be positive")
+            if self.active_num_experts > self.num_experts:
+                raise ValueError(
+                    "active_num_experts cannot exceed num_experts "
+                    f"({self.active_num_experts} > {self.num_experts})"
+                )
+        if self.active_expert_width is not None:
+            if self.active_expert_width <= 0:
+                raise ValueError("active_expert_width must be positive")
+            max_expert_width = self.intermediate_size // self.num_experts
+            if self.active_expert_width > max_expert_width:
+                raise ValueError(
+                    "active_expert_width cannot exceed intermediate_size // "
+                    f"num_experts ({self.active_expert_width} > {max_expert_width})"
+                )
         if self.token_frequencies is not None:
             if not isinstance(self.token_frequencies, torch.Tensor):
                 raise ValueError("token_frequencies must be a torch.Tensor")

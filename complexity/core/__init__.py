@@ -6,7 +6,7 @@ Modular building blocks for transformer architectures.
 
 Modules:
 - attention: MHA, GQA, MQA implementations
-- mlp: Standard, SwiGLU, Token-Routed MoE
+- mlp: TR-Hash MoE
 - position: RoPE, YaRN, Dynamic NTK
 - normalization: RMSNorm, LayerNorm
 - registry: Component registration system
@@ -14,7 +14,7 @@ Modules:
 Usage:
     from complexity.core.registry import ATTENTION_REGISTRY, register_attention
     from complexity.core.attention import GroupedQueryAttention
-    from complexity.core.mlp import SwiGLUMLP
+    from complexity.core.mlp import TRHashEngineMLP
 """
 
 # Registry (must be imported first)
@@ -46,19 +46,12 @@ from complexity.core.attention import (
     MultiHeadAttention,
     MultiQueryAttention,
     RoutedGQA,
-    I64Attention,
 )
 
 from complexity.core.mlp import (
     MLPBase,
     MLPConfig,
-    StandardMLP,
-    SwiGLUMLP,
-    GeGLUMLP,
-    TokenRoutedMLP,
-    MixtralMoE,
-    I64SwiGLUMLP,
-    I64TokenRoutedMLP,
+    TRHashEngineMLP,
 )
 
 from complexity.core.position import (
@@ -77,7 +70,6 @@ from complexity.core.normalization import (
     LayerNorm,
     IdentityNorm,
     build_norm,
-    I64RMSNorm,
 )
 
 
@@ -100,18 +92,11 @@ __all__ = [
     "GroupedQueryAttention",
     "MultiHeadAttention",
     "MultiQueryAttention",
-    "I64Attention",
     "RoutedGQA",
     # MLP
     "MLPBase",
     "MLPConfig",
-    "StandardMLP",
-    "SwiGLUMLP",
-    "GeGLUMLP",
-    "TokenRoutedMLP",
-    "MixtralMoE",
-    "I64SwiGLUMLP",
-    "I64TokenRoutedMLP",
+    "TRHashEngineMLP",
     # Position
     "RotaryEmbedding",
     "StandardRoPE",
@@ -126,5 +111,4 @@ __all__ = [
     "LayerNorm",
     "IdentityNorm",
     "build_norm",
-    "I64RMSNorm",
 ]

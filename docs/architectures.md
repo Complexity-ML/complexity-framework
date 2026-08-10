@@ -22,13 +22,12 @@ ModelConfig(
     attention_type="gqa",
     num_attention_heads=8,
     num_key_value_heads=2,
-    mlp_type="token_routed",
+    mlp_type="tr_hash_engine",
 )
 ```
 
 Multiple query heads share each K/V head. The FFN contains a shared dense path
-and deterministic token-selected experts. This is the default o200k
-pretraining family.
+and deterministic token-selected experts.
 
 ### TR-MHA
 
@@ -39,7 +38,7 @@ ModelConfig(
     attention_type="mha",
     num_attention_heads=8,
     num_key_value_heads=8,
-    mlp_type="token_routed",
+    mlp_type="tr_hash_engine",
 )
 ```
 
@@ -48,9 +47,10 @@ TR-MoE routing and expert computation remain the same.
 
 ### Dense controls
 
-Matched dense controls replace `mlp_type="token_routed"` with
-`mlp_type="swiglu"`. Parameter matching must be done explicitly through
-`intermediate_size` and, for TR-MoE, `shared_intermediate_size`.
+Removed. Dense (`mlp_type="swiglu"`/`"gelu"`/`"geglu"`/`"standard"`) was
+fully removed from the codebase to scope the framework to TR-Hash MoE only;
+it will return later as an explicit comparison baseline, reimplemented
+against the current architecture rather than restored as-is.
 
 ## TR-MoE block
 
@@ -81,7 +81,7 @@ The attention registry also exposes:
 - `tr_mha_v2` / `token_routed_mha_v2`.
 
 These keep a full MHA path and add low-rank token-routed Q/V residual adapters.
-They are **not** the same configuration as MHA + `TokenRoutedMLP`. The first
+They are **not** the same configuration as MHA + `TRHashEngineMLP`. The first
 prototype evaluates contextual logits across all route experts; v2 restricts
 contextual reweighting to two fixed token-ID candidates and starts the routed
 up-projection at zero.

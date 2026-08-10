@@ -21,15 +21,13 @@ Usage Avancé (modèles maison):
     from complexity.api import (
         # Building blocks
         Attention, MLP, Position, Norm, Block,
-        GQA, SwiGLU, RoPE, RMSNorm, TokenRoutedMLP,
+        GQA, RoPE, RMSNorm, TokenRoutedMLP,
         # CUDA / Triton optimizations
         CUDA, Triton, FlashAttention, SlidingWindowAttention,
         # Inference
         Generate, GenerationConfig,
         # Multimodal
         Vision, Audio, Fusion,
-        # Architectures INL (O(N))
-        Architecture, Mamba, RWKV, RetNet,
         # Registry pour custom
         register,
     )
@@ -39,13 +37,12 @@ Usage Avancé (modèles maison):
         def __init__(self, config):
             super().__init__()
             self.attn = GQA(config.hidden_size, config.num_heads, config.kv_heads)
-            self.mlp = SwiGLU(config.hidden_size, config.intermediate_size)
+            self.mlp = TokenRoutedMLP(hidden_size=config.hidden_size, intermediate_size=config.intermediate_size, num_experts=8)
             self.norm = RMSNorm(config.hidden_size)
             self.rope = RoPE(config.head_dim, config.max_seq_len)
 
     # Ou via factories
     attn = Attention.gqa(hidden_size=4096, num_heads=32, kv_heads=8)
-    mlp = MLP.swiglu(hidden_size=4096, intermediate_size=11008)
     mlp_moe = MLP.moe(hidden_size=4096, num_experts=8, top_k=2)
 
     # CUDA / Triton optimizations
@@ -80,7 +77,6 @@ from .core import (
     Position,
     Norm,
     Block,
-    Architecture,
     # Attention
     GQA,
     MHA,
@@ -91,11 +87,6 @@ from .core import (
     AttentionBase,
     AttentionConfig,
     # MLP
-    SwiGLU,
-    GeGLU,
-    SwiGLUMLP,
-    GeGLUMLP,
-    StandardMLP,
     TokenRoutedMLP,
     MLPBase,
     MLPConfig,
@@ -120,16 +111,6 @@ from .core import (
     TransformerBlock,
     ComplexityModel,
     ModelConfig,
-    # INL Architectures (O(N))
-    Mamba,
-    MambaBlock,
-    MambaConfig,
-    RWKV,
-    RWKVBlock,
-    RWKVConfig,
-    RetNet,
-    RetNetBlock,
-    RetNetConfig,
     # Registry
     Registry,
     register,
@@ -237,7 +218,6 @@ __all__ = [
     "Position",
     "Norm",
     "Block",
-    "Architecture",
 
     # ========== Attention ==========
     "GQA",
@@ -250,11 +230,6 @@ __all__ = [
     "AttentionConfig",
 
     # ========== MLP ==========
-    "SwiGLU",
-    "GeGLU",
-    "SwiGLUMLP",
-    "GeGLUMLP",
-    "StandardMLP",
     "TokenRoutedMLP",
     "MLPBase",
     "MLPConfig",
@@ -283,16 +258,6 @@ __all__ = [
     "ComplexityModel",
     "ModelConfig",
 
-    # ========== INL Architectures (O(N)) ==========
-    "Mamba",
-    "MambaBlock",
-    "MambaConfig",
-    "RWKV",
-    "RWKVBlock",
-    "RWKVConfig",
-    "RetNet",
-    "RetNetBlock",
-    "RetNetConfig",
     # ========== Registry ==========
     "Registry",
     "register",

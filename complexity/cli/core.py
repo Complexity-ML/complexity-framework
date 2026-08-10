@@ -279,44 +279,36 @@ class ComplexityCLI:
 
     @staticmethod
     def list_models() -> List[str]:
-        """List available models."""
-        return [
-            "complexity-1b",
-            "complexity-7b",
-            "complexity-13b",
-            "complexity-70b",
-        ]
+        """List the framework's real TR-Hash MoE preset configs (excludes size-ladder aliases)."""
+        from complexity.config.model_config import PRESET_CONFIGS
+
+        aliases = {"tiny", "small", "base", "large", "xl"}
+        return [name for name in PRESET_CONFIGS if name not in aliases]
 
     @staticmethod
     def model_info(name: str) -> Dict[str, Any]:
-        """Get model info."""
-        info = {
-            "complexity-1b": {
-                "parameters": "1.3B",
-                "context": "8K",
-                "features": ["chat", "reasoning"],
-                "vram": "~3GB",
-            },
-            "complexity-7b": {
-                "parameters": "7B",
-                "context": "32K",
-                "features": ["chat", "reasoning", "tools", "code"],
-                "vram": "~14GB",
-            },
-            "complexity-13b": {
-                "parameters": "13B",
-                "context": "32K",
-                "features": ["chat", "reasoning", "tools", "code", "multimodal"],
-                "vram": "~26GB",
-            },
-            "complexity-70b": {
-                "parameters": "70B",
-                "context": "128K",
-                "features": ["chat", "reasoning", "tools", "code", "multimodal", "agents"],
-                "vram": "~140GB",
-            },
+        """Get real preset info, derived from the actual ModelConfig (meta-device parameter count)."""
+        from complexity.config.model_config import PRESET_CONFIGS
+
+        if name not in PRESET_CONFIGS:
+            return {"error": f"Unknown model: {name}. Available: {list(PRESET_CONFIGS)}"}
+
+        config = PRESET_CONFIGS[name]()
+        with torch.device("meta"):
+            from complexity.models import ComplexityModel
+
+            model = ComplexityModel(config)
+        num_params = sum(parameter.numel() for parameter in model.parameters())
+
+        return {
+            "parameters": f"{num_params / 1e9:.2f}B" if num_params >= 1e9 else f"{num_params / 1e6:.1f}M",
+            "context": f"{config.max_position_embeddings // 1024}K",
+            "hidden_size": config.hidden_size,
+            "num_hidden_layers": config.num_hidden_layers,
+            "attention_type": config.attention_type,
+            "mlp_type": config.mlp_type,
+            "num_experts": config.num_experts,
         }
-        return info.get(name, {"error": f"Unknown model: {name}"})
 
 
 # Global CLI instance

@@ -1,12 +1,52 @@
-"""Compatibility contracts protected while the framework is modularized."""
+"""Compatibility contracts protected while the framework is modularized.
+
+The historical ``TokenRoutedMLP`` dispatch implementation (and its
+``token_routing.py`` helper module) were removed once the canonical
+``TRHashEngineMLP`` covered its default behavior. Existing on-disk
+``token_routed``-format checkpoints still need their exact tensor
+names/shapes honored, so that contract now lives in
+``complexity.utils.token_routed_conversion`` — these tests lock it in there
+instead of against a live legacy instance.
+"""
 
 import torch
 
 
-def _legacy_mlp():
-    from complexity.core.mlp import MLPConfig, TokenRoutedMLP
+def test_legacy_token_routed_tensor_names_are_all_accounted_for():
+    """Every tensor name a real token_routed checkpoint can contain must be
+    either renamed, transplanted separately (route_table), or explicitly
+    dropped by the converter — never silently ignored."""
+    from complexity.utils.token_routed_conversion import (
+        _DROPPED_SUFFIXES,
+        _RENAME,
+        _ROUTE_TABLE_SUFFIX,
+    )
 
-    return TokenRoutedMLP(
+    historical_tensor_names = {
+        "gate_proj_w",
+        "up_proj_w",
+        "down_proj_w",
+        "token_to_expert",
+        "topk_token_to_expert",
+        "pair_hash_route_codes",
+        "pair_hash_expert_pairs",
+        "shared_gate.weight",
+        "shared_up.weight",
+        "shared_down.weight",
+    }
+    accounted_for = set(_RENAME) | set(_DROPPED_SUFFIXES) | {_ROUTE_TABLE_SUFFIX}
+    assert historical_tensor_names <= accounted_for
+
+
+def test_legacy_token_routed_expert_weight_shapes_match_tr_hash_engine():
+    """gate_proj_w/up_proj_w/down_proj_w's [num_experts, hidden, width] /
+    [num_experts, width, hidden] layout must still match TRHashEngineMLP's
+    expert_gate/expert_up/expert_down — the converter only renames keys, it
+    never reshapes or transposes."""
+    from complexity.core.mlp.base import MLPConfig
+    from complexity.core.mlp.tr_hash_engine import TRHashEngineMLP
+
+    mlp = TRHashEngineMLP(
         MLPConfig(
             hidden_size=8,
             intermediate_size=16,
@@ -15,58 +55,14 @@ def _legacy_mlp():
             top_k=2,
             top_k_primary_weight=0.5,
             shared_expert=True,
-            use_cggr=False,
+            shared_intermediate_size=16,
             routing_strategy="token_id_balanced_hash",
         )
     )
-
-
-def test_historical_routing_helpers_remain_import_compatible():
-    from complexity.core.mlp import token_routed
-    from complexity.core.mlp import token_routing
-
-    assert (
-        token_routed._create_pair_coverage_hash_metadata
-        is token_routing.create_pair_coverage_hash_metadata
-    )
-    assert (
-        token_routed._create_pair_coverage_hash_routes
-        is token_routing.create_pair_coverage_hash_routes
-    )
-    assert (
-        token_routed._encode_pair_coverage_hash_routes
-        is token_routing.encode_pair_coverage_hash_routes
-    )
-
-
-def test_legacy_token_routed_state_dict_keys_and_shapes_are_stable():
-    state = _legacy_mlp().state_dict()
-    assert {name: tuple(value.shape) for name, value in state.items()} == {
-        "gate_proj_w": (4, 8, 4),
-        "up_proj_w": (4, 8, 4),
-        "down_proj_w": (4, 4, 8),
-        "token_to_expert": (17,),
-        "topk_token_to_expert": (2, 17),
-        "pair_hash_route_codes": (17,),
-        "pair_hash_expert_pairs": (6, 2),
-        "shared_gate.weight": (16, 8),
-        "shared_up.weight": (16, 8),
-        "shared_down.weight": (8, 16),
-    }
-
-
-def test_legacy_token_routed_state_dict_round_trip_is_bitwise():
-    torch.manual_seed(47)
-    source = _legacy_mlp()
-    target = _legacy_mlp()
-    target.load_state_dict(source.state_dict())
-
-    hidden = torch.randn(2, 5, 8)
-    token_ids = torch.randint(0, 17, (2, 5))
-    assert torch.equal(
-        source(hidden, token_ids=token_ids),
-        target(hidden, token_ids=token_ids),
-    )
+    assert tuple(mlp.engine.expert_gate.shape) == (4, 8, 4)
+    assert tuple(mlp.engine.expert_up.shape) == (4, 8, 4)
+    assert tuple(mlp.engine.expert_down.shape) == (4, 4, 8)
+    assert tuple(mlp.engine.shared_gate.weight.shape) == (16, 8)
 
 
 def test_cuda_extras_remain_available_from_historical_module():

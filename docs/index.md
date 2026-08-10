@@ -1,18 +1,18 @@
 # Documentation
 
 Complexity Framework is a PyTorch research stack for deterministic
-Token-Routed Mixture-of-Experts (TR-MoE) language models.
+TR-Hash Mixture-of-Experts (TR-MoE) language and multimodal models.
 
 ## Start here
 
 1. [Architecture and naming](architectures.md)
 2. [Getting started](getting-started.md)
-3. [TR-MoE internals](token-routed.md)
-4. [Training](training.md)
-5. [Run configurations](run_configs.md)
-6. [GPU and dispatch paths](cuda.md)
-7. [API reference](api.md)
-8. [TR-Hash execution engine](tr-hash-engine.md)
+3. [TR-Hash execution engine](tr-hash-engine.md)
+4. [TokenRoutedMLP (removed) and migrating to TR-Hash](token-routed.md)
+5. [Training](training.md)
+6. [Run configurations](run_configs.md)
+7. [GPU and dispatch paths](cuda.md)
+8. [API reference](api.md)
 
 ## Architecture vocabulary
 
@@ -20,11 +20,11 @@ Token-Routed Mixture-of-Experts (TR-MoE) language models.
 | --- | --- | --- |
 | TR-GQA | GQA | TR-MoE |
 | TR-MHA | MHA | TR-MoE |
-| Dense GQA | GQA | dense SwiGLU |
-| Dense MHA | MHA | dense SwiGLU |
 
-TR-GQA and TR-MHA share the same `TokenRoutedMLP`. They differ only in the
-attention head layout.
+TR-GQA and TR-MHA share the same `TRHashEngineMLP`. They differ only in the
+attention head layout. The framework is currently scoped to TR-Hash MoE only
+— dense and learned-router baselines were removed and will return later as
+explicit comparisons.
 
 The registry values `tr_mha` and `tr_mha_v2` refer to experimental routed
 residual adapters inside attention. They are documented separately in
@@ -38,6 +38,17 @@ MHA + TR-MoE architecture.
 - [Efficient training](efficient.md)
 - [Multimodal prototypes](multimodal.md)
 - [Historical Mu-Guidance control](dynamics.md)
+
+## Multimodal / image
+
+- [TR-Hash image editor](tr-hash-image-editor.md)
+- [TR-Hash image-text-to-text](tr-hash-image-text-to-text.md)
+- [TR-Hash text-to-image](tr-hash-text-to-image.md)
+
+## Operations
+
+- [200M o200k B200 runbook](200m-o200k-b200-runbook.md)
+- [Hugging Face org card](huggingface-org-card.md)
 
 ## Evidence policy
 

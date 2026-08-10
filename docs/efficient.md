@@ -15,12 +15,10 @@ of relying on a model-size label.
 
 ## BF16
 
-```bash
-cf-o200k-pretrain ... --bf16
-```
-
-The runner selects backend-appropriate autocast. BF16 support and performance
-vary by device.
+The `cf-o200k-pretrain` runner this referred to was removed (see
+[`training.md`](training.md)); backend-appropriate autocast is still
+available directly via `complexity.utils.autocast`. BF16 support and
+performance vary by device.
 
 ## Gradient checkpointing
 

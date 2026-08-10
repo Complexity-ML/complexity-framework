@@ -35,12 +35,12 @@ Quick Start:
         hidden_size=768,
         num_hidden_layers=12,
         num_attention_heads=12,
-        mlp_type="swiglu",
+        mlp_type="tr_hash_engine",
+        num_experts=4,
     )
     model = ComplexityModel(config)
 
     # Or use a preset
-    model = ComplexityModel.from_preset("llama-7b")
     model = ComplexityModel.from_preset("complexity-7b")
 
     # Forward pass
@@ -120,9 +120,7 @@ from complexity.core.attention import (
 from complexity.core.mlp import (
     MLPBase,
     MLPConfig,
-    StandardMLP,
-    SwiGLUMLP,
-    TokenRoutedMLP,
+    TRHashEngineMLP,
 )
 
 # Normalization
@@ -183,9 +181,7 @@ __all__ = [
     # MLP
     "MLPBase",
     "MLPConfig",
-    "StandardMLP",
-    "SwiGLUMLP",
-    "TokenRoutedMLP",
+    "TRHashEngineMLP",
     "TRHashEngine",
     "TRHashEngineConfig",
     # Normalization

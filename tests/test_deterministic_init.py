@@ -127,25 +127,3 @@ def test_global_rng_does_not_affect_deterministic_model():
         # LayerNorm weights are all-ones constant init → trivially equal.
         # What matters is that attn/FFN/embedding weights match too.
         assert torch.equal(p_a, p_b), f"global RNG leaked into {name}"
-
-
-def test_swiglu_model_is_not_deterministic():
-    """Sanity check: a regular swiglu model consumes global RNG, so two
-    instantiations without a fixed seed diverge."""
-    cfg = ModelConfig(
-        hidden_size=128, num_hidden_layers=2,
-        num_attention_heads=4, num_key_value_heads=2,
-        vocab_size=1024, max_position_embeddings=128,
-        attention_type="gqa", mlp_type="swiglu",
-        intermediate_size=256, num_experts=1, shared_expert=False,
-        norm_type="rmsnorm", use_qk_norm=True, use_mu_guidance=False,
-    )
-    torch.manual_seed(1)
-    m1 = ComplexityModel(cfg)
-    torch.manual_seed(2)
-    m2 = ComplexityModel(cfg)
-    # Different seeds → different random draws → different weights.
-    some_param = "layers.0.mlp.gate_proj.weight"
-    p1 = dict(m1.named_parameters())[some_param]
-    p2 = dict(m2.named_parameters())[some_param]
-    assert not torch.equal(p1, p2)

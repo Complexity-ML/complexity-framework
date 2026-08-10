@@ -1,22 +1,27 @@
 # MoE implementations
 
-The framework contains two different MoE families.
+The framework is scoped to a single MoE family: TR-Hash (deterministic
+token-ID / hash-table routing). A learned-router MoE (`MixtralMoE`) and the
+historical `TokenRoutedMLP` dispatch implementation existed at earlier points
+and were removed from the code entirely — not just discouraged — to keep the
+canonical path unambiguous. Both are planned to return later as explicit,
+clearly-labeled comparison baselines against TR-Hash, once the framework
+around them has settled.
 
-| Family | Class | Routing | Auxiliary balancing loss |
-| --- | --- | --- | --- |
-| TR-MoE | `TokenRoutedMLP` | fixed lexical tables or experimental LSH | no |
-| Learned-router control | `MixtralMoE` | learned contextual logits and top-k selection | differentiable Switch-style loss |
+## TR-Hash MoE
 
-## TR-MoE
-
-TR-MoE is the main research path. It combines a dense shared SwiGLU branch with
-deterministically selected narrow experts. See
-[TR-MoE internals](token-routed.md).
+`TRHashEngineMLP` (`mlp_type="tr_hash_engine"` / `"tr_hash_moe"`) combines a
+dense shared SwiGLU branch with deterministically selected narrow experts —
+no learned router, no auxiliary balancing loss. See
+[TR-Hash Engine](tr-hash-engine.md) for the full contract (backend selection,
+CUDA Graph buckets, dynamic capacity) and
+[TokenRoutedMLP (removed) and migrating to TR-Hash](token-routed.md) if
+you're working with an existing checkpoint from before this change.
 
 ```python
-from complexity.core.mlp import MLPConfig, TokenRoutedMLP
+from complexity.core.mlp import MLPConfig, TRHashEngineMLP
 
-mlp = TokenRoutedMLP(
+mlp = TRHashEngineMLP(
     MLPConfig(
         hidden_size=768,
         intermediate_size=512,
@@ -24,7 +29,7 @@ mlp = TokenRoutedMLP(
         vocab_size=32_000,
         num_experts=4,
         shared_expert=True,
-        routing_strategy="modulo_cyclic",
+        routing_strategy="token_id_balanced_hash",
         top_k=2,
         top_k_primary_weight=0.5,
     )
@@ -32,32 +37,10 @@ mlp = TokenRoutedMLP(
 output = mlp(hidden_states, token_ids=input_ids)
 ```
 
-## Learned-router control
-
-`MixtralMoE` exists for controlled comparisons with a learned router. Its
-expert and shared-path tensors use the same shapes and initialization order as
-`TokenRoutedMLP`; only the small contextual routing projection is additional.
-The training entry point applies the differentiable balancing loss with
-`--router-aux-loss-weight`.
-
-```python
-from complexity.core.mlp import MLPConfig, MixtralMoE
-
-mlp = MixtralMoE(
-    MLPConfig(
-        hidden_size=768,
-        intermediate_size=512,
-        shared_intermediate_size=2048,
-        num_experts=4,
-        top_k=2,
-    )
-)
-output = mlp(hidden_states)
-```
-
 ## Fair comparisons
 
-An MoE comparison should report:
+When the learned-router and dense baselines return, an MoE comparison
+against TR-Hash should report:
 
 - total trainable parameters;
 - active parameters per token;

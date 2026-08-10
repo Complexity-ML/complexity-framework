@@ -47,7 +47,7 @@ def small_config():
         intermediate_size=256,
         vocab_size=1000,
         attention_type="gqa",
-        mlp_type="token_routed",
+        mlp_type="tr_hash_engine",
         num_experts=2,
         norm_type="rmsnorm",
         use_qk_norm=False,

@@ -20,8 +20,8 @@ keywords = [
     "moe",
     "mixture-of-experts",
     "flash-attention",
-    "mamba",
-    "rwkv",
+    "token-routed",
+    "tr-hash",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -101,12 +101,11 @@ tools = [
 
 [project.scripts]
 complexity = "complexity.cli.app:main"
-cf-o200k-pretrain = "complexity.training.o200k_pretrain:main"
 cf-plan-run = "complexity.training.plan_run:main"
 cf-plan-cluster = "complexity.training.cluster_plan:main"
-cf-check-pipeline = "complexity.training.pipeline_check:main"
 cf-image-train = "complexity.generative.image.training:main"
 cf-image-edit-train = "complexity.generative.image.edit_training:main"
+cf-detector-train = "complexity.generative.detection.training:main"
 
 [project.urls]
 Homepage = "https://github.com/Complexity-ML/complexity-framework"

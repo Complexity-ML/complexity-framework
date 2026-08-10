@@ -47,10 +47,6 @@ def profile_model(
         raise typer.Exit(1)
 
     try:
-        from complexity.profiling import ModelProfiler, estimate_memory
-
-        profiler = ModelProfiler()
-
         # Calculate parameters
         head_dim = hidden_size // num_heads
         ff_dim = hidden_size * 4

@@ -63,11 +63,6 @@ from .shared_online_rl import (
     SharedRLEvent,
 )
 
-from .mps_online_rl_engine import (
-    MPSOnlineRLEngine,
-    MPSOnlineRLEngineConfig,
-)
-
 from .tool_rewards import (
     VerifiedToolEpisode,
     build_calculator_episode,
@@ -103,8 +98,6 @@ __all__ = [
     "SharedOnlineRLLoop",
     "SharedOnlineRLConfig",
     "SharedRLEvent",
-    "MPSOnlineRLEngine",
-    "MPSOnlineRLEngineConfig",
     "VerifiedToolEpisode",
     "build_calculator_episode",
     "build_datetime_episode",

@@ -9,15 +9,13 @@ Usage:
         # Attention
         Attention, GQA, MHA, MQA,
         # MLP
-        MLP, SwiGLU, GeGLU, TokenRoutedMLP,
+        MLP, TokenRoutedMLP,
         # Position
         Position, RoPE, YaRN, ALiBi,
         # Normalization
         Norm, RMSNorm, LayerNorm,
         # Blocks
         Block, TransformerBlock,
-        # Architectures INL (O(N))
-        Architecture, Mamba, RWKV, RetNet,
         # CUDA / Triton Optimizations
         CUDA, Triton, FlashAttention, SlidingWindowAttention,
         # Registry
@@ -47,11 +45,6 @@ from .attention import (
 # MLP
 from .mlp import (
     MLP,
-    SwiGLU,
-    GeGLU,
-    SwiGLUMLP,
-    GeGLUMLP,
-    StandardMLP,
     TokenRoutedMLP,
     MLPBase,
     MLPConfig,
@@ -88,20 +81,6 @@ from .block import (
     TransformerBlock,
     ComplexityModel,
     ModelConfig,
-)
-
-# Architectures INL (O(N) alternatives)
-from .architecture import (
-    Architecture,
-    Mamba,
-    MambaBlock,
-    MambaConfig,
-    RWKV,
-    RWKVBlock,
-    RWKVConfig,
-    RetNet,
-    RetNetBlock,
-    RetNetConfig,
 )
 
 # Registry
@@ -164,7 +143,6 @@ __all__ = [
     "Position",
     "Norm",
     "Block",
-    "Architecture",
 
     # ========== Attention ==========
     "GQA",
@@ -177,11 +155,6 @@ __all__ = [
     "AttentionConfig",
 
     # ========== MLP ==========
-    "SwiGLU",
-    "GeGLU",
-    "SwiGLUMLP",
-    "GeGLUMLP",
-    "StandardMLP",
     "TokenRoutedMLP",
     "MLPBase",
     "MLPConfig",
@@ -210,16 +183,6 @@ __all__ = [
     "ComplexityModel",
     "ModelConfig",
 
-    # ========== INL Architectures (O(N)) ==========
-    "Mamba",
-    "MambaBlock",
-    "MambaConfig",
-    "RWKV",
-    "RWKVBlock",
-    "RWKVConfig",
-    "RetNet",
-    "RetNetBlock",
-    "RetNetConfig",
     # ========== Registry ==========
     "Registry",
     "register",

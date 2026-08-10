@@ -25,10 +25,12 @@ definitions of MoE.
 
 | Name | Attention | Feed-forward path | Configuration |
 | --- | --- | --- | --- |
-| **TR-GQA** | Grouped-query attention | TR-MoE | `attention_type="gqa"`, `mlp_type="token_routed"` |
-| **TR-MHA** | Multi-head attention | TR-MoE | `attention_type="mha"`, `mlp_type="token_routed"` |
-| **Dense GQA** | Grouped-query attention | Dense SwiGLU | `attention_type="gqa"`, `mlp_type="swiglu"` |
-| **Dense MHA** | Multi-head attention | Dense SwiGLU | `attention_type="mha"`, `mlp_type="swiglu"` |
+| **TR-GQA** | Grouped-query attention | TR-MoE | `attention_type="gqa"`, `mlp_type="tr_hash_engine"` |
+| **TR-MHA** | Multi-head attention | TR-MoE | `attention_type="mha"`, `mlp_type="tr_hash_engine"` |
+
+This framework is now scoped to TR-Hash MoE only: dense (SwiGLU/GeGLU) and
+learned-router baselines were removed and will return later as explicit
+comparisons against TR-Hash — see "Research paths and evidence" below.
 
 TR-MoE is therefore shared by both TR-GQA and TR-MHA:
 
@@ -43,135 +45,51 @@ They must not be confused with the main **TR-MHA = MHA + TR-MoE** pairing.
 
 ## TR-MoE
 
-`TokenRoutedMLP` provides:
+`TRHashEngineMLP` (`mlp_type="tr_hash_engine"`, aliased `tr_hash_moe`) is the
+canonical implementation, backed by `complexity.tr_hash.TRHashEngine`:
 
 - a dense shared SwiGLU branch for common contextual computation;
-- four narrow routed experts by default;
-- deterministic per-layer token-to-expert tables;
+- narrow routed experts, `num_experts` in `{1, 2, 4, 8, 16}`;
+- deterministic per-layer token-to-expert tables, re-derived from
+  `routing_strategy` at construction — `modulo_cyclic` (no corpus counts) or
+  `token_id_balanced_hash`;
 - top-k routes without a learned router or auxiliary balancing loss;
-- explicit `modulo_cyclic` routing with no corpus counts;
-- `zipf`, `round_robin`, `random`, and experimental `lsh_hidden` are retained
-  only as research controls;
-- a universal PyTorch dispatch path and an optional CUDA/Triton CGGR path;
-- optional routing and shared/routed RMS telemetry.
+- a universal PyTorch dispatch path and optional CUDA/Triton CGGR / hash-native
+  fused paths, selected automatically per shape (`use_cggr`, `use_custom_kernels`);
+- runtime-configurable capacity: an allocated model can be shrunk to fewer
+  active experts and/or a narrower per-expert width at any point via
+  `engine.set_active_capacity(num_experts=..., expert_width=...)` (or
+  declaratively via `ModelConfig(active_num_experts=..., active_expert_width=...)`)
+  — still fully deterministic ID/hash routing, just over a smaller pool.
 
-The legacy names `modulo` and `modulo_balanced_secondary` remain accepted only
-for historical ablation configurations. New TR-GQA and TR-MHA runs use
-`modulo_cyclic`, so the canonical architecture has no dataset-frequency
-pre-pass or frequency-dependent routing table.
+`zipf`, `round_robin`, `random`, and `lsh_hidden` routing, and the historical
+`TokenRoutedMLP` dispatch implementation (`mlp_type="token_routed"`), were
+removed to keep the framework scoped to deterministic token-ID / hash-table
+routing only; constructing a config with any of them raises a clear error.
+Existing `token_routed`-format checkpoints still load — convert them first:
+
+```python
+from complexity.utils.token_routed_conversion import convert_token_routed_checkpoint_dir
+
+model = convert_token_routed_checkpoint_dir("/path/to/old/checkpoint")
+```
+
+This renames the checkpoint's tensors to `TRHashEngineMLP`'s layout and
+transplants the exact trained routing table (not a re-derived one), so the
+converted model is numerically equivalent to the original.
 
 ## Research paths and evidence
 
-### Matched 99.49M MPS summary
-
-The seed-42 selection pilot compares dense and token-routed FFNs under both
-GQA and MHA. Every run has 99,487,680 parameters, uses the same
-1,024,000-token training budget, and evaluates on the same 5% tail. Routing
-statistics use the training partition only.
-
-| Attention | FFN | Final evaluation NLL | Evaluation PPL | NLL vs matched dense |
-| --- | --- | ---: | ---: | ---: |
-| GQA | Dense SwiGLU | 7.596686 | 1991.58 | — |
-| GQA | **TR-MoE (TR-GQA)** | **7.536167** | **1874.63** | **-0.060519** |
-| MHA | Dense SwiGLU | 7.586145 | 1970.70 | — |
-| MHA | **TR-MoE (TR-MHA)** | **7.536471** | **1875.20** | **-0.049674** |
-
-Both attention families show the same direction at this short budget. The
-selected widths were subsequently frozen and paired with their dense controls
-under seed 43; the routed direction repeats for GQA and MHA. These remain
-architecture pilots on one small corpus and two seeds, not scaling or
-statistical claims. Full protocol, throughput context, and machine-readable
-results are in [`RESULTS_100M_MPS.md`](RESULTS_100M_MPS.md) and
-[`results/matched_gqa_mha_mps_100m.csv`](results/matched_gqa_mha_mps_100m.csv).
-
-### TR-GQA
-
-TR-GQA is the default o200k pretraining path. Tracked profiles cover
-approximately 50M, 100M, 300M, 1B, and 8B parameters, with local, ROCm, and
-cluster-planning configurations under
-[`configs/run_configs`](configs/run_configs).
-
-The completed primary comparison uses one matched seed per architecture,
-306.5M parameters, and an 8B-token FineWeb-Edu training budget. At the last
-common evaluation checkpoint (step 7,500; 7.864B tokens processed):
-
-| Architecture | Evaluation-stream NLL | Evaluation PPL | Training throughput |
-| --- | ---: | ---: | ---: |
-| Dense GQA + dense SwiGLU | 2.948246 | 19.07 | ~0.95M tok/s |
-| **TR-GQA: GQA + shared top-2 TR-MoE** | **2.932897** | **18.78** | ~0.75M tok/s |
-
-The NLL difference is -0.015349 in favor of TR-GQA at this checkpoint. This is
-a token-matched, single-seed observation, not a claim of statistical
-significance or general superiority. The fixed evaluation stream comes from
-the FineWeb-Edu training split and is therefore diagnostic rather than held
-out. The routed implementation is also approximately 21% slower in training.
-The matched measurements are published in
-[`corrected_300m_scaling.csv`](https://github.com/Complexity-ML/tmlr-paper-pool/blob/main/supplementary_code/results/corrected_300m_scaling.csv).
-
-An additional matched 99,487,680-parameter MPS pilot tests how much of the
-1,648-unit FFN budget should be assigned to the routed branch. All runs use the
-same local FineWeb-Edu sample, 5% held-out tail, optimizer, 1,024,000-token
-budget, and seed 42. Routing frequencies are computed from the training
-partition only.
-
-| Routed width | Shared width | Final evaluation NLL | Evaluation PPL |
-| ---: | ---: | ---: | ---: |
-| Dense GQA | 1,648 | 7.596686 | 1991.58 |
-| 64 | 1,584 | 7.598139 | 1994.48 |
-| 128 | 1,520 | 7.570862 | 1940.81 |
-| 160 | 1,488 | 7.547887 | 1896.73 |
-| **256** | **1,392** | **7.536167** | **1874.63** |
-
-Because width 256 was selected on this sweep, it was rerun against Dense GQA
-with seed 43:
-
-| Seed 43 architecture | Final evaluation NLL | Evaluation PPL |
-| --- | ---: | ---: |
-| Dense GQA | 7.530082 | 1863.26 |
-| **TR-GQA, routed width 256** | **7.492290** | **1794.16** |
-
-The seed-43 difference is -0.037792 NLL in favor of TR-GQA. This confirms the
-direction on a second initialization, but it uses the same small corpus and
-evaluation tail. It is not a multi-corpus or scaling result. Protocol details
-and machine-readable values are in [`TR_GQA.md`](TR_GQA.md) and
-[`results/tr_gqa_mps_100m.csv`](results/tr_gqa_mps_100m.csv).
-
-A stricter routing control keeps the same attention backbone, shared path,
-experts, data order, optimizer, and token budget while replacing the fixed
-lookup with a learned contextual top-2 router:
-
-| Attention | Seed | Dense | Learned contextual top-2 | Fixed token-ID top-2 |
-| --- | ---: | ---: | ---: | ---: |
-| GQA | 42 | 7.596686 | 7.602109 | **7.536167** |
-| GQA | 43 | 7.530082 | 7.548665 | **7.492290** |
-| MHA | 42 | 7.586145 | 7.592847 | **7.536471** |
-| MHA | 43 | 7.726971 | 7.666093 | **7.541488** |
-
-The learned control adds only 15,360 routing parameters (0.0154%). Fixed
-routing is lower in NLL in all four short local runs, but two seeds do not
-establish general superiority. Full details are in
-[`RESULTS_100M_MPS.md`](RESULTS_100M_MPS.md).
-
-The other tracked configurations establish implementation and launch
-contracts. A planned large run is not presented as a completed result.
-
-### TR-MHA
-
-Corrected matched MPS pairs compare dense MHA with MHA + TR-MoE for
-1,024,000 training tokens:
-
-| Seed | Architecture | Final evaluation NLL | Evaluation PPL | NLL delta |
-| ---: | --- | ---: | ---: | ---: |
-| 42 | Dense MHA | 7.586145 | 1970.70 | — |
-| 42 | **TR-MHA: MHA + shared TR-MoE** | **7.536471** | **1875.20** | **-0.049674** |
-| 43 | Dense MHA | 7.726971 | 2268.72 | — |
-| 43 | **TR-MHA: MHA + shared TR-MoE** | **7.541488** | **1884.63** | **-0.185483** |
-
-The mean paired NLL difference is -0.117579 in favor of TR-MHA. Routing
-statistics exclude the evaluation tail. These remain short two-seed pilots;
-the variation between paired differences precludes a statistical claim. See
-[`RESULTS_100M_MPS.md`](RESULTS_100M_MPS.md). The separate routed-attention
-adapter experiments are documented in [`TR_MHA.md`](TR_MHA.md).
+Earlier measurements in this section compared TR-GQA/TR-MHA against Dense GQA/MHA
+and a learned contextual router, produced by the `o200k` pretraining pipeline.
+Both the Dense architecture and that pipeline were removed this cycle to
+refocus the framework on TR-Hash MoE only; they will return later as explicit
+baselines, at which point these comparisons will be rerun against the current
+implementation rather than restated from the removed one. The original
+protocol, tables, and machine-readable results are preserved for the
+historical record in [`RESULTS_100M_MPS.md`](RESULTS_100M_MPS.md),
+[`TR_GQA.md`](TR_GQA.md), [`TR_MHA.md`](TR_MHA.md), and
+[`results/`](results/).
 
 ## Installation
 
@@ -206,7 +124,7 @@ tr_gqa = ModelConfig(
     num_key_value_heads=2,
     attention_type="gqa",
     vocab_size=200_019,
-    mlp_type="token_routed",
+    mlp_type="tr_hash_engine",
     num_experts=4,
     intermediate_size=128,
     shared_expert=True,
@@ -231,20 +149,16 @@ TR-MoE routes from token identity while transforming contextual hidden states.
 
 ## Train from a tracked configuration
 
-```bash
-cf-o200k-pretrain \
-  --config configs/run_configs/100m_o200k_tr_rocm_mi350x.yaml
-```
-
-For a bounded MPS TR-MHA pilot, adapt the local dataset and tokenizer paths in:
-
-```bash
-cf-o200k-pretrain \
-  --config configs/run_configs/experiments_100m/100m_params_mha_modulo_balanced_shared_1296_mps.yaml
-```
-
-YAML settings, CLI overrides, resume validation, token accounting, and cluster
-plans are documented in [`docs/run_configs.md`](docs/run_configs.md).
+The `cf-o200k-pretrain` CLI and the `complexity/training/o200k/` pipeline it
+drove were removed with the rest of this cycle's TR-Hash refocus, along with
+the Dense architecture they were built to compare against. A replacement
+training entrypoint is not yet in place. The tracked YAML configurations
+under [`configs/run_configs`](configs/run_configs) and the settings they
+describe (token accounting, resume validation, cluster plans) still document
+the intended run shapes — see [`docs/run_configs.md`](docs/run_configs.md) —
+but currently need a driver to execute against. `cf-plan-run` and
+`cf-plan-cluster` remain available for token-budget and cluster-sizing
+arithmetic independent of any specific pipeline.
 
 ## Instruction fine-tuning from binary shards
 
@@ -330,7 +244,9 @@ vLLM or SGLang.
 ```bash
 python -m pytest -q \
   tests/test_models.py \
-  tests/test_o200k_pretrain.py \
+  tests/test_tr_hash_engine.py \
+  tests/test_tr_hash_dynamic_moe.py \
+  tests/test_token_routed_to_tr_hash_conversion.py \
   tests/test_100m_ablation_configs.py \
   tests/test_tr_mha.py \
   tests/test_external_inference.py

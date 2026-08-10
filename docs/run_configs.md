@@ -1,5 +1,10 @@
 # Run configurations
 
+> **`cf-o200k-pretrain` was removed** along with the `o200k` training
+> pipeline (see [`training.md`](training.md)). The tracked YAML
+> configurations below still describe the intended run shapes but currently
+> need a driver to execute against.
+
 The repository separates direct runner configurations, bounded experiments, and
 cluster plans.
 

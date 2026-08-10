@@ -579,7 +579,7 @@ class SmallModels:
             config["attention_type"] = "flash"
 
         # Use efficient defaults
-        config.setdefault("mlp_type", "swiglu")
+        config.setdefault("mlp_type", "tr_hash_engine")
         config.setdefault("norm_type", "rmsnorm")
         config.setdefault("tie_word_embeddings", True)
 

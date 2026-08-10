@@ -70,7 +70,8 @@ run:
   cggr: auto
 ```
 
-The selected path is logged and exposed as `TokenRoutedMLP.last_dispatch_path`.
+The selected path is logged and exposed as `TRHashEngineMLP.engine.last_backend`
+(or `TRHashEngineMLP.capability_summary()["selected_backend"]`).
 
 ### ROCm policy
 
@@ -81,11 +82,9 @@ testing the installed ROCm/Triton combination:
 export COMPLEXITY_ALLOW_ROCM_TRITON=1
 ```
 
-or:
-
-```bash
-cf-o200k-pretrain ... --use-custom-kernels true --cggr true
-```
+or, in code, via `ModelConfig(use_custom_kernels=True, use_cggr=True)` (the
+`--use-custom-kernels`/`--cggr` CLI flags belonged to the removed
+`cf-o200k-pretrain`; see [`training.md`](training.md)).
 
 The opt-in is experimental and should be benchmarked against the fallback.
 

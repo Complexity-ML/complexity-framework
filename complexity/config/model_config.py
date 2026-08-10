@@ -15,33 +15,21 @@ import torch
 @dataclass
 class ModelConfig:
     """
-    Unified configuration for all model architectures.
-
-    This config supports:
-    - Llama-style models (GQA, SwiGLU, RMSNorm)
-    - Mistral-style models (sliding window attention)
-    - GPT-style models (MHA, GELU, LayerNorm)
-    - Complexity custom models (Token-Routed MoE)
+    Unified configuration for TR-Hash MoE architectures: GQA/MHA attention
+    paired with deterministic token-ID / hash-table routed MoE FFN blocks.
+    Dense and learned-router baselines were removed and will return later as
+    explicit comparisons against TR-Hash.
 
     Example:
-        # Llama-style
         config = ModelConfig(
             hidden_size=4096,
             num_hidden_layers=32,
             num_attention_heads=32,
             num_key_value_heads=8,  # GQA
             attention_type="gqa",
-            mlp_type="swiglu",
-            norm_type="rmsnorm",
-        )
-
-        # Complexity with MoE
-        config = ModelConfig(
-            hidden_size=4096,
-            num_hidden_layers=32,
-            num_attention_heads=32,
-            mlp_type="token_routed",
+            mlp_type="tr_hash_engine",
             num_experts=4,
+            norm_type="rmsnorm",
         )
     """
 
@@ -89,7 +77,7 @@ class ModelConfig:
     rope_fraction: float = 1.0  # Fraction of head_dim to apply RoPE to (1.0 = full, 0.5 = partial)
 
     # === MLP / FFN ===
-    mlp_type: str = "token_routed"  # token_routed, swiglu, gelu
+    mlp_type: str = "tr_hash_engine"  # tr_hash_engine (default) or tr_hash_moe; num_experts in {1,2,4,8,16}
     hidden_act: str = "silu"  # silu, gelu, relu
 
     # === MoE (Token-Routed) ===
@@ -124,7 +112,13 @@ class ModelConfig:
     static_expert_capacity: bool = False  # Use fixed per-expert dispatch capacity for torch.export / pipeline tracing
     use_custom_kernels: Any = "auto"  # "auto", True, or False. ROCm defaults to PyTorch fallback in auto mode.
     collect_moe_telemetry: bool = False  # Per-layer expert/RMS diagnostics. Disabled by default for throughput.
-    use_cggr: Any = "auto"  # "auto", True, or False. CGGR grouped-GEMM Triton path for TokenRoutedMLP when custom Triton is available.
+    use_cggr: Any = "auto"  # "auto", True, or False. CGGR grouped-GEMM Triton path for TR-Hash MoE when custom Triton is available.
+    # Dynamic TR-Hash capacity (tr_hash_engine/tr_hash_moe only): start already
+    # shrunk to a smaller deterministic ID/hash-routed sub-network of the
+    # allocated (num_experts, routed width). None = full capacity. Adjustable
+    # afterwards at runtime via the MLP's set_active_experts()/set_active_expert_width().
+    active_num_experts: Optional[int] = None
+    active_expert_width: Optional[int] = None
 
     # === Lexical feature-modulated residual ===
     lexical_object_rank: int = 16
@@ -187,18 +181,59 @@ class ModelConfig:
     # === Extra (for custom extensions) ===
     extra_config: Dict[str, Any] = field(default_factory=dict)
 
+    _removed_mlp_types = {
+        "standard",
+        "gelu",
+        "swiglu",
+        "silu",
+        "llama",
+        "geglu",
+        "mixtral",
+        "learned_router",
+        "standard_moe",
+        "i64_swiglu",
+        "integer_swiglu",
+        "i64_token_routed",
+        "integer_moe",
+        "token_routed",
+        "sort_split",
+        "sort_split_moe",
+        "deterministic_moe",
+        "complexity",
+    }
+    _token_routed_mlp_types = {
+        "token_routed",
+        "sort_split",
+        "sort_split_moe",
+        "deterministic_moe",
+        "complexity",
+    }
+
     def __post_init__(self):
         """Validate and set defaults."""
+        if self.mlp_type in self._removed_mlp_types:
+            if self.mlp_type in self._token_routed_mlp_types:
+                raise ValueError(
+                    f"mlp_type={self.mlp_type!r} was removed: the historical "
+                    "TokenRoutedMLP dispatch implementation is gone. Loading an "
+                    "existing token_routed checkpoint? Use "
+                    "complexity.utils.token_routed_conversion."
+                    "convert_token_routed_checkpoint_dir(path) to load it as "
+                    "'tr_hash_engine' instead — same trained weights and "
+                    "routing, different execution engine. New models should "
+                    "use 'tr_hash_engine' (default) or 'tr_hash_moe'."
+                )
+            raise ValueError(
+                f"mlp_type={self.mlp_type!r} was removed: this framework is "
+                "scoped to TR-Hash MoE (deterministic token-ID / hash-table "
+                "routing) only. Dense and learned-router MLPs will return "
+                "later as explicit comparison baselines. Use 'tr_hash_engine' "
+                "(default) or 'tr_hash_moe'."
+            )
+
         # Auto-compute intermediate_size
         if self.intermediate_size is None:
-            if self.mlp_type in [
-                "swiglu",
-                "silu",
-                "geglu",
-                "token_routed",
-                "tr_hash_engine",
-                "tr_hash_moe",
-            ]:
+            if self.mlp_type in {"tr_hash_engine", "tr_hash_moe"}:
                 # SwiGLU uses 8/3 ratio (rounded to multiple of 256)
                 self.intermediate_size = int(self.hidden_size * 8 / 3)
                 self.intermediate_size = ((self.intermediate_size + 255) // 256) * 256
@@ -448,58 +483,11 @@ class ModelConfig:
 
 
 # Preset configurations
-def llama_7b_config() -> ModelConfig:
-    """Llama 2 7B configuration."""
-    return ModelConfig(
-        hidden_size=4096,
-        num_hidden_layers=32,
-        num_attention_heads=32,
-        num_key_value_heads=32,  # Llama 2 7B uses MHA
-        intermediate_size=11008,
-        vocab_size=32000,
-        max_position_embeddings=4096,
-        attention_type="mha",
-        mlp_type="swiglu",
-        norm_type="rmsnorm",
-        rope_theta=10000.0,
-    )
-
-
-def llama_70b_config() -> ModelConfig:
-    """Llama 2 70B configuration (GQA)."""
-    return ModelConfig(
-        hidden_size=8192,
-        num_hidden_layers=80,
-        num_attention_heads=64,
-        num_key_value_heads=8,  # GQA with 8 KV heads
-        intermediate_size=28672,
-        vocab_size=32000,
-        max_position_embeddings=4096,
-        attention_type="gqa",
-        mlp_type="swiglu",
-        norm_type="rmsnorm",
-        rope_theta=10000.0,
-    )
-
-
-def mistral_7b_config() -> ModelConfig:
-    """Mistral 7B configuration (sliding window)."""
-    return ModelConfig(
-        hidden_size=4096,
-        num_hidden_layers=32,
-        num_attention_heads=32,
-        num_key_value_heads=8,  # GQA
-        intermediate_size=14336,
-        vocab_size=32000,
-        max_position_embeddings=32768,
-        sliding_window=4096,  # Sliding window attention
-        attention_type="gqa",
-        mlp_type="swiglu",
-        norm_type="rmsnorm",
-        rope_theta=10000.0,
-    )
-
-
+#
+# This framework is scoped to TR-Hash MoE (deterministic token-ID / hash-table
+# routing): dense reference architectures (Llama/Mistral/GPT-2-shaped presets)
+# and the I64 integer-precision presets were removed and will return later as
+# explicit comparison baselines.
 def complexity_7b_config() -> ModelConfig:
     """Complexity 7B with Token-Routed MoE."""
     return ModelConfig(
@@ -511,32 +499,14 @@ def complexity_7b_config() -> ModelConfig:
         vocab_size=100000,
         max_position_embeddings=8192,
         attention_type="gqa",
-        mlp_type="token_routed",
+        mlp_type="tr_hash_engine",
         num_experts=4,
         norm_type="rmsnorm",
         use_qk_norm=True,
     )
 
 
-def gpt2_config() -> ModelConfig:
-    """GPT-2 Small configuration."""
-    return ModelConfig(
-        hidden_size=768,
-        num_hidden_layers=12,
-        num_attention_heads=12,
-        num_key_value_heads=12,  # MHA
-        intermediate_size=3072,
-        vocab_size=50257,
-        max_position_embeddings=1024,
-        attention_type="mha",
-        mlp_type="gelu",
-        norm_type="layernorm",
-        hidden_act="gelu",
-        use_qk_norm=False,
-    )
-
-
-# === Complexity Size Presets ===
+# === Complexity Size Presets (TR-Hash: GQA + Token-Routed MoE) ===
 def complexity_tiny_config() -> ModelConfig:
     """Complexity Tiny (~15M params) - for testing and debugging."""
     return ModelConfig(
@@ -548,7 +518,8 @@ def complexity_tiny_config() -> ModelConfig:
         vocab_size=32000,
         max_position_embeddings=2048,
         attention_type="gqa",
-        mlp_type="swiglu",
+        mlp_type="tr_hash_engine",
+        num_experts=4,
         norm_type="rmsnorm",
         use_qk_norm=True,
     )
@@ -565,7 +536,8 @@ def complexity_small_config() -> ModelConfig:
         vocab_size=32000,
         max_position_embeddings=2048,
         attention_type="gqa",
-        mlp_type="swiglu",
+        mlp_type="tr_hash_engine",
+        num_experts=4,
         norm_type="rmsnorm",
         use_qk_norm=True,
     )
@@ -582,7 +554,8 @@ def complexity_base_config() -> ModelConfig:
         vocab_size=32000,
         max_position_embeddings=2048,
         attention_type="gqa",
-        mlp_type="swiglu",
+        mlp_type="tr_hash_engine",
+        num_experts=4,
         norm_type="rmsnorm",
         use_qk_norm=True,
     )
@@ -599,7 +572,8 @@ def complexity_large_config() -> ModelConfig:
         vocab_size=32000,
         max_position_embeddings=4096,
         attention_type="gqa",
-        mlp_type="swiglu",
+        mlp_type="tr_hash_engine",
+        num_experts=4,
         norm_type="rmsnorm",
         use_qk_norm=True,
     )
@@ -616,89 +590,10 @@ def complexity_xl_config() -> ModelConfig:
         vocab_size=32000,
         max_position_embeddings=4096,
         attention_type="gqa",
-        mlp_type="swiglu",
+        mlp_type="tr_hash_engine",
+        num_experts=4,
         norm_type="rmsnorm",
         use_qk_norm=True,
-    )
-
-
-# === Dense Baselines (for paper comparisons) ===
-def llama_1_5b_config() -> ModelConfig:
-    """Dense Llama 1.5B — same dimensions as complexity-deep, no MoE.
-
-    Purpose: fair baseline comparison for the paper.
-    Same: hidden_size, num_layers, num_heads, intermediate_size, vocab_size, max_pos
-    Removed: token routing, mu-guidance
-    """
-    return ModelConfig(
-        hidden_size=2048,
-        num_hidden_layers=24,
-        num_attention_heads=16,
-        num_key_value_heads=8,  # GQA like the original
-        intermediate_size=5632,
-        vocab_size=32000,
-        max_position_embeddings=2048,
-        attention_type="gqa",
-        mlp_type="swiglu",
-        num_experts=1,
-        norm_type="rmsnorm",
-        use_qk_norm=True,
-        use_mu_guidance=False,
-    )
-
-
-# === I64 Integer Presets (train float, deploy INT8) ===
-def i64_1b_config() -> ModelConfig:
-    """I64 1.5B — Integer-native, train float deploy INT8."""
-    return ModelConfig(
-        hidden_size=2048,
-        num_hidden_layers=24,
-        num_attention_heads=16,
-        num_key_value_heads=4,
-        intermediate_size=5632,
-        vocab_size=32000,
-        max_position_embeddings=2048,
-        attention_type="i64",
-        mlp_type="i64_swiglu",
-        norm_type="i64_rmsnorm",
-        use_qk_norm=True,
-        use_mu_guidance=True,
-    )
-
-
-def i64_3b_config() -> ModelConfig:
-    """I64 3B — Integer-native, train float deploy INT8."""
-    return ModelConfig(
-        hidden_size=2560,
-        num_hidden_layers=32,
-        num_attention_heads=20,
-        num_key_value_heads=5,
-        intermediate_size=7168,
-        vocab_size=32000,
-        max_position_embeddings=4096,
-        attention_type="i64",
-        mlp_type="i64_swiglu",
-        norm_type="i64_rmsnorm",
-        use_qk_norm=True,
-        use_mu_guidance=True,
-    )
-
-
-def i64_7b_config() -> ModelConfig:
-    """I64 7B — Integer-native, train float deploy INT8."""
-    return ModelConfig(
-        hidden_size=4096,
-        num_hidden_layers=32,
-        num_attention_heads=32,
-        num_key_value_heads=8,
-        intermediate_size=11008,
-        vocab_size=32000,
-        max_position_embeddings=4096,
-        attention_type="i64",
-        mlp_type="i64_swiglu",
-        norm_type="i64_rmsnorm",
-        use_qk_norm=True,
-        use_mu_guidance=True,
     )
 
 
@@ -712,18 +607,6 @@ PRESET_CONFIGS = {
     "complexity-xl": complexity_xl_config,
     # Complexity with MoE
     "complexity-7b": complexity_7b_config,
-    # Reference architectures
-    "llama-7b": llama_7b_config,
-    "llama-70b": llama_70b_config,
-    "mistral-7b": mistral_7b_config,
-    "gpt2": gpt2_config,
-    # Dense baselines (paper comparisons)
-    "llama-1.5b": llama_1_5b_config,
-    "dense-1.5b": llama_1_5b_config,
-    # I64 Integer presets
-    "i64-1b": i64_1b_config,
-    "i64-3b": i64_3b_config,
-    "i64-7b": i64_7b_config,
     # Aliases
     "tiny": complexity_tiny_config,
     "small": complexity_small_config,

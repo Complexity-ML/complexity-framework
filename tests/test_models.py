@@ -120,7 +120,7 @@ class TestComplexityModel:
             num_key_value_heads=2,
             intermediate_size=256,
             vocab_size=1000,
-            mlp_type="token_routed",
+            mlp_type="tr_hash_engine",
             num_experts=4,
         )
         model = ComplexityModel(config)

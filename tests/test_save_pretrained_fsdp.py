@@ -32,7 +32,7 @@ def _small_moe_config():
         hidden_size=128, num_hidden_layers=2, num_attention_heads=4,
         num_key_value_heads=2, intermediate_size=256, vocab_size=1024,
         max_position_embeddings=128, attention_type="gqa",
-        mlp_type="token_routed", num_experts=4, shared_expert=True,
+        mlp_type="tr_hash_engine", num_experts=4, shared_expert=True,
         norm_type="rmsnorm", use_qk_norm=True, use_mu_guidance=True,
     )
 

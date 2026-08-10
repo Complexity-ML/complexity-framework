@@ -1,10 +1,15 @@
 # Training
 
-The supported research runner is `cf-o200k-pretrain`, implemented by
-`complexity.training.o200k_pretrain`.
+> **`cf-o200k-pretrain` and `complexity.training.o200k_pretrain` were
+> removed** along with the Dense architecture they were built to compare
+> against, as part of scoping the framework to TR-Hash MoE only. A
+> replacement training entrypoint is not yet in place — see the README's
+> ["Train from a tracked configuration"](../README.md#train-from-a-tracked-configuration)
+> section. The rest of this page describes the removed runner's behavior for
+> historical/design reference; commands below will not run as written.
 
-It runs on CPU, MPS, CUDA, or ROCm through PyTorch and supports single-process
-or DDP execution.
+It ran on CPU, MPS, CUDA, or ROCm through PyTorch and supported
+single-process or DDP execution.
 
 ## What the runner records
 

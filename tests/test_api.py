@@ -49,39 +49,6 @@ class TestAttentionFactory:
 class TestMLPFactory:
     """Test MLP factory methods."""
 
-    def test_mlp_standard(self):
-        """Test standard MLP creation."""
-        from complexity.api import MLP
-
-        mlp = MLP.standard(hidden_size=256, intermediate_size=512)
-        assert mlp is not None
-
-        x = torch.randn(2, 16, 256)
-        out = mlp(x)
-        assert out.shape == x.shape
-
-    def test_mlp_swiglu(self):
-        """Test SwiGLU MLP creation."""
-        from complexity.api import MLP
-
-        mlp = MLP.swiglu(hidden_size=256, intermediate_size=512)
-        assert mlp is not None
-
-        x = torch.randn(2, 16, 256)
-        out = mlp(x)
-        assert out.shape == x.shape
-
-    def test_mlp_geglu(self):
-        """Test GeGLU MLP creation."""
-        from complexity.api import MLP
-
-        mlp = MLP.geglu(hidden_size=256, intermediate_size=512)
-        assert mlp is not None
-
-        x = torch.randn(2, 16, 256)
-        out = mlp(x)
-        assert out.shape == x.shape
-
     def test_mlp_moe(self):
         """Test MoE MLP creation."""
         from complexity.api import MLP
@@ -90,7 +57,8 @@ class TestMLPFactory:
         assert moe is not None
 
         x = torch.randn(2, 16, 256)
-        out, aux_loss = moe(x)
+        token_ids = torch.randint(0, 100000, (2, 16))
+        out, aux_loss = moe(x, token_ids=token_ids)
         assert out.shape == x.shape
         assert aux_loss.ndim == 0  # scalar
 
@@ -155,40 +123,6 @@ class TestEfficientNamespace:
         # Should not raise
 
 
-class TestArchitectureNamespace:
-    """Test Architecture namespace for O(N) models."""
-
-    def test_architecture_mamba(self):
-        """Test Architecture.mamba() creates model."""
-        from complexity.api import Architecture
-
-        try:
-            model = Architecture.mamba(hidden_size=256, num_layers=2)
-            assert model is not None
-        except NotImplementedError:
-            pytest.skip("Mamba not fully implemented")
-
-    def test_architecture_rwkv(self):
-        """Test Architecture.rwkv() creates model."""
-        from complexity.api import Architecture
-
-        try:
-            model = Architecture.rwkv(hidden_size=256, num_layers=2)
-            assert model is not None
-        except NotImplementedError:
-            pytest.skip("RWKV not fully implemented")
-
-    def test_architecture_retnet(self):
-        """Test Architecture.retnet() creates model."""
-        from complexity.api import Architecture
-
-        try:
-            model = Architecture.retnet(hidden_size=256, num_layers=2)
-            assert model is not None
-        except NotImplementedError:
-            pytest.skip("RetNet not fully implemented")
-
-
 class TestTokenRoutedMLP:
     """Test TokenRoutedMLP (MoE) directly."""
 
@@ -204,7 +138,8 @@ class TestTokenRoutedMLP:
         )
 
         x = torch.randn(2, 16, 256)
-        out, aux_loss = moe(x)
+        token_ids = torch.randint(0, 100000, (2, 16))
+        out, aux_loss = moe(x, token_ids=token_ids)
 
         assert out.shape == x.shape
         assert aux_loss.ndim == 0
@@ -223,7 +158,8 @@ class TestTokenRoutedMLP:
 
         # With enough diversity, experts should vary
         x = torch.randn(4, 32, 64)
-        out, _ = moe(x)
+        token_ids = torch.randint(0, 100000, (4, 32))
+        out, _ = moe(x, token_ids=token_ids)
 
         # Output should differ from input (transformation happened)
         assert not torch.allclose(out, x)

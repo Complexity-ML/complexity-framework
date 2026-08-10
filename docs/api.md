@@ -160,12 +160,15 @@ causal_conv, causal_state_conv, causal_fast_weight_conv
 Principal MLP keys:
 
 ```text
-swiglu, gelu, geglu
-token_routed
-mixtral
+tr_hash_engine, tr_hash_moe
 dense_deterministic
-lexical_modulated
+lexical_modulated, lexical_channel_modulated, lexical_object_micro_expert
 ```
+
+`swiglu`/`gelu`/`geglu`/`standard`/`mixtral`/`token_routed` were removed —
+constructing a config with any of them raises a clear error pointing at the
+replacement (see [`token-routed.md`](token-routed.md) for `token_routed`
+checkpoints specifically).
 
 Several aliases exist for checkpoint compatibility. New documentation should
 use the principal key.
@@ -173,9 +176,9 @@ use the principal key.
 ## Direct TR-MoE module
 
 ```python
-from complexity.core.mlp import MLPConfig, TokenRoutedMLP
+from complexity.core.mlp import MLPConfig, TRHashEngineMLP
 
-layer = TokenRoutedMLP(
+layer = TRHashEngineMLP(
     MLPConfig(
         hidden_size=384,
         intermediate_size=128,
@@ -192,8 +195,8 @@ output = layer(hidden_states, token_ids=input_ids)
 Useful diagnostics:
 
 ```python
-layer.last_dispatch_path
-layer.get_expert_counts()
+layer.engine.last_backend
+layer.capability_summary()
 layer.training_telemetry()
 ```
 
@@ -223,11 +226,11 @@ stdio transport. It does not reimplement tools.
 
 ```text
 complexity
-cf-o200k-pretrain
 cf-plan-run
 cf-plan-cluster
-cf-check-pipeline
 ```
 
-The o200k runner and planners are the documented research paths. Some older
-`complexity` subcommands remain experimental.
+`cf-o200k-pretrain` and `cf-check-pipeline` were removed along with the
+`o200k` training pipeline (see [`training.md`](training.md)). `cf-plan-run`
+and `cf-plan-cluster` remain for token-budget and cluster-sizing arithmetic.
+Some older `complexity` subcommands remain experimental.

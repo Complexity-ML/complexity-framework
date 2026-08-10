@@ -30,14 +30,10 @@ class TestCoreImports:
         """Test MLP imports."""
         from complexity.core.mlp import (
             MLPBase,
-            SwiGLUMLP,
-            GeGLUMLP,
-            TokenRoutedMLP,
+            TRHashEngineMLP,
         )
         assert MLPBase is not None
-        assert SwiGLUMLP is not None
-        assert GeGLUMLP is not None
-        assert TokenRoutedMLP is not None
+        assert TRHashEngineMLP is not None
 
     def test_import_core_normalization(self):
         """Test normalization imports."""
@@ -88,14 +84,6 @@ class TestAPIImports:
         assert Efficient is not None
         assert hasattr(Efficient, 'tiny_llm')
 
-    def test_import_api_architecture(self):
-        """Test Architecture namespace from API."""
-        from complexity.api import Architecture
-        assert Architecture is not None
-        assert hasattr(Architecture, 'mamba')
-        assert hasattr(Architecture, 'rwkv')
-
-
 class TestModelsImports:
     """Test models module imports."""
 
@@ -131,18 +119,3 @@ class TestOptionalImports:
         except ImportError:
             pytest.skip("CUDA extensions not available")
 
-    def test_import_linear_mamba(self):
-        """Test Mamba import."""
-        try:
-            from complexity.linear import Mamba
-            assert Mamba is not None
-        except ImportError:
-            pytest.skip("Linear architectures not available")
-
-    def test_import_linear_rwkv(self):
-        """Test RWKV import."""
-        try:
-            from complexity.linear import RWKV
-            assert RWKV is not None
-        except ImportError:
-            pytest.skip("Linear architectures not available")

@@ -40,7 +40,7 @@ config = ModelConfig(
     attention_type="gqa",
     vocab_size=1_024,
     max_position_embeddings=128,
-    mlp_type="token_routed",
+    mlp_type="tr_hash_engine",
     num_experts=4,
     intermediate_size=64,
     shared_expert=True,
@@ -78,35 +78,11 @@ changes.
 
 ## Run a local smoke training
 
-The following uses synthetic data and avoids custom GPU kernels:
-
-```bash
-cf-o200k-pretrain \
-  --profile 50m \
-  --dataset random \
-  --vocab-size 32000 \
-  --steps 2 \
-  --batch-size 1 \
-  --seq-len 64 \
-  --routing-strategy modulo \
-  --no-grad-ckpt \
-  --use-custom-kernels false \
-  --cggr false \
-  --run-name smoke-tr-gqa
-```
-
-This validates construction and the training loop; it is not a language-model
-quality experiment.
-
-## Run from YAML
-
-```bash
-cf-o200k-pretrain \
-  --config configs/run_configs/experiments_100m/100m_params_mha_modulo_balanced_shared_1296_mps.yaml
-```
-
-Machine-specific dataset and tokenizer paths in experimental files must be
-updated before launch.
+> `cf-o200k-pretrain` was removed along with the `o200k` training pipeline —
+> see [`training.md`](training.md). The commands below no longer run as
+> written; a replacement smoke-training entrypoint is not yet in place.
+> `--routing-strategy modulo` above also predates the routing-strategy
+> guardrail — use `modulo_cyclic` or `token_id_balanced_hash` going forward.
 
 ## Save and load
 

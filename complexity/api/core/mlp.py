@@ -12,28 +12,38 @@ from complexity.core import (
     register_mlp,
     MLPBase,
     MLPConfig,
-    StandardMLP,
-    SwiGLUMLP,
-    GeGLUMLP,
-    TokenRoutedMLP as CoreTokenRoutedMLP,
+    TRHashEngineMLP as CoreTRHashEngineMLP,
 )
 
 
 class TokenRoutedMLP(nn.Module):
-    """API wrapper around the core TokenRoutedMLP.
+    """API wrapper around the core TR-Hash engine MoE.
 
     The public API returns ``(output, aux_loss)`` for compatibility with other
-    MoE layers. Core model code should use ``complexity.core.mlp.TokenRoutedMLP``.
+    MoE layers. Core model code should use ``complexity.core.mlp.TRHashEngineMLP``
+    directly. Named ``TokenRoutedMLP`` for API stability — the underlying
+    implementation is ``TRHashEngineMLP`` (the historical TokenRoutedMLP
+    dispatch class was removed; see
+    ``complexity.utils.token_routed_conversion`` for migrating old
+    ``token_routed`` checkpoints).
+
+    Unlike the removed implementation, ``token_ids`` is required: TR-Hash MoE
+    always routes deterministically by token ID, there is no dense fallback.
     """
 
     def __init__(self, **kwargs):
         super().__init__()
         if "intermediate_size" not in kwargs:
-            kwargs["intermediate_size"] = int(kwargs["hidden_size"] * 8 / 3)
+            num_experts = kwargs.get("num_experts", 1)
+            raw_width = int(kwargs["hidden_size"] * 8 / 3)
+            # TR-Hash routed width must divide evenly across experts.
+            kwargs["intermediate_size"] = -(-raw_width // num_experts) * num_experts
         self.config = MLPConfig(**kwargs)
-        self.mlp = CoreTokenRoutedMLP(self.config)
+        self.mlp = CoreTRHashEngineMLP(self.config)
 
     def forward(self, hidden_states, token_ids=None, **kwargs):
+        if token_ids is None:
+            raise ValueError("TR-Hash MoE requires token_ids to route")
         out = self.mlp(hidden_states, token_ids=token_ids, **kwargs)
         aux_loss = out.new_zeros(())
         return out, aux_loss
@@ -43,29 +53,29 @@ class MLP:
     """
     Factory pour créer des MLP layers.
 
+    Ce framework est recentré sur TR-Hash MoE (routing déterministe par ID de
+    token / table de hachage) : les MLP denses autonomes (swiglu/geglu/standard)
+    ont été retirés et seront réintroduits plus tard comme comparaisons
+    explicites contre TR-Hash.
+
     Usage:
-        mlp = MLP.create("swiglu", hidden_size=4096, intermediate_size=11008)
-        mlp = MLP.swiglu(hidden_size=4096, intermediate_size=11008)
-        mlp = MLP.geglu(hidden_size=4096, intermediate_size=11008)
-        mlp = MLP.standard(hidden_size=4096, intermediate_size=16384)
+        mlp = MLP.create("moe", hidden_size=4096, num_experts=8)
         mlp = MLP.moe(hidden_size=4096, num_experts=8, top_k=2)
     """
 
     TYPES = {
-        "standard": StandardMLP,
-        "swiglu": SwiGLUMLP,
-        "geglu": GeGLUMLP,
-        "gated": SwiGLUMLP,  # alias
         "moe": TokenRoutedMLP,
     }
 
     @classmethod
-    def create(cls, mlp_type: str = "swiglu", **kwargs) -> nn.Module:
+    def create(cls, mlp_type: str = "moe", **kwargs) -> nn.Module:
         """
         Crée un MLP layer.
 
         Args:
-            mlp_type: "standard", "swiglu", "geglu", "gated", "moe"
+            mlp_type: "moe" (returns (output, aux_loss)), or any name
+                registered directly on MLP_REGISTRY (e.g. "tr_hash_engine",
+                returns just output).
             **kwargs: hidden_size, intermediate_size, dropout, ...
         """
         kwargs = dict(kwargs)
@@ -73,7 +83,10 @@ class MLP:
             hidden_size = kwargs.get("hidden_size")
             if hidden_size is None:
                 raise ValueError("hidden_size is required when intermediate_size is omitted")
-            kwargs["intermediate_size"] = int(hidden_size * 8 / 3)
+            num_experts = kwargs.get("num_experts", 1)
+            raw_width = int(hidden_size * 8 / 3)
+            # TR-Hash routed width must divide evenly across experts.
+            kwargs["intermediate_size"] = -(-raw_width // num_experts) * num_experts
         if mlp_type == "moe":
             return TokenRoutedMLP(**kwargs)
         if mlp_type in MLP_REGISTRY._registry:
@@ -89,24 +102,6 @@ class MLP:
         return mlp_cls(config)
 
     @classmethod
-    def swiglu(cls, hidden_size: int, intermediate_size: int = None, **kwargs) -> nn.Module:
-        """SwiGLU MLP (Llama style)."""
-        intermediate_size = intermediate_size or int(hidden_size * 8 / 3)
-        return cls.create("swiglu", hidden_size=hidden_size, intermediate_size=intermediate_size, **kwargs)
-
-    @classmethod
-    def geglu(cls, hidden_size: int, intermediate_size: int = None, **kwargs) -> nn.Module:
-        """GeGLU MLP."""
-        intermediate_size = intermediate_size or hidden_size * 4
-        return cls.create("geglu", hidden_size=hidden_size, intermediate_size=intermediate_size, **kwargs)
-
-    @classmethod
-    def standard(cls, hidden_size: int, intermediate_size: int = None, **kwargs) -> nn.Module:
-        """Standard MLP (GPT style)."""
-        intermediate_size = intermediate_size or hidden_size * 4
-        return cls.create("standard", hidden_size=hidden_size, intermediate_size=intermediate_size, **kwargs)
-
-    @classmethod
     def moe(cls, hidden_size: int, num_experts: int = 8, **kwargs) -> nn.Module:
         """Token-Routed MoE."""
         return cls.create("moe", hidden_size=hidden_size, num_experts=num_experts, **kwargs)
@@ -118,17 +113,8 @@ class MLP:
         cls.TYPES[name] = mlp_cls
 
 
-# Aliases
-SwiGLU = SwiGLUMLP
-GeGLU = GeGLUMLP
-
 __all__ = [
     "MLP",
-    "SwiGLU",
-    "GeGLU",
-    "SwiGLUMLP",
-    "GeGLUMLP",
-    "StandardMLP",
     "TokenRoutedMLP",
     "MLPBase",
     "MLPConfig",

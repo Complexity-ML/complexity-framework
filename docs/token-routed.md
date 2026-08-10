@@ -1,184 +1,101 @@
-# TR-MoE internals
+# TokenRoutedMLP (removed) and migrating to TR-Hash
 
-TR-MoE is the deterministic Token-Routed Mixture-of-Experts feed-forward path
-implemented by `complexity.core.mlp.TokenRoutedMLP`.
+`TokenRoutedMLP` was the original, feature-complete Token-Routed MoE
+dispatch implementation (`complexity.core.mlp.token_routed`). It predated
+`complexity.tr_hash` and has been removed — new models use `TRHashEngineMLP`
+(`mlp_type="tr_hash_engine"` / `"tr_hash_moe"`), documented in
+[`tr-hash-engine.md`](tr-hash-engine.md). This page exists to help migrate
+anything still referring to the old implementation.
 
-It can be paired with GQA (**TR-GQA**) or MHA (**TR-MHA**).
+## Why it was removed
 
-## Computation
+The framework is now scoped to `complexity.tr_hash.TRHashEngine` as the
+single canonical MoE execution path. `TokenRoutedMLP` had accumulated
+several ablation-only features (`zipf`/`round_robin`/`random`/`lsh_hidden`
+routing, `modulo_balanced_secondary`/`modulo_frequency_balanced_secondary`
+frequency-aware secondary routing, `expert_initialization="legacy_kaiming"`)
+that existed only to replay historical experiments and don't belong in the
+canonical path going forward.
 
-Each layer contains:
+Constructing a config with the old `mlp_type` values (`token_routed`,
+`sort_split`, `sort_split_moe`, `deterministic_moe`, `complexity`) now raises
+a clear `ValueError` pointing here instead of silently failing deeper in the
+stack.
 
-1. an optional dense shared SwiGLU path;
-2. \(E\) narrow SwiGLU experts;
-3. one or more deterministic route tables;
-4. a dispatch implementation.
+## Loading an existing `token_routed` checkpoint
 
-```text
-contextual hidden state x ───────────────► shared SwiGLU ──┐
-                                                           ├─► sum / gated sum
-token ID t ─► layer route table ─► selected experts(x) ────┘
-```
-
-Token identity selects parameters. Every selected branch still transforms the
-current contextual hidden state.
-
-## Route construction
-
-### `modulo_cyclic`
-
-The primary route starts from `token_id % num_experts`, followed by a
-deterministic layer-specific permutation. Auxiliary routes advance cyclically.
-This route never reads corpus frequencies. `modulo` is its legacy alias.
-
-### Historical frequency-aware controls
-
-The standalone TMLR supplement retains `zipf` and
-`modulo_balanced_secondary` solely to reproduce reported controls. They are
-not part of the canonical TR-GQA or TR-MHA path. New runs use
-`modulo_cyclic` and do not scan the training corpus to construct routing
-tables.
-
-### Controls
-
-- `round_robin`: deterministic token-rank assignment;
-- `random`: seeded deterministic lexical partition;
-- `lsh_hidden`: experimental fixed random-hyperplane routing on hidden states.
-
-`lsh_hidden` is contextual rather than token-ID routing and should be labeled
-as a separate control.
-
-## Per-layer route variation
-
-Each lexical table receives a deterministic layer-specific permutation of
-expert labels. This preserves its load distribution while allowing a token to
-reach different expert parameters at different depths.
-
-## Top-k routing
-
-`top_k=1` selects one expert. For `top_k>1`, the framework precomputes distinct
-route tables and combines them using `top_k_primary_weight`.
-
-For top-2 with primary weight \(p\):
-
-\[
-y_{\mathrm{routed}}
-=p\,E_{r_1(t)}(x)+(1-p)\,E_{r_2(t)}(x).
-\]
-
-No learned router is executed at runtime for lexical strategies.
-
-## Shared path
-
-With `shared_expert=True`:
-
-```text
-output = shared_output + routed_output
-```
-
-With `use_shared_routed_gates=True`:
-
-```text
-output = shared_gate * shared_output + routed_gate * routed_output
-```
-
-`shared_expert_chunk_tokens` chunks the dense shared computation across the
-token dimension to lower peak activation memory without changing the
-mathematical result.
-
-## Dispatch paths
-
-### Universal PyTorch path
-
-The implementation sorts tokens by expert and falls back to a PyTorch
-expert-compute path when custom kernels are unavailable. The current fallback
-is designed for portability and autograd correctness; it is not claimed to be
-the fastest path on every device.
-
-### CGGR CUDA/Triton path
-
-When CUDA, Triton, and the autograd-aware grouped-GEMM kernel are available,
-`use_cggr="auto"` may select CGGR. The actual path is stored in
-`last_dispatch_path` and logged once.
-
-### Static capacity
-
-`static_expert_capacity=True` selects an export-friendly path intended for
-pipeline tracing. It changes dispatch mechanics, not the route definition.
-
-## Telemetry
-
-`collect_moe_telemetry=True` records:
-
-- token counts per route expert;
-- shared output RMS;
-- routed output RMS;
-- scheduled top-k and gate values.
-
-Telemetry is off by default because reductions and host-side logging can reduce
-throughput.
-
-## Model example
+Do **not** try to construct `ModelConfig(mlp_type="token_routed", ...)` — it
+will raise. Instead convert the checkpoint's tensors to `TRHashEngineMLP`'s
+layout:
 
 ```python
-from complexity import ComplexityModel, ModelConfig
+from complexity.utils.token_routed_conversion import convert_token_routed_checkpoint_dir
 
-config = ModelConfig(
-    hidden_size=384,
-    num_hidden_layers=10,
-    num_attention_heads=8,
-    num_key_value_heads=2,
-    attention_type="gqa",
-    vocab_size=200_019,
-    mlp_type="token_routed",
-    num_experts=4,
-    intermediate_size=128,
-    shared_expert=True,
-    shared_intermediate_size=1536,
-    routing_strategy="modulo_cyclic",
-    top_k=2,
-    top_k_primary_weight=0.5,
-)
-
-model = ComplexityModel(config)
+model = convert_token_routed_checkpoint_dir("/path/to/old/checkpoint")
 ```
 
-To build TR-MHA, set `attention_type="mha"` and
-`num_key_value_heads=num_attention_heads`.
-
-## Direct module example
+This works directly on the checkpoint directory's raw `config.json` +
+`model.safetensors` — it never needs the removed `TokenRoutedMLP` class to be
+importable. Lower-level entry points, if you're working with an in-memory
+state dict/config dict instead of a directory:
 
 ```python
-import torch
-
-from complexity.core.mlp import MLPConfig, TokenRoutedMLP
-
-mlp = TokenRoutedMLP(
-    MLPConfig(
-        hidden_size=64,
-        intermediate_size=128,
-        vocab_size=1_000,
-        num_experts=4,
-        shared_expert=True,
-        shared_intermediate_size=128,
-        routing_strategy="modulo_cyclic",
-        top_k=2,
-        top_k_primary_weight=0.5,
-    )
+from complexity.utils.token_routed_conversion import (
+    convert_token_routed_checkpoint,  # (state_dict, config_dict) -> model
+    convert_token_routed_config,      # config_dict -> ModelConfig(mlp_type="tr_hash_engine")
+    convert_token_routed_state_dict,  # state_dict -> (converted_state_dict, route_tables)
 )
-
-hidden = torch.randn(2, 16, 64)
-token_ids = torch.randint(0, 1_000, (2, 16))
-output = mlp(hidden, token_ids=token_ids)
 ```
 
-## Claims that are intentionally not made
+### What the conversion does
 
-- Routing is not perfectly balanced for every finite batch.
-- Deterministic routing does not make expert collapse mathematically
-  impossible.
-- CUDA graph compatibility depends on the selected dispatch and serving
-  integration.
-- A route table alone does not establish better generalization.
+`TokenRoutedMLP` and `TRHashEngineMLP` store per-expert weights in the same
+`[num_experts, hidden_size, expert_width]` / `[num_experts, expert_width,
+hidden_size]` tensor layout — the conversion is a rename, not a reshape or
+numeric remap:
 
-These questions require measurement under a named protocol.
+| `token_routed` tensor | `tr_hash_engine` tensor |
+|---|---|
+| `mlp.gate_proj_w` | `mlp.engine.expert_gate` |
+| `mlp.up_proj_w` | `mlp.engine.expert_up` |
+| `mlp.down_proj_w` | `mlp.engine.expert_down` |
+| `mlp.shared_gate.weight` | `mlp.engine.shared_gate.weight` |
+| `mlp.shared_up.weight` | `mlp.engine.shared_up.weight` |
+| `mlp.shared_down.weight` | `mlp.engine.shared_down.weight` |
+| `mlp.topk_token_to_expert` | `mlp.engine.route_table` (installed via `TRHashEngine.load_route_table`, not the state dict) |
+
+The routing table is transplanted exactly rather than regenerated: the two
+implementations' route-table constructions are independent algorithms with
+no guarantee of agreeing, so regenerating from `routing_strategy` would
+silently pair an expert's trained weights with a different set of tokens
+than it was trained on. `load_route_table` also recompiles fused-CUDA pair
+metadata to match, so the converted model stays correct on the fused path
+too.
+
+Any tensor the conversion doesn't recognize (e.g. `hash_pair_gate_logits`
+from `learn_hash_pair_gates`, an ablation-only feature with no
+`tr_hash_engine` equivalent) raises rather than being silently dropped.
+
+### Verified equivalence
+
+Converting a real 500M-parameter `token_routed` checkpoint and comparing
+logits against the original (same prompt, same weights) produced bit-exact
+output in BF16. A small synthetic model shows a few-millipoint fp32 drift
+from the two implementations summing expert contributions in a different
+order — not a correctness issue; see
+`tests/test_token_routed_to_tr_hash_conversion.py`.
+
+## Feature gaps versus the old implementation
+
+A few things `TokenRoutedMLP` had are not (yet) in `TRHashEngineMLP`:
+
+- **Per-expert telemetry** (`expert_counts`, `training.moe_telemetry`
+  aggregation) and **tensor-parallel expert-weight sharding**
+  (`parallel.tensor_parallel`) are duck-typed against the old class's
+  attribute names. They now permanently return empty/no-op for any model
+  (verified: this degrades gracefully, it does not crash) until equivalent
+  hooks are added to `TRHashEngine`.
+- **LSH/semantic routing**, **learned hash-pair/channel gates**, and
+  **static export capacity** (`static_expert_capacity`) have no equivalent —
+  though `TRHashEngineMLP`'s single dispatch path is already unconditionally
+  export/pipeline-trace-safe, so the last one specifically was never needed.

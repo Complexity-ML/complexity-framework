@@ -4,11 +4,16 @@
 routed residual experts. It is general inside the TR-Hash family; it is not a
 learned contextual Mixtral router.
 
+`TRHashEngineMLP` (`mlp_type="tr_hash_engine"` / `"tr_hash_moe"`) is the
+canonical model-block adapter and the default `mlp_type`. The historical
+`TokenRoutedMLP` dispatch implementation was removed — see
+[`token-routed.md`](token-routed.md) for migrating existing checkpoints.
+
 ## Supported model matrix
 
 | Axis | Contract |
 |---|---|
-| Experts | 2, 4, 8, 16 |
+| Experts | 1 (degenerate single-route), 2, 4, 8, 16 |
 | Active experts | top-1, top-2, top-4 |
 | Widths | independent shared and per-expert widths |
 | Attention input | GQA or MHA hidden states |
@@ -68,6 +73,28 @@ output = engine(hidden, token_ids)
 
 The same module can be wrapped in PyTorch DDP. `world_size` is recorded in the
 engine manifest; it does not change route identity.
+
+## Dynamic capacity
+
+An engine is allocated at `(num_experts, expert_width)` but can be shrunk at
+runtime to a smaller deterministic sub-network:
+
+```python
+engine.set_active_capacity(num_experts=4, expert_width=32)
+```
+
+Routing for the reduced expert count is re-derived with the same
+deterministic token-ID/hash-table construction used at `__init__` (never a
+learned or contextual decision), and the width reduction slices a fixed
+prefix of each expert's parameters. `active_num_experts`/`active_expert_width`
+report the current state; `capability_summary()` includes them alongside
+`is_reduced_capacity`. `TRHashEngineMLP` (the model-block adapter) exposes
+the same control as `set_active_experts(n)` / `set_active_expert_width(w)`,
+and `ModelConfig(active_num_experts=..., active_expert_width=...)` sets the
+initial state declaratively. FUSED_CUDA requires full capacity — its
+precompiled pair metadata is tied to the allocated `num_experts` — and raises
+a clear error if requested while reduced; PYTORCH and CGGR both work at any
+active capacity. Any capacity change invalidates cached CUDA Graphs.
 
 ## Backend selection
 

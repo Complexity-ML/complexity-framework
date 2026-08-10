@@ -145,64 +145,26 @@ class TestRoPE:
         assert not torch.allclose(q_rot1, q_rot2)
 
 
-class TestSwiGLU:
-    """Test SwiGLU MLP."""
+class TestTRHashEngineMLP:
+    """Test TRHashEngineMLP (canonical TR-Hash MoE) component."""
 
-    def test_swiglu_forward(self):
-        """Test SwiGLU forward pass."""
-        from complexity.core.mlp import SwiGLUMLP, MLPConfig
-
-        mlp = SwiGLUMLP(MLPConfig(hidden_size=256, intermediate_size=512))
-
-        x = torch.randn(2, 16, 256)
-        out = mlp(x)
-        assert out.shape == x.shape
-
-    def test_swiglu_gating(self):
-        """Test that SwiGLU uses gating mechanism."""
-        from complexity.core.mlp import SwiGLUMLP, MLPConfig
-
-        mlp = SwiGLUMLP(MLPConfig(hidden_size=64, intermediate_size=128))
-
-        # Should have gate and up projections
-        assert hasattr(mlp, 'gate_proj') or hasattr(mlp, 'w1')
-        assert hasattr(mlp, 'up_proj') or hasattr(mlp, 'w2') or hasattr(mlp, 'w3')
-
-
-class TestGeGLU:
-    """Test GeGLU MLP."""
-
-    def test_geglu_forward(self):
-        """Test GeGLU forward pass."""
-        from complexity.core.mlp import GeGLUMLP, MLPConfig
-
-        mlp = GeGLUMLP(MLPConfig(hidden_size=256, intermediate_size=512))
-
-        x = torch.randn(2, 16, 256)
-        out = mlp(x)
-        assert out.shape == x.shape
-
-
-class TestTokenRoutedMLP:
-    """Test TokenRoutedMLP (MoE) component."""
-
-    def test_token_routed_mlp_forward(self):
+    def test_tr_hash_engine_mlp_forward(self):
         """Test MoE forward pass."""
-        from complexity.core.mlp import TokenRoutedMLP, MLPConfig
+        from complexity.core.mlp import TRHashEngineMLP, MLPConfig
 
-        moe = TokenRoutedMLP(MLPConfig(hidden_size=256, intermediate_size=512, num_experts=4))
+        moe = TRHashEngineMLP(MLPConfig(hidden_size=256, intermediate_size=512, num_experts=4))
 
         x = torch.randn(2, 16, 256)
-        # token_ids required for routed dispatch; without them it uses _forward_all_experts
+        # token_ids required: TR-Hash MoE always routes deterministically by token ID.
         token_ids = torch.randint(0, 32000, (2, 16))
         out = moe(x, token_ids=token_ids)
         assert out.shape == x.shape
 
-    def test_token_routed_mlp_load_balancing(self):
+    def test_tr_hash_engine_mlp_load_balancing(self):
         """Test that routing covers all experts across a batch."""
-        from complexity.core.mlp import TokenRoutedMLP, MLPConfig
+        from complexity.core.mlp import TRHashEngineMLP, MLPConfig
 
-        moe = TokenRoutedMLP(MLPConfig(hidden_size=64, intermediate_size=128, num_experts=4))
+        moe = TRHashEngineMLP(MLPConfig(hidden_size=64, intermediate_size=128, num_experts=4))
 
         # Run multiple batches and verify outputs are consistent shapes
         for _ in range(5):

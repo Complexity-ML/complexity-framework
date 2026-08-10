@@ -19,7 +19,7 @@ def _config() -> ModelConfig:
         causal_conv_kernel_size=3,
         causal_conv_dilation_cycle=2,
         causal_state_rank=8,
-        mlp_type="swiglu",
+        mlp_type="tr_hash_engine",
         use_cache=True,
     )
 

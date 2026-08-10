@@ -32,7 +32,6 @@ from .lexical_key_gqa import LexicalKeyGQA, ProjectedLexicalKeyGQA
 from .token_routed_mha import TokenRoutedMultiHeadAttention
 from .token_routed_mha_v2 import TokenRoutedMultiHeadAttentionV2
 from .routed_gqa import RoutedGQA
-from .i64_attention import I64Attention
 from .causal_conv import CausalConvMixer
 from .causal_state_conv import CausalStateConvMixer
 from .causal_fast_weight_conv import CausalFastWeightConvMixer
@@ -49,7 +48,6 @@ __all__ = [
     "TokenRoutedMultiHeadAttention",
     "TokenRoutedMultiHeadAttentionV2",
     "RoutedGQA",
-    "I64Attention",
     "CausalConvMixer",
     "CausalStateConvMixer",
     "CausalFastWeightConvMixer",

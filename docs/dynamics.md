@@ -13,7 +13,7 @@ from complexity import ComplexityModel, ModelConfig
 
 config = ModelConfig(
     attention_type="gqa",
-    mlp_type="token_routed",
+    mlp_type="tr_hash_engine",
     use_mu_guidance=True,
 )
 model = ComplexityModel(config)

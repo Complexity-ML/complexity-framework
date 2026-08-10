@@ -162,8 +162,9 @@ complexity info tokens       # Show special tokens
             # Import framework components
             try:
                 import complexity
-                from complexity.core import Transformer, TransformerConfig
+                from complexity.config import ModelConfig
                 from complexity.data import ComplexityTokenizer, ComplexityTemplate
+                from complexity.models import ComplexityModel
                 from complexity.training import Trainer, TrainingConfig
                 has_complexity = True
             except ImportError:
@@ -176,7 +177,7 @@ Complexity Interactive Shell
 Available:
   - torch, np (numpy)
   - complexity module
-  - Transformer, TransformerConfig
+  - ComplexityModel, ModelConfig
   - ComplexityTokenizer, ComplexityTemplate
   - Trainer, TrainingConfig
 
@@ -190,8 +191,8 @@ Type 'exit()' or Ctrl+D to quit.
 
             if has_complexity:
                 local_vars.update({
-                    "Transformer": Transformer,
-                    "TransformerConfig": TransformerConfig,
+                    "ComplexityModel": ComplexityModel,
+                    "ModelConfig": ModelConfig,
                     "ComplexityTokenizer": ComplexityTokenizer,
                     "ComplexityTemplate": ComplexityTemplate,
                     "Trainer": Trainer,
