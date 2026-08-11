@@ -225,3 +225,22 @@ def test_pose_checkpoint_round_trip(tmp_path):
 
     torch.testing.assert_close(restored(pixels)["heatmaps"], expected)
     assert restored.vision_task == "pose"
+
+
+def test_instance_segmentation_checkpoint_round_trip(tmp_path):
+    model = TRHashInstanceSegmenter(_config(), num_prototypes=6).eval()
+    pixels = torch.randn(1, 3, 32, 32)
+    expected = model.forward_instance(pixels)
+
+    checkpoint = save_vision_task_checkpoint(
+        model,
+        tmp_path / "instance-segmenter",
+        task="instance_segmentation",
+        class_names=("a", "b", "c", "d"),
+    )
+    restored = load_vision_task_checkpoint(checkpoint)
+    actual = restored.forward_instance(pixels)
+
+    for name in ("raw", "mask_coefficients", "prototypes"):
+        torch.testing.assert_close(actual[name], expected[name])
+    assert restored.vision_task == "instance_segmentation"
