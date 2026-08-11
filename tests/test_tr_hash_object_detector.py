@@ -100,6 +100,35 @@ def test_decode_produces_bounded_normalized_boxes():
     assert torch.allclose(probs.sum(dim=-1), torch.ones(2, config.num_cells), atol=1e-5)
 
 
+def test_decode_center_offsets_can_leave_the_source_cell():
+    config = _tiny_config()
+    model = TRHashObjectDetector(config).eval()
+    raw = torch.zeros(1, config.num_cells, 5 + config.num_classes)
+
+    # The first fine-grid cell spans [0, 0.25]. A neighbouring-cell positive
+    # must still be able to regress a target center well beyond x=0.25.
+    raw[0, 0, 0] = 2.0
+    decoded = model.decode(raw)
+
+    assert torch.allclose(
+        decoded["boxes_cxcywh"][0, 0, 0], torch.tensor(0.625)
+    )
+
+
+def test_unversioned_checkpoint_config_keeps_legacy_sigmoid_centers():
+    values = _tiny_config().to_dict()
+    values.pop("center_offset_mode")
+    config = TRHashDetectorConfig.from_dict(values)
+    model = TRHashObjectDetector(config).eval()
+    raw = torch.zeros(1, config.num_cells, 5 + config.num_classes)
+    raw[0, 0, 0] = 2.0
+
+    center_x = model.decode(raw)["boxes_cxcywh"][0, 0, 0]
+
+    assert config.center_offset_mode == "sigmoid"
+    assert 0.0 <= center_x <= 0.25
+
+
 def test_loss_backward_reaches_head_and_backbone_experts():
     torch.manual_seed(1)
     config = _tiny_config()

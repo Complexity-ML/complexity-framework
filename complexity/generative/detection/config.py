@@ -37,6 +37,7 @@ class TRHashDetectorConfig:
     assignment_object_cells: float = 4.0
     assignment_class_power: float = 1.0
     assignment_iou_power: float = 6.0
+    center_offset_mode: str = "linear"
     box_loss_weight: float = 5.0
     objectness_loss_weight: float = 1.0
     class_loss_weight: float = 1.0
@@ -77,6 +78,8 @@ class TRHashDetectorConfig:
             raise ValueError("assignment_top_k must be positive")
         if self.assignment_center_radius <= 0.0 or self.assignment_object_cells <= 0.0:
             raise ValueError("assignment radii must be positive")
+        if self.center_offset_mode not in {"linear", "sigmoid"}:
+            raise ValueError("center_offset_mode must be linear or sigmoid")
         if not 0.0 <= self.focal_alpha <= 1.0:
             raise ValueError("focal_alpha must be in [0, 1]")
         if self.focal_gamma < 0.0:
@@ -126,6 +129,10 @@ class TRHashDetectorConfig:
 
     @classmethod
     def from_dict(cls, values: Dict[str, Any]) -> "TRHashDetectorConfig":
+        values = dict(values)
+        # Checkpoints written before center-offset versioning used cell-bounded
+        # sigmoid offsets. Preserve their inference semantics on load.
+        values.setdefault("center_offset_mode", "sigmoid")
         allowed = {item.name for item in fields(cls)}
         unknown = sorted(set(values) - allowed)
         if unknown:

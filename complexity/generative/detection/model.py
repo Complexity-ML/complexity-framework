@@ -247,8 +247,17 @@ class TRHashObjectDetector(nn.Module):
         tx, ty, tw, th, obj_logit = raw[..., 0], raw[..., 1], raw[..., 2], raw[..., 3], raw[..., 4]
         class_logits = raw[..., 5:]
         rows, cols, denominators, levels = self._cell_geometry(raw.device)
-        cx = (cols + torch.sigmoid(tx)) / denominators
-        cy = (rows + torch.sigmoid(ty)) / denominators
+        if self.config.center_offset_mode == "linear":
+            # YOLOX-style unconstrained center offsets. Dynamic assignment may
+            # mark neighbouring cells as positives, so a positive cell must be
+            # able to regress an object center outside its own boundaries.
+            cx = (cols + 0.5 + tx) / denominators
+            cy = (rows + 0.5 + ty) / denominators
+        else:
+            # Compatibility path for checkpoints trained before center-offset
+            # versioning, whose logits were learned with cell-bounded centers.
+            cx = (cols + torch.sigmoid(tx)) / denominators
+            cy = (rows + torch.sigmoid(ty)) / denominators
         w = torch.sigmoid(tw)
         h = torch.sigmoid(th)
         boxes_cxcywh = torch.stack((cx, cy, w, h), dim=-1)

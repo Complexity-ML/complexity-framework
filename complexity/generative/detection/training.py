@@ -229,9 +229,12 @@ def load_pretrained_detector(
     """Transfer a detector while adapting class-dependent output rows.
 
     Compatible tower, feature-pyramid, and hidden head parameters are copied.
-    Each final prediction layer always preserves its four box rows and
-    objectness row. Class rows are copied wholesale when class counts match,
-    or selectively through ``class_mapping`` when adapting to a new label set.
+    Each final prediction layer preserves its box rows and objectness row when
+    center decoding matches. When migrating from legacy sigmoid centers to
+    linear offsets, center rows are reinitialized while size and objectness
+    rows remain transferable. Class rows are copied wholesale when class
+    counts match, or selectively through ``class_mapping`` when adapting to a
+    new label set.
     """
 
     source_config = TRHashDetectorConfig.from_dict(
@@ -283,7 +286,10 @@ def load_pretrained_detector(
             continue
 
         adapted = parameter.detach().cpu().clone()
-        adapted[:5].copy_(source[:5])
+        if source_config.center_offset_mode == model.config.center_offset_mode:
+            adapted[:5].copy_(source[:5])
+        else:
+            adapted[2:5].copy_(source[2:5])
         if class_mapping is None and source_config.num_classes == model.config.num_classes:
             adapted[5:].copy_(source[5:])
         elif class_mapping is not None:

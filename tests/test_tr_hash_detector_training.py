@@ -341,3 +341,46 @@ def test_detector_transfer_preserves_box_objectness_and_mapped_classes(tmp_path)
         assert torch.equal(final.bias[5], source.scale_heads[0][-1].bias[7])
     assert torch.equal(target.scale_heads[0][-1].weight[6], unmapped_weight)
     assert torch.equal(target.scale_heads[0][-1].bias[6], unmapped_bias)
+
+
+def test_detector_transfer_reinitializes_centers_when_decode_mode_changes(tmp_path):
+    common = dict(
+        image_size=32,
+        patch_size=8,
+        vision_hidden_size=32,
+        vision_layers=1,
+        vision_heads=4,
+        vision_num_experts=2,
+        vision_top_k=1,
+        vision_expert_width=16,
+        num_classes=2,
+        multi_scale=False,
+    )
+    source = TRHashObjectDetector(
+        TRHashDetectorConfig(**common, center_offset_mode="sigmoid")
+    )
+    with torch.no_grad():
+        source.scale_heads[0][-1].weight.fill_(0.75)
+        source.scale_heads[0][-1].bias.fill_(0.5)
+
+    checkpoint = tmp_path / "legacy_detector"
+    checkpoint.mkdir()
+    save_file(
+        {
+            name: value.detach().contiguous()
+            for name, value in source.state_dict().items()
+        },
+        str(checkpoint / "model.safetensors"),
+    )
+    (checkpoint / "config.json").write_text(json.dumps(source.config.to_dict()))
+
+    target = TRHashObjectDetector(TRHashDetectorConfig(**common))
+    initial_center_weight = target.scale_heads[0][-1].weight[:2].detach().clone()
+    initial_center_bias = target.scale_heads[0][-1].bias[:2].detach().clone()
+    load_pretrained_detector(target, checkpoint)
+
+    final = target.scale_heads[0][-1]
+    assert torch.equal(final.weight[:2], initial_center_weight)
+    assert torch.equal(final.bias[:2], initial_center_bias)
+    assert torch.equal(final.weight[2:5], source.scale_heads[0][-1].weight[2:5])
+    assert torch.equal(final.bias[2:5], source.scale_heads[0][-1].bias[2:5])
