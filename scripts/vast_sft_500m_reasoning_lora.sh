@@ -8,7 +8,7 @@ export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
 
 exec python -m scripts.run_sft_curriculum \
-  --checkpoint artifacts/tr_hash_500m_sft_final \
+  --checkpoint artifacts/tr_hash_500m_sft_final_v6 \
   --sft-bin artifacts/complexity_atlas_posttrain/tokenized/32k-v16 \
   --curriculum-config configs/sft_500m_32k_v16.yaml \
   --through-stage generalist-consolidation \
