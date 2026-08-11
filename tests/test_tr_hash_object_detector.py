@@ -210,6 +210,17 @@ def test_loss_handles_images_with_no_ground_truth_boxes():
     losses["loss"].backward()
 
 
+def test_loss_accepts_bfloat16_predictions_with_float32_targets():
+    config = _tiny_config()
+    model = TRHashObjectDetector(config)
+    raw = model(torch.randn(1, 3, 32, 32)).to(torch.bfloat16)
+    targets = [torch.tensor([[0.5, 0.5, 0.2, 0.2, 2.0]])]
+
+    losses = model.compute_loss(raw, targets)
+
+    assert torch.isfinite(losses["loss"])
+
+
 def test_predict_returns_per_image_detections_with_matching_lengths():
     config = _tiny_config()
     model = TRHashObjectDetector(config).eval()

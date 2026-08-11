@@ -350,7 +350,7 @@ class TRHashObjectDetector(nn.Module):
                 batch_indices,
                 cell_indices,
                 assigned["classes"][positive],
-            ] = assigned["quality"][positive]
+            ] = assigned["quality"][positive].to(raw.dtype)
         quality_loss = quality_focal_loss(
             decoded["class_logits"],
             quality_targets,
