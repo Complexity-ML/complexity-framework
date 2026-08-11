@@ -3,7 +3,7 @@ from pathlib import Path
 
 import torch
 from PIL import Image
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 
 from complexity.generative.detection import (
     VOC_CLASS_NAMES,
@@ -81,6 +81,28 @@ def test_export_and_strict_reload_hub_folder(tmp_path: Path):
     assert "0.2500" in (output / "README.md").read_text()
     loaded = load_detector_checkpoint(output)
     assert loaded.config.num_classes == len(VOC_CLASS_NAMES)
+
+
+def test_reload_discards_removed_one_to_one_checkpoint_tensors(tmp_path: Path):
+    checkpoint = _checkpoint(tmp_path / "legacy")
+    state = load_file(str(checkpoint / "model.safetensors"))
+    state["one_to_one_heads.0.weight"] = torch.randn(25, 16)
+    state["one_to_one_heads.0.bias"] = torch.randn(25)
+    save_file(state, str(checkpoint / "model.safetensors"))
+    config = json.loads((checkpoint / "config.json").read_text())
+    config.update(
+        {
+            "end_to_end": True,
+            "one_to_one_loss_weight": 1.0,
+            "one_to_one_loss_warmup_fraction": 0.3,
+        }
+    )
+    (checkpoint / "config.json").write_text(json.dumps(config))
+
+    loaded = load_detector_checkpoint(checkpoint)
+
+    assert loaded.config.end_to_end is False
+    assert not hasattr(loaded, "one_to_one_heads")
 
 
 def test_training_draft_does_not_publish_checkpoint_weights(tmp_path: Path):

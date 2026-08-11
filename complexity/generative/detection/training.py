@@ -134,12 +134,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--varifocal-gamma", type=float, default=2.0)
     parser.add_argument("--no-stal", action="store_true")
     parser.add_argument("--no-progressive-loss", action="store_true")
-    parser.add_argument("--no-end-to-end", action="store_true")
-    parser.add_argument("--one-to-one-loss-weight", type=float, default=1.0)
-    parser.add_argument("--one-to-one-loss-warmup-fraction", type=float, default=0.30)
-    parser.add_argument("--one-to-one-iou-power", type=float, default=4.0)
-    parser.add_argument("--no-one-to-one-teacher-assignment", action="store_true")
-    parser.add_argument("--one-to-one-single-scale", action="store_true")
     parser.add_argument("--log-steps", type=int, default=20)
     parser.add_argument("--save-steps", type=int, default=0, help="0 disables periodic checkpoints")
     parser.add_argument("--seed", type=int, default=42)
@@ -297,12 +291,6 @@ def load_pretrained_detector(
         for level, head in enumerate(model.scale_heads)
         for suffix in ("weight", "bias")
     }
-    if model.one_to_one_heads is not None:
-        output_parameter_names.update(
-            f"one_to_one_heads.{level}.{suffix}"
-            for level in range(len(model.one_to_one_heads))
-            for suffix in ("weight", "bias")
-        )
     pyramid_compatible = source_config.grid_sizes == model.config.grid_sizes
     compatible = {}
     adapted_outputs = []
@@ -310,9 +298,7 @@ def load_pretrained_detector(
         source = source_state.get(name)
         if source is None:
             continue
-        if not pyramid_compatible and (
-            name.startswith("scale_heads.") or name.startswith("one_to_one_heads.")
-        ):
+        if not pyramid_compatible and name.startswith("scale_heads."):
             continue
         is_output = name in output_parameter_names
         if not is_output and source.shape == parameter.shape:
@@ -672,12 +658,6 @@ def main() -> None:
         dynamic_assignment=not args.static_assignment,
         assignment_top_k=args.assignment_top_k,
         stal_enabled=not args.no_stal,
-        end_to_end=not args.no_end_to_end,
-        one_to_one_loss_weight=args.one_to_one_loss_weight,
-        one_to_one_loss_warmup_fraction=args.one_to_one_loss_warmup_fraction,
-        one_to_one_teacher_assignment=not args.no_one_to_one_teacher_assignment,
-        one_to_one_multiscale_candidates=not args.one_to_one_single_scale,
-        one_to_one_iou_power=args.one_to_one_iou_power,
         progressive_loss_enabled=not args.no_progressive_loss,
         box_loss_weight=args.box_loss_weight,
         objectness_loss_weight=args.objectness_loss_weight,
@@ -786,11 +766,10 @@ def main() -> None:
 
             autocast = torch.autocast("cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
             with autocast:
-                raw, one_to_one_raw = model.forward_predictions(pixel_values)
+                raw = model(pixel_values)
                 losses = model.compute_loss(
                     raw,
                     targets,
-                    one_to_one_raw=one_to_one_raw,
                     training_progress=step / max(total_steps - 1, 1),
                 )
             optimizer.zero_grad(set_to_none=True)
@@ -809,31 +788,18 @@ def main() -> None:
             if step % args.log_steps == 0:
                 averages = {name: value / args.log_steps for name, value in running_losses.items()}
                 elapsed = time.monotonic() - started
-                one_to_one_log = (
-                    " o2o_raw=%.4f o2o_w=%.2f o2o_contrib=%.4f"
-                    % (
-                        averages["one_to_one_loss"],
-                        averages["one_to_one_weight"],
-                        averages["one_to_one_weighted_loss"],
-                    )
-                    if "one_to_one_loss" in averages
-                    else ""
-                )
                 LOGGER.info(
-                    "epoch=%d step=%d loss_total=%.4f loss_o2m=%.4f "
-                    "o2m_obj=%.4f o2m_box=%.4f o2m_cls=%.4f "
-                    "lr=%.2e expert_lr=%.2e elapsed=%.1fs%s",
+                    "epoch=%d step=%d loss_total=%.4f obj=%.4f box=%.4f cls=%.4f "
+                    "lr=%.2e expert_lr=%.2e elapsed=%.1fs",
                     epoch,
                     step,
                     averages["loss"],
-                    averages["one_to_many_loss"],
                     averages["objectness_loss"],
                     averages["box_loss"],
                     averages["class_loss"],
                     scheduler.get_last_lr()[0],
                     scheduler.get_last_lr()[1],
                     elapsed,
-                    one_to_one_log,
                 )
                 with metrics_path.open("a") as handle:
                     handle.write(
@@ -849,13 +815,7 @@ def main() -> None:
                         + "\n"
                     )
                 progress.set_postfix(
-                    total=f"{averages['loss']:.4f}",
-                    o2m=f"{averages['one_to_many_loss']:.4f}",
-                    o2o=(
-                        f"{averages['one_to_one_weighted_loss']:.4f}"
-                        if "one_to_one_loss" in averages
-                        else "off"
-                    ),
+                    loss=f"{averages['loss']:.4f}",
                     lr=f"{scheduler.get_last_lr()[0]:.2e}",
                     expert_lr=f"{scheduler.get_last_lr()[1]:.2e}",
                 )
@@ -871,20 +831,6 @@ def main() -> None:
                 confidence_threshold=args.eval_confidence,
                 use_amp=use_amp,
                 show_progress=True,
-                prediction_branch="one_to_one" if model.one_to_one_heads is not None else "auto",
-            )
-            one_to_many_metrics = (
-                evaluate_detector(
-                    model,
-                    validation_loader,
-                    device,
-                    confidence_threshold=args.eval_confidence,
-                    use_amp=use_amp,
-                    show_progress=True,
-                    prediction_branch="one_to_many",
-                )
-                if model.one_to_one_heads is not None
-                else None
             )
             LOGGER.info(
                 "validation epoch=%d mAP50=%.4f precision=%.4f recall=%.4f "
@@ -897,40 +843,20 @@ def main() -> None:
                 validation_metrics["best_f1"],
                 validation_metrics["best_confidence"],
             )
-            if one_to_many_metrics is not None:
-                LOGGER.info(
-                    "validation one-to-many epoch=%d mAP50=%.4f precision=%.4f "
-                    "recall=%.4f f1=%.4f best_f1=%.4f best_conf=%.3f",
-                    epoch,
-                    one_to_many_metrics["map50"],
-                    one_to_many_metrics["precision"],
-                    one_to_many_metrics["recall"],
-                    one_to_many_metrics["f1"],
-                    one_to_many_metrics["best_f1"],
-                    one_to_many_metrics["best_confidence"],
-                )
             with metrics_path.open("a") as handle:
-                record = {"step": step, "epoch": epoch, "validation": validation_metrics}
-                if one_to_many_metrics is not None:
-                    record["validation_one_to_many"] = one_to_many_metrics
-                handle.write(json.dumps(record) + "\n")
+                handle.write(
+                    json.dumps({"step": step, "epoch": epoch, "validation": validation_metrics})
+                    + "\n"
+                )
             if validation_metrics["map50"] > best_map50:
                 best_map50 = validation_metrics["map50"]
-                checkpoint_metrics = dict(validation_metrics)
-                if one_to_many_metrics is not None:
-                    checkpoint_metrics.update(
-                        {
-                            f"one_to_many_{name}": value
-                            for name, value in one_to_many_metrics.items()
-                        }
-                    )
                 save_checkpoint(
                     args.output,
                     model,
                     config,
                     step,
                     name="best",
-                    validation_metrics=checkpoint_metrics,
+                    validation_metrics=validation_metrics,
                 )
 
     save_checkpoint(args.output, model, config, step)

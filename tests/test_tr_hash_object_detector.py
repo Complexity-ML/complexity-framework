@@ -75,17 +75,15 @@ def test_optional_p2_head_adds_a_stride_four_prediction_grid():
     assert model.fpn_upsample is not None
 
 
-def test_end_to_end_head_adds_lightweight_one_to_one_predictions():
+def test_forward_predictions_exposes_only_stable_one_to_many_head():
     config = _tiny_config()
     model = TRHashObjectDetector(config)
     pixels = torch.randn(2, 3, 32, 32)
 
-    one_to_many, one_to_one = model.forward_predictions(pixels)
-    legacy = TRHashObjectDetector(_tiny_config(end_to_end=False))
+    one_to_many = model.forward_predictions(pixels)
 
-    assert one_to_one is not None
-    assert one_to_one.shape == one_to_many.shape
-    assert model.num_parameters() - legacy.num_parameters() < 20_000
+    assert one_to_many.shape == (2, config.num_cells, 5 + config.num_classes)
+    assert not hasattr(model, "one_to_one_heads")
 
 
 def test_default_224_configuration_uses_rounded_pyramid_grids():
@@ -157,6 +155,16 @@ def test_decode_center_offsets_can_leave_the_source_cell():
 def test_unversioned_checkpoint_config_keeps_legacy_sigmoid_centers():
     values = _tiny_config().to_dict()
     values.pop("center_offset_mode")
+    values.update(
+        {
+            "end_to_end": True,
+            "one_to_one_loss_weight": 1.0,
+            "one_to_one_loss_warmup_fraction": 0.3,
+            "one_to_one_teacher_assignment": True,
+            "one_to_one_multiscale_candidates": True,
+            "one_to_one_iou_power": 4.0,
+        }
+    )
     config = TRHashDetectorConfig.from_dict(values)
     model = TRHashObjectDetector(config).eval()
     raw = torch.zeros(1, config.num_cells, 5 + config.num_classes)
@@ -165,6 +173,7 @@ def test_unversioned_checkpoint_config_keeps_legacy_sigmoid_centers():
     center_x = model.decode(raw)["boxes_cxcywh"][0, 0, 0]
 
     assert config.center_offset_mode == "sigmoid"
+    assert config.end_to_end is False
     assert 0.0 <= center_x <= 0.25
 
 
@@ -189,86 +198,6 @@ def test_loss_backward_reaches_head_and_backbone_experts():
     grad = model.tower.blocks[0].mlp.expert_gate.grad
     assert grad is not None
     assert grad.abs().sum() > 0
-
-
-def test_one_to_one_loss_reaches_end_to_end_head():
-    config = _tiny_config()
-    model = TRHashObjectDetector(config)
-    pixels = torch.randn(2, 3, 32, 32)
-    targets = [
-        torch.tensor([[0.3, 0.4, 0.2, 0.3, 1.0]]),
-        torch.tensor([[0.6, 0.5, 0.3, 0.2, 2.0]]),
-    ]
-
-    raw, one_to_one = model.forward_predictions(pixels)
-    losses = model.compute_loss(raw, targets, one_to_one_raw=one_to_one)
-    losses["loss"].backward()
-
-    assert "one_to_one_loss" in losses
-    assert model.one_to_one_heads is not None
-    assert model.one_to_one_heads[0].weight.grad is not None
-
-
-def test_global_one_to_one_assignment_keeps_close_objects_unique():
-    config = _tiny_config(
-        one_to_one_teacher_assignment=True,
-        one_to_one_multiscale_candidates=True,
-    )
-    model = TRHashObjectDetector(config)
-    raw = torch.zeros(1, config.num_cells, 5 + config.num_classes)
-    decoded = model.decode(raw)
-    targets = [
-        torch.tensor(
-            [
-                [0.50, 0.50, 0.20, 0.20, 1.0],
-                [0.51, 0.50, 0.20, 0.20, 2.0],
-            ]
-        )
-    ]
-
-    assigned = model._assign_one_to_one_targets(
-        targets,
-        student_decoded=decoded,
-        teacher_decoded=decoded,
-    )
-
-    positives = assigned["positive_mask"][0]
-    assert positives.sum() == 2
-    assert sorted(assigned["target_indices"][0, positives].tolist()) == [0, 1]
-
-
-def test_one_to_one_loss_weight_warms_up_without_changing_main_loss():
-    config = _tiny_config(one_to_one_loss_weight=1.0, one_to_one_loss_warmup_fraction=0.4)
-    model = TRHashObjectDetector(config)
-    pixels = torch.randn(1, 3, 32, 32)
-    targets = [torch.tensor([[0.5, 0.5, 0.25, 0.25, 1.0]])]
-    raw, one_to_one = model.forward_predictions(pixels)
-
-    main = model.compute_loss(raw, targets, training_progress=0.0)
-    start = model.compute_loss(
-        raw,
-        targets,
-        one_to_one_raw=one_to_one,
-        training_progress=0.0,
-    )
-    middle = model.compute_loss(
-        raw,
-        targets,
-        one_to_one_raw=one_to_one,
-        training_progress=0.2,
-    )
-
-    assert torch.allclose(start["loss"], main["loss"])
-    assert start["one_to_one_weight"].item() == 0.0
-    assert torch.allclose(middle["one_to_one_weight"], torch.tensor(0.5))
-    assert torch.allclose(
-        middle["loss"],
-        middle["one_to_many_loss"] + middle["one_to_one_weighted_loss"],
-    )
-    assert torch.allclose(
-        middle["one_to_one_weighted_loss"],
-        middle["one_to_one_weight"] * middle["one_to_one_loss"],
-    )
 
 
 def test_progressive_loss_interpolates_objectness_and_box_weights():
@@ -332,26 +261,8 @@ def test_predict_threshold_reduces_or_keeps_detection_count():
         assert strict_entry["boxes"].shape[0] <= loose_entry["boxes"].shape[0]
 
 
-def test_end_to_end_predict_does_not_call_nms(monkeypatch):
-    config = _tiny_config(end_to_end=True)
-    model = TRHashObjectDetector(config).eval()
-
-    def fail_if_called(*args, **kwargs):
-        raise AssertionError("NMS must not run for one-to-one inference")
-
-    monkeypatch.setattr("complexity.generative.detection.model.class_aware_nms", fail_if_called)
-    detections = model.predict(
-        torch.randn(1, 3, 32, 32),
-        objectness_threshold=0.0,
-        max_detections=5,
-    )
-
-    assert len(detections) == 1
-    assert detections[0]["boxes"].shape[0] == 5
-
-
-def test_one_to_many_prediction_branch_still_runs_nms(monkeypatch):
-    model = TRHashObjectDetector(_tiny_config(end_to_end=True)).eval()
+def test_prediction_runs_nms(monkeypatch):
+    model = TRHashObjectDetector(_tiny_config()).eval()
     calls = []
 
     def record_nms(boxes, scores, labels, iou_threshold, max_detections):

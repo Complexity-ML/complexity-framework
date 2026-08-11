@@ -18,7 +18,6 @@ import torch.nn.functional as F
 
 from ..vision_language.vision_tower import TRHashVisionTower
 from .config import TRHashDetectorConfig
-from .matching import assign_one_to_one_targets
 from .ops import box_iou, class_aware_nms
 from .ops import greedy_nms as greedy_nms
 
@@ -128,16 +127,8 @@ class TRHashObjectDetector(nn.Module):
             )
             for _ in self.config.grid_sizes
         )
-        self.one_to_one_heads = (
-            nn.ModuleList(nn.Linear(hidden, output_width) for _ in self.config.grid_sizes)
-            if self.config.end_to_end
-            else None
-        )
         for head in self.scale_heads:
             self._initialize_prediction_layer(head[-1])
-        if self.one_to_one_heads is not None:
-            for head in self.one_to_one_heads:
-                self._initialize_prediction_layer(head)
 
     @staticmethod
     def _initialize_prediction_layer(layer: nn.Linear) -> None:
@@ -170,13 +161,12 @@ class TRHashObjectDetector(nn.Module):
         features: torch.Tensor,
         *,
         return_hidden: bool = False,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[List[torch.Tensor]]]:
+    ) -> tuple[torch.Tensor, Optional[List[torch.Tensor]]]:
         """Run detector heads without recomputing the shared vision tower."""
 
         feature_maps = self._feature_pyramid(features)
 
         outputs = []
-        one_to_one_outputs = []
         hidden_outputs = []
         for level, (head, feature_map) in enumerate(zip(self.scale_heads, feature_maps)):
             tokens = feature_map.flatten(2).transpose(1, 2)
@@ -184,26 +174,20 @@ class TRHashObjectDetector(nn.Module):
             if return_hidden:
                 hidden_outputs.append(hidden_tokens)
             outputs.append(head[3](hidden_tokens))
-            if self.one_to_one_heads is not None:
-                one_to_one_outputs.append(self.one_to_one_heads[level](hidden_tokens))
         one_to_many = torch.cat(outputs, dim=1)
-        one_to_one = torch.cat(one_to_one_outputs, dim=1) if one_to_one_outputs else None
-        return one_to_many, one_to_one, hidden_outputs if return_hidden else None
+        return one_to_many, hidden_outputs if return_hidden else None
 
-    def forward_predictions(
-        self, pixel_values: torch.Tensor
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Return one-to-many training predictions and optional one-to-one outputs."""
+    def forward_predictions(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        """Return stable one-to-many predictions."""
 
         features = self.tower(pixel_values)
-        one_to_many, one_to_one, _ = self._predictions_from_features(features)
-        return one_to_many, one_to_one
+        one_to_many, _ = self._predictions_from_features(features)
+        return one_to_many
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         """Raw one-to-many predictions, preserving the original public API."""
 
-        one_to_many, _ = self.forward_predictions(pixel_values)
-        return one_to_many
+        return self.forward_predictions(pixel_values)
 
     def _cell_geometry(
         self, device: torch.device
@@ -382,24 +366,15 @@ class TRHashObjectDetector(nn.Module):
         *,
         assignment_top_k: Optional[int] = None,
         allow_stal: bool = True,
-        one_to_one_teacher: Optional[Dict[str, torch.Tensor]] = None,
         training_progress: float = 1.0,
     ) -> Dict[str, torch.Tensor]:
         decoded = self.decode(raw)
-        assigned = (
-            self._assign_one_to_one_targets(
-                targets,
-                student_decoded=decoded,
-                teacher_decoded=one_to_one_teacher,
-            )
-            if one_to_one_teacher is not None
-            else self._assign_targets(
-                targets,
-                raw.device,
-                decoded=decoded,
-                assignment_top_k=assignment_top_k,
-                allow_stal=allow_stal,
-            )
+        assigned = self._assign_targets(
+            targets,
+            raw.device,
+            decoded=decoded,
+            assignment_top_k=assignment_top_k,
+            allow_stal=allow_stal,
         )
         positive = assigned["positive_mask"]
         positive_weights = assigned["objectness"] * positive
@@ -470,35 +445,14 @@ class TRHashObjectDetector(nn.Module):
             "class_loss": class_loss,
         }
 
-    def _assign_one_to_one_targets(
-        self,
-        targets: List[torch.Tensor],
-        *,
-        student_decoded: Dict[str, torch.Tensor],
-        teacher_decoded: Dict[str, torch.Tensor],
-    ) -> Dict[str, torch.Tensor]:
-        rows, cols, denominators, _ = self._cell_geometry(student_decoded["boxes"].device)
-        return assign_one_to_one_targets(
-            targets,
-            student_decoded=student_decoded,
-            teacher_decoded=teacher_decoded,
-            config=self.config,
-            rows=rows,
-            cols=cols,
-            denominators=denominators,
-            level_offsets=self._level_offsets(),
-            level_for_box=self._level_for_box,
-        )
-
     def compute_loss(
         self,
         raw: torch.Tensor,
         targets: List[torch.Tensor],
         *,
-        one_to_one_raw: Optional[torch.Tensor] = None,
         training_progress: float = 1.0,
     ) -> Dict[str, torch.Tensor]:
-        """Compute one-to-many and optional one-to-one detector losses.
+        """Compute the stable one-to-many detector loss.
 
         ``targets`` is a length-``batch`` list of ``[N_i, 5]`` tensors in
         normalized ``(cx, cy, w, h, class_id)`` format.
@@ -512,37 +466,6 @@ class TRHashObjectDetector(nn.Module):
             training_progress=training_progress,
         )
         losses["one_to_many_loss"] = losses["loss"]
-        if one_to_one_raw is None:
-            return losses
-        if one_to_one_raw.shape != raw.shape:
-            raise ValueError("one-to-one predictions must match one-to-many shape")
-        if self.config.one_to_one_teacher_assignment:
-            with torch.no_grad():
-                teacher_decoded = self.decode(raw)
-        else:
-            teacher_decoded = None
-        one_to_one = self._compute_branch_loss(
-            one_to_one_raw,
-            targets,
-            assignment_top_k=1,
-            allow_stal=False,
-            one_to_one_teacher=teacher_decoded,
-            training_progress=training_progress,
-        )
-        warmup_fraction = self.config.one_to_one_loss_warmup_fraction
-        one_to_one_scale = (
-            1.0
-            if warmup_fraction == 0.0
-            else min(max(float(training_progress) / warmup_fraction, 0.0), 1.0)
-        )
-        effective_weight = self.config.one_to_one_loss_weight * one_to_one_scale
-        losses["one_to_one_loss"] = one_to_one["loss"]
-        losses["one_to_one_objectness_loss"] = one_to_one["objectness_loss"]
-        losses["one_to_one_box_loss"] = one_to_one["box_loss"]
-        losses["one_to_one_class_loss"] = one_to_one["class_loss"]
-        losses["one_to_one_weight"] = raw.new_tensor(effective_weight)
-        losses["one_to_one_weighted_loss"] = effective_weight * one_to_one["loss"]
-        losses["loss"] = losses["one_to_many_loss"] + losses["one_to_one_weighted_loss"]
         return losses
 
     @torch.no_grad()
@@ -556,19 +479,15 @@ class TRHashObjectDetector(nn.Module):
         max_detections: int = 300,
         prediction_branch: str = "auto",
     ) -> List[Dict[str, torch.Tensor]]:
-        """Decode detections, using the one-to-one NMS-free head when enabled.
+        """Decode detections with class-aware NMS.
 
         Returns a list (length = batch) of dicts with ``boxes`` (xyxy,
         normalized), ``scores``, and ``labels``.
         """
 
-        if prediction_branch not in {"auto", "one_to_one", "one_to_many"}:
-            raise ValueError("prediction_branch must be auto, one_to_one, or one_to_many")
-        one_to_many_raw, one_to_one_raw = self.forward_predictions(pixel_values)
-        use_one_to_one = one_to_one_raw is not None and prediction_branch != "one_to_many"
-        if prediction_branch == "one_to_one" and one_to_one_raw is None:
-            raise ValueError("this detector has no one-to-one prediction branch")
-        raw = one_to_one_raw if use_one_to_one else one_to_many_raw
+        if prediction_branch not in {"auto", "one_to_many"}:
+            raise ValueError("only the one_to_many prediction branch is supported")
+        raw = self.forward_predictions(pixel_values)
         if postprocess_on_cpu:
             raw = raw.cpu()
         decoded = self.decode(raw)
@@ -584,16 +503,13 @@ class TRHashObjectDetector(nn.Module):
             keep = scores >= objectness_threshold
             boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
 
-            if use_one_to_one:
-                kept_indices = torch.argsort(scores, descending=True)[:max_detections]
-            else:
-                kept_indices = class_aware_nms(
-                    boxes,
-                    scores,
-                    labels,
-                    iou_threshold,
-                    max_detections=max_detections,
-                )
+            kept_indices = class_aware_nms(
+                boxes,
+                scores,
+                labels,
+                iou_threshold,
+                max_detections=max_detections,
+            )
             results.append(
                 {
                     "boxes": boxes[kept_indices],

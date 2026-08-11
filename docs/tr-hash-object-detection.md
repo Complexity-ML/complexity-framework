@@ -2,17 +2,17 @@
 
 The v0.3 detector is a compact, anchor-free, single-stage model. A TR-Hash
 vision tower feeds a lightweight prediction pyramid. Its one-to-many branch
-provides dense supervision during training, while a one-to-one branch is used
-for NMS-free inference. Dynamic STAL-style assignment sends small objects to
-the finest grid and Varifocal objectness learns an IoU-aware confidence score.
+provides dense supervision during training and class-aware batched NMS removes
+duplicate predictions at inference. Dynamic STAL-style assignment sends small
+objects to the finest grid and Varifocal objectness learns an IoU-aware score.
 
 ```text
 TR-Hash vision tower
         |
-        +-- P2 (optional) -- one-to-many + one-to-one heads
-        +-- P3            -- one-to-many + one-to-one heads
-        +-- P4            -- one-to-many + one-to-one heads
-        +-- P5            -- one-to-many + one-to-one heads
+        +-- P2 (optional) -- one-to-many head
+        +-- P3            -- one-to-many head
+        +-- P4            -- one-to-many head
+        +-- P5            -- one-to-many head
 ```
 
 For a 128 px input, width 128, four tower layers, and four routed experts, the
@@ -75,29 +75,22 @@ cf-detector-train \
   --device mps
 ```
 
-Progressive loss balancing, STAL assignment, and the one-to-one end-to-end
-branch are enabled by default for new v0.3 configs. Progressive loss begins
+Progressive loss balancing and STAL assignment are enabled by default.
+Progressive loss begins
 with stronger objectness supervision and half-strength box regression, then
 linearly reaches the configured final weights. Old unversioned checkpoints
-load with their legacy sigmoid center decoding and without the new branches.
-Use `--no-progressive-loss`, `--no-stal`, or `--no-end-to-end` for controlled
-ablations. AdamW remains selectable only to reproduce an older baseline; the
+load with their legacy sigmoid center decoding. Use `--no-progressive-loss`
+or `--no-stal` for controlled ablations. AdamW remains selectable only to reproduce an older baseline; the
 v0.3 default is SGD with Nesterov momentum and a separate expert LR group.
 
-The v2 end-to-end assignment uses the mature one-to-many branch as a detached
-teacher, globally gives each target a unique cell across all feature scales,
-and ramps the one-to-one loss over the first 30% of training. This prevents
-nearby objects from fighting for one cell before the box predictions are
-useful. Validation reports the production one-to-one/NMS-free result first and
-the one-to-many/NMS result separately, so a regression can be localized to the
-head instead of being hidden by the combined training loss. The main controls
-are `--one-to-one-loss-warmup-fraction`, `--one-to-one-iou-power`,
-`--no-one-to-one-teacher-assignment`, and `--one-to-one-single-scale`.
+The unsuccessful one-to-one/NMS-free experiment was removed after controlled
+validation measured mAP50 0.0630 versus 0.0995 for the same checkpoint's
+one-to-many branch. Legacy checkpoints containing `one_to_one_heads.*` remain
+loadable: those obsolete tensors are discarded and inference uses the validated
+one-to-many head with `torchvision.ops.batched_nms`.
 
-Training logs keep the loss accounting explicit: `loss_total = loss_o2m +
-o2o_w * o2o_raw`. The weighted one-to-one term is printed as `o2o_contrib`;
-the JSONL record additionally contains the objectness, box, and class losses for
-both branches. This avoids comparing a combined loss with O2M-only components.
+Training logs report one unambiguous loss total and its objectness, box, and
+class components. There is no hidden auxiliary loss added to the total.
 
 The trainer writes `metrics.jsonl`, a validated `best/` checkpoint, and a final
 step checkpoint. Validation reports mAP50, precision, recall, F1, the best F1,

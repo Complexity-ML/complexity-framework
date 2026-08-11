@@ -43,12 +43,9 @@ class TRHashDetectorConfig:
     stal_top_k: int = 9
     stal_center_radius: float = 3.5
     center_offset_mode: str = "linear"
-    end_to_end: bool = True
-    one_to_one_loss_weight: float = 1.0
-    one_to_one_loss_warmup_fraction: float = 0.30
-    one_to_one_teacher_assignment: bool = True
-    one_to_one_multiscale_candidates: bool = True
-    one_to_one_iou_power: float = 4.0
+    # Retained only so older checkpoint configs deserialize. The failed
+    # one-to-one experiment is no longer constructed or trained.
+    end_to_end: bool = False
     progressive_loss_enabled: bool = True
     progressive_box_start: float = 0.5
     progressive_objectness_start: float = 1.5
@@ -68,6 +65,7 @@ class TRHashDetectorConfig:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "scale_factors", tuple(self.scale_factors))
+        object.__setattr__(self, "end_to_end", False)
         if self.num_classes <= 0:
             raise ValueError("num_classes must be positive")
         if self.image_size <= 0 or self.patch_size <= 0:
@@ -98,12 +96,6 @@ class TRHashDetectorConfig:
             raise ValueError("STAL top-k and center radius must be positive")
         if self.center_offset_mode not in {"linear", "sigmoid"}:
             raise ValueError("center_offset_mode must be linear or sigmoid")
-        if self.one_to_one_loss_weight < 0.0:
-            raise ValueError("one_to_one_loss_weight must be non-negative")
-        if not 0.0 <= self.one_to_one_loss_warmup_fraction <= 1.0:
-            raise ValueError("one_to_one_loss_warmup_fraction must be in [0, 1]")
-        if self.one_to_one_iou_power < 0.0:
-            raise ValueError("one_to_one_iou_power must be non-negative")
         if not 0.0 < self.progressive_box_start <= 1.0:
             raise ValueError("progressive_box_start must be in (0, 1]")
         if self.progressive_objectness_start < 1.0:
@@ -159,13 +151,21 @@ class TRHashDetectorConfig:
     @classmethod
     def from_dict(cls, values: Dict[str, Any]) -> "TRHashDetectorConfig":
         values = dict(values)
+        for deprecated in (
+            "one_to_one_loss_weight",
+            "one_to_one_loss_warmup_fraction",
+            "one_to_one_teacher_assignment",
+            "one_to_one_multiscale_candidates",
+            "one_to_one_iou_power",
+        ):
+            values.pop(deprecated, None)
         # Checkpoints written before center-offset versioning used cell-bounded
         # sigmoid offsets. Preserve their inference semantics on load.
         values.setdefault("center_offset_mode", "sigmoid")
         # New training-only branches are opt-in for unversioned checkpoints so
         # their state dictionaries and inference outputs remain unchanged.
         values.setdefault("stal_enabled", False)
-        values.setdefault("end_to_end", False)
+        values["end_to_end"] = False
         values.setdefault("progressive_loss_enabled", False)
         allowed = {item.name for item in fields(cls)}
         unknown = sorted(set(values) - allowed)

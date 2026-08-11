@@ -237,8 +237,6 @@ class TrainingJobManager:
                 command.append("--no-stal")
             if not request.progressive_loss:
                 command.append("--no-progressive-loss")
-            if not request.end_to_end:
-                command.append("--no-end-to-end")
             if request.backbone_checkpoint and request.detector_checkpoint:
                 raise ValueError(
                     "backbone_checkpoint and detector_checkpoint are mutually exclusive"
@@ -380,7 +378,6 @@ def create_app(
         p2_head: bool = False
         stal: bool = True
         progressive_loss: bool = True
-        end_to_end: bool = True
         optimizer: str = Field(default="sgd", pattern="^(sgd|adamw)$")
         momentum: float = Field(default=0.937, ge=0.0, lt=1.0)
         weight_decay: float = Field(default=5e-4, ge=0.0)

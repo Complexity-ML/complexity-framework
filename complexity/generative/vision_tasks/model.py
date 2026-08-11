@@ -223,7 +223,7 @@ class TRHashInstanceSegmenter(TRHashObjectDetector):
 
     def forward_instance(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:
         features = self.tower(pixel_values)
-        raw, one_to_one_raw, hidden = self._predictions_from_features(features, return_hidden=True)
+        raw, hidden = self._predictions_from_features(features, return_hidden=True)
         assert hidden is not None
         coefficients = torch.cat(
             [head(tokens) for head, tokens in zip(self.mask_coefficient_heads, hidden)],
@@ -246,7 +246,6 @@ class TRHashInstanceSegmenter(TRHashObjectDetector):
             )
         return {
             "raw": raw,
-            "one_to_one_raw": one_to_one_raw,
             "mask_coefficients": coefficients,
             "prototypes": prototypes,
         }
@@ -265,7 +264,6 @@ class TRHashInstanceSegmenter(TRHashObjectDetector):
         losses = self.compute_loss(
             raw,
             detection_targets,
-            one_to_one_raw=outputs.get("one_to_one_raw"),
             training_progress=training_progress,
         )
         assigned = self._assign_targets(detection_targets, raw.device, decoded=self.decode(raw))
@@ -314,9 +312,7 @@ class TRHashInstanceSegmenter(TRHashObjectDetector):
         """Return boxes and full-resolution binary masks for each instance."""
 
         outputs = self.forward_instance(pixel_values)
-        raw = outputs["one_to_one_raw"]
-        use_nms = raw is None
-        raw = outputs["raw"] if raw is None else raw
+        raw = outputs["raw"]
         decoded = self.decode(raw)
         results = []
         for image_index in range(pixel_values.size(0)):
@@ -328,16 +324,13 @@ class TRHashInstanceSegmenter(TRHashObjectDetector):
             boxes = decoded["boxes"][image_index, candidate_indices]
             selected_scores = scores[candidate_indices]
             selected_labels = labels[candidate_indices]
-            if use_nms:
-                local_keep = class_aware_nms(
-                    boxes,
-                    selected_scores,
-                    selected_labels,
-                    iou_threshold,
-                    max_detections=max_detections,
-                )
-            else:
-                local_keep = torch.argsort(selected_scores, descending=True)[:max_detections]
+            local_keep = class_aware_nms(
+                boxes,
+                selected_scores,
+                selected_labels,
+                iou_threshold,
+                max_detections=max_detections,
+            )
             kept = candidate_indices[local_keep]
             kept_boxes = decoded["boxes"][image_index, kept]
             mask_logits = torch.einsum(
@@ -394,7 +387,7 @@ class TRHashOBBDetector(TRHashObjectDetector):
 
     def forward_obb(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:
         features = self.tower(pixel_values)
-        raw, one_to_one_raw, hidden = self._predictions_from_features(features, return_hidden=True)
+        raw, hidden = self._predictions_from_features(features, return_hidden=True)
         assert hidden is not None
         angle_vectors = torch.cat(
             [head(tokens) for head, tokens in zip(self.angle_heads, hidden)], dim=1
@@ -403,7 +396,6 @@ class TRHashOBBDetector(TRHashObjectDetector):
         angles = torch.atan2(angle_vectors[..., 0], angle_vectors[..., 1])
         return {
             "raw": raw,
-            "one_to_one_raw": one_to_one_raw,
             "angle_vectors": angle_vectors,
             "angles": angles,
         }
@@ -426,7 +418,6 @@ class TRHashOBBDetector(TRHashObjectDetector):
         losses = self.compute_loss(
             raw,
             detection_targets,
-            one_to_one_raw=outputs.get("one_to_one_raw"),
             training_progress=training_progress,
         )
         assigned = self._assign_targets(detection_targets, raw.device, decoded=self.decode(raw))
@@ -455,9 +446,7 @@ class TRHashOBBDetector(TRHashObjectDetector):
         max_detections: int = 300,
     ) -> List[Dict[str, torch.Tensor]]:
         outputs = self.forward_obb(pixel_values)
-        raw = outputs["one_to_one_raw"]
-        use_nms = raw is None
-        raw = outputs["raw"] if raw is None else raw
+        raw = outputs["raw"]
         decoded = self.decode(raw)
         results = []
         for image_index in range(pixel_values.size(0)):
@@ -469,16 +458,13 @@ class TRHashOBBDetector(TRHashObjectDetector):
             boxes = decoded["boxes"][image_index, candidate_indices]
             selected_scores = scores[candidate_indices]
             selected_labels = labels[candidate_indices]
-            if use_nms:
-                local_keep = class_aware_nms(
-                    boxes,
-                    selected_scores,
-                    selected_labels,
-                    iou_threshold,
-                    max_detections=max_detections,
-                )
-            else:
-                local_keep = torch.argsort(selected_scores, descending=True)[:max_detections]
+            local_keep = class_aware_nms(
+                boxes,
+                selected_scores,
+                selected_labels,
+                iou_threshold,
+                max_detections=max_detections,
+            )
             kept = candidate_indices[local_keep]
             results.append(
                 {

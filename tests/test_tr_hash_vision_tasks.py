@@ -124,8 +124,8 @@ def test_instance_segmentation_uses_one_backbone_pass_and_trains_masks():
     assert predictions[0]["masks"].dtype == torch.bool
 
 
-def test_obb_periodic_angle_loss_and_nms_free_prediction(monkeypatch):
-    model = TRHashOBBDetector(_config(end_to_end=True))
+def test_obb_periodic_angle_loss_and_nms_prediction(monkeypatch):
+    model = TRHashOBBDetector(_config())
     outputs = model.forward_obb(torch.randn(1, 3, 32, 32))
     targets = [torch.tensor([[0.5, 0.5, 0.3, 0.4, math.pi / 4, 2.0]])]
     losses = model.compute_obb_loss(outputs, targets)
@@ -135,15 +135,19 @@ def test_obb_periodic_angle_loss_and_nms_free_prediction(monkeypatch):
     assert torch.all(outputs["angles"] <= math.pi)
     assert torch.isfinite(losses["angle_loss"])
 
-    def fail_if_called(*_args, **_kwargs):
-        raise AssertionError("NMS must not run for end-to-end OBB inference")
+    calls = []
 
-    monkeypatch.setattr("complexity.generative.vision_tasks.model.class_aware_nms", fail_if_called)
+    def record_nms(boxes, scores, labels, iou_threshold, max_detections):
+        calls.append(len(boxes))
+        return torch.argsort(scores, descending=True)[:max_detections]
+
+    monkeypatch.setattr("complexity.generative.vision_tasks.model.class_aware_nms", record_nms)
     predictions = model.predict_obb(
         torch.randn(1, 3, 32, 32), objectness_threshold=0.0, max_detections=5
     )
     assert predictions[0]["boxes"].shape == (5, 4)
     assert predictions[0]["angles"].shape == (5,)
+    assert calls
 
 
 def test_unknown_task_is_rejected():
