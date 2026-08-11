@@ -34,6 +34,16 @@ from .model import TRHashObjectDetector
 LOGGER = logging.getLogger("tr_hash_detector")
 
 
+class TqdmLoggingHandler(logging.StreamHandler):
+    """Write log records without corrupting an active tqdm progress bar."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            tqdm.write(self.format(record), file=self.stream)
+        except Exception:
+            self.handleError(record)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--annotations", type=Path, default=None, help="COCO-format JSON")
@@ -536,7 +546,11 @@ def cosine_schedule(step: int, *, warmup_steps: int, total_steps: int, min_ratio
 def main() -> None:
     args = parse_args()
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s", datefmt="%H:%M:%S"
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[TqdmLoggingHandler()],
+        force=True,
     )
     torch.manual_seed(args.seed)
     device = resolve_device(args.device)
