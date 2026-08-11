@@ -2,7 +2,7 @@
 
 Predicts local LTRB box distributions and joint quality-class scores directly
 per backbone patch/grid cell (no anchors or region proposals). The backbone is
-``TRHashVisionTower``, so
+the hierarchical v6 TR-Hash vision tower, so
 detection gets the same real multi-expert TR-Hash MoE routing as
 classification — this is a detection *head* bolted onto a compliant
 backbone, not a separate architecture with its own routing scheme.
@@ -17,7 +17,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..vision_language.vision_tower import TRHashVisionTower
 from .config import TRHashDetectorConfig
 from .head import DecoupledDetectionHead, OneToOnePredictionHead
 from .hierarchical_tower import HierarchicalTRHashVisionTower
@@ -68,11 +67,7 @@ class TRHashObjectDetector(nn.Module):
     def __init__(self, config: Optional[TRHashDetectorConfig] = None):
         super().__init__()
         self.config = config or TRHashDetectorConfig()
-        self.tower = (
-            HierarchicalTRHashVisionTower(self.config)
-            if self.config.architecture_version == 6
-            else TRHashVisionTower(self.config.vision_tower_config())
-        )
+        self.tower = HierarchicalTRHashVisionTower(self.config)
         hidden = self.config.vision_hidden_size
         self.fpn_upsample = (
             nn.Sequential(
@@ -82,15 +77,6 @@ class TRHashObjectDetector(nn.Module):
             )
             if self.config.p2_head
             else None
-        )
-        coarse_grids = self.config.grid_sizes[1:] if self.config.p2_head else self.config.grid_sizes
-        self.fpn_downsamples = nn.ModuleList(
-            nn.Sequential(
-                nn.Conv2d(hidden, hidden, 3, stride=2, padding=1, groups=hidden),
-                nn.GELU(),
-                nn.Conv2d(hidden, hidden, 1),
-            )
-            for _ in (() if self.config.architecture_version == 6 else coarse_grids[1:])
         )
         self.neck = (
             None
@@ -110,40 +96,24 @@ class TRHashObjectDetector(nn.Module):
 
     def _feature_pyramid(
         self,
-        features: torch.Tensor | List[torch.Tensor],
+        features: List[torch.Tensor],
     ) -> List[torch.Tensor]:
         """Build the prediction pyramid from already-encoded patch features."""
 
-        if isinstance(features, list):
-            source_maps = list(features)
-            feature_map = source_maps[0]
-            feature_maps = []
-        else:
-            batch = features.size(0)
-            grid = math.isqrt(features.size(1))
-            if grid * grid != features.size(1):
-                raise ValueError("vision tokens must form a square feature grid")
-            feature_map = features.transpose(1, 2).reshape(
-                batch, self.config.vision_hidden_size, grid, grid
-            )
-            feature_maps = []
+        source_maps = list(features)
+        feature_map = source_maps[0]
+        feature_maps = []
         if self.fpn_upsample is not None:
             fine_map = F.interpolate(
                 feature_map, scale_factor=2.0, mode="bilinear", align_corners=False
             )
             feature_maps.append(self.fpn_upsample(fine_map))
-        if isinstance(features, list):
-            feature_maps.extend(source_maps)
-        else:
-            feature_maps.append(feature_map)
-            for downsample in self.fpn_downsamples:
-                feature_map = downsample(feature_map)
-                feature_maps.append(feature_map)
+        feature_maps.extend(source_maps)
         return feature_maps if self.neck is None else self.neck(feature_maps)
 
     def _predictions_from_features(
         self,
-        features: torch.Tensor | List[torch.Tensor],
+        features: List[torch.Tensor],
         *,
         return_hidden: bool = False,
     ) -> tuple[torch.Tensor, Optional[List[torch.Tensor]]]:

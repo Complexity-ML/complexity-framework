@@ -118,7 +118,7 @@ class DistributedContext:
 
     def barrier(self) -> None:
         if self.enabled:
-            dist.barrier()
+            dist.barrier(device_ids=[self.local_rank])
 
     def close(self) -> None:
         if self.enabled and dist.is_initialized():

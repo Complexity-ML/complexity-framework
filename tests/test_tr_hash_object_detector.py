@@ -10,7 +10,9 @@ def _tiny_config(**overrides) -> TRHashDetectorConfig:
         image_size=32,
         patch_size=8,
         vision_hidden_size=32,
-        vision_layers=2,
+        vision_layers=3,
+        vision_stage_depths=(1, 1, 1),
+        vision_window_size=2,
         vision_heads=4,
         vision_num_experts=4,
         vision_top_k=2,
@@ -45,8 +47,9 @@ def test_greedy_nms_suppresses_overlapping_lower_score_boxes():
 def test_backbone_uses_real_multi_expert_moe():
     config = _tiny_config()
     model = TRHashObjectDetector(config)
-    for block in model.tower.blocks:
-        assert torch.unique(block.mlp.route_table).numel() > 1
+    for stage in model.tower.stages:
+        for block in stage:
+            assert torch.unique(block.mlp.route_table).numel() > 1
 
 
 def test_forward_shape():
@@ -64,18 +67,17 @@ def test_default_head_uses_three_feature_scales():
     model = TRHashObjectDetector(config)
     assert len(model.head.regression_heads) == 3
     assert len(model.head.classification_heads) == 3
-    assert len(model.fpn_downsamples) == 2
-    assert config.architecture_version == 5
+    assert config.architecture_version == 6
     assert config.neck_mode == "pan"
     assert model.neck is not None
 
 
-def test_pre_v5_config_is_rejected():
+def test_non_v6_config_is_rejected():
     values = _tiny_config().to_dict()
     values.pop("architecture_version")
     values.pop("neck_mode")
 
-    with pytest.raises(ValueError, match="architecture v5"):
+    with pytest.raises(ValueError, match="architecture v6"):
         TRHashDetectorConfig.from_dict(values)
 
 

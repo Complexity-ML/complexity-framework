@@ -15,8 +15,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..detection import TRHashDetectorConfig, TRHashObjectDetector
+from ..detection.hierarchical_tower import (
+    HierarchicalTRHashVisionClassifier,
+    HierarchicalTRHashVisionTower,
+)
 from ..detection.model import class_aware_nms
-from ..vision_language.vision_tower import TRHashVisionClassifier, TRHashVisionTower
 
 VisionTask = Literal[
     "detection",
@@ -66,14 +69,10 @@ class _TRHashDenseVisionModel(nn.Module):
     def __init__(self, config: TRHashDetectorConfig):
         super().__init__()
         self.config = config
-        self.tower = TRHashVisionTower(config.vision_tower_config())
+        self.tower = HierarchicalTRHashVisionTower(config)
 
     def spatial_features(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        tokens = self.tower(pixel_values)
-        grid = self.config.grid_size
-        return tokens.transpose(1, 2).reshape(
-            tokens.size(0), self.config.vision_hidden_size, grid, grid
-        )
+        return self.tower(pixel_values)[0]
 
     def num_parameters(self, trainable_only: bool = False) -> int:
         parameters = self.parameters()
@@ -82,11 +81,11 @@ class _TRHashDenseVisionModel(nn.Module):
         return sum(value.numel() for value in parameters)
 
 
-class TRHashImageClassifier(TRHashVisionClassifier):
+class TRHashImageClassifier(HierarchicalTRHashVisionClassifier):
     """Classification variant constructed from the common detector config."""
 
     def __init__(self, config: TRHashDetectorConfig, num_classes: int):
-        super().__init__(config.vision_tower_config(), num_classes)
+        super().__init__(config, num_classes)
         self.detector_config = config
 
     def num_parameters(self, trainable_only: bool = False) -> int:

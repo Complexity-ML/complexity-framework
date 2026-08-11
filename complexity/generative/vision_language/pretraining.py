@@ -8,7 +8,6 @@ import logging
 import math
 import time
 from contextlib import nullcontext
-from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
 
@@ -22,7 +21,6 @@ from ..detection.config import TRHashDetectorConfig
 from ..detection.distributed import DistributedContext
 from ..detection.hierarchical_tower import HierarchicalTRHashVisionClassifier
 from ..detection.training import TqdmLoggingHandler, vision_backend_summary
-from .vision_tower import TRHashVisionClassifier, TRHashVisionTowerConfig
 
 LOGGER = logging.getLogger("tr_hash_vision_pretraining")
 
@@ -71,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--data-root", type=Path, default=Path("data/vision"))
     parser.add_argument("--image-size", type=int, default=128)
-    parser.add_argument("--architecture-version", type=int, choices=(5, 6), default=5)
+    parser.add_argument("--architecture-version", type=int, choices=(6,), default=6)
     parser.add_argument("--patch-size", type=int, default=8)
     parser.add_argument("--hidden-size", type=int, default=128)
     parser.add_argument("--layers", type=int, default=4)
@@ -241,11 +239,7 @@ def build_datasets(args: argparse.Namespace):
 
 
 def _config_values(config) -> dict:
-    if isinstance(config, TRHashDetectorConfig):
-        return config.to_dict()
-    values = asdict(config)
-    values["precision"] = config.precision.value
-    return values
+    return config.to_dict()
 
 
 def save_tower(
@@ -421,36 +415,22 @@ def main() -> None:
         pin_memory=device.type == "cuda",
     )
     precision = "fp32" if device.type == "mps" else "bf16"
-    if args.architecture_version == 6:
-        config = TRHashDetectorConfig(
-            architecture_version=6,
-            image_size=args.image_size,
-            patch_size=args.patch_size,
-            vision_hidden_size=args.hidden_size,
-            vision_layers=args.layers,
-            vision_heads=args.heads,
-            vision_num_experts=args.num_experts,
-            vision_top_k=args.top_k,
-            vision_expert_width=args.expert_width,
-            vision_stage_depths=tuple(args.stage_depths),
-            vision_window_size=args.window_size,
-            vision_precision=precision,
-            num_classes=num_classes,
-        )
-        model = HierarchicalTRHashVisionClassifier(config, num_classes).to(device)
-    else:
-        config = TRHashVisionTowerConfig(
-            image_size=args.image_size,
-            patch_size=args.patch_size,
-            hidden_size=args.hidden_size,
-            num_hidden_layers=args.layers,
-            num_attention_heads=args.heads,
-            num_experts=args.num_experts,
-            top_k=args.top_k,
-            expert_width=args.expert_width,
-            precision=precision,
-        )
-        model = TRHashVisionClassifier(config, num_classes).to(device)
+    config = TRHashDetectorConfig(
+        architecture_version=6,
+        image_size=args.image_size,
+        patch_size=args.patch_size,
+        vision_hidden_size=args.hidden_size,
+        vision_layers=args.layers,
+        vision_heads=args.heads,
+        vision_num_experts=args.num_experts,
+        vision_top_k=args.top_k,
+        vision_expert_width=args.expert_width,
+        vision_stage_depths=tuple(args.stage_depths),
+        vision_window_size=args.window_size,
+        vision_precision=precision,
+        num_classes=num_classes,
+    )
+    model = HierarchicalTRHashVisionClassifier(config, num_classes).to(device)
     if args.resume is not None:
         saved_config = json.loads((args.resume / "config.json").read_text())["tower"]
         current_config = json.loads(json.dumps(_config_values(config)))

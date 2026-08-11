@@ -25,7 +25,6 @@ from complexity.generative.detection.training import (
     _average_precision_from_matches,
     _match_image_detections,
     load_pretrained_detector,
-    load_pretrained_tower,
     should_validate_epoch,
     vision_backend_summary,
 )
@@ -58,7 +57,9 @@ def test_vision_backend_summary_reports_and_can_require_triton():
             image_size=32,
             patch_size=8,
             vision_hidden_size=32,
-            vision_layers=2,
+                vision_layers=3,
+                vision_stage_depths=(1, 1, 1),
+                vision_window_size=2,
             vision_heads=4,
             vision_expert_width=8,
         )
@@ -369,7 +370,9 @@ def test_training_loop_reduces_loss_on_synthetic_shapes():
         image_size=64,
         patch_size=16,
         vision_hidden_size=64,
-        vision_layers=2,
+        vision_layers=3,
+        vision_stage_depths=(1, 1, 1),
+        vision_window_size=2,
         vision_heads=4,
         vision_num_experts=4,
         vision_top_k=2,
@@ -399,57 +402,14 @@ def test_training_loop_reduces_loss_on_synthetic_shapes():
     assert late < early
 
 
-def test_pretrained_tower_resizes_positions_and_regenerates_routes(tmp_path):
-    source = TRHashObjectDetector(
-        TRHashDetectorConfig(
-            image_size=32,
-            patch_size=8,
-            vision_hidden_size=32,
-            vision_layers=1,
-            vision_heads=4,
-            vision_num_experts=4,
-            vision_top_k=2,
-            vision_expert_width=16,
-            num_classes=3,
-        )
-    )
-    checkpoint = tmp_path / "backbone"
-    checkpoint.mkdir()
-    save_file(
-        {name: value.detach().contiguous() for name, value in source.tower.state_dict().items()},
-        str(checkpoint / "tower.safetensors"),
-    )
-    target = TRHashObjectDetector(
-        TRHashDetectorConfig(
-            image_size=64,
-            patch_size=8,
-            vision_hidden_size=32,
-            vision_layers=1,
-            vision_heads=4,
-            vision_num_experts=4,
-            vision_top_k=2,
-            vision_expert_width=16,
-            num_classes=3,
-        )
-    )
-
-    load_pretrained_tower(target, checkpoint)
-
-    assert target.tower.position_embedding.shape == (1, 64, 32)
-    assert target.tower.route_ids.shape == (64,)
-    assert target.tower.blocks[0].mlp.route_table.shape == (2, 64)
-    assert torch.equal(
-        target.tower.blocks[0].mlp.expert_gate,
-        source.tower.blocks[0].mlp.expert_gate,
-    )
-
-
 def test_detector_transfer_preserves_regression_and_mapped_classes(tmp_path):
     common = dict(
         image_size=32,
         patch_size=8,
         vision_hidden_size=32,
-        vision_layers=1,
+        vision_layers=3,
+        vision_stage_depths=(1, 1, 1),
+        vision_window_size=2,
         vision_heads=4,
         vision_num_experts=4,
         vision_top_k=2,
@@ -459,7 +419,6 @@ def test_detector_transfer_preserves_regression_and_mapped_classes(tmp_path):
     source = TRHashObjectDetector(source_config)
     with torch.no_grad():
         source.tower.patch_embed.weight.fill_(0.125)
-        source.fpn_downsamples[0][0].weight.fill_(0.25)
         source.head.regression_heads[0][1].weight.fill_(0.375)
         for head in source.head.classification_heads:
             final = head[-1]
@@ -484,7 +443,6 @@ def test_detector_transfer_preserves_regression_and_mapped_classes(tmp_path):
     load_pretrained_detector(target, checkpoint, class_mapping={0: 2})
 
     assert torch.all(target.tower.patch_embed.weight == 0.125)
-    assert torch.all(target.fpn_downsamples[0][0].weight == 0.25)
     assert torch.all(target.head.regression_heads[0][1].weight == 0.375)
     for level, head in enumerate(target.head.classification_heads):
         final = head[-1]

@@ -84,7 +84,7 @@ def parse_args() -> argparse.Namespace:
         "--detector-checkpoint",
         type=Path,
         default=None,
-        help="Transfer a v5/v6 detector checkpoint, optionally onto new classes",
+        help="Transfer a v6 detector checkpoint, optionally onto new classes",
     )
     parser.add_argument(
         "--class-map",
@@ -96,9 +96,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--architecture-version",
         type=int,
-        choices=(5, 6),
+        choices=(6,),
         default=6,
-        help="detector architecture version",
+        help="detector architecture version (v6 only)",
     )
     parser.add_argument("--patch-size", type=int, default=16)
     parser.add_argument("--num-classes", type=int, default=3)
@@ -424,7 +424,7 @@ def load_pretrained_detector(
     *,
     class_mapping: Dict[int, int] | None = None,
 ) -> None:
-    """Transfer a v5/v6 detector and optionally remap classification rows."""
+    """Transfer a v6 detector and optionally remap classification rows."""
 
     source_config = TRHashDetectorConfig.from_dict(
         json.loads((checkpoint / "config.json").read_text())
@@ -805,8 +805,6 @@ def main() -> None:
     multi_scale_max = args.multi_scale_max or args.image_size
     multi_scale_step = args.multi_scale_step or args.patch_size
     if args.multi_scale_min:
-        if args.architecture_version != 6:
-            raise ValueError("variable-resolution training requires architecture v6")
         if not args.multi_scale_min <= multi_scale_max <= args.image_size:
             raise ValueError("multi-scale resolutions must satisfy min <= max <= image-size")
         if (
@@ -856,11 +854,7 @@ def main() -> None:
         vision_num_experts=args.vision_num_experts,
         vision_top_k=args.vision_top_k,
         vision_expert_width=args.vision_expert_width,
-        vision_stage_depths=(
-            tuple(args.vision_stage_depths)
-            if args.architecture_version == 6
-            else TRHashDetectorConfig.__dataclass_fields__["vision_stage_depths"].default
-        ),
+        vision_stage_depths=tuple(args.vision_stage_depths),
         vision_window_size=args.vision_window_size,
         vision_precision=vision_precision,
         num_classes=num_classes,
@@ -994,32 +988,19 @@ def main() -> None:
         "device_type": device.type,
         "use_amp": use_amp,
     }
-    if args.architecture_version == 6 or any(
-        (
-            args.ema_decay,
-            args.mosaic,
-            args.mixup,
-            args.copy_paste,
-            args.random_erasing,
-            args.close_mosaic_epochs,
-            args.multi_scale_min,
-            args.multi_scale_max,
-            args.multi_scale_step,
-        )
-    ):
-        training_options.update(
-            {
-                "ema_decay": args.ema_decay,
-                "mosaic": args.mosaic,
-                "mixup": args.mixup,
-                "copy_paste": args.copy_paste,
-                "random_erasing": args.random_erasing,
-                "close_mosaic_epochs": args.close_mosaic_epochs,
-                "multi_scale_min": args.multi_scale_min,
-                "multi_scale_max": multi_scale_max,
-                "multi_scale_step": multi_scale_step,
-            }
-        )
+    training_options.update(
+        {
+            "ema_decay": args.ema_decay,
+            "mosaic": args.mosaic,
+            "mixup": args.mixup,
+            "copy_paste": args.copy_paste,
+            "random_erasing": args.random_erasing,
+            "close_mosaic_epochs": args.close_mosaic_epochs,
+            "multi_scale_min": args.multi_scale_min,
+            "multi_scale_max": multi_scale_max,
+            "multi_scale_step": multi_scale_step,
+        }
+    )
     if distributed.enabled:
         training_options["world_size"] = distributed.world_size
     start_epoch = 0

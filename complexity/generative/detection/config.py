@@ -5,9 +5,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, fields
 from typing import Any, Dict, Tuple
 
-from ..vision_language.vision_tower import TRHashVisionTowerConfig
-
-
 @dataclass(frozen=True)
 class TRHashDetectorConfig:
     """Architecture contract for a YOLO-style anchor-free detector.
@@ -18,7 +15,7 @@ class TRHashDetectorConfig:
     unified sigmoid quality-class scores are enabled by default.
     """
 
-    architecture_version: int = 5
+    architecture_version: int = 6
     image_size: int = 224
     patch_size: int = 16
     vision_hidden_size: int = 384
@@ -66,8 +63,8 @@ class TRHashDetectorConfig:
     def __post_init__(self) -> None:
         object.__setattr__(self, "scale_factors", tuple(self.scale_factors))
         object.__setattr__(self, "vision_stage_depths", tuple(self.vision_stage_depths))
-        if self.architecture_version not in {5, 6}:
-            raise ValueError("detector architecture_version must be 5 or 6")
+        if self.architecture_version != 6:
+            raise ValueError("only detector architecture_version 6 is supported")
         if self.num_classes <= 0:
             raise ValueError("num_classes must be positive")
         if self.image_size <= 0 or self.patch_size <= 0:
@@ -82,13 +79,12 @@ class TRHashDetectorConfig:
             depth <= 0 for depth in self.vision_stage_depths
         ):
             raise ValueError("vision_stage_depths must contain positive depths")
-        if self.architecture_version == 6:
-            if sum(self.vision_stage_depths) != self.vision_layers:
-                raise ValueError("v6 vision_layers must equal sum(vision_stage_depths)")
-            if len(self.vision_stage_depths) != len(self.scale_factors):
-                raise ValueError("v6 stages must match the configured feature pyramid")
-            if self.vision_window_size <= 0:
-                raise ValueError("v6 vision_window_size must be positive")
+        if sum(self.vision_stage_depths) != self.vision_layers:
+            raise ValueError("v6 vision_layers must equal sum(vision_stage_depths)")
+        if len(self.vision_stage_depths) != len(self.scale_factors):
+            raise ValueError("v6 stages must match the configured feature pyramid")
+        if self.vision_window_size <= 0:
+            raise ValueError("v6 vision_window_size must be positive")
         if self.vision_precision not in {"fp32", "bf16", "fp16"}:
             raise ValueError("vision_precision must be fp32, bf16, or fp16")
         if self.neck_mode not in {"baseline", "fpn", "pan"}:
@@ -157,31 +153,14 @@ class TRHashDetectorConfig:
         )
         return ((self.grid_size * 2,) + grids) if self.p2_head else grids
 
-    def vision_tower_config(self) -> TRHashVisionTowerConfig:
-        return TRHashVisionTowerConfig(
-            image_size=self.image_size,
-            patch_size=self.patch_size,
-            hidden_size=self.vision_hidden_size,
-            num_hidden_layers=self.vision_layers,
-            num_attention_heads=self.vision_heads,
-            num_experts=self.vision_num_experts,
-            top_k=self.vision_top_k,
-            shared_width=self.vision_shared_width,
-            expert_width=self.vision_expert_width,
-            precision=self.vision_precision,
-            route_seed=self.route_seed,
-            attention_dropout=self.dropout,
-            layer_norm_eps=self.layer_norm_eps,
-        )
-
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, values: Dict[str, Any]) -> "TRHashDetectorConfig":
         values = dict(values)
-        if values.get("architecture_version") not in {5, 6}:
-            raise ValueError("only TR-Hash detector architecture v5/v6 checkpoints are supported")
+        if values.get("architecture_version") != 6:
+            raise ValueError("only TR-Hash detector architecture v6 checkpoints are supported")
         allowed = {item.name for item in fields(cls)}
         unknown = sorted(set(values) - allowed)
         if unknown:

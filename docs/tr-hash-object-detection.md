@@ -1,6 +1,6 @@
 # TR-Hash Object Detection and Serving
 
-The v5 detector is a compact, anchor-free, single-stage model. A TR-Hash
+The v6 detector is a compact, anchor-free, single-stage model. A TR-Hash
 vision tower feeds a lightweight additive PAN with top-down and bottom-up
 cross-scale fusion. Its one-to-many branch
 provides dense supervision during training and class-aware batched NMS removes
@@ -66,7 +66,7 @@ below; when omitted, the trainer creates a deterministic 80/20 split.
 
 ```bash
 cf-detector-train \
-  --output artifacts/detector_v05 \
+  --output artifacts/detector_v06 \
   --backbone-checkpoint artifacts/tr_hash_vision_cifar10/best \
   --yolo-images data/objects/images/train \
   --yolo-labels data/objects/labels/train \
@@ -74,6 +74,7 @@ cf-detector-train \
   --validation-yolo-labels data/objects/labels/val \
   --image-size 128 --patch-size 8 \
   --vision-hidden-size 128 --vision-layers 4 \
+  --vision-stage-depths 1 1 2 --vision-window-size 8 \
   --vision-heads 4 --vision-expert-width 48 \
   --lr 1e-2 --momentum 0.937 \
   --weight-decay 5e-4 --expert-lr-multiplier 1.5 \
@@ -121,7 +122,7 @@ and values are source class IDs.
 
 ```bash
 cf-detector-train \
-  --detector-checkpoint artifacts/detector_v05/best \
+  --detector-checkpoint artifacts/detector_v06/best \
   --class-map data/custom/class-map.json \
   --yolo-images data/custom/images/train \
   --yolo-labels data/custom/labels/train \
@@ -130,6 +131,7 @@ cf-detector-train \
   --output artifacts/detector_custom \
   --image-size 224 --patch-size 8 \
   --vision-hidden-size 128 --vision-layers 4 \
+  --vision-stage-depths 1 1 2 --vision-window-size 8 \
   --vision-heads 4 --vision-expert-width 48 \
   --device cuda
 ```
@@ -145,7 +147,7 @@ images, 4,952 validation images, 20 classes):
 python scripts/prepare_voc_yolo.py --output artifacts/VOC
 
 cf-detector-train \
-  --output artifacts/detector_voc_v05 \
+  --output artifacts/detector_voc_v06 \
   --backbone-checkpoint artifacts/tr_hash_vision_imagenet100/best \
   --yolo-images artifacts/VOC/images/train \
   --yolo-labels artifacts/VOC/labels/train \
@@ -153,18 +155,17 @@ cf-detector-train \
   --validation-yolo-labels artifacts/VOC/labels/val \
   --image-size 224 --patch-size 8 \
   --vision-hidden-size 128 --vision-layers 4 \
+  --vision-stage-depths 1 1 2 --vision-window-size 8 \
   --vision-heads 4 --vision-expert-width 48 \
   --expert-lr-multiplier 1.5 --device mps
 ```
 
-On one 32 GB CUDA GPU, `scripts/vast_sft_voc_v05_fast.sh` uses a larger
-training/evaluation batch and validates every five epochs. For replicated
-multi-GPU training, the batch is per GPU and validation is sharded without
-padding duplicates:
+`scripts/vast_sft_voc_v06.sh` launches replicated multi-GPU training. The
+batch is per GPU and validation is sharded without padding duplicates:
 
 ```bash
-NPROC_PER_NODE=4 BATCH_SIZE_PER_GPU=64 \
-  bash scripts/vast_sft_voc_v05_ddp.sh
+NPROC_PER_NODE=4 BATCH_SIZE_PER_GPU=4 \
+  bash scripts/vast_sft_voc_v06.sh
 ```
 
 The equivalent direct launcher is `torchrun --standalone --nproc_per_node 4
@@ -179,7 +180,7 @@ long-lived process:
 ```bash
 pip install -e ".[serve]"
 cf-detector-serve \
-  --checkpoint artifacts/detector_voc_v05/best \
+  --checkpoint artifacts/detector_voc_v06/best \
   --device mps \
   --host 127.0.0.1 --port 8000
 ```
@@ -268,7 +269,7 @@ the model card and metrics have been reviewed.
 ```bash
 python scripts/publish_tr_hash_vision_hf.py \
   --repo-id AETHORIA-AI/TR-HASH-Vision-0.8M-VOC \
-  --checkpoint artifacts/detector_voc_v05/best \
+  --checkpoint artifacts/detector_voc_v06/best \
   --push --public
 ```
 

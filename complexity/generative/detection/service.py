@@ -11,7 +11,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 import torch
 from PIL import Image
@@ -425,7 +425,7 @@ def create_app(
         validation_fraction: float = Field(default=0.2, gt=0.0, lt=1.0)
         eval_every: int = Field(default=5, ge=1)
         eval_max_detections: int = Field(default=100, ge=1, le=1000)
-        architecture_version: int = Field(default=6, ge=5, le=6)
+        architecture_version: Literal[6] = 6
         vision_hidden_size: int = Field(default=128, ge=32)
         vision_layers: int = Field(default=4, ge=1)
         vision_heads: int = Field(default=4, ge=1)
