@@ -1,86 +1,53 @@
 TITLE
 
-TR-HASH Vision v6: a compact routed-MoE detector built with CUDA and Triton
+Technical feedback wanted: deterministic routed MoE for a small CUDA detector
 
 
-POST
+FIRST POST — NO LINKS
 
-[![GitHub](https://img.shields.io/github/stars/Complexity-ML/complexity-framework?style=for-the-badge&logo=github&label=COMPLEXITY%20FRAMEWORK&color=181717)](https://github.com/Complexity-ML/complexity-framework)
-[![Hugging Face](https://img.shields.io/badge/HUGGING%20FACE-AETHORIA%20AI-FFD21E?style=for-the-badge&logo=huggingface&logoColor=000000)](https://huggingface.co/AETHORIA-AI)
-[![Vision model](https://img.shields.io/badge/TR--HASH%20VISION-v6%20MODEL-5B5FEF?style=for-the-badge)](https://huggingface.co/AETHORIA-AI/TR-HASH-Vision-v6-1M-COCO)
-[![Website](https://img.shields.io/badge/PROJECT-COMPLEXITY--AI.FR-111827?style=for-the-badge&logo=googlechrome&logoColor=white)](https://www.complexity-ai.fr/)
+I have been experimenting with a compact anchor-free detector that uses deterministic spatial-token routing instead of a learned Mixture-of-Experts router. I would value technical feedback from CUDA and Triton developers on the implementation approach.
 
-We are building **TR-HASH Vision v6**, a compact anchor-free object detector that extends deterministic token-routed Mixture-of-Experts into a hierarchical vision architecture.
-
-The goal is not to publish another unverified “YOLO killer.” Our goal is to explore whether deterministic expert specialization can provide useful model capacity while keeping active computation, memory use, and deployment complexity low. The target detector is approximately **1 million parameters**, and we will publish accuracy claims only after a reproducible, equal-budget evaluation.
-
-### What is different?
-
-TR-HASH replaces a learned expert router with stable, identity-based routing. Each spatial token selects a small expert subspace deterministically, while shared computation continues to process the complete contextual representation.
+The current research prototype is approximately 1M parameters. Its hierarchical vision tower produces native P3/P4/P5 features, uses shifted-window attention, and feeds a lightweight top-down and bottom-up PAN. The detection side includes quality-class scoring, LTRB/DFL regression, small-object assignment and an optional one-to-one inference branch.
 
 ```text
 spatial token identity
         |
         v
-deterministic, layer-specific routing ---> selected expert parameters
-        |                                      |
-        +---- shared contextual features ------+----> output
+fixed layer-specific route ---> selected expert parameters
+        |                              |
+        +---- shared context ----------+----> output
 ```
 
-Vision v6 combines:
+The CUDA path currently includes BF16 training, fused routed-expert operations, a Triton implementation, a PyTorch reference fallback, NCCL DDP and exact distributed checkpoint resume. I have exercised the training path on four RTX 5060 Ti GPUs with the fused backend active.
 
-- a hierarchical TR-HASH tower producing native P3/P4/P5 features;
-- shifted-window attention, with global context retained at the coarsest stage;
-- a lightweight top-down and bottom-up PAN for cross-scale fusion;
-- an optional P2 path and STAL-style assignment for small objects;
-- decoupled quality-class and LTRB/DFL regression heads;
-- one-to-many supervision during training;
-- an optional one-to-one branch for end-to-end, NMS-free inference;
-- EMA, multi-resolution training, Mosaic, MixUp, Copy-Paste and random erasing.
+Training and evaluation are still in progress. I am not making an accuracy claim or presenting this as a replacement for an established detector. The planned comparison will use the same data, resolution, augmentation budget and evaluation protocol, with mAP50-95, AP by object size, latency, throughput and peak VRAM reported together.
 
-### NVIDIA acceleration work
+I would particularly appreciate thoughts on:
 
-The implementation is written in PyTorch and includes:
+1. Nsight Compute counters that best expose launch overhead versus poor tensor-core occupancy for many narrow routed operations.
+2. Whether this routing operation should become a TensorRT plugin or first be lowered into gather/GEMM/scatter primitives.
+3. Efficient CUDA layouts for shifted-window attention at 640 px.
 
-- CUDA/BF16 training;
-- custom fused CUDA and Triton paths for routed expert computation;
-- PyTorch fallbacks for portability and correctness checks;
-- multi-GPU DDP with sharded validation;
-- exact checkpoint resume, including optimizer, scheduler, data cursor and per-rank RNG state;
-- ONNX and TorchScript deployment paths, with Core ML parity work for Apple silicon.
-
-We have validated the v6 training path on **4x NVIDIA GeForce RTX 5060 Ti GPUs** with NCCL DDP and the fused TR-HASH backend active. ImageNet-1K backbone pretraining and the detector training pipeline are still research runs, so the public model page intentionally does not report final mAP yet.
-
-### What we will measure
-
-The meaningful comparison is a controlled one: the same dataset, input resolution, augmentation budget, training duration and evaluation protocol. We plan to report:
-
-- mAP50 and mAP50-95;
-- AP small, medium and large;
-- parameter count and checkpoint size;
-- latency, throughput and peak VRAM;
-- results for the PyTorch, ONNX and optimized CUDA paths.
-
-We are especially interested in feedback from CUDA and Triton developers on routed-kernel shapes, profiling methodology, TensorRT export, and efficient shifted-window attention at 640 px.
-
-Source code: https://github.com/Complexity-ML/complexity-framework
-
-GitHub organization: https://github.com/Complexity-ML
-
-Hugging Face organization: https://huggingface.co/AETHORIA-AI
-
-Vision v6 model page: https://huggingface.co/AETHORIA-AI/TR-HASH-Vision-v6-1M-COCO
-
-Project website: https://www.complexity-ai.fr/
-
-The framework and research artifacts are released under **CC BY-NC 4.0**. Contributions, profiling results, critical feedback and reproducible comparisons are welcome.
+If this topic fits the channel, I can share the implementation and profiler traces in a follow-up reply.
 
 
-SUGGESTED TAG
+TAG
 
 CUDA
 
 
-NOTE BEFORE POSTING
+FIRST REPLY — ADD ONLY AFTER THE THREAD REMAINS VISIBLE
 
-The four badges above use standard Markdown image links. If the NVIDIA forum preview blocks external SVG badges, remove only the badge block; the complete plain links at the end remain available.
+Source code, for anyone who wants to inspect the implementation:
+
+https://github.com/Complexity-ML/complexity-framework
+
+The model card and reproducibility notes can be added later in the same thread if useful.
+
+
+POSTING NOTES
+
+- Paste only the TITLE and FIRST POST sections initially.
+- Do not include badges, images, the website, Hugging Face or multiple links.
+- Add the FIRST REPLY only after the thread remains visible.
+- If the no-link version is still removed, the account likely lacks permission or the channel requires moderator approval; do not keep reposting it.
