@@ -115,6 +115,11 @@ class TRHashEngine(nn.Module):
         super().__init__()
         self.config = config
         self.register_buffer("route_table", build_route_table(config))
+        self.register_buffer(
+            "_route_weights",
+            torch.tensor(config.route_weights, dtype=torch.float32),
+            persistent=False,
+        )
         route_codes, expert_pairs = self._compile_fused_metadata(self.route_table)
         self.register_buffer("fused_route_codes", route_codes)
         self.register_buffer("fused_expert_pairs", expert_pairs)
@@ -328,11 +333,7 @@ class TRHashEngine(nn.Module):
     ) -> torch.Tensor:
         """Graph-friendly, autograd-correct fixed expert loop."""
 
-        route_weights = torch.tensor(
-            self.config.route_weights,
-            dtype=flat_x.dtype,
-            device=flat_x.device,
-        )[:, None].expand_as(routes)
+        route_weights = self._route_weights.to(dtype=flat_x.dtype)[:, None].expand_as(routes)
         gate, up, down = self._active_expert_weights()
         return reference_topk_swiglu(
             flat_x,
@@ -392,11 +393,7 @@ class TRHashEngine(nn.Module):
             token_count,
             hidden_size,
         )
-        weights = torch.tensor(
-            self.config.route_weights,
-            device=flat_x.device,
-            dtype=flat_x.dtype,
-        ).view(self.config.top_k, 1, 1)
+        weights = self._route_weights.to(dtype=flat_x.dtype).view(self.config.top_k, 1, 1)
         return (expanded_output * weights).sum(dim=0)
 
     def _fused_cuda_routed(
