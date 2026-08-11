@@ -1,0 +1,83 @@
+version: 1
+seed: 42
+
+# LoRA epoch ablation. Keep rank, targets, optimizer, and source checkpoint
+# unchanged; vary only the number and focus of curriculum exposures.
+stages:
+  - name: reasoning-adaptation-e3
+    max_examples: 2000
+    epochs: 3
+    lr: 1.0e-6
+    include_previous: false
+    balance_by: weighted_task
+    task_weights:
+      reasoning_verification: 0.25
+      planning_comparison: 0.15
+      explanation_learning: 0.20
+      critique_revision: 0.20
+      troubleshooting: 0.20
+    batch_size: 24
+    seq_len: 512
+    save_steps: 42
+    filters:
+      tasks:
+        - reasoning_verification
+        - planning_comparison
+        - explanation_learning
+        - critique_revision
+        - troubleshooting
+      max_num_tokens: 512
+      max_supervised_tokens: 192
+      exclude_response_substrings:
+        - "let's think step by step"
+        - "chain of thought"
+        - "reasoning:"
+        - "analysis:"
+
+  - name: casual-adaptation-e2
+    max_examples: 400
+    epochs: 2
+    lr: 2.0e-6
+    include_previous: false
+    balance_by: task
+    batch_size: 24
+    seq_len: 384
+    save_steps: 9
+    filters:
+      tasks: [casual_conversation]
+      max_num_tokens: 384
+      max_supervised_tokens: 160
+
+  - name: generalist-consolidation-e1
+    max_examples: 2000
+    epochs: 1
+    lr: 5.0e-7
+    include_previous: false
+    balance_by: weighted_task
+    task_weights:
+      casual_conversation: 0.20
+      conversation_empathy: 0.05
+      reasoning_verification: 0.07
+      planning_comparison: 0.04
+      explanation_learning: 0.03
+      critique_revision: 0.03
+      troubleshooting: 0.03
+      practical_action: 0.08
+      grounded_qa: 0.08
+      context_clarification: 0.06
+      brainstorming_creativity: 0.06
+      writing_transformation: 0.07
+      summarization_synthesis: 0.06
+      extraction_classification: 0.06
+      safety_uncertainty: 0.08
+    batch_size: 24
+    seq_len: 512
+    save_steps: 42
+    filters:
+      max_num_tokens: 512
+      max_supervised_tokens: 192
+      exclude_response_substrings:
+        - "let's think step by step"
+        - "chain of thought"
+        - "reasoning:"
+        - "analysis:"
