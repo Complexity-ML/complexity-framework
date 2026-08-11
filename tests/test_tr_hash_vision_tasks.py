@@ -191,3 +191,20 @@ def test_semantic_checkpoint_round_trip(tmp_path):
 
     torch.testing.assert_close(restored(pixels)["logits"], expected)
     assert restored.vision_task == "semantic_segmentation"
+
+
+def test_depth_checkpoint_round_trip(tmp_path):
+    model = TRHashDepthEstimator(_config(), max_depth=80.0).eval()
+    pixels = torch.randn(1, 3, 32, 32)
+    expected = model(pixels)["depth"]
+
+    checkpoint = save_vision_task_checkpoint(
+        model,
+        tmp_path / "depth",
+        task="depth",
+    )
+    restored = load_vision_task_checkpoint(checkpoint)
+
+    torch.testing.assert_close(restored(pixels)["depth"], expected)
+    assert restored.vision_task == "depth"
+    assert json.loads((checkpoint / "class_names.json").read_text()) == []

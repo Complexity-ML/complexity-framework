@@ -49,7 +49,9 @@ def save_vision_task_checkpoint(
     output.mkdir(parents=True, exist_ok=True)
     config = _model_config(model)
     options = _task_options(model, task)
-    expected_classes = int(options.get("num_classes", config.num_classes))
+    expected_classes = (
+        0 if task == "depth" else int(options.get("num_classes", config.num_classes))
+    )
     names = (
         tuple(str(name) for name in class_names)
         if class_names is not None
