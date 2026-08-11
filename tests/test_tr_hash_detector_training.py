@@ -20,11 +20,13 @@ from complexity.generative.detection.checkpointing import (
     load_training_state,
     save_training_state,
 )
+from complexity.generative.detection.distributed import DistributedEvalSampler
 from complexity.generative.detection.training import (
     _average_precision_from_matches,
     _match_image_detections,
     load_pretrained_detector,
     load_pretrained_tower,
+    should_validate_epoch,
 )
 
 
@@ -38,6 +40,26 @@ def _checkpoint_test_optimizer():
     optimizer.step()
     scheduler.step()
     return model, optimizer, scheduler
+
+
+def test_validation_cadence_always_includes_final_epoch():
+    selected = [
+        epoch
+        for epoch in range(12)
+        if should_validate_epoch(epoch, total_epochs=12, eval_every=5)
+    ]
+    assert selected == [4, 9, 11]
+
+
+def test_distributed_validation_sampler_has_no_padding_duplicates():
+    dataset = list(range(11))
+    shards = [
+        list(DistributedEvalSampler(dataset, rank, world_size=4))
+        for rank in range(4)
+    ]
+    flattened = [index for shard in shards for index in shard]
+    assert sorted(flattened) == list(range(len(dataset)))
+    assert len(flattened) == len(set(flattened))
 
 
 def test_exact_training_state_roundtrip_restores_cursor_optimizer_scheduler_and_rng(tmp_path):
@@ -92,6 +114,46 @@ def test_exact_resume_rejects_weights_only_checkpoint(tmp_path):
             total_epochs=5,
             steps_per_epoch=4,
             training_options={},
+        )
+
+
+def test_distributed_checkpoint_records_and_validates_world_size(tmp_path):
+    _, optimizer, scheduler = _checkpoint_test_optimizer()
+    checkpoint = tmp_path / "distributed"
+    checkpoint.mkdir()
+    rng_states = [
+        {"torch": torch.get_rng_state(), "cuda": torch.tensor([rank], dtype=torch.uint8)}
+        for rank in range(2)
+    ]
+    save_training_state(
+        checkpoint,
+        optimizer,
+        scheduler,
+        epoch=0,
+        batch_in_epoch=0,
+        step=1,
+        best_map50=0.0,
+        running_losses={},
+        running_loss_steps=0,
+        total_epochs=2,
+        steps_per_epoch=3,
+        training_options={"world_size": 2},
+        distributed_rng_states=rng_states,
+    )
+    state = torch.load(checkpoint / "training_state.pt", weights_only=True)
+    assert state["world_size"] == 2
+    assert len(state["distributed_rng_states"]) == 2
+
+    _, restored_optimizer, restored_scheduler = _checkpoint_test_optimizer()
+    with pytest.raises(ValueError, match="world size differs"):
+        load_training_state(
+            checkpoint,
+            restored_optimizer,
+            restored_scheduler,
+            total_epochs=2,
+            steps_per_epoch=3,
+            training_options={"world_size": 2},
+            world_size=1,
         )
 
 

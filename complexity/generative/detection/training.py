@@ -1,9 +1,4 @@
-"""Training loop for ``TRHashObjectDetector``.
-
-Single-device (CPU/MPS/CUDA), non-distributed -- the detector is small
-enough that a training farm is not the point here; this is for proving the
-model actually learns, and for fine-tuning on a real COCO-format dataset.
-"""
+"""Single-device or DDP training loop for ``TRHashObjectDetector``."""
 
 from __future__ import annotations
 
@@ -14,7 +9,7 @@ import math
 import time
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Mapping, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -30,6 +25,7 @@ from .data import (
     YoloDetectionDataset,
     collate_detection,
 )
+from .distributed import DistributedContext
 from .metrics import DetectionMetricsAccumulator
 from .model import TRHashObjectDetector
 
@@ -84,7 +80,7 @@ def parse_args() -> argparse.Namespace:
         "--detector-checkpoint",
         type=Path,
         default=None,
-        help="Transfer a v2 detector checkpoint, optionally onto new classes",
+        help="Transfer a v5 detector checkpoint, optionally onto new classes",
     )
     parser.add_argument(
         "--class-map",
@@ -130,7 +126,18 @@ def parse_args() -> argparse.Namespace:
         help="auto selects fp32 on MPS and bf16 elsewhere",
     )
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=8,
+        help="training batch size per device",
+    )
+    parser.add_argument(
+        "--eval-batch-size",
+        type=int,
+        default=0,
+        help="validation batch size per device; 0 reuses --batch-size",
+    )
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--expert-lr-multiplier", type=float, default=1.0)
@@ -139,6 +146,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-steps", type=int, default=50)
     parser.add_argument("--min-lr-ratio", type=float, default=0.05)
     parser.add_argument("--eval-confidence", type=float, default=0.20)
+    parser.add_argument(
+        "--eval-every",
+        type=int,
+        default=1,
+        help="validate every N epochs and always after the final epoch",
+    )
+    parser.add_argument(
+        "--eval-max-detections",
+        type=int,
+        default=100,
+        help="maximum detections retained per validation image",
+    )
     parser.add_argument("--box-loss-weight", type=float, default=5.0)
     parser.add_argument("--quality-loss-weight", type=float, default=1.0)
     parser.add_argument("--box-l1-weight", type=float, default=0.25)
@@ -195,6 +214,7 @@ def save_checkpoint(
     training_options: Dict[str, object],
     name: str | None = None,
     validation_metrics: Dict[str, float] | None = None,
+    distributed_rng_states: Sequence[Mapping[str, torch.Tensor]] | None = None,
 ) -> None:
     target = output / (name or f"step_{step:06d}")
     target.mkdir(parents=True, exist_ok=True)
@@ -220,6 +240,7 @@ def save_checkpoint(
         total_epochs=total_epochs,
         steps_per_epoch=steps_per_epoch,
         training_options=training_options,
+        distributed_rng_states=distributed_rng_states,
     )
     LOGGER.info("Checkpoint saved: %s", target)
 
@@ -290,7 +311,7 @@ def load_pretrained_detector(
     *,
     class_mapping: Dict[int, int] | None = None,
 ) -> None:
-    """Transfer a v2 detector and optionally remap classification rows."""
+    """Transfer a v5 detector and optionally remap classification rows."""
 
     source_config = TRHashDetectorConfig.from_dict(
         json.loads((checkpoint / "config.json").read_text())
@@ -460,6 +481,8 @@ def evaluate_detector(
     confidence_threshold: float,
     use_amp: bool = False,
     show_progress: bool = False,
+    max_detections: int = 100,
+    distributed: DistributedContext | None = None,
 ) -> Dict[str, float]:
     model.eval()
     metrics = DetectionMetricsAccumulator(
@@ -483,6 +506,7 @@ def evaluate_detector(
                 confidence_threshold=0.001,
                 iou_threshold=0.5,
                 postprocess_on_cpu=device.type == "mps",
+                max_detections=max_detections,
             )
         for detection, image_targets in zip(detections, targets):
             metrics.update(
@@ -491,6 +515,14 @@ def evaluate_detector(
                 detection["labels"],
                 image_targets,
             )
+    if distributed is not None and distributed.enabled:
+        states = distributed.all_gather_objects(metrics.state_dict())
+        metrics = DetectionMetricsAccumulator(
+            model.config.num_classes,
+            model.config.image_size,
+        )
+        for state in states:
+            metrics.merge_state_dict(state)
     model.train()
     return metrics.compute(confidence_threshold)
 
@@ -503,17 +535,25 @@ def cosine_schedule(step: int, *, warmup_steps: int, total_steps: int, min_ratio
     return min_ratio + (1.0 - min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
+def should_validate_epoch(epoch: int, total_epochs: int, eval_every: int) -> bool:
+    """Return true on the configured cadence and unconditionally at the end."""
+
+    completed_epochs = epoch + 1
+    return completed_epochs % eval_every == 0 or completed_epochs == total_epochs
+
+
 def main() -> None:
     args = parse_args()
+    distributed = DistributedContext.initialize(resolve_device(args.device))
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.INFO if distributed.is_main else logging.ERROR,
         format="%(asctime)s | %(levelname)s | %(message)s",
         datefmt="%H:%M:%S",
         handlers=[TqdmLoggingHandler()],
         force=True,
     )
-    torch.manual_seed(args.seed)
-    device = resolve_device(args.device)
+    torch.manual_seed(args.seed + distributed.rank)
+    device = distributed.device
     use_amp = device.type == "cuda" and not args.no_amp
     if device.type == "cuda":
         torch.set_float32_matmul_precision("high")
@@ -591,12 +631,20 @@ def main() -> None:
         epoch_dataset = dataset
         LOGGER.info("Synthetic dataset: %d images, %d classes", len(dataset), num_classes)
 
+    if args.eval_every <= 0:
+        raise ValueError("--eval-every must be positive")
+    if args.eval_max_detections <= 0:
+        raise ValueError("--eval-max-detections must be positive")
+    if args.eval_batch_size < 0:
+        raise ValueError("--eval-batch-size cannot be negative")
     shuffle_generator = torch.Generator()
+    train_sampler = distributed.train_sampler(dataset, args.seed)
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
-        shuffle=True,
-        generator=shuffle_generator,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
+        generator=shuffle_generator if train_sampler is None else None,
         num_workers=args.workers,
         # Recreate workers each epoch so dataset.set_epoch() reaches worker copies.
         persistent_workers=False,
@@ -606,7 +654,8 @@ def main() -> None:
     validation_loader = (
         DataLoader(
             validation_dataset,
-            batch_size=args.batch_size,
+            batch_size=args.eval_batch_size or args.batch_size,
+            sampler=distributed.eval_sampler(validation_dataset),
             num_workers=args.workers,
             persistent_workers=args.workers > 0,
             pin_memory=device.type == "cuda",
@@ -721,8 +770,11 @@ def main() -> None:
             min_ratio=args.min_lr_ratio,
         ),
     )
+    training_model = distributed.wrap(model)
 
-    args.output.mkdir(parents=True, exist_ok=True)
+    if distributed.is_main:
+        args.output.mkdir(parents=True, exist_ok=True)
+    distributed.barrier()
     metrics_path = args.output / "metrics.jsonl"
 
     training_options: Dict[str, object] = {
@@ -740,6 +792,8 @@ def main() -> None:
         "device_type": device.type,
         "use_amp": use_amp,
     }
+    if distributed.enabled:
+        training_options["world_size"] = distributed.world_size
     start_epoch = 0
     start_batch = 0
     step = 0
@@ -754,6 +808,9 @@ def main() -> None:
             total_epochs=args.epochs,
             steps_per_epoch=len(loader),
             training_options=training_options,
+            rank=distributed.rank,
+            world_size=distributed.world_size,
+            device=device,
         )
         start_epoch = int(resume_state["epoch"])
         start_batch = int(resume_state["batch_in_epoch"])
@@ -785,30 +842,37 @@ def main() -> None:
         name: str | None = None,
         validation_metrics: Dict[str, float] | None = None,
     ) -> None:
-        save_checkpoint(
-            args.output,
-            model,
-            config,
-            step,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            epoch=epoch,
-            batch_in_epoch=batch_in_epoch,
-            best_map50=best_map50,
-            running_losses=running_losses,
-            running_loss_steps=running_loss_steps,
-            total_epochs=args.epochs,
-            steps_per_epoch=len(loader),
-            training_options=training_options,
-            name=name,
-            validation_metrics=validation_metrics,
-        )
+        distributed_rng_states = distributed.gather_rng_states()
+        if distributed.is_main:
+            save_checkpoint(
+                args.output,
+                model,
+                config,
+                step,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                epoch=epoch,
+                batch_in_epoch=batch_in_epoch,
+                best_map50=best_map50,
+                running_losses=running_losses,
+                running_loss_steps=running_loss_steps,
+                total_epochs=args.epochs,
+                steps_per_epoch=len(loader),
+                training_options=training_options,
+                name=name,
+                validation_metrics=validation_metrics,
+                distributed_rng_states=distributed_rng_states,
+            )
+        distributed.barrier()
 
     started = time.monotonic()
     for epoch in range(start_epoch, args.epochs):
         if epoch_dataset is not None and hasattr(epoch_dataset, "set_epoch"):
             epoch_dataset.set_epoch(epoch)
-        shuffle_generator.manual_seed(args.seed + epoch)
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
+        else:
+            shuffle_generator.manual_seed(args.seed + epoch)
         loader_iterator = iter(loader)
         batches_to_skip = start_batch if epoch == start_epoch else 0
         for _ in range(batches_to_skip):
@@ -821,7 +885,7 @@ def main() -> None:
             initial=batches_to_skip,
             dynamic_ncols=True,
             leave=False,
-            disable=False,
+            disable=not distributed.is_main,
         )
         for batch_index, (pixel_values, targets) in enumerate(
             progress, start=batches_to_skip
@@ -831,7 +895,7 @@ def main() -> None:
 
             autocast = torch.autocast("cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
             with autocast:
-                raw = model(pixel_values)
+                raw = training_model(pixel_values)
                 losses = model.compute_loss(
                     raw,
                     targets,
@@ -855,51 +919,60 @@ def main() -> None:
                 averages = {
                     name: value / running_loss_steps for name, value in running_losses.items()
                 }
+                averages = distributed.mean_scalars(averages)
                 elapsed = time.monotonic() - started
-                LOGGER.info(
-                    "epoch=%d step=%d loss_total=%.4f quality=%.4f box=%.4f dfl=%.4f "
-                    "lr=%.2e expert_lr=%.2e elapsed=%.1fs",
-                    epoch,
-                    step,
-                    averages["loss"],
-                    averages["quality_loss"],
-                    averages["box_loss"],
-                    averages["dfl_loss"],
-                    scheduler.get_last_lr()[0],
-                    scheduler.get_last_lr()[1],
-                    elapsed,
-                )
-                with metrics_path.open("a") as handle:
-                    handle.write(
-                        json.dumps(
-                            {
-                                "step": step,
-                                "epoch": epoch,
-                                "lr": scheduler.get_last_lr()[0],
-                                "expert_lr": scheduler.get_last_lr()[1],
-                                **averages,
-                            }
-                        )
-                        + "\n"
+                if distributed.is_main:
+                    LOGGER.info(
+                        "epoch=%d step=%d loss_total=%.4f quality=%.4f box=%.4f dfl=%.4f "
+                        "lr=%.2e expert_lr=%.2e elapsed=%.1fs",
+                        epoch,
+                        step,
+                        averages["loss"],
+                        averages["quality_loss"],
+                        averages["box_loss"],
+                        averages["dfl_loss"],
+                        scheduler.get_last_lr()[0],
+                        scheduler.get_last_lr()[1],
+                        elapsed,
                     )
-                progress.set_postfix(
-                    loss=f"{averages['loss']:.4f}",
-                    lr=f"{scheduler.get_last_lr()[0]:.2e}",
-                    expert_lr=f"{scheduler.get_last_lr()[1]:.2e}",
-                )
+                    with metrics_path.open("a") as handle:
+                        handle.write(
+                            json.dumps(
+                                {
+                                    "step": step,
+                                    "epoch": epoch,
+                                    "lr": scheduler.get_last_lr()[0],
+                                    "expert_lr": scheduler.get_last_lr()[1],
+                                    **averages,
+                                }
+                            )
+                            + "\n"
+                        )
+                    progress.set_postfix(
+                        loss=f"{averages['loss']:.4f}",
+                        lr=f"{scheduler.get_last_lr()[0]:.2e}",
+                        expert_lr=f"{scheduler.get_last_lr()[1]:.2e}",
+                    )
                 running_losses.clear()
                 running_loss_steps = 0
             if args.save_steps and step % args.save_steps == 0:
                 write_checkpoint(epoch=epoch, batch_in_epoch=batch_index + 1)
 
-        if validation_loader is not None:
+        should_validate = validation_loader is not None and should_validate_epoch(
+            epoch,
+            args.epochs,
+            args.eval_every,
+        )
+        if should_validate:
             validation_metrics = evaluate_detector(
                 model,
                 validation_loader,
                 device,
                 confidence_threshold=args.eval_confidence,
                 use_amp=use_amp,
-                show_progress=True,
+                show_progress=distributed.is_main,
+                max_detections=args.eval_max_detections,
+                distributed=distributed,
             )
             LOGGER.info(
                 "validation epoch=%d mAP50=%.4f mAP50-95=%.4f "
@@ -917,11 +990,18 @@ def main() -> None:
                 validation_metrics["best_f1"],
                 validation_metrics["best_confidence"],
             )
-            with metrics_path.open("a") as handle:
-                handle.write(
-                    json.dumps({"step": step, "epoch": epoch, "validation": validation_metrics})
-                    + "\n"
-                )
+            if distributed.is_main:
+                with metrics_path.open("a") as handle:
+                    handle.write(
+                        json.dumps(
+                            {
+                                "step": step,
+                                "epoch": epoch,
+                                "validation": validation_metrics,
+                            }
+                        )
+                        + "\n"
+                    )
             if validation_metrics["map50"] > best_map50:
                 best_map50 = validation_metrics["map50"]
                 write_checkpoint(
@@ -934,6 +1014,7 @@ def main() -> None:
 
     write_checkpoint(epoch=args.epochs, batch_in_epoch=0)
     LOGGER.info("Training complete: %d steps over %d epochs", step, args.epochs)
+    distributed.close()
 
 
 if __name__ == "__main__":

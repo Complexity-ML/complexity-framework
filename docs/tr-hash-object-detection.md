@@ -1,7 +1,8 @@
 # TR-Hash Object Detection and Serving
 
-The v0.4 detector is a compact, anchor-free, single-stage model. A TR-Hash
-vision tower feeds a lightweight prediction pyramid. Its one-to-many branch
+The v5 detector is a compact, anchor-free, single-stage model. A TR-Hash
+vision tower feeds a lightweight additive PAN with top-down and bottom-up
+cross-scale fusion. Its one-to-many branch
 provides dense supervision during training and class-aware batched NMS removes
 duplicate predictions at inference. Dynamic STAL-style assignment sends small
 objects to the finest grid. Decoupled branches predict stride-local LTRB box
@@ -10,10 +11,13 @@ distributions and unified sigmoid quality-class scores trained with DFL/QFL.
 ```text
 TR-Hash vision tower
         |
-        +-- P2 -- regression (LTRB/DFL) + quality-class (QFL)
-        +-- P3 -- regression (LTRB/DFL) + quality-class (QFL)
-        +-- P4 -- regression (LTRB/DFL) + quality-class (QFL)
-        +-- P5 -- regression (LTRB/DFL) + quality-class (QFL)
+        +-- initial P2/P3/P4/P5 maps
+                 | top-down additive FPN
+                 | bottom-up additive PAN
+                 v
+            fused P2/P3/P4/P5
+                 |
+                 +-- LTRB/DFL regression + quality-class QFL heads
 ```
 
 For a 128 px input, width 128, four tower layers, and four routed experts, the
@@ -62,7 +66,7 @@ below; when omitted, the trainer creates a deterministic 80/20 split.
 
 ```bash
 cf-detector-train \
-  --output artifacts/detector_v02_mps \
+  --output artifacts/detector_v05 \
   --backbone-checkpoint artifacts/tr_hash_vision_cifar10/best \
   --yolo-images data/objects/images/train \
   --yolo-labels data/objects/labels/train \
@@ -89,9 +93,13 @@ components. The validated inference path remains O2M with
 `torchvision.ops.batched_nms`.
 
 The trainer writes `metrics.jsonl`, a validated `best/` checkpoint, and a final
-step checkpoint. Validation reports mAP50, precision, recall, F1, the best F1,
-and its confidence threshold. The service uses that calibrated threshold by
-default when `confidence` is omitted.
+step checkpoint. Validation reports mAP50, mAP50-95, AP small/medium/large,
+precision, recall, F1, the best F1, and its confidence threshold. Use
+`--eval-every 5` to avoid a full validation pass after every epoch;
+the final epoch is always evaluated. `--eval-batch-size` and
+`--eval-max-detections` control validation throughput and memory. The service
+uses the calibrated confidence threshold by default when `confidence` is
+omitted.
 `--expert-lr-multiplier 1.5` can give the routed expert tensors a higher
 learning rate than the shared tower and detection heads; the default `1.0`
 keeps a single learning rate for controlled comparisons.
@@ -113,7 +121,7 @@ and values are source class IDs.
 
 ```bash
 cf-detector-train \
-  --detector-checkpoint artifacts/detector_voc_5090_imagenet100/best \
+  --detector-checkpoint artifacts/detector_v05/best \
   --class-map data/custom/class-map.json \
   --yolo-images data/custom/images/train \
   --yolo-labels data/custom/labels/train \
@@ -137,8 +145,8 @@ images, 4,952 validation images, 20 classes):
 python scripts/prepare_voc_yolo.py --output artifacts/VOC
 
 cf-detector-train \
-  --output artifacts/detector_voc_mps \
-  --backbone-checkpoint artifacts/detector_v02_mps/best \
+  --output artifacts/detector_voc_v05 \
+  --backbone-checkpoint artifacts/tr_hash_vision_imagenet100/best \
   --yolo-images artifacts/VOC/images/train \
   --yolo-labels artifacts/VOC/labels/train \
   --validation-yolo-images artifacts/VOC/images/val \
@@ -149,6 +157,20 @@ cf-detector-train \
   --expert-lr-multiplier 1.5 --device mps
 ```
 
+On one 32 GB CUDA GPU, `scripts/vast_sft_voc_v05_fast.sh` uses a larger
+training/evaluation batch and validates every five epochs. For replicated
+multi-GPU training, the batch is per GPU and validation is sharded without
+padding duplicates:
+
+```bash
+NPROC_PER_NODE=4 BATCH_SIZE_PER_GPU=64 \
+  bash scripts/vast_sft_voc_v05_ddp.sh
+```
+
+The equivalent direct launcher is `torchrun --standalone --nproc_per_node 4
+-m complexity.generative.detection.training ...`. DDP records each rank's RNG
+state and world size so exact resume keeps the same number of processes.
+
 ## Run the local service
 
 Install the serving dependencies and load one validated checkpoint into a
@@ -157,7 +179,7 @@ long-lived process:
 ```bash
 pip install -e ".[serve]"
 cf-detector-serve \
-  --checkpoint artifacts/detector_v02_mps/best \
+  --checkpoint artifacts/detector_voc_v05/best \
   --device mps \
   --host 127.0.0.1 --port 8000
 ```
@@ -246,7 +268,7 @@ the model card and metrics have been reviewed.
 ```bash
 python scripts/publish_tr_hash_vision_hf.py \
   --repo-id AETHORIA-AI/TR-HASH-Vision-0.8M-VOC \
-  --checkpoint artifacts/detector_voc_5090_v03/best \
+  --checkpoint artifacts/detector_voc_v05/best \
   --push --public
 ```
 

@@ -35,8 +35,9 @@ def _average_precision(
     if not len(scores):
         return 0.0
     order = torch.argsort(scores, descending=True)
-    true_positive_cumulative = true_positives[order].cumsum(0)
-    false_positive_cumulative = (1.0 - true_positives[order]).cumsum(0)
+    ordered_true_positives = true_positives[order].float()
+    true_positive_cumulative = ordered_true_positives.cumsum(0)
+    false_positive_cumulative = (1.0 - ordered_true_positives).cumsum(0)
     recall = true_positive_cumulative / total_ground_truth
     precision = true_positive_cumulative / (
         true_positive_cumulative + false_positive_cumulative
@@ -68,19 +69,33 @@ def _match_thresholds(
     else:
         ious = torch.empty(len(boxes), len(targets))
 
-    matches = {}
-    for threshold in IOU_THRESHOLDS:
-        matched = torch.zeros(len(scores), dtype=torch.float32)
-        used_targets = torch.zeros(len(targets), dtype=torch.bool)
-        for prediction_index in range(len(scores)):
-            if not len(targets):
-                break
-            available = ious[prediction_index].masked_fill(used_targets, -1.0)
-            best_iou, target_index = available.max(dim=0)
-            if float(best_iou) >= threshold:
-                matched[prediction_index] = 1.0
-                used_targets[int(target_index)] = True
-        matches[threshold] = matched
+    thresholds = torch.tensor(IOU_THRESHOLDS)
+    matched = torch.zeros(
+        len(IOU_THRESHOLDS),
+        len(scores),
+        dtype=torch.bool,
+    )
+    used_targets = torch.zeros(
+        len(IOU_THRESHOLDS),
+        len(targets),
+        dtype=torch.bool,
+    )
+    if len(targets):
+        candidates = torch.nonzero(
+            (ious >= IOU_THRESHOLDS[0]).any(dim=1),
+            as_tuple=False,
+        ).flatten()
+        for prediction_index in candidates.tolist():
+            available = ious[prediction_index].expand(len(IOU_THRESHOLDS), -1)
+            available = available.masked_fill(used_targets, -1.0)
+            best_iou, target_indices = available.max(dim=1)
+            accepted = best_iou >= thresholds
+            matched[accepted, prediction_index] = True
+            used_targets[accepted, target_indices[accepted]] = True
+    matches = {
+        threshold: matched[index]
+        for index, threshold in enumerate(IOU_THRESHOLDS)
+    }
     return scores, matches
 
 
@@ -142,6 +157,41 @@ class DetectionMetricsAccumulator:
                     self.matches[scope][threshold][class_id].append(values)
                 self.target_counts[scope][class_id] += int(target_mask.sum())
 
+    def state_dict(self) -> Dict[str, object]:
+        return {
+            "scores": {
+                scope: {
+                    class_id: self._concatenate(values)
+                    for class_id, values in by_class.items()
+                }
+                for scope, by_class in self.scores.items()
+            },
+            "matches": {
+                scope: {
+                    threshold: {
+                        class_id: self._concatenate(values)
+                        for class_id, values in by_class.items()
+                    }
+                    for threshold, by_class in by_threshold.items()
+                }
+                for scope, by_threshold in self.matches.items()
+            },
+            "target_counts": self.target_counts,
+        }
+
+    def merge_state_dict(self, state: Dict[str, object]) -> None:
+        scores = state["scores"]
+        matches = state["matches"]
+        target_counts = state["target_counts"]
+        for scope in self.scores:
+            for class_id in range(self.num_classes):
+                self.scores[scope][class_id].append(scores[scope][class_id])
+                for threshold in IOU_THRESHOLDS:
+                    self.matches[scope][threshold][class_id].append(
+                        matches[scope][threshold][class_id]
+                    )
+                self.target_counts[scope][class_id] += target_counts[scope][class_id]
+
     @staticmethod
     def _concatenate(values: list[torch.Tensor]) -> torch.Tensor:
         return torch.cat(values) if values else torch.empty(0)
@@ -176,7 +226,7 @@ class DetectionMetricsAccumulator:
         )
         order = torch.argsort(scores, descending=True)
         scores = scores[order]
-        matches = matches[order]
+        matches = matches[order].float()
         total_targets = sum(self.target_counts["all"])
         fixed = scores >= confidence_threshold
         fixed_true_positives = float(matches[fixed].sum())

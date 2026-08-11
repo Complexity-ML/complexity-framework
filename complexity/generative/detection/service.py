@@ -208,6 +208,10 @@ class TrainingJobManager:
                 str(request.validation_samples),
                 "--validation-fraction",
                 str(request.validation_fraction),
+                "--eval-every",
+                str(request.eval_every),
+                "--eval-max-detections",
+                str(request.eval_max_detections),
                 "--architecture-version",
                 "5",
                 "--vision-hidden-size",
@@ -382,6 +386,8 @@ def create_app(
         synthetic_samples: int = Field(default=4096, ge=1)
         validation_samples: int = Field(default=512, ge=1)
         validation_fraction: float = Field(default=0.2, gt=0.0, lt=1.0)
+        eval_every: int = Field(default=5, ge=1)
+        eval_max_detections: int = Field(default=100, ge=1, le=1000)
         vision_hidden_size: int = Field(default=128, ge=32)
         vision_layers: int = Field(default=4, ge=1)
         vision_heads: int = Field(default=4, ge=1)
