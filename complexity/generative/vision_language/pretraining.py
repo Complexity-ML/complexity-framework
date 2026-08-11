@@ -195,13 +195,10 @@ def build_datasets(args: argparse.Namespace):
             split=args.hf_validation_split,
             cache_dir=str(args.data_root),
         )
-        label_feature = train_source.features["label"]
-        class_names = getattr(label_feature, "names", None)
-        num_classes = (
-            len(class_names)
-            if class_names
-            else max(train_source.unique("label")) + 1
-        )
+        # Derive the head from labels actually present in the training split.
+        # Some repacks append a metadata-only ``none`` class for the unlabeled
+        # test split, which must not create a spurious 1001st training class.
+        num_classes = max(train_source.unique("label")) + 1
         return (
             HuggingFaceImageDataset(train_source, train_transform, seed=args.seed),
             HuggingFaceImageDataset(validation_source, validation_transform),
