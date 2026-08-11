@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 from complexity.generative.detection.hub import (
+    COCO_CLASS_NAMES,
     export_detector_for_hub,
     upload_detector_to_hub,
 )
@@ -13,9 +14,11 @@ from complexity.generative.detection.hub import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo-id", default="AETHORIA-AI/TR-HASH-Vision-0.8M-VOC")
+    parser.add_argument("--repo-id", default="AETHORIA-AI/TR-HASH-Vision-v6-1M-COCO")
     parser.add_argument("--checkpoint", type=Path, default=None)
-    parser.add_argument("--output", type=Path, default=Path("artifacts/hf/tr-hash-vision-0.8m-voc"))
+    parser.add_argument(
+        "--output", type=Path, default=Path("artifacts/hf/tr-hash-vision-v6-1m-coco")
+    )
     parser.add_argument("--training", action="store_true", help="Publish a card-only draft")
     parser.add_argument("--push", action="store_true")
     parser.add_argument("--public", action="store_true", help="Create a public repository")
@@ -30,6 +33,7 @@ def main() -> None:
         args.output,
         args.repo_id,
         checkpoint=None if args.training else args.checkpoint,
+        class_names=COCO_CLASS_NAMES,
         training=args.training,
     )
     print(f"prepared Hugging Face folder: {args.output}")

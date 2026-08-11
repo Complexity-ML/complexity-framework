@@ -26,6 +26,7 @@ from .data import (
     collate_detection,
 )
 from .hub import (
+    COCO_CLASS_NAMES,
     VOC_CLASS_NAMES,
     DetectionImageMetadata,
     export_detector_for_hub,
@@ -57,6 +58,7 @@ __all__ = [
     "SyntheticShapesDataset",
     "YoloDetectionDataset",
     "collate_detection",
+    "COCO_CLASS_NAMES",
     "VOC_CLASS_NAMES",
     "DetectionImageMetadata",
     "export_detector_for_hub",

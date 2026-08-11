@@ -39,6 +39,89 @@ VOC_CLASS_NAMES: Tuple[str, ...] = (
     "tvmonitor",
 )
 
+COCO_CLASS_NAMES: Tuple[str, ...] = (
+    "person",
+    "bicycle",
+    "car",
+    "motorcycle",
+    "airplane",
+    "bus",
+    "train",
+    "truck",
+    "boat",
+    "traffic light",
+    "fire hydrant",
+    "stop sign",
+    "parking meter",
+    "bench",
+    "bird",
+    "cat",
+    "dog",
+    "horse",
+    "sheep",
+    "cow",
+    "elephant",
+    "bear",
+    "zebra",
+    "giraffe",
+    "backpack",
+    "umbrella",
+    "handbag",
+    "tie",
+    "suitcase",
+    "frisbee",
+    "skis",
+    "snowboard",
+    "sports ball",
+    "kite",
+    "baseball bat",
+    "baseball glove",
+    "skateboard",
+    "surfboard",
+    "tennis racket",
+    "bottle",
+    "wine glass",
+    "cup",
+    "fork",
+    "knife",
+    "spoon",
+    "bowl",
+    "banana",
+    "apple",
+    "sandwich",
+    "orange",
+    "broccoli",
+    "carrot",
+    "hot dog",
+    "pizza",
+    "donut",
+    "cake",
+    "chair",
+    "couch",
+    "potted plant",
+    "bed",
+    "dining table",
+    "toilet",
+    "tv",
+    "laptop",
+    "mouse",
+    "remote",
+    "keyboard",
+    "cell phone",
+    "microwave",
+    "oven",
+    "toaster",
+    "sink",
+    "refrigerator",
+    "book",
+    "clock",
+    "vase",
+    "scissors",
+    "teddy bear",
+    "hair drier",
+    "toothbrush",
+)
+
 
 @dataclass(frozen=True)
 class DetectionImageMetadata:
@@ -135,6 +218,15 @@ def load_detector_from_hub(
     return load_detector_checkpoint(checkpoint, device=device)
 
 
+def _dataset_metadata(class_names: Sequence[str]) -> tuple[str, str, str]:
+    names = tuple(class_names)
+    if names == COCO_CLASS_NAMES:
+        return "COCO 2017", "coco", "coco"
+    if names == VOC_CLASS_NAMES:
+        return "Pascal VOC 2007+2012", "pascal_voc", "pascal-voc"
+    return "Custom detection dataset", "custom", "custom-dataset"
+
+
 def _model_card(
     repo_id: str,
     *,
@@ -144,9 +236,14 @@ def _model_card(
     training: bool,
 ) -> str:
     model_name = repo_id.split("/")[-1]
-    image_size = config.image_size if config is not None else 224
+    image_size = config.image_size if config is not None else 640
     architecture_version = config.architecture_version if config is not None else 6
-    parameter_text = "0.83M" if config is None else "compact"
+    parameter_text = (
+        "approximately 1M"
+        if config is None
+        else f"{sum(parameter.numel() for parameter in TRHashObjectDetector(config).parameters()) / 1e6:.2f}M"
+    )
+    dataset_name, dataset_type, dataset_tag = _dataset_metadata(class_names)
     metrics_yaml = ""
     metrics_table = "Training is currently in progress; validated metrics will be added here."
     if metrics:
@@ -159,8 +256,8 @@ model-index:
       type: object-detection
       name: Object Detection
     dataset:
-      name: Pascal VOC 2007+2012
-      type: pascal_voc
+      name: {dataset_name}
+      type: {dataset_type}
     metrics:
     - name: mAP50
       type: map
@@ -184,40 +281,10 @@ model-index:
         if training
         else "This repository contains the validated TR-Hash detector checkpoint."
     )
-    return f"""---
-license: cc-by-nc-4.0
-library_name: complexity-framework
-pipeline_tag: object-detection
-tags:
-- object-detection
-- tr-hash
-- mixture-of-experts
-- pytorch
-- pascal-voc
-{metrics_yaml}
----
-
-# {model_name}
-
-{status}
-
-TR-Hash Vision v{architecture_version} is a compact anchor-free detector built on a deterministic
-token-routed MoE vision tower. The architecture combines a hierarchical,
-window-attention backbone with a lightweight PAN
-cross-scale neck, dynamic one-to-many assignment, class-aware batched NMS,
-a P2 small-object scale, STAL-style
-assignment, decoupled LTRB/DFL regression, unified QFL quality-class scores,
-strong detection augmentation, and progressive loss balancing. The target release is
-approximately **{parameter_text} parameters**, trained at **{image_size} px** on
-Pascal VOC 2007+2012.
-
-## Evaluation
-
-{metrics_table}
-
-## Inference
-
-```python
+    inference = (
+        "Inference instructions will be added when validated v6 weights are uploaded."
+        if training
+        else f"""```python
 from PIL import Image
 import torch
 
@@ -242,21 +309,58 @@ prediction["boxes"] = restore_detector_boxes(
 
 Class IDs are listed in `class_names.json`. Boxes returned by `predict` are
 normalized `xyxy` coordinates until `restore_detector_boxes` maps them to source
-pixels.
+pixels."""
+    )
+    return f"""---
+license: cc-by-nc-4.0
+library_name: complexity-framework
+pipeline_tag: object-detection
+tags:
+- object-detection
+- tr-hash
+- mixture-of-experts
+- hierarchical-vision-transformer
+- pytorch
+- triton
+- {dataset_tag}
+{metrics_yaml}
+---
+
+# {model_name}
+
+{status}
+
+TR-Hash Vision v{architecture_version} is a compact anchor-free detector built on a
+deterministic token-routed MoE vision tower. The architecture combines native
+hierarchical P3/P4/P5 features, shifted-window attention, a lightweight PAN,
+an optional P2 small-object path, dynamic one-to-many assignment with STAL,
+decoupled LTRB/DFL regression, unified QFL quality-class scores, and an optional
+one-to-one NMS-free inference branch. The realized model has
+**{parameter_text} parameters** and uses **{image_size} px** inputs on {dataset_name}.
+
+## Evaluation
+
+{metrics_table}
+
+## Inference
+
+{inference}
 
 ## Training
 
-- Dataset: Pascal VOC 2007+2012, 16,551 train and 4,952 validation images
+- Dataset: {dataset_name}
 - Optimizer: SGD with Nesterov momentum
 - Routed-expert LR multiplier: 1.5x
-- Backbone initialization: TR-Hash ImageNet-100 vision pretraining
+- Backbone initialization: TR-Hash Vision v6 ImageNet-1K pretraining
+- Training: EMA, multi-resolution, Mosaic, MixUp, Copy-Paste and random erasing
 - Framework: [Complexity Framework](https://github.com/Complexity-ML/complexity-framework)
 
 ## Limitations
 
 This is a research checkpoint under CC BY-NC 4.0. Validate accuracy, calibration,
-latency, and failure modes on your own target domain. Pascal VOC is small and does
-not represent the diversity of modern production detection datasets.
+latency, and failure modes on your own target domain. A training configuration or
+active run is not evidence of accuracy; release claims require a realized checkpoint
+and an explicit evaluation protocol.
 """
 
 

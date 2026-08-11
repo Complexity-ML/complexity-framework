@@ -6,6 +6,7 @@ from PIL import Image
 from safetensors.torch import load_file, save_file
 
 from complexity.generative.detection import (
+    COCO_CLASS_NAMES,
     VOC_CLASS_NAMES,
     TRHashDetectorConfig,
     TRHashObjectDetector,
@@ -95,9 +96,15 @@ def test_export_and_strict_reload_hub_folder(tmp_path: Path):
 def test_training_draft_does_not_publish_checkpoint_weights(tmp_path: Path):
     output = export_detector_for_hub(
         tmp_path / "draft",
-        "AETHORIA-AI/TR-HASH-Vision-0.8M-VOC",
+        "AETHORIA-AI/TR-HASH-Vision-v6-1M-COCO",
+        class_names=COCO_CLASS_NAMES,
         training=True,
     )
 
-    assert "Training in progress" in (output / "README.md").read_text()
+    card = (output / "README.md").read_text()
+    assert "Training in progress" in card
+    assert "COCO 2017" in card
+    assert "ImageNet-1K" in card
+    assert "load_detector_from_hub" not in card
+    assert json.loads((output / "class_names.json").read_text()) == list(COCO_CLASS_NAMES)
     assert not (output / "model.safetensors").exists()
