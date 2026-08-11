@@ -51,6 +51,36 @@ def test_rocm_custom_triton_is_opt_in(monkeypatch):
     assert supports_custom_triton("auto") is True
 
 
+def test_tr_hash_triton_detects_rocm_and_selects_amd_launch_profiles(monkeypatch):
+    from complexity_cuda import triton_token_routed
+
+    cuda_profiles = ["cuda-profile"]
+    rocm_profiles = ["rocm-profile"]
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", "6.4.0", raising=False)
+
+    assert triton_token_routed._is_rocm() is True
+    assert (
+        triton_token_routed._platform_autotune_configs(cuda_profiles, rocm_profiles)
+        is rocm_profiles
+    )
+
+
+def test_tr_hash_triton_keeps_nvidia_launch_profiles_without_hip(monkeypatch):
+    from complexity_cuda import triton_token_routed
+
+    cuda_profiles = ["cuda-profile"]
+    rocm_profiles = ["rocm-profile"]
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None, raising=False)
+
+    assert triton_token_routed._is_rocm() is False
+    assert (
+        triton_token_routed._platform_autotune_configs(cuda_profiles, rocm_profiles)
+        is cuda_profiles
+    )
+
+
 def test_nvidia_cuda_enables_custom_triton_in_auto(monkeypatch):
     from complexity.utils.device import get_backend_info, supports_custom_triton
 

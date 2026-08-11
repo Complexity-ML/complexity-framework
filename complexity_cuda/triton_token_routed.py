@@ -43,6 +43,18 @@ def _is_rocm() -> bool:
         return False
 
 
+def _platform_autotune_configs(cuda_configs, rocm_configs):
+    """Select launch profiles for the active Triton compiler backend.
+
+    PyTorch exposes ROCm tensors through the CUDA device API, so checking
+    ``Tensor.is_cuda`` cannot distinguish NVIDIA from AMD. Keep that decision
+    centralized on ``torch.version.hip`` and independently unit-testable on
+    hosts without an AMD GPU.
+    """
+
+    return rocm_configs if _is_rocm() else cuda_configs
+
+
 def _to_local(t: torch.Tensor) -> torch.Tensor:
     """Convert DTensor to local tensor (FSDP v2 compat)."""
     if hasattr(t, 'to_local'):
@@ -702,7 +714,10 @@ if HAS_TRITON:
         triton.Config({"BLOCK_M": 64,  "BLOCK_N": 128, "BLOCK_K": 128}, num_warps=4, num_stages=1),
     ]
 
-    _CGGR_CONFIGS = _CGGR_CONFIGS_ROCM if _is_rocm() else _CGGR_CONFIGS_CUDA
+    _CGGR_CONFIGS = _platform_autotune_configs(
+        _CGGR_CONFIGS_CUDA,
+        _CGGR_CONFIGS_ROCM,
+    )
 
     # Separate autotune config list for grad_W — different reduction pattern
     # (reduce over tokens, tiles are (in_dim, out_dim)) benefits from narrower
@@ -723,7 +738,10 @@ if HAS_TRITON:
         triton.Config({"BLOCK_M": 32,  "BLOCK_N": 128, "BLOCK_O": 128}, num_warps=8, num_stages=1),
     ]
 
-    _CGGR_GRAD_W_CONFIGS = _CGGR_GRAD_W_CONFIGS_ROCM if _is_rocm() else _CGGR_GRAD_W_CONFIGS_CUDA
+    _CGGR_GRAD_W_CONFIGS = _platform_autotune_configs(
+        _CGGR_GRAD_W_CONFIGS_CUDA,
+        _CGGR_GRAD_W_CONFIGS_ROCM,
+    )
 
     @triton.autotune(configs=_CGGR_GRAD_W_CONFIGS, key=["in_dim", "out_dim"])
     @triton.jit
