@@ -9,9 +9,9 @@ SFT_BIN="${SFT_BIN:-artifacts/complexity_atlas_posttrain/tokenized/32k-v16}"
 SAVE_DIR="${SAVE_DIR:-artifacts/tr_hash_500m_32k_sft}"
 RUN_NAME="${RUN_NAME:-tr-hash-500m-32k-tr}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
-BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-8}"
+BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-24}"
 EPOCHS="${EPOCHS:-1}"
-STEPS="${STEPS:-16103}"
+STEPS="${STEPS:-5368}"
 
 INITIALIZATION=(--checkpoint "$BASE_CHECKPOINT")
 if [[ -n "${RESUME_CHECKPOINT:-}" ]]; then
