@@ -6,12 +6,17 @@ cd /workspace/complexity-framework
 
 OUTPUT="${OUTPUT:-artifacts/detector_coco_v06}"
 BACKBONE="${BACKBONE:-artifacts/tr_hash_vision_v06_imagenet1k/best}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
+BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-4}"
 INITIALIZATION=(--backbone-checkpoint "$BACKBONE")
 if [[ -n "${RESUME_CHECKPOINT:-}" ]]; then
   INITIALIZATION=(--resume "$RESUME_CHECKPOINT")
 fi
 
-exec python -u -m complexity.generative.detection.training \
+exec torchrun \
+  --standalone \
+  --nproc_per_node "$NPROC_PER_NODE" \
+  -m complexity.generative.detection.training \
   --output "$OUTPUT" \
   "${INITIALIZATION[@]}" \
   --annotations artifacts/COCO/annotations/instances_train2017.json \
@@ -44,8 +49,9 @@ exec python -u -m complexity.generative.detection.training \
   --multi-scale-step 32 \
   --ema-decay 0.9999 \
   --epochs 100 \
-  --batch-size 16 \
-  --workers 12 \
+  --batch-size "$BATCH_SIZE_PER_GPU" \
+  --eval-batch-size 8 \
+  --workers 6 \
   --lr 1e-2 \
   --expert-lr-multiplier 1.5 \
   --warmup-steps 1000 \

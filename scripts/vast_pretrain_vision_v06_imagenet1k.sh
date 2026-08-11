@@ -6,9 +6,13 @@ cd /workspace/complexity-framework
 
 HF_DATASET="${HF_DATASET:-ILSVRC/imagenet-1k}"
 OUTPUT="${OUTPUT:-artifacts/tr_hash_vision_v06_imagenet1k}"
-BATCH_SIZE="${BATCH_SIZE:-256}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
+BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-64}"
 
-exec python -u -m complexity.generative.vision_language.pretraining \
+exec torchrun \
+  --standalone \
+  --nproc_per_node "$NPROC_PER_NODE" \
+  -m complexity.generative.vision_language.pretraining \
   --hf-dataset "$HF_DATASET" \
   --data-root artifacts/hf-cache \
   --output "$OUTPUT" \
@@ -24,12 +28,13 @@ exec python -u -m complexity.generative.vision_language.pretraining \
   --top-k 2 \
   --expert-width 48 \
   --epochs 100 \
-  --batch-size "$BATCH_SIZE" \
-  --workers 12 \
+  --batch-size "$BATCH_SIZE_PER_GPU" \
+  --workers 6 \
   --lr 3e-4 \
   --expert-lr-multiplier 1.5 \
   --weight-decay 0.05 \
   --warmup-steps 5000 \
   --log-steps 50 \
   --device cuda \
+  --require-triton \
   --seed 3

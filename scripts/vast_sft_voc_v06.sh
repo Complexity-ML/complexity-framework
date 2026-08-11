@@ -6,12 +6,17 @@ cd /workspace/complexity-framework
 
 OUTPUT="${OUTPUT:-artifacts/detector_voc_v06}"
 SOURCE="${SOURCE:-artifacts/detector_coco_v06/best}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
+BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-4}"
 INITIALIZATION=(--detector-checkpoint "$SOURCE")
 if [[ -n "${RESUME_CHECKPOINT:-}" ]]; then
   INITIALIZATION=(--resume "$RESUME_CHECKPOINT")
 fi
 
-exec python -u -m complexity.generative.detection.training \
+exec torchrun \
+  --standalone \
+  --nproc_per_node "$NPROC_PER_NODE" \
+  -m complexity.generative.detection.training \
   --output "$OUTPUT" \
   "${INITIALIZATION[@]}" \
   --yolo-images artifacts/VOC/images/train \
@@ -44,11 +49,11 @@ exec python -u -m complexity.generative.detection.training \
   --multi-scale-step 32 \
   --ema-decay 0.9999 \
   --epochs 50 \
-  --batch-size 16 \
-  --eval-batch-size 32 \
+  --batch-size "$BATCH_SIZE_PER_GPU" \
+  --eval-batch-size 8 \
   --eval-every 5 \
   --eval-max-detections 300 \
-  --workers 12 \
+  --workers 6 \
   --lr 5e-3 \
   --momentum 0.937 \
   --weight-decay 5e-4 \

@@ -18,7 +18,9 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from ..detection.config import TRHashDetectorConfig
+from ..detection.distributed import DistributedContext
 from ..detection.hierarchical_tower import HierarchicalTRHashVisionClassifier
+from ..detection.training import vision_backend_summary
 from .vision_tower import TRHashVisionClassifier, TRHashVisionTowerConfig
 
 LOGGER = logging.getLogger("tr_hash_vision_pretraining")
@@ -58,6 +60,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-lr-ratio", type=float, default=0.05)
     parser.add_argument("--log-steps", type=int, default=25)
     parser.add_argument("--device", default=None)
+    parser.add_argument(
+        "--require-triton",
+        action="store_true",
+        help="fail instead of silently using the PyTorch TR-Hash fallback",
+    )
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
@@ -194,12 +201,13 @@ def save_tower(
 
 @torch.inference_mode()
 def validate(
-    model: TRHashVisionClassifier,
+    model: torch.nn.Module,
     loader: DataLoader,
     device: torch.device,
     *,
     use_amp: bool = False,
     show_progress: bool = False,
+    distributed: DistributedContext | None = None,
 ) -> float:
     model.eval()
     correct = total = 0
@@ -223,6 +231,10 @@ def validate(
             predictions = model(pixels)["logits"].argmax(-1)
         correct += int((predictions == labels).sum().cpu())
         total += len(labels)
+    if distributed is not None and distributed.enabled:
+        counts = distributed.all_gather_objects((correct, total))
+        correct = sum(item[0] for item in counts)
+        total = sum(item[1] for item in counts)
     model.train()
     return correct / max(total, 1)
 
@@ -241,24 +253,31 @@ def cosine_schedule(
 
 def main() -> None:
     args = parse_args()
+    distributed = DistributedContext.initialize(resolve_device(args.device))
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.INFO if distributed.is_main else logging.ERROR,
         format="%(asctime)s | %(levelname)s | %(message)s",
         datefmt="%H:%M:%S",
     )
-    torch.manual_seed(args.seed)
-    device = resolve_device(args.device)
+    torch.manual_seed(args.seed + distributed.rank)
+    device = distributed.device
+    # Hugging Face/datasets serializes cache writes with file locks.  Let every
+    # rank resolve the local dataset before the first NCCL collective so a large
+    # initial download cannot time out a process-group barrier.
     train_dataset, validation_dataset, num_classes = build_datasets(args)
-    LOGGER.info(
-        "Vision dataset: %d train, %d validation, %d classes",
-        len(train_dataset),
-        len(validation_dataset),
-        num_classes,
-    )
+    if distributed.is_main:
+        LOGGER.info(
+            "Vision dataset: %d train, %d validation, %d classes",
+            len(train_dataset),
+            len(validation_dataset),
+            num_classes,
+        )
+    train_sampler = distributed.train_sampler(train_dataset, args.seed)
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
         num_workers=args.workers,
         persistent_workers=args.workers > 0,
         pin_memory=device.type == "cuda",
@@ -266,6 +285,7 @@ def main() -> None:
     validation_loader = DataLoader(
         validation_dataset,
         batch_size=args.batch_size,
+        sampler=distributed.eval_sampler(validation_dataset),
         num_workers=args.workers,
         persistent_workers=args.workers > 0,
         pin_memory=device.type == "cuda",
@@ -301,11 +321,20 @@ def main() -> None:
             precision=precision,
         )
         model = TRHashVisionClassifier(config, num_classes).to(device)
-    LOGGER.info(
-        "Vision model: %.2fM parameters on %s",
-        sum(parameter.numel() for parameter in model.parameters()) / 1e6,
-        device,
-    )
+    if distributed.is_main:
+        LOGGER.info(
+            "Vision model: %.2fM parameters on %s (%d GPU%s)",
+            sum(parameter.numel() for parameter in model.parameters()) / 1e6,
+            device,
+            distributed.world_size,
+            "s" if distributed.world_size != 1 else "",
+        )
+        backend = vision_backend_summary(
+            model,
+            device.type,
+            require_triton=args.require_triton,
+        )
+        LOGGER.info("TR-Hash vision backend: %s", backend["selected_backend"])
     if args.expert_lr_multiplier <= 0.0:
         raise ValueError("--expert-lr-multiplier must be positive")
     expert_parameters = []
@@ -339,7 +368,10 @@ def main() -> None:
             min_ratio=args.min_lr_ratio,
         ),
     )
-    args.output.mkdir(parents=True, exist_ok=True)
+    training_model = distributed.wrap(model)
+    if distributed.is_main:
+        args.output.mkdir(parents=True, exist_ok=True)
+    distributed.barrier()
     metrics_path = args.output / "metrics.jsonl"
     use_amp = device.type == "cuda"
     best_accuracy = -1.0
@@ -347,13 +379,15 @@ def main() -> None:
     step = 0
     running_loss = 0.0
     for epoch in range(args.epochs):
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         progress = tqdm(
             train_loader,
             desc=f"vision train {epoch + 1}/{args.epochs}",
             unit="batch",
             dynamic_ncols=True,
             leave=False,
-            disable=False,
+            disable=not distributed.is_main,
         )
         for pixels, labels in progress:
             pixels = pixels.to(device, non_blocking=device.type == "cuda")
@@ -364,7 +398,7 @@ def main() -> None:
                 else nullcontext()
             )
             with autocast:
-                loss = model(pixels, labels=labels)["loss"]
+                loss = training_model(pixels, labels=labels)["loss"]
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(
@@ -377,7 +411,9 @@ def main() -> None:
             step += 1
             running_loss += float(loss.detach())
             if step % args.log_steps == 0:
-                average_loss = running_loss / args.log_steps
+                average_loss = distributed.mean_scalars(
+                    {"loss": running_loss / args.log_steps}
+                )["loss"]
                 record = {
                     "step": step,
                     "epoch": epoch,
@@ -386,53 +422,74 @@ def main() -> None:
                     "expert_lr": scheduler.get_last_lr()[1],
                     "elapsed": time.monotonic() - started,
                 }
-                LOGGER.info(
-                    "epoch=%d step=%d/%d loss=%.4f lr=%.2e expert_lr=%.2e elapsed=%.1fs",
-                    epoch,
-                    step,
-                    total_steps,
-                    average_loss,
-                    record["lr"],
-                    record["expert_lr"],
-                    record["elapsed"],
-                )
-                with metrics_path.open("a") as handle:
-                    handle.write(json.dumps(record) + "\n")
-                progress.set_postfix(
-                    loss=f"{average_loss:.4f}",
-                    lr=f"{record['lr']:.2e}",
-                    expert_lr=f"{record['expert_lr']:.2e}",
-                )
+                if distributed.is_main:
+                    LOGGER.info(
+                        "epoch=%d step=%d/%d loss=%.4f lr=%.2e "
+                        "expert_lr=%.2e elapsed=%.1fs",
+                        epoch,
+                        step,
+                        total_steps,
+                        average_loss,
+                        record["lr"],
+                        record["expert_lr"],
+                        record["elapsed"],
+                    )
+                    with metrics_path.open("a") as handle:
+                        handle.write(json.dumps(record) + "\n")
+                    progress.set_postfix(
+                        loss=f"{average_loss:.4f}",
+                        lr=f"{record['lr']:.2e}",
+                        expert_lr=f"{record['expert_lr']:.2e}",
+                    )
                 running_loss = 0.0
         accuracy = validate(
             model,
             validation_loader,
             device,
             use_amp=use_amp,
-            show_progress=True,
+            show_progress=distributed.is_main,
+            distributed=distributed,
         )
-        LOGGER.info(
-            "validation epoch=%d val_accuracy=%.4f elapsed=%.1fs",
-            epoch,
-            accuracy,
-            time.monotonic() - started,
-        )
-        with metrics_path.open("a") as handle:
-            handle.write(
-                json.dumps(
-                    {
-                        "step": step,
-                        "epoch": epoch,
-                        "validation_accuracy": accuracy,
-                        "elapsed": time.monotonic() - started,
-                    }
-                )
-                + "\n"
+        if distributed.is_main:
+            LOGGER.info(
+                "validation epoch=%d val_accuracy=%.4f elapsed=%.1fs",
+                epoch,
+                accuracy,
+                time.monotonic() - started,
             )
+            with metrics_path.open("a") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "step": step,
+                            "epoch": epoch,
+                            "validation_accuracy": accuracy,
+                            "elapsed": time.monotonic() - started,
+                        }
+                    )
+                    + "\n"
+                )
         if accuracy > best_accuracy:
             best_accuracy = accuracy
-            save_tower(args.output / "best", model, config, epoch=epoch, accuracy=accuracy)
-    save_tower(args.output / "last", model, config, epoch=args.epochs - 1, accuracy=accuracy)
+            if distributed.is_main:
+                save_tower(
+                    args.output / "best",
+                    model,
+                    config,
+                    epoch=epoch,
+                    accuracy=accuracy,
+                )
+        distributed.barrier()
+    if distributed.is_main:
+        save_tower(
+            args.output / "last",
+            model,
+            config,
+            epoch=args.epochs - 1,
+            accuracy=accuracy,
+        )
+    distributed.barrier()
+    distributed.close()
 
 
 if __name__ == "__main__":
