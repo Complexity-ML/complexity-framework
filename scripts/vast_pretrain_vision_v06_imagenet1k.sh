@@ -4,10 +4,15 @@ set -euo pipefail
 source /venv/main/bin/activate
 cd /workspace/complexity-framework
 
-HF_DATASET="${HF_DATASET:-ILSVRC/imagenet-1k}"
+# The official ILSVRC repository is gated and its 167 GB original-resolution
+# cache is too close to the 200 GB cluster disk. This public 256 px repack keeps
+# all 1.43M ImageNet-1K examples in roughly 20 GB and is resized/cropped to 224
+# by the same training transforms below.
+HF_DATASET="${HF_DATASET:-benjamin-paine/imagenet-1k-256x256}"
 OUTPUT="${OUTPUT:-artifacts/tr_hash_vision_v06_imagenet1k}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
 BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-64}"
+export HF_XET_HIGH_PERFORMANCE=1
 
 exec torchrun \
   --standalone \
