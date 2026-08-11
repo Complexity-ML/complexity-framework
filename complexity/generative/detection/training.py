@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import torch
+import torch.nn.functional as F
 from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader, Subset
 
@@ -143,6 +144,48 @@ def save_checkpoint(
             json.dumps(validation_metrics, indent=2) + "\n"
         )
     LOGGER.info("Checkpoint saved: %s", target)
+
+
+def load_pretrained_tower(model: TRHashObjectDetector, checkpoint: Path) -> None:
+    """Load compatible tower parameters and resize learned patch positions.
+
+    Routing tables are deterministic buffers derived from the target image
+    grid, so they are deliberately regenerated instead of copied.
+    """
+
+    state = load_file(str(checkpoint / "tower.safetensors"))
+    parameters = dict(model.tower.named_parameters())
+    position_name = "position_embedding"
+    if position_name in state and state[position_name].shape != parameters[position_name].shape:
+        old_positions = state[position_name]
+        old_grid = math.isqrt(old_positions.shape[1])
+        new_grid = math.isqrt(parameters[position_name].shape[1])
+        if old_grid**2 != old_positions.shape[1] or new_grid**2 != parameters[position_name].shape[1]:
+            raise ValueError("vision position embeddings must form square patch grids")
+        state[position_name] = F.interpolate(
+            old_positions.reshape(1, old_grid, old_grid, old_positions.shape[-1])
+            .permute(0, 3, 1, 2)
+            .float(),
+            size=(new_grid, new_grid),
+            mode="bicubic",
+            align_corners=False,
+        ).permute(0, 2, 3, 1).reshape(1, new_grid**2, old_positions.shape[-1]).to(
+            old_positions.dtype
+        )
+
+    compatible = {
+        name: state[name]
+        for name, parameter in parameters.items()
+        if name in state and state[name].shape == parameter.shape
+    }
+    skipped = sorted(set(parameters) - set(compatible))
+    model.tower.load_state_dict(compatible, strict=False)
+    LOGGER.info(
+        "Loaded %d pretrained tower parameters from %s%s",
+        len(compatible),
+        checkpoint,
+        f" (skipped incompatible: {', '.join(skipped)})" if skipped else "",
+    )
 
 
 def _xywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
@@ -441,10 +484,7 @@ def main() -> None:
         model.load_state_dict(load_file(str(args.resume / "model.safetensors")))
         LOGGER.info("Resumed from: %s", args.resume)
     elif args.backbone_checkpoint is not None:
-        model.tower.load_state_dict(
-            load_file(str(args.backbone_checkpoint / "tower.safetensors"))
-        )
-        LOGGER.info("Loaded pretrained backbone: %s", args.backbone_checkpoint)
+        load_pretrained_tower(model, args.backbone_checkpoint)
     LOGGER.info("Model: %.2fM parameters", model.num_parameters() / 1e6)
     if args.expert_lr_multiplier <= 0.0:
         raise ValueError("--expert-lr-multiplier must be positive")

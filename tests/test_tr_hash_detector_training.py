@@ -2,6 +2,7 @@ import json
 
 import torch
 from PIL import Image
+from safetensors.torch import save_file
 
 from complexity.generative.detection import (
     CocoDetectionDataset,
@@ -14,6 +15,7 @@ from complexity.generative.detection import (
     complete_iou_loss,
     sigmoid_focal_loss,
 )
+from complexity.generative.detection.training import load_pretrained_tower
 
 
 def test_synthetic_dataset_yields_valid_targets():
@@ -200,3 +202,48 @@ def test_training_loop_reduces_loss_on_synthetic_shapes():
     early = sum(losses[:5]) / 5
     late = sum(losses[-5:]) / 5
     assert late < early
+
+
+def test_pretrained_tower_resizes_positions_and_regenerates_routes(tmp_path):
+    source = TRHashObjectDetector(
+        TRHashDetectorConfig(
+            image_size=32,
+            patch_size=8,
+            vision_hidden_size=32,
+            vision_layers=1,
+            vision_heads=4,
+            vision_num_experts=4,
+            vision_top_k=2,
+            vision_expert_width=16,
+            num_classes=3,
+        )
+    )
+    checkpoint = tmp_path / "backbone"
+    checkpoint.mkdir()
+    save_file(
+        {name: value.detach().contiguous() for name, value in source.tower.state_dict().items()},
+        str(checkpoint / "tower.safetensors"),
+    )
+    target = TRHashObjectDetector(
+        TRHashDetectorConfig(
+            image_size=64,
+            patch_size=8,
+            vision_hidden_size=32,
+            vision_layers=1,
+            vision_heads=4,
+            vision_num_experts=4,
+            vision_top_k=2,
+            vision_expert_width=16,
+            num_classes=3,
+        )
+    )
+
+    load_pretrained_tower(target, checkpoint)
+
+    assert target.tower.position_embedding.shape == (1, 64, 32)
+    assert target.tower.route_ids.shape == (64,)
+    assert target.tower.blocks[0].mlp.route_table.shape == (2, 64)
+    assert torch.equal(
+        target.tower.blocks[0].mlp.expert_gate,
+        source.tower.blocks[0].mlp.expert_gate,
+    )
