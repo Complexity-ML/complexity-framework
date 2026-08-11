@@ -65,6 +65,14 @@ def test_default_head_uses_three_feature_scales():
     assert len(model.fpn_downsamples) == 2
 
 
+def test_default_224_configuration_uses_rounded_pyramid_grids():
+    config = TRHashDetectorConfig()
+    assert config.grid_sizes == (14, 7, 4)
+    model = TRHashObjectDetector(config)
+    raw = model(torch.randn(1, 3, 224, 224))
+    assert raw.shape[1] == 14**2 + 7**2 + 4**2
+
+
 def test_dynamic_assignment_selects_multiple_quality_weighted_cells():
     torch.manual_seed(0)
     config = _tiny_config(assignment_top_k=3)

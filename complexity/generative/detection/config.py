@@ -71,8 +71,8 @@ class TRHashDetectorConfig:
             2**level for level in range(len(self.scale_factors))
         ):
             raise ValueError("multi-scale factors must form a 1, 2, 4, ... pyramid")
-        if any(factor <= 0 or self.grid_size % factor for factor in self.scale_factors):
-            raise ValueError("scale_factors must be positive divisors of grid_size")
+        if any(factor <= 0 for factor in self.scale_factors):
+            raise ValueError("scale_factors must be positive")
         if self.assignment_top_k <= 0:
             raise ValueError("assignment_top_k must be positive")
         if self.assignment_center_radius <= 0.0 or self.assignment_object_cells <= 0.0:
@@ -100,7 +100,9 @@ class TRHashDetectorConfig:
     def grid_sizes(self) -> Tuple[int, ...]:
         if not self.multi_scale:
             return (self.grid_size,)
-        return tuple(self.grid_size // factor for factor in self.scale_factors)
+        return tuple(
+            (self.grid_size + factor - 1) // factor for factor in self.scale_factors
+        )
 
     def vision_tower_config(self) -> TRHashVisionTowerConfig:
         return TRHashVisionTowerConfig(
