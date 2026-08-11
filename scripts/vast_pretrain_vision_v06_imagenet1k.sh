@@ -13,6 +13,10 @@ OUTPUT="${OUTPUT:-artifacts/tr_hash_vision_v06_imagenet1k}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
 BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-64}"
 export HF_XET_HIGH_PERFORMANCE=1
+INITIALIZATION=()
+if [[ -n "${RESUME_CHECKPOINT:-}" ]]; then
+  INITIALIZATION=(--resume "$RESUME_CHECKPOINT")
+fi
 
 exec torchrun \
   --standalone \
@@ -21,6 +25,7 @@ exec torchrun \
   --hf-dataset "$HF_DATASET" \
   --data-root artifacts/hf-cache \
   --output "$OUTPUT" \
+  "${INITIALIZATION[@]}" \
   --architecture-version 6 \
   --image-size 224 \
   --patch-size 8 \
@@ -40,6 +45,8 @@ exec torchrun \
   --weight-decay 0.05 \
   --warmup-steps 5000 \
   --log-steps 50 \
+  --save-steps 2500 \
+  --eval-every 5 \
   --device cuda \
   --require-triton \
   --seed 3

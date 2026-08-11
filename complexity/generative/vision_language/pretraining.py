@@ -13,10 +13,11 @@ from pathlib import Path
 from typing import Callable
 
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
+from ..detection.checkpointing import load_training_state, save_training_state
 from ..detection.config import TRHashDetectorConfig
 from ..detection.distributed import DistributedContext
 from ..detection.hierarchical_tower import HierarchicalTRHashVisionClassifier
@@ -38,6 +39,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hf-train-split", default="train")
     parser.add_argument("--hf-validation-split", default="validation")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="exactly resume model, optimizer, scheduler, cursor and RNG state",
+    )
     parser.add_argument("--data-root", type=Path, default=Path("data/vision"))
     parser.add_argument("--image-size", type=int, default=128)
     parser.add_argument("--architecture-version", type=int, choices=(5, 6), default=5)
@@ -59,6 +66,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-steps", type=int, default=100)
     parser.add_argument("--min-lr-ratio", type=float, default=0.05)
     parser.add_argument("--log-steps", type=int, default=25)
+    parser.add_argument("--save-steps", type=int, default=0)
+    parser.add_argument("--eval-every", type=int, default=1)
     parser.add_argument("--device", default=None)
     parser.add_argument(
         "--require-triton",
@@ -72,9 +81,14 @@ def parse_args() -> argparse.Namespace:
 class HuggingFaceImageDataset(Dataset):
     """Apply torchvision transforms lazily to an Arrow-backed image dataset."""
 
-    def __init__(self, dataset, transform: Callable):
+    def __init__(self, dataset, transform: Callable, *, seed: int = 0):
         self.dataset = dataset
         self.transform = transform
+        self.seed = int(seed)
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
 
     def __len__(self) -> int:
         return len(self.dataset)
@@ -82,7 +96,35 @@ class HuggingFaceImageDataset(Dataset):
     def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
         example = self.dataset[index]
         image = example["image"].convert("RGB")
-        return self.transform(image), int(example["label"])
+        # Make stochastic crops/jitter a pure function of epoch+index. This is
+        # required for an exact mid-epoch resume with DataLoader workers.
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(self.seed + self.epoch * len(self) + index)
+            pixels = self.transform(image)
+        return pixels, int(example["label"])
+
+
+class TorchvisionImageDataset(Dataset):
+    """Apply transforms deterministically to a raw torchvision-style dataset."""
+
+    def __init__(self, dataset, transform: Callable, *, seed: int = 0):
+        self.dataset = dataset
+        self.transform = transform
+        self.seed = int(seed)
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
+        image, label = self.dataset[index]
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(self.seed + self.epoch * len(self) + index)
+            pixels = self.transform(image.convert("RGB"))
+        return pixels, int(label)
 
 
 def resolve_device(override: str | None) -> torch.device:
@@ -124,13 +166,17 @@ def build_datasets(args: argparse.Namespace):
         )
     )
     if args.cifar10:
-        train = datasets.CIFAR10(
-            args.data_root, train=True, transform=train_transform, download=True
+        train_source = datasets.CIFAR10(
+            args.data_root, train=True, transform=None, download=True
         )
-        validation = datasets.CIFAR10(
-            args.data_root, train=False, transform=validation_transform, download=True
+        validation_source = datasets.CIFAR10(
+            args.data_root, train=False, transform=None, download=True
         )
-        return train, validation, 10
+        return (
+            TorchvisionImageDataset(train_source, train_transform, seed=args.seed),
+            TorchvisionImageDataset(validation_source, validation_transform),
+            10,
+        )
 
     if args.hf_dataset:
         try:
@@ -157,18 +203,28 @@ def build_datasets(args: argparse.Namespace):
             else max(train_source.unique("label")) + 1
         )
         return (
-            HuggingFaceImageDataset(train_source, train_transform),
+            HuggingFaceImageDataset(train_source, train_transform, seed=args.seed),
             HuggingFaceImageDataset(validation_source, validation_transform),
             num_classes,
         )
 
-    train = datasets.ImageFolder(args.image_folder / "train", transform=train_transform)
-    validation = datasets.ImageFolder(
-        args.image_folder / "val", transform=validation_transform
-    )
-    if train.class_to_idx != validation.class_to_idx:
+    train_source = datasets.ImageFolder(args.image_folder / "train")
+    validation_source = datasets.ImageFolder(args.image_folder / "val")
+    if train_source.class_to_idx != validation_source.class_to_idx:
         raise ValueError("train and validation ImageFolder classes differ")
-    return train, validation, len(train.classes)
+    return (
+        TorchvisionImageDataset(train_source, train_transform, seed=args.seed),
+        TorchvisionImageDataset(validation_source, validation_transform),
+        len(train_source.classes),
+    )
+
+
+def _config_values(config) -> dict:
+    if isinstance(config, TRHashDetectorConfig):
+        return config.to_dict()
+    values = asdict(config)
+    values["precision"] = config.precision.value
+    return values
 
 
 def save_tower(
@@ -185,17 +241,61 @@ def save_tower(
         for name, value in model.tower.state_dict().items()
     }
     save_file(state, str(output / "tower.safetensors"))
-    if isinstance(config, TRHashDetectorConfig):
-        config_values = config.to_dict()
-    else:
-        config_values = asdict(config)
-        config_values["precision"] = config.precision.value
     (output / "config.json").write_text(
         json.dumps(
-            {"tower": config_values, "epoch": epoch, "validation_accuracy": accuracy},
+            {
+                "tower": _config_values(config),
+                "epoch": epoch,
+                "validation_accuracy": accuracy,
+            },
             indent=2,
         )
         + "\n"
+    )
+
+
+def save_vision_checkpoint(
+    output: Path,
+    model: torch.nn.Module,
+    config,
+    *,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    epoch: int,
+    batch_in_epoch: int,
+    step: int,
+    best_accuracy: float,
+    running_loss: float,
+    running_loss_steps: int,
+    total_epochs: int,
+    steps_per_epoch: int,
+    training_options: dict[str, object],
+    distributed_rng_states,
+    accuracy: float,
+) -> None:
+    """Write transfer weights plus the exact state required for continuation."""
+
+    metadata_epoch = epoch - 1 if batch_in_epoch == 0 and epoch > 0 else epoch
+    save_tower(output, model, config, epoch=metadata_epoch, accuracy=accuracy)
+    model_state = {
+        name: value.detach().cpu().contiguous()
+        for name, value in model.state_dict().items()
+    }
+    save_file(model_state, str(output / "model.safetensors"))
+    save_training_state(
+        output,
+        optimizer,
+        scheduler,
+        epoch=epoch,
+        batch_in_epoch=batch_in_epoch,
+        step=step,
+        best_map50=best_accuracy,
+        running_losses={"classification": running_loss},
+        running_loss_steps=running_loss_steps,
+        total_epochs=total_epochs,
+        steps_per_epoch=steps_per_epoch,
+        training_options=training_options,
+        distributed_rng_states=distributed_rng_states,
     )
 
 
@@ -273,13 +373,16 @@ def main() -> None:
             num_classes,
         )
     train_sampler = distributed.train_sampler(train_dataset, args.seed)
+    shuffle_generator = torch.Generator()
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=train_sampler is None,
         sampler=train_sampler,
+        generator=shuffle_generator if train_sampler is None else None,
         num_workers=args.workers,
-        persistent_workers=args.workers > 0,
+        # Recreate workers so train_dataset.set_epoch() reaches worker copies.
+        persistent_workers=False,
         pin_memory=device.type == "cuda",
     )
     validation_loader = DataLoader(
@@ -321,6 +424,12 @@ def main() -> None:
             precision=precision,
         )
         model = TRHashVisionClassifier(config, num_classes).to(device)
+    if args.resume is not None:
+        saved_config = json.loads((args.resume / "config.json").read_text())["tower"]
+        current_config = json.loads(json.dumps(_config_values(config)))
+        if saved_config != current_config:
+            raise ValueError("exact resume requires an unchanged vision model config")
+        model.load_state_dict(load_file(str(args.resume / "model.safetensors")))
     if distributed.is_main:
         LOGGER.info(
             "Vision model: %.2fM parameters on %s (%d GPU%s)",
@@ -368,28 +477,124 @@ def main() -> None:
             min_ratio=args.min_lr_ratio,
         ),
     )
+    if args.log_steps <= 0 or args.eval_every <= 0 or args.save_steps < 0:
+        raise ValueError("log/eval steps must be positive and save steps non-negative")
+    training_options = {
+        "batch_size": args.batch_size,
+        "dataset_size": len(train_dataset),
+        "seed": args.seed,
+        "lr": args.lr,
+        "expert_lr_multiplier": args.expert_lr_multiplier,
+        "weight_decay": args.weight_decay,
+        "warmup_steps": args.warmup_steps,
+        "min_lr_ratio": args.min_lr_ratio,
+        "model_config": _config_values(config),
+        "dataset": args.hf_dataset or str(args.image_folder or "cifar10"),
+    }
+    start_epoch = 0
+    start_batch = 0
+    step = 0
+    best_accuracy = -1.0
+    last_accuracy = -1.0
+    running_loss = 0.0
+    running_loss_steps = 0
+    if args.resume is not None:
+        resume_state = load_training_state(
+            args.resume,
+            optimizer,
+            scheduler,
+            total_epochs=args.epochs,
+            steps_per_epoch=len(train_loader),
+            training_options=training_options,
+            rank=distributed.rank,
+            world_size=distributed.world_size,
+            device=device,
+        )
+        start_epoch = int(resume_state["epoch"])
+        start_batch = int(resume_state["batch_in_epoch"])
+        step = int(resume_state["step"])
+        best_accuracy = float(resume_state["best_map50"])
+        last_accuracy = best_accuracy
+        running_loss = float(
+            resume_state.get("running_losses", {}).get("classification", 0.0)
+        )
+        running_loss_steps = int(resume_state.get("running_loss_steps", 0))
+        if not 0 <= start_epoch <= args.epochs:
+            raise ValueError(f"invalid resumed epoch cursor: {start_epoch}")
+        if not 0 <= start_batch <= len(train_loader):
+            raise ValueError(f"invalid resumed batch cursor: {start_batch}")
+        if distributed.is_main:
+            LOGGER.info(
+                "Resumed exactly from %s: epoch=%d batch=%d step=%d",
+                args.resume,
+                start_epoch,
+                start_batch,
+                step,
+            )
+
     training_model = distributed.wrap(model)
     if distributed.is_main:
         args.output.mkdir(parents=True, exist_ok=True)
     distributed.barrier()
     metrics_path = args.output / "metrics.jsonl"
     use_amp = device.type == "cuda"
-    best_accuracy = -1.0
     started = time.monotonic()
-    step = 0
-    running_loss = 0.0
-    for epoch in range(args.epochs):
+
+    def write_checkpoint(
+        target: Path,
+        *,
+        epoch: int,
+        batch_in_epoch: int,
+        accuracy: float,
+    ) -> None:
+        distributed_rng_states = distributed.gather_rng_states()
+        if distributed.is_main:
+            save_vision_checkpoint(
+                target,
+                model,
+                config,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                epoch=epoch,
+                batch_in_epoch=batch_in_epoch,
+                step=step,
+                best_accuracy=best_accuracy,
+                running_loss=running_loss,
+                running_loss_steps=running_loss_steps,
+                total_epochs=args.epochs,
+                steps_per_epoch=len(train_loader),
+                training_options=training_options,
+                distributed_rng_states=distributed_rng_states,
+                accuracy=accuracy,
+            )
+            LOGGER.info("Vision checkpoint saved: %s", target)
+        distributed.barrier()
+
+    for epoch in range(start_epoch, args.epochs):
+        if hasattr(train_dataset, "set_epoch"):
+            train_dataset.set_epoch(epoch)
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
+        else:
+            shuffle_generator.manual_seed(args.seed + epoch)
+        loader_iterator = iter(train_loader)
+        batches_to_skip = start_batch if epoch == start_epoch else 0
+        for _ in range(batches_to_skip):
+            next(loader_iterator)
         progress = tqdm(
-            train_loader,
+            loader_iterator,
             desc=f"vision train {epoch + 1}/{args.epochs}",
             unit="batch",
+            total=len(train_loader),
+            initial=batches_to_skip,
             dynamic_ncols=True,
             leave=False,
             disable=not distributed.is_main,
         )
-        for pixels, labels in progress:
+        for batch_index, (pixels, labels) in enumerate(
+            progress,
+            start=batches_to_skip,
+        ):
             pixels = pixels.to(device, non_blocking=device.type == "cuda")
             labels = labels.to(device, non_blocking=device.type == "cuda")
             autocast = (
@@ -410,9 +615,10 @@ def main() -> None:
             scheduler.step()
             step += 1
             running_loss += float(loss.detach())
+            running_loss_steps += 1
             if step % args.log_steps == 0:
                 average_loss = distributed.mean_scalars(
-                    {"loss": running_loss / args.log_steps}
+                    {"loss": running_loss / max(running_loss_steps, 1)}
                 )["loss"]
                 record = {
                     "step": step,
@@ -442,53 +648,63 @@ def main() -> None:
                         expert_lr=f"{record['expert_lr']:.2e}",
                     )
                 running_loss = 0.0
-        accuracy = validate(
-            model,
-            validation_loader,
-            device,
-            use_amp=use_amp,
-            show_progress=distributed.is_main,
-            distributed=distributed,
-        )
-        if distributed.is_main:
-            LOGGER.info(
-                "validation epoch=%d val_accuracy=%.4f elapsed=%.1fs",
-                epoch,
-                accuracy,
-                time.monotonic() - started,
+                running_loss_steps = 0
+            if args.save_steps and step % args.save_steps == 0:
+                next_batch = batch_index + 1
+                next_epoch = epoch
+                if next_batch == len(train_loader):
+                    next_epoch += 1
+                    next_batch = 0
+                write_checkpoint(
+                    args.output / f"step_{step:07d}",
+                    epoch=next_epoch,
+                    batch_in_epoch=next_batch,
+                    accuracy=last_accuracy,
+                )
+        start_batch = 0
+        should_evaluate = (epoch + 1) % args.eval_every == 0 or epoch + 1 == args.epochs
+        if should_evaluate:
+            last_accuracy = validate(
+                model,
+                validation_loader,
+                device,
+                use_amp=use_amp,
+                show_progress=distributed.is_main,
+                distributed=distributed,
             )
-            with metrics_path.open("a") as handle:
-                handle.write(
-                    json.dumps(
-                        {
-                            "step": step,
-                            "epoch": epoch,
-                            "validation_accuracy": accuracy,
-                            "elapsed": time.monotonic() - started,
-                        }
-                    )
-                    + "\n"
-                )
-        if accuracy > best_accuracy:
-            best_accuracy = accuracy
             if distributed.is_main:
-                save_tower(
-                    args.output / "best",
-                    model,
-                    config,
-                    epoch=epoch,
-                    accuracy=accuracy,
+                LOGGER.info(
+                    "validation epoch=%d val_accuracy=%.4f elapsed=%.1fs",
+                    epoch,
+                    last_accuracy,
+                    time.monotonic() - started,
                 )
-        distributed.barrier()
-    if distributed.is_main:
-        save_tower(
-            args.output / "last",
-            model,
-            config,
-            epoch=args.epochs - 1,
-            accuracy=accuracy,
-        )
-    distributed.barrier()
+                with metrics_path.open("a") as handle:
+                    handle.write(
+                        json.dumps(
+                            {
+                                "step": step,
+                                "epoch": epoch,
+                                "validation_accuracy": last_accuracy,
+                                "elapsed": time.monotonic() - started,
+                            }
+                        )
+                        + "\n"
+                    )
+            if last_accuracy > best_accuracy:
+                best_accuracy = last_accuracy
+                write_checkpoint(
+                    args.output / "best",
+                    epoch=epoch + 1,
+                    batch_in_epoch=0,
+                    accuracy=last_accuracy,
+                )
+    write_checkpoint(
+        args.output / "last",
+        epoch=args.epochs,
+        batch_in_epoch=0,
+        accuracy=last_accuracy,
+    )
     distributed.close()
 
 
