@@ -38,10 +38,12 @@ class TRHashVisionTowerConfig:
     shared_width: int = 0
     expert_width: int = 64
     route_seed: int = 0x71D5A17
+    precision: TRHashPrecision = TRHashPrecision.BF16
     attention_dropout: float = 0.0
     layer_norm_eps: float = 1e-6
 
     def __post_init__(self) -> None:
+        self.precision = TRHashPrecision(self.precision)
         if self.image_size <= 0 or self.image_size % self.patch_size:
             raise ValueError("image_size must be positive and divisible by patch_size")
         if self.hidden_size % self.num_attention_heads:
@@ -97,7 +99,7 @@ class TRHashVisionBlock(nn.Module):
                 routing_strategy=TRHashStrategy.BALANCED_HASH,
                 layer_index=layer_index,
                 route_seed=config.route_seed,
-                precision=TRHashPrecision.BF16,
+                precision=config.precision,
                 backend=TRHashBackend.AUTO,
             )
         )

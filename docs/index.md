@@ -44,6 +44,7 @@ MHA + TR-MoE architecture.
 - [TR-Hash image editor](tr-hash-image-editor.md)
 - [TR-Hash image-text-to-text](tr-hash-image-text-to-text.md)
 - [TR-Hash text-to-image](tr-hash-text-to-image.md)
+- [TR-Hash object detection and serving](tr-hash-object-detection.md)
 
 ## Operations
 

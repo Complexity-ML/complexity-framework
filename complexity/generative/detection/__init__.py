@@ -20,15 +20,33 @@ Usage:
 """
 
 from .config import TRHashDetectorConfig
-from .data import CocoDetectionDataset, SyntheticShapesDataset, collate_detection
-from .model import TRHashObjectDetector, box_iou, greedy_nms
+from .data import (
+    CocoDetectionDataset,
+    SyntheticShapesDataset,
+    YoloDetectionDataset,
+    collate_detection,
+)
+from .model import (
+    TRHashObjectDetector,
+    box_iou,
+    class_aware_nms,
+    complete_iou_loss,
+    greedy_nms,
+    sigmoid_focal_loss,
+    varifocal_loss,
+)
 
 __all__ = [
     "TRHashDetectorConfig",
     "TRHashObjectDetector",
     "box_iou",
+    "class_aware_nms",
+    "complete_iou_loss",
     "greedy_nms",
+    "sigmoid_focal_loss",
+    "varifocal_loss",
     "CocoDetectionDataset",
     "SyntheticShapesDataset",
+    "YoloDetectionDataset",
     "collate_detection",
 ]

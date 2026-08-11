@@ -8,7 +8,11 @@ from complexity.generative.detection import (
     SyntheticShapesDataset,
     TRHashDetectorConfig,
     TRHashObjectDetector,
+    YoloDetectionDataset,
+    class_aware_nms,
     collate_detection,
+    complete_iou_loss,
+    sigmoid_focal_loss,
 )
 
 
@@ -40,6 +44,50 @@ def test_synthetic_dataset_varies_across_indices():
     _, targets_0 = dataset[0]
     _, targets_1 = dataset[1]
     assert not torch.equal(targets_0, targets_1) or targets_0.shape != targets_1.shape
+
+
+def test_synthetic_dataset_can_resample_each_epoch_deterministically():
+    first = SyntheticShapesDataset(
+        length=4, image_size=64, seed=7, resample_each_epoch=True
+    )
+    second = SyntheticShapesDataset(
+        length=4, image_size=64, seed=7, resample_each_epoch=True
+    )
+    pixels_epoch_0, targets_epoch_0 = first[2]
+    first.set_epoch(1)
+    second.set_epoch(1)
+    pixels_epoch_1, targets_epoch_1 = first[2]
+    expected_pixels, expected_targets = second[2]
+
+    assert torch.equal(pixels_epoch_1, expected_pixels)
+    assert torch.equal(targets_epoch_1, expected_targets)
+    assert not torch.equal(pixels_epoch_0, pixels_epoch_1) or not torch.equal(
+        targets_epoch_0, targets_epoch_1
+    )
+
+
+def test_class_aware_nms_preserves_overlapping_different_classes():
+    boxes = torch.tensor([[0.1, 0.1, 0.9, 0.9], [0.1, 0.1, 0.9, 0.9]])
+    scores = torch.tensor([0.9, 0.8])
+    labels = torch.tensor([0, 1])
+    kept = class_aware_nms(boxes, scores, labels, iou_threshold=0.5)
+    assert kept.tolist() == [0, 1]
+
+
+def test_complete_iou_loss_is_zero_for_identical_boxes():
+    boxes = torch.tensor([[0.5, 0.5, 0.25, 0.4]])
+    assert torch.allclose(complete_iou_loss(boxes, boxes), torch.zeros(1), atol=1e-6)
+
+
+def test_focal_loss_downweights_easy_examples():
+    targets = torch.tensor([1.0, 0.0])
+    easy = sigmoid_focal_loss(
+        torch.tensor([8.0, -8.0]), targets, alpha=0.75, gamma=2.0
+    )
+    hard = sigmoid_focal_loss(
+        torch.tensor([0.0, 0.0]), targets, alpha=0.75, gamma=2.0
+    )
+    assert easy < hard
 
 
 def test_collate_detection_batches_variable_length_targets():
@@ -77,11 +125,33 @@ def test_coco_dataset_loads_from_json_and_normalizes_boxes(tmp_path):
 
     cx, cy, w, h, class_id = targets[0].tolist()
     assert abs(cx - 20.0 / 100.0) < 1e-5
-    assert abs(cy - 10.0 / 50.0) < 1e-5
+    assert abs(cy - 0.35) < 1e-5
     assert abs(w - 20.0 / 100.0) < 1e-5
-    assert abs(h - 10.0 / 50.0) < 1e-5
+    assert abs(h - 0.1) < 1e-5
     assert class_id == 0.0
     assert targets[1, 4].item() == 1.0
+
+
+def test_yolo_dataset_loads_labels_letterboxes_and_augments(tmp_path):
+    images_dir = tmp_path / "images" / "nested"
+    labels_dir = tmp_path / "labels" / "nested"
+    images_dir.mkdir(parents=True)
+    labels_dir.mkdir(parents=True)
+    Image.new("RGB", (100, 50), color=(10, 20, 30)).save(images_dir / "a.png")
+    (labels_dir / "a.txt").write_text("2 0.2 0.2 0.2 0.2\n")
+
+    dataset = YoloDetectionDataset(
+        tmp_path / "images",
+        tmp_path / "labels",
+        image_size=32,
+        augment=True,
+        seed=4,
+    )
+    pixels, targets = dataset[0]
+    assert dataset.num_classes == 3
+    assert pixels.shape == (3, 32, 32)
+    assert targets.shape == (1, 5)
+    assert torch.all((targets[:, :4] >= 0.0) & (targets[:, :4] <= 1.0))
 
 
 def test_coco_dataset_handles_images_with_no_annotations(tmp_path):

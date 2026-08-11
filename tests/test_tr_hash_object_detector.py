@@ -56,6 +56,27 @@ def test_forward_shape():
     assert raw.shape == (2, config.num_cells, 5 + config.num_classes)
 
 
+def test_default_head_uses_three_feature_scales():
+    config = _tiny_config()
+    assert config.grid_sizes == (4, 2, 1)
+    assert config.num_cells == 21
+    model = TRHashObjectDetector(config)
+    assert len(model.scale_heads) == 3
+    assert len(model.fpn_downsamples) == 2
+
+
+def test_dynamic_assignment_selects_multiple_quality_weighted_cells():
+    torch.manual_seed(0)
+    config = _tiny_config(assignment_top_k=3)
+    model = TRHashObjectDetector(config)
+    raw = model(torch.randn(1, 3, 32, 32))
+    targets = [torch.tensor([[0.5, 0.5, 0.25, 0.25, 2.0]])]
+    assigned = model._assign_targets(targets, raw.device, decoded=model.decode(raw))
+    assert 1 <= assigned["positive_mask"].sum() <= 3
+    quality = assigned["objectness"][assigned["positive_mask"]]
+    assert torch.all((quality >= 0.2) & (quality <= 1.0))
+
+
 def test_decode_produces_bounded_normalized_boxes():
     config = _tiny_config()
     model = TRHashObjectDetector(config).eval()
@@ -88,7 +109,7 @@ def test_loss_backward_reaches_head_and_backbone_experts():
         assert torch.isfinite(losses[key])
 
     losses["loss"].backward()
-    assert model.head.weight.grad is not None
+    assert model.scale_heads[0][-1].weight.grad is not None
     grad = model.tower.blocks[0].mlp.expert_gate.grad
     assert grad is not None
     assert grad.abs().sum() > 0

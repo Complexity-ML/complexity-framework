@@ -98,6 +98,11 @@ dev = [
 tools = [
     "mcp>=1.0.0; python_version >= '3.10'",
 ]
+serve = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "python-multipart>=0.0.9",
+]
 
 [project.scripts]
 complexity = "complexity.cli.app:main"
@@ -106,6 +111,8 @@ cf-plan-cluster = "complexity.training.cluster_plan:main"
 cf-image-train = "complexity.generative.image.training:main"
 cf-image-edit-train = "complexity.generative.image.edit_training:main"
 cf-detector-train = "complexity.generative.detection.training:main"
+cf-vision-pretrain = "complexity.generative.vision_language.pretraining:main"
+cf-detector-serve = "complexity.generative.detection.service:main"
 
 [project.urls]
 Homepage = "https://github.com/Complexity-ML/complexity-framework"
