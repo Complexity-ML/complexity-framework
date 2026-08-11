@@ -71,6 +71,22 @@ def write_tokenizer_chat_template(output: Path, chat_template: dict) -> Path:
     return path
 
 
+def strip_tokenizer_chat_template(output: Path) -> Path:
+    """Remove instruction-format metadata from a base-model tokenizer."""
+
+    path = output / "tokenizer_config.json"
+    if not path.exists():
+        raise FileNotFoundError(f"Tokenizer config not found after export: {path}")
+    config = json.loads(path.read_text(encoding="utf-8"))
+    config.pop("chat_template", None)
+    config.pop("chat_template_id", None)
+    path.write_text(
+        json.dumps(config, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def build_config(raw: dict, chat_template: dict | None = None) -> dict:
     """Translate the training configuration to the DeepConfig contract."""
 
@@ -157,6 +173,11 @@ def main() -> None:
         choices=("float32", "float16", "bfloat16"),
         default="bfloat16",
     )
+    parser.add_argument(
+        "--base-model",
+        action="store_true",
+        help="Export a raw pretrained model without chat-template metadata.",
+    )
     args = parser.parse_args()
 
     checkpoint = torch.load(
@@ -178,9 +199,11 @@ def main() -> None:
             tensor = tensor.to(target_dtype)
         state[vllm_tensor_name(name)] = tensor.contiguous()
     save_file(state, str(output / "model.safetensors"))
-    chat_template = validate_chat_template(
-        checkpoint.get("chat_template", default_chat_template())
-    )
+    chat_template = None
+    if not args.base_model:
+        chat_template = validate_chat_template(
+            checkpoint.get("chat_template", default_chat_template())
+        )
     config = build_config(dict(checkpoint["config"]), chat_template)
     config["torch_dtype"] = args.dtype
     (output / "config.json").write_text(
@@ -191,13 +214,17 @@ def main() -> None:
         json.dumps({"do_sample": True, "max_new_tokens": 128}, indent=2) + "\n",
         encoding="utf-8",
     )
-    (output / "chat_template.json").write_text(
-        json.dumps(chat_template, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    if chat_template is not None:
+        (output / "chat_template.json").write_text(
+            json.dumps(chat_template, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     if args.tokenizer:
         copy_tokenizer_files(args.tokenizer, output)
-        write_tokenizer_chat_template(output, chat_template)
+        if chat_template is None:
+            strip_tokenizer_chat_template(output)
+        else:
+            write_tokenizer_chat_template(output, chat_template)
 
     print(
         f"exported step={checkpoint.get('step')} tensors={len(state)} "

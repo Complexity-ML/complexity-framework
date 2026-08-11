@@ -11,6 +11,7 @@ from scripts.convert_pt_to_mlx import write_chat_template
 from scripts.export_tr_hash_vllm import (
     build_config,
     copy_tokenizer_files,
+    strip_tokenizer_chat_template,
     write_tokenizer_chat_template,
 )
 
@@ -154,6 +155,40 @@ def test_export_replaces_stale_tokenizer_chat_template(tmp_path) -> None:
     assert config["chat_template"] != "stale"
     assert config["chat_template_id"] == CHAT_TEMPLATE_ID
     assert "+ eos_token" in config["chat_template"]
+
+
+def test_base_export_removes_tokenizer_chat_template(tmp_path) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "tokenizer_config.json").write_text(
+        '{"chat_template": "stale", "chat_template_id": "chat-v1", '
+        '"model_max_length": 2048}',
+        encoding="utf-8",
+    )
+
+    path = strip_tokenizer_chat_template(output)
+    config = __import__("json").loads(path.read_text(encoding="utf-8"))
+
+    assert "chat_template" not in config
+    assert "chat_template_id" not in config
+    assert config["model_max_length"] == 2048
+
+
+def test_base_config_has_no_chat_template_metadata() -> None:
+    config = build_config(
+        {
+            "hidden_size": 64,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "intermediate_size": 128,
+            "vocab_size": 256,
+        },
+        chat_template=None,
+    )
+
+    assert "chat_template_id" not in config
+    assert "chat_template_file" not in config
 
 
 def test_mlx_export_preserves_checkpoint_chat_template(tmp_path) -> None:
