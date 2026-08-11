@@ -96,9 +96,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--architecture-version",
         type=int,
-        choices=(4, 5),
+        choices=(5,),
         default=5,
-        help="v4 is accepted only for exact legacy resume/transfer",
+        help="detector architecture version",
     )
     parser.add_argument("--patch-size", type=int, default=16)
     parser.add_argument("--num-classes", type=int, default=3)

@@ -70,17 +70,13 @@ def test_default_head_uses_three_feature_scales():
     assert model.neck is not None
 
 
-def test_legacy_config_without_v5_fields_loads_deprecated_baseline():
+def test_pre_v5_config_is_rejected():
     values = _tiny_config().to_dict()
     values.pop("architecture_version")
     values.pop("neck_mode")
 
-    with pytest.warns(DeprecationWarning, match="architecture v4"):
-        config = TRHashDetectorConfig.from_dict(values)
-
-    assert config.architecture_version == 4
-    assert config.neck_mode == "baseline"
-    assert TRHashObjectDetector(config).neck is None
+    with pytest.raises(ValueError, match="architecture v5"):
+        TRHashDetectorConfig.from_dict(values)
 
 
 def test_fpn_and_pan_are_identity_initialized_for_checkpoint_transfer():

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import asdict, dataclass, fields
 from typing import Any, Dict, Tuple
 
@@ -62,8 +61,8 @@ class TRHashDetectorConfig:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "scale_factors", tuple(self.scale_factors))
-        if self.architecture_version not in {4, 5}:
-            raise ValueError("architecture_version must be 4 or 5")
+        if self.architecture_version != 5:
+            raise ValueError("only detector architecture_version=5 is supported")
         if self.num_classes <= 0:
             raise ValueError("num_classes must be positive")
         if self.image_size <= 0 or self.patch_size <= 0:
@@ -163,14 +162,8 @@ class TRHashDetectorConfig:
     @classmethod
     def from_dict(cls, values: Dict[str, Any]) -> "TRHashDetectorConfig":
         values = dict(values)
-        values.setdefault("architecture_version", 4)
-        values.setdefault("neck_mode", "baseline")
-        if values["architecture_version"] == 4:
-            warnings.warn(
-                "TR-Hash detector architecture v4 is deprecated; transfer it into a v5 neck",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+        if values.get("architecture_version") != 5:
+            raise ValueError("only TR-Hash detector architecture v5 checkpoints are supported")
         allowed = {item.name for item in fields(cls)}
         unknown = sorted(set(values) - allowed)
         if unknown:
