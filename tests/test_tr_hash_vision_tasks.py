@@ -174,3 +174,20 @@ def test_classification_checkpoint_round_trip(tmp_path):
     torch.testing.assert_close(restored(pixels)["logits"], expected)
     assert restored.vision_task == "classification"
     assert json.loads((checkpoint / "vision_task.json").read_text())["format_version"] == 4
+
+
+def test_semantic_checkpoint_round_trip(tmp_path):
+    model = TRHashSemanticSegmenter(_config(), num_classes=3).eval()
+    pixels = torch.randn(1, 3, 32, 32)
+    expected = model(pixels)["logits"]
+
+    checkpoint = save_vision_task_checkpoint(
+        model,
+        tmp_path / "segmenter",
+        task="semantic_segmentation",
+        class_names=("road", "person", "sky"),
+    )
+    restored = load_vision_task_checkpoint(checkpoint)
+
+    torch.testing.assert_close(restored(pixels)["logits"], expected)
+    assert restored.vision_task == "semantic_segmentation"
