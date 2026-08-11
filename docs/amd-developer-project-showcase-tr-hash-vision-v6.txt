@@ -1,0 +1,45 @@
+TITLE
+
+TR-HASH Vision v6: a compact hash-routed detector looking toward ROCm
+
+
+POST
+
+I would like to share **TR-HASH Vision v6**, an open research prototype for compact object detection, and connect with AMD developers interested in helping us evaluate and optimize it on ROCm.
+
+TR-HASH uses a layer-specific hash of spatial-token IDs to select expert parameter subspaces. It does not use a learned MoE router. Shared contextual features and the selected expert parameters are combined inside each vision block.
+
+The current v6 detector targets approximately **1M parameters** and includes:
+
+- a hierarchical P3/P4/P5 vision tower;
+- shifted-window attention and a lightweight PAN;
+- optional P2 features and small-object-aware assignment;
+- quality-class scoring with LTRB/DFL box regression;
+- one-to-many training and an optional one-to-one NMS-free branch;
+- multi-GPU distributed training with exact checkpoint resume;
+- PyTorch, ONNX and TorchScript runtime/export work.
+
+The framework has a portable PyTorch routed-expert path that is intended to remain backend-neutral. Our optimized routed kernels are currently CUDA-focused, and we have **not yet published a validated ROCm benchmark or a custom HIP kernel**. I would rather state that clearly than present CUDA measurements as AMD results.
+
+The AMD work we would like to explore next is:
+
+1. validating the complete vision training and inference path with PyTorch on ROCm;
+2. profiling the hash-routed gather/GEMM/scatter workload on AMD GPUs;
+3. evaluating whether Triton on ROCm, HIP, or composable primitives are the best implementation route;
+4. testing BF16 behavior, multi-GPU scaling and ONNX Runtime parity;
+5. publishing reproducible latency, throughput, VRAM and accuracy measurements.
+
+Training and detector evaluation are still in progress, so there is no final mAP claim in this post. The goal is to build an honest cross-vendor baseline and identify which parts of this small routed architecture benefit from AMD-specific optimization.
+
+Source code:
+https://github.com/Complexity-ML/complexity-framework
+
+Vision v6 model page:
+https://huggingface.co/AETHORIA-AI/TR-HASH-Vision-v6-1M-COCO
+
+If you work with PyTorch ROCm, Triton on AMD, HIP kernels, or AMD GPU profiling, I would be very interested in technical feedback and reproducible test results.
+
+
+POSTING NOTE
+
+Attach the panda project image. This is a project showcase, so keep the links in the body and do not add advertising-style badges.
