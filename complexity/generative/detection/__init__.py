@@ -35,13 +35,13 @@ from .hub import (
     restore_detector_boxes,
     upload_detector_to_hub,
 )
+from .losses import distribution_focal_loss, quality_focal_loss
 from .model import (
     TRHashObjectDetector,
     box_iou,
     class_aware_nms,
     complete_iou_loss,
 )
-from .losses import distribution_focal_loss, quality_focal_loss
 from .ops import greedy_nms
 
 __all__ = [

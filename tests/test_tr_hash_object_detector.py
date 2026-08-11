@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from complexity.generative.detection import TRHashDetectorConfig, TRHashObjectDetector
@@ -64,6 +65,45 @@ def test_default_head_uses_three_feature_scales():
     assert len(model.head.regression_heads) == 3
     assert len(model.head.classification_heads) == 3
     assert len(model.fpn_downsamples) == 2
+    assert config.architecture_version == 5
+    assert config.neck_mode == "pan"
+    assert model.neck is not None
+
+
+def test_legacy_config_without_v5_fields_loads_deprecated_baseline():
+    values = _tiny_config().to_dict()
+    values.pop("architecture_version")
+    values.pop("neck_mode")
+
+    with pytest.warns(DeprecationWarning, match="architecture v4"):
+        config = TRHashDetectorConfig.from_dict(values)
+
+    assert config.architecture_version == 4
+    assert config.neck_mode == "baseline"
+    assert TRHashObjectDetector(config).neck is None
+
+
+def test_fpn_and_pan_are_identity_initialized_for_checkpoint_transfer():
+    torch.manual_seed(7)
+    baseline = TRHashObjectDetector(_tiny_config(neck_mode="baseline")).eval()
+    pixels = torch.randn(1, 3, 32, 32)
+    expected = baseline(pixels)
+
+    for mode in ("fpn", "pan"):
+        target = TRHashObjectDetector(_tiny_config(neck_mode=mode)).eval()
+        target.load_state_dict(baseline.state_dict(), strict=False)
+        torch.testing.assert_close(target(pixels), expected)
+
+
+def test_pan_cross_scale_gates_receive_gradients():
+    model = TRHashObjectDetector(_tiny_config(neck_mode="pan"))
+    output = model(torch.randn(2, 3, 32, 32))
+    output.square().mean().backward()
+
+    assert model.neck.top_down_gates.grad is not None
+    assert model.neck.top_down_gates.grad.abs().sum() > 0
+    assert model.neck.bottom_up_gates.grad is not None
+    assert model.neck.bottom_up_gates.grad.abs().sum() > 0
 
 
 def test_optional_p2_head_adds_a_stride_four_prediction_grid():

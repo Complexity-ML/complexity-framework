@@ -5,12 +5,14 @@ source /venv/main/bin/activate
 cd /workspace/complexity-framework
 
 exec python -u -m complexity.generative.detection.training \
-  --output artifacts/detector_voc_5090_v04 \
+  --output artifacts/detector_voc_5090_v05_pan \
   --backbone-checkpoint artifacts/tr_hash_vision_imagenet100/best \
   --yolo-images artifacts/VOC/images/train \
   --yolo-labels artifacts/VOC/labels/train \
   --validation-yolo-images artifacts/VOC/images/val \
   --validation-yolo-labels artifacts/VOC/labels/val \
+  --architecture-version 5 \
+  --neck-mode pan \
   --image-size 224 \
   --patch-size 8 \
   --vision-hidden-size 128 \

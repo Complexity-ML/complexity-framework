@@ -173,7 +173,7 @@ def test_classification_checkpoint_round_trip(tmp_path):
 
     torch.testing.assert_close(restored(pixels)["logits"], expected)
     assert restored.vision_task == "classification"
-    assert json.loads((checkpoint / "vision_task.json").read_text())["format_version"] == 4
+    assert json.loads((checkpoint / "vision_task.json").read_text())["format_version"] == 5
 
 
 def test_semantic_checkpoint_round_trip(tmp_path):

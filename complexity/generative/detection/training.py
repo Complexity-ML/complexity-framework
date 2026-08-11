@@ -14,7 +14,7 @@ import math
 import time
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict
 
 import torch
 import torch.nn.functional as F
@@ -30,6 +30,7 @@ from .data import (
     YoloDetectionDataset,
     collate_detection,
 )
+from .metrics import DetectionMetricsAccumulator
 from .model import TRHashObjectDetector
 
 LOGGER = logging.getLogger("tr_hash_detector")
@@ -92,6 +93,13 @@ def parse_args() -> argparse.Namespace:
         help="JSON object mapping target class IDs to source class IDs",
     )
     parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument(
+        "--architecture-version",
+        type=int,
+        choices=(4, 5),
+        default=5,
+        help="v4 is accepted only for exact legacy resume/transfer",
+    )
     parser.add_argument("--patch-size", type=int, default=16)
     parser.add_argument("--num-classes", type=int, default=3)
     parser.add_argument("--vision-hidden-size", type=int, default=192)
@@ -101,6 +109,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vision-top-k", type=int, default=2)
     parser.add_argument("--vision-expert-width", type=int, default=48)
     parser.add_argument("--single-scale", action="store_true")
+    parser.add_argument(
+        "--neck-mode",
+        choices=("baseline", "fpn", "pan"),
+        default="pan",
+        help="cross-scale feature fusion used before the prediction heads",
+    )
     parser.add_argument(
         "--p2-head",
         action=argparse.BooleanOptionalAction,
@@ -448,14 +462,10 @@ def evaluate_detector(
     show_progress: bool = False,
 ) -> Dict[str, float]:
     model.eval()
-    scores_by_class: Dict[int, List[torch.Tensor]] = {
-        class_id: [] for class_id in range(model.config.num_classes)
-    }
-    matches_by_class: Dict[int, List[torch.Tensor]] = {
-        class_id: [] for class_id in range(model.config.num_classes)
-    }
-    target_counts = [0 for _ in range(model.config.num_classes)]
-    total_targets = 0
+    metrics = DetectionMetricsAccumulator(
+        model.config.num_classes,
+        model.config.image_size,
+    )
 
     progress = tqdm(
         loader,
@@ -475,71 +485,14 @@ def evaluate_detector(
                 postprocess_on_cpu=device.type == "mps",
             )
         for detection, image_targets in zip(detections, targets):
-            target_boxes = _xywh_to_xyxy(image_targets[:, :4]).cpu()
-            target_labels = image_targets[:, 4].long().cpu()
-            total_targets += len(image_targets)
-            for class_id in range(model.config.num_classes):
-                target_counts[class_id] += int((target_labels == class_id).sum())
-
-            boxes = detection["boxes"].cpu()
-            scores = detection["scores"].cpu()
-            labels = detection["labels"].cpu()
-            image_matches = _match_image_detections(
-                boxes,
-                scores,
-                labels,
-                target_boxes,
-                target_labels,
-                model.config.num_classes,
+            metrics.update(
+                detection["boxes"],
+                detection["scores"],
+                detection["labels"],
+                image_targets,
             )
-            for class_id, (class_scores, class_matches) in image_matches.items():
-                scores_by_class[class_id].append(class_scores)
-                matches_by_class[class_id].append(class_matches)
-
-    class_scores = [
-        torch.cat(scores_by_class[class_id]) for class_id in range(model.config.num_classes)
-    ]
-    class_matches = [
-        torch.cat(matches_by_class[class_id]) for class_id in range(model.config.num_classes)
-    ]
-    average_precisions = [
-        _average_precision_from_matches(
-            class_scores[class_id], class_matches[class_id], target_counts[class_id]
-        )
-        for class_id in range(model.config.num_classes)
-    ]
-    valid_average_precisions = [value for value in average_precisions if not math.isnan(value)]
-    scores_tensor = torch.cat(class_scores)
-    matches_tensor = torch.cat(class_matches)
-    score_order = torch.argsort(scores_tensor, descending=True)
-    scores_tensor = scores_tensor[score_order]
-    matches_tensor = matches_tensor[score_order]
-    fixed_mask = scores_tensor >= confidence_threshold
-    fixed_true_positives = float(matches_tensor[fixed_mask].sum())
-    fixed_predictions = int(fixed_mask.sum())
-    precision = fixed_true_positives / max(fixed_predictions, 1)
-    recall = fixed_true_positives / max(total_targets, 1)
-    f1 = 2.0 * precision * recall / max(precision + recall, 1e-9)
-    if len(scores_tensor):
-        cumulative_true_positives = matches_tensor.cumsum(0)
-        prediction_counts = torch.arange(1, len(scores_tensor) + 1)
-        f1_curve = (
-            2.0 * cumulative_true_positives / (prediction_counts + total_targets).clamp_min(1)
-        )
-        best_f1, best_index = f1_curve.max(dim=0)
-        best_confidence = float(scores_tensor[int(best_index)])
-    else:
-        best_f1 = torch.tensor(0.0)
-        best_confidence = 1.0
     model.train()
-    return {
-        "map50": sum(valid_average_precisions) / max(len(valid_average_precisions), 1),
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
-        "best_f1": float(best_f1),
-        "best_confidence": best_confidence,
-    }
+    return metrics.compute(confidence_threshold)
 
 
 def cosine_schedule(step: int, *, warmup_steps: int, total_steps: int, min_ratio: float) -> float:
@@ -667,6 +620,7 @@ def main() -> None:
     if vision_precision == "auto":
         vision_precision = "fp32" if device.type == "mps" else "bf16"
     config = TRHashDetectorConfig(
+        architecture_version=args.architecture_version,
         image_size=args.image_size,
         patch_size=args.patch_size,
         vision_hidden_size=args.vision_hidden_size,
@@ -679,6 +633,7 @@ def main() -> None:
         num_classes=num_classes,
         multi_scale=not args.single_scale,
         p2_head=args.p2_head,
+        neck_mode=args.neck_mode,
         dynamic_assignment=not args.static_assignment,
         assignment_top_k=args.assignment_top_k,
         stal_enabled=not args.no_stal,
@@ -947,10 +902,15 @@ def main() -> None:
                 show_progress=True,
             )
             LOGGER.info(
-                "validation epoch=%d mAP50=%.4f precision=%.4f recall=%.4f "
+                "validation epoch=%d mAP50=%.4f mAP50-95=%.4f "
+                "APs=%.4f APm=%.4f APl=%.4f precision=%.4f recall=%.4f "
                 "f1=%.4f best_f1=%.4f best_conf=%.3f",
                 epoch,
                 validation_metrics["map50"],
+                validation_metrics["map50_95"],
+                validation_metrics["ap_small"],
+                validation_metrics["ap_medium"],
+                validation_metrics["ap_large"],
                 validation_metrics["precision"],
                 validation_metrics["recall"],
                 validation_metrics["f1"],

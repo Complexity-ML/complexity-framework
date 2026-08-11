@@ -208,6 +208,8 @@ class TrainingJobManager:
                 str(request.validation_samples),
                 "--validation-fraction",
                 str(request.validation_fraction),
+                "--architecture-version",
+                "5",
                 "--vision-hidden-size",
                 str(request.vision_hidden_size),
                 "--vision-layers",
@@ -218,6 +220,8 @@ class TrainingJobManager:
                 str(request.vision_expert_width),
                 "--assignment-top-k",
                 str(request.assignment_top_k),
+                "--neck-mode",
+                request.neck_mode,
                 "--reg-max",
                 str(request.reg_max),
                 "--head-hidden-size",
@@ -389,6 +393,7 @@ def create_app(
         quality_focal_beta: float = Field(default=2.0, ge=0.0)
         augmentation: str = Field(default="strong", pattern="^(light|strong)$")
         p2_head: bool = True
+        neck_mode: str = Field(default="pan", pattern="^(baseline|fpn|pan)$")
         stal: bool = True
         progressive_loss: bool = True
         momentum: float = Field(default=0.937, ge=0.0, lt=1.0)
@@ -406,7 +411,7 @@ def create_app(
     resolved_device = resolve_device(device)
     runtime = ModelRuntime(checkpoint, resolved_device)
     jobs = TrainingJobManager(jobs_root, sys.executable)
-    app = FastAPI(title="TR-Hash Detector Service", version="0.4.0")
+    app = FastAPI(title="TR-Hash Detector Service", version="0.5.0")
 
     def authenticate(x_api_key: Optional[str] = Header(default=None)) -> None:
         if api_key and x_api_key != api_key:

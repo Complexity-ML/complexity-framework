@@ -144,6 +144,7 @@ def _model_card(
     metrics_yaml = ""
     metrics_table = "Training is currently in progress; validated metrics will be added here."
     if metrics:
+        map50_95 = metrics.get("map50_95", metrics["map50"])
         metrics_yaml = f"""
 model-index:
 - name: {model_name}
@@ -158,11 +159,16 @@ model-index:
     - name: mAP50
       type: map
       value: {metrics['map50']:.6f}
+    - name: mAP50-95
+      type: map
+      value: {map50_95:.6f}
 """.rstrip()
         metrics_table = (
-            "| mAP50 | Precision | Recall | Best F1 | Best confidence |\n"
-            "|---:|---:|---:|---:|---:|\n"
-            f"| {metrics['map50']:.4f} | {metrics['precision']:.4f} | "
+            "| mAP50 | mAP50-95 | AP small | AP medium | AP large | Precision | Recall | Best F1 | Best confidence |\n"
+            "|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n"
+            f"| {metrics['map50']:.4f} | {map50_95:.4f} | "
+            f"{metrics.get('ap_small', 0.0):.4f} | {metrics.get('ap_medium', 0.0):.4f} | "
+            f"{metrics.get('ap_large', 0.0):.4f} | {metrics['precision']:.4f} | "
             f"{metrics['recall']:.4f} | {metrics['best_f1']:.4f} | "
             f"{metrics['best_confidence']:.3f} |"
         )
@@ -189,9 +195,10 @@ tags:
 
 {status}
 
-TR-Hash Vision is a compact anchor-free detector built on a deterministic
-token-routed MoE vision tower. The architecture combines dynamic one-to-many
-assignment, class-aware batched NMS, a P2 small-object scale, STAL-style
+TR-Hash Vision v5 is a compact anchor-free detector built on a deterministic
+token-routed MoE vision tower. The architecture combines a lightweight PAN
+cross-scale neck, dynamic one-to-many assignment, class-aware batched NMS,
+a P2 small-object scale, STAL-style
 assignment, decoupled LTRB/DFL regression, unified QFL quality-class scores,
 strong detection augmentation, and progressive loss balancing. The target release is
 approximately **{parameter_text} parameters**, trained at **{image_size} px** on

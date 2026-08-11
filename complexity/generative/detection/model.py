@@ -21,6 +21,7 @@ from ..vision_language.vision_tower import TRHashVisionTower
 from .config import TRHashDetectorConfig
 from .head import DecoupledDetectionHead
 from .losses import distribution_focal_loss, quality_focal_loss
+from .neck import CrossScaleFusionNeck
 from .ops import box_iou, class_aware_nms
 from .ops import greedy_nms as greedy_nms
 
@@ -86,6 +87,15 @@ class TRHashObjectDetector(nn.Module):
             )
             for _ in coarse_grids[1:]
         )
+        self.neck = (
+            None
+            if self.config.neck_mode == "baseline"
+            else CrossScaleFusionNeck(
+                hidden,
+                len(self.config.grid_sizes),
+                self.config.neck_mode,
+            )
+        )
         self.head = DecoupledDetectionHead(self.config)
 
     def _feature_pyramid(self, features: torch.Tensor) -> List[torch.Tensor]:
@@ -106,7 +116,7 @@ class TRHashObjectDetector(nn.Module):
         for downsample in self.fpn_downsamples:
             feature_map = downsample(feature_map)
             feature_maps.append(feature_map)
-        return feature_maps
+        return feature_maps if self.neck is None else self.neck(feature_maps)
 
     def _predictions_from_features(
         self,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import asdict, dataclass, fields
 from typing import Any, Dict, Tuple
 
@@ -18,6 +19,7 @@ class TRHashDetectorConfig:
     unified sigmoid quality-class scores are enabled by default.
     """
 
+    architecture_version: int = 5
     image_size: int = 224
     patch_size: int = 16
     vision_hidden_size: int = 384
@@ -32,6 +34,7 @@ class TRHashDetectorConfig:
     num_classes: int = 80
     multi_scale: bool = True
     p2_head: bool = False
+    neck_mode: str = "pan"
     scale_factors: Tuple[int, ...] = (1, 2, 4)
     dynamic_assignment: bool = True
     assignment_top_k: int = 5
@@ -59,6 +62,8 @@ class TRHashDetectorConfig:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "scale_factors", tuple(self.scale_factors))
+        if self.architecture_version not in {4, 5}:
+            raise ValueError("architecture_version must be 4 or 5")
         if self.num_classes <= 0:
             raise ValueError("num_classes must be positive")
         if self.image_size <= 0 or self.patch_size <= 0:
@@ -71,6 +76,8 @@ class TRHashDetectorConfig:
             raise ValueError("vision_top_k cannot exceed vision_num_experts")
         if self.vision_precision not in {"fp32", "bf16", "fp16"}:
             raise ValueError("vision_precision must be fp32, bf16, or fp16")
+        if self.neck_mode not in {"baseline", "fpn", "pan"}:
+            raise ValueError("neck_mode must be baseline, fpn, or pan")
         if not self.scale_factors or self.scale_factors[0] != 1:
             raise ValueError("scale_factors must start with 1")
         if self.multi_scale and self.scale_factors != tuple(
@@ -156,6 +163,14 @@ class TRHashDetectorConfig:
     @classmethod
     def from_dict(cls, values: Dict[str, Any]) -> "TRHashDetectorConfig":
         values = dict(values)
+        values.setdefault("architecture_version", 4)
+        values.setdefault("neck_mode", "baseline")
+        if values["architecture_version"] == 4:
+            warnings.warn(
+                "TR-Hash detector architecture v4 is deprecated; transfer it into a v5 neck",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         allowed = {item.name for item in fields(cls)}
         unknown = sorted(set(values) - allowed)
         if unknown:

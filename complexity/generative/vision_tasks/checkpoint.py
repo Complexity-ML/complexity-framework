@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -72,7 +73,7 @@ def save_vision_task_checkpoint(
             raise ValueError("class_names must match the task class count")
 
     (output / "config.json").write_text(json.dumps(config.to_dict(), indent=2) + "\n")
-    manifest = {"format_version": 4, "task": task, "options": options}
+    manifest = {"format_version": 5, "task": task, "options": options}
     (output / "vision_task.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (output / "class_names.json").write_text(json.dumps(names, indent=2) + "\n")
     state = {
@@ -92,7 +93,14 @@ def load_vision_task_checkpoint(
 
     checkpoint = Path(checkpoint)
     manifest = json.loads((checkpoint / "vision_task.json").read_text())
-    if manifest.get("format_version") != 4:
+    format_version = manifest.get("format_version")
+    if format_version == 4:
+        warnings.warn(
+            "vision task checkpoint format v4 is deprecated; resave it as v5",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    elif format_version != 5:
         raise ValueError("unsupported vision task checkpoint format")
     task = str(manifest.get("task"))
     if task not in SUPPORTED_VISION_TASKS:
