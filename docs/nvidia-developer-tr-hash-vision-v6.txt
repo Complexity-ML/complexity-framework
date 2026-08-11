@@ -1,21 +1,22 @@
 TITLE
 
-Technical feedback wanted: deterministic routed MoE for a small CUDA detector
+Technical feedback wanted: hash-routed MoE for a small CUDA detector
 
 
 FIRST POST — NO LINKS
 
-I have been experimenting with a compact anchor-free detector that uses deterministic spatial-token routing instead of a learned Mixture-of-Experts router. I would value technical feedback from CUDA and Triton developers on the implementation approach.
+I have been experimenting with a compact anchor-free detector that hashes spatial-token IDs to select expert parameter subspaces instead of using a learned Mixture-of-Experts router. I would value technical feedback from CUDA and Triton developers on the implementation approach.
 
 The current research prototype is approximately 1M parameters. Its hierarchical vision tower produces native P3/P4/P5 features, uses shifted-window attention, and feeds a lightweight top-down and bottom-up PAN. The detection side includes quality-class scoring, LTRB/DFL regression, small-object assignment and an optional one-to-one inference branch.
 
 ```text
-spatial token identity
-        |
-        v
-fixed layer-specific route ---> selected expert parameters
-        |                              |
-        +---- shared context ----------+----> output
+spatial token ID ---> layer-specific hash ---> expert IDs
+        |                                      |
+        |                                      v
+        +---- shared contextual features + selected expert parameters
+                                               |
+                                               v
+                                             output
 ```
 
 The CUDA path currently includes BF16 training, fused routed-expert operations, a Triton implementation, a PyTorch reference fallback, NCCL DDP and exact distributed checkpoint resume. I have exercised the training path on four RTX 5060 Ti GPUs with the fused backend active.
