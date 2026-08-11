@@ -104,9 +104,6 @@ def load_detector_checkpoint(
     config = TRHashDetectorConfig.from_dict(json.loads((checkpoint / "config.json").read_text()))
     model = TRHashObjectDetector(config)
     state = load_file(str(checkpoint / "model.safetensors"), device=str(device))
-    state = {
-        name: value for name, value in state.items() if not name.startswith("one_to_one_heads.")
-    }
     model.load_state_dict(state, strict=True)
     return model.to(device).eval()
 
@@ -195,7 +192,8 @@ tags:
 TR-Hash Vision is a compact anchor-free detector built on a deterministic
 token-routed MoE vision tower. The architecture combines dynamic one-to-many
 assignment, class-aware batched NMS, a P2 small-object scale, STAL-style
-assignment, and progressive loss balancing. The target release is
+assignment, decoupled LTRB/DFL regression, unified QFL quality-class scores,
+strong detection augmentation, and progressive loss balancing. The target release is
 approximately **{parameter_text} parameters**, trained at **{image_size} px** on
 Pascal VOC 2007+2012.
 

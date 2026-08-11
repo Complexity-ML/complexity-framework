@@ -80,7 +80,7 @@ class ModelRuntime:
             pixels = _normalize_image(image).unsqueeze(0).to(self.device)
             detection = self.model.predict(
                 pixels,
-                objectness_threshold=confidence,
+                confidence_threshold=confidence,
                 iou_threshold=iou_threshold,
                 postprocess_on_cpu=self.device.type == "mps",
             )[0]
@@ -218,8 +218,16 @@ class TrainingJobManager:
                 str(request.vision_expert_width),
                 "--assignment-top-k",
                 str(request.assignment_top_k),
-                "--optimizer",
-                request.optimizer,
+                "--reg-max",
+                str(request.reg_max),
+                "--head-hidden-size",
+                str(request.head_hidden_size),
+                "--dfl-loss-weight",
+                str(request.dfl_loss_weight),
+                "--quality-focal-beta",
+                str(request.quality_focal_beta),
+                "--augmentation",
+                request.augmentation,
                 "--momentum",
                 str(request.momentum),
                 "--weight-decay",
@@ -231,8 +239,8 @@ class TrainingJobManager:
                 "--seed",
                 str(request.seed),
             ]
-            if request.p2_head:
-                command.append("--p2-head")
+            if not request.p2_head:
+                command.append("--no-p2-head")
             if not request.stal:
                 command.append("--no-stal")
             if not request.progressive_loss:
@@ -375,10 +383,14 @@ def create_app(
         vision_heads: int = Field(default=4, ge=1)
         vision_expert_width: int = Field(default=48, ge=8)
         assignment_top_k: int = Field(default=5, ge=1, le=64)
-        p2_head: bool = False
+        reg_max: int = Field(default=16, ge=0, le=32)
+        head_hidden_size: int = Field(default=0, ge=0)
+        dfl_loss_weight: float = Field(default=0.5, ge=0.0)
+        quality_focal_beta: float = Field(default=2.0, ge=0.0)
+        augmentation: str = Field(default="strong", pattern="^(light|strong)$")
+        p2_head: bool = True
         stal: bool = True
         progressive_loss: bool = True
-        optimizer: str = Field(default="sgd", pattern="^(sgd|adamw)$")
         momentum: float = Field(default=0.937, ge=0.0, lt=1.0)
         weight_decay: float = Field(default=5e-4, ge=0.0)
         learning_rate: float = Field(default=1e-2, gt=0.0)
@@ -394,7 +406,7 @@ def create_app(
     resolved_device = resolve_device(device)
     runtime = ModelRuntime(checkpoint, resolved_device)
     jobs = TrainingJobManager(jobs_root, sys.executable)
-    app = FastAPI(title="TR-Hash Detector Service", version="0.3.0")
+    app = FastAPI(title="TR-Hash Detector Service", version="0.4.0")
 
     def authenticate(x_api_key: Optional[str] = Header(default=None)) -> None:
         if api_key and x_api_key != api_key:

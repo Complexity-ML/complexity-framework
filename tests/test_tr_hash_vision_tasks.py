@@ -117,7 +117,7 @@ def test_instance_segmentation_uses_one_backbone_pass_and_trains_masks():
 
     predictions = model.predict_instance(
         torch.randn(1, 3, 32, 32),
-        objectness_threshold=0.0,
+        confidence_threshold=0.0,
         max_detections=3,
     )
     assert predictions[0]["masks"].shape == (3, 32, 32)
@@ -143,7 +143,7 @@ def test_obb_periodic_angle_loss_and_nms_prediction(monkeypatch):
 
     monkeypatch.setattr("complexity.generative.vision_tasks.model.class_aware_nms", record_nms)
     predictions = model.predict_obb(
-        torch.randn(1, 3, 32, 32), objectness_threshold=0.0, max_detections=5
+        torch.randn(1, 3, 32, 32), confidence_threshold=0.0, max_detections=5
     )
     assert predictions[0]["boxes"].shape == (5, 4)
     assert predictions[0]["angles"].shape == (5,)

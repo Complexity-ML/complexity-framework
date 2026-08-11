@@ -3,7 +3,7 @@
 The task variants deliberately reuse the same deterministic routed vision
 tower as the detector. Dense tasks attach small convolutional decoders;
 instance segmentation and oriented detection extend the detector so box,
-class, and objectness knowledge transfers directly between checkpoints.
+class and localization knowledge transfers directly between checkpoints.
 """
 
 from __future__ import annotations
@@ -304,7 +304,7 @@ class TRHashInstanceSegmenter(TRHashObjectDetector):
         self,
         pixel_values: torch.Tensor,
         *,
-        objectness_threshold: float = 0.25,
+        confidence_threshold: float = 0.25,
         iou_threshold: float = 0.45,
         max_detections: int = 100,
         mask_threshold: float = 0.5,
@@ -316,10 +316,9 @@ class TRHashInstanceSegmenter(TRHashObjectDetector):
         decoded = self.decode(raw)
         results = []
         for image_index in range(pixel_values.size(0)):
-            class_confidence, labels = decoded["class_probs"][image_index].max(-1)
-            scores = decoded["objectness"][image_index] * class_confidence
+            scores, labels = decoded["class_scores"][image_index].max(-1)
             candidate_indices = torch.nonzero(
-                scores >= objectness_threshold, as_tuple=False
+                scores >= confidence_threshold, as_tuple=False
             ).flatten()
             boxes = decoded["boxes"][image_index, candidate_indices]
             selected_scores = scores[candidate_indices]
@@ -441,7 +440,7 @@ class TRHashOBBDetector(TRHashObjectDetector):
         self,
         pixel_values: torch.Tensor,
         *,
-        objectness_threshold: float = 0.25,
+        confidence_threshold: float = 0.25,
         iou_threshold: float = 0.45,
         max_detections: int = 300,
     ) -> List[Dict[str, torch.Tensor]]:
@@ -450,10 +449,9 @@ class TRHashOBBDetector(TRHashObjectDetector):
         decoded = self.decode(raw)
         results = []
         for image_index in range(pixel_values.size(0)):
-            class_confidence, labels = decoded["class_probs"][image_index].max(-1)
-            scores = decoded["objectness"][image_index] * class_confidence
+            scores, labels = decoded["class_scores"][image_index].max(-1)
             candidate_indices = torch.nonzero(
-                scores >= objectness_threshold, as_tuple=False
+                scores >= confidence_threshold, as_tuple=False
             ).flatten()
             boxes = decoded["boxes"][image_index, candidate_indices]
             selected_scores = scores[candidate_indices]

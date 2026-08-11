@@ -5,7 +5,7 @@ source /venv/main/bin/activate
 cd /workspace/complexity-framework
 
 exec python -u -m complexity.generative.detection.training \
-  --output artifacts/detector_voc_5090_o2m_clean \
+  --output artifacts/detector_voc_5090_v04 \
   --backbone-checkpoint artifacts/tr_hash_vision_imagenet100/best \
   --yolo-images artifacts/VOC/images/train \
   --yolo-labels artifacts/VOC/labels/train \
@@ -18,10 +18,13 @@ exec python -u -m complexity.generative.detection.training \
   --vision-heads 4 \
   --vision-expert-width 48 \
   --p2-head \
+  --reg-max 16 \
+  --dfl-loss-weight 0.5 \
+  --quality-focal-beta 2.0 \
+  --augmentation strong \
   --epochs 50 \
   --batch-size 64 \
   --workers 8 \
-  --optimizer sgd \
   --lr 1e-2 \
   --momentum 0.937 \
   --weight-decay 5e-4 \

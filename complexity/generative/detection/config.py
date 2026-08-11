@@ -14,7 +14,8 @@ class TRHashDetectorConfig:
 
     Predictions use the backbone patch grid and optional lightweight
     depthwise downsampled grids. Multi-scale output, dynamic positive-cell
-    assignment, and Varifocal objectness are enabled by default.
+    assignment, a decoupled head, stride-local LTRB/DFL regression, and
+    unified sigmoid quality-class scores are enabled by default.
     """
 
     image_size: int = 224
@@ -42,30 +43,22 @@ class TRHashDetectorConfig:
     stal_small_object_threshold: float = 0.08
     stal_top_k: int = 9
     stal_center_radius: float = 3.5
-    center_offset_mode: str = "linear"
-    # Retained only so older checkpoint configs deserialize. The failed
-    # one-to-one experiment is no longer constructed or trained.
-    end_to_end: bool = False
+    reg_max: int = 16
+    head_hidden_size: int = 0
+    dfl_loss_weight: float = 0.5
+    quality_focal_beta: float = 2.0
     progressive_loss_enabled: bool = True
     progressive_box_start: float = 0.5
-    progressive_objectness_start: float = 1.5
+    progressive_quality_start: float = 1.5
     box_loss_weight: float = 5.0
-    objectness_loss_weight: float = 1.0
-    class_loss_weight: float = 1.0
+    quality_loss_weight: float = 1.0
     box_l1_weight: float = 0.25
     box_iou_weight: float = 1.0
-    focal_alpha: float = 0.75
-    focal_gamma: float = 2.0
-    objectness_loss_type: str = "varifocal"
-    varifocal_alpha: float = 0.75
-    varifocal_gamma: float = 2.0
-    class_label_smoothing: float = 0.0
     dropout: float = 0.0
     layer_norm_eps: float = 1e-6
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "scale_factors", tuple(self.scale_factors))
-        object.__setattr__(self, "end_to_end", False)
         if self.num_classes <= 0:
             raise ValueError("num_classes must be positive")
         if self.image_size <= 0 or self.patch_size <= 0:
@@ -94,22 +87,18 @@ class TRHashDetectorConfig:
             raise ValueError("stal_small_object_threshold must be in (0, 1]")
         if self.stal_top_k <= 0 or self.stal_center_radius <= 0.0:
             raise ValueError("STAL top-k and center radius must be positive")
-        if self.center_offset_mode not in {"linear", "sigmoid"}:
-            raise ValueError("center_offset_mode must be linear or sigmoid")
+        if self.reg_max < 0:
+            raise ValueError("reg_max must be non-negative")
+        if self.reg_max == 1:
+            raise ValueError("reg_max must be 0 (disabled) or at least 2")
+        if self.head_hidden_size < 0:
+            raise ValueError("head_hidden_size must be non-negative")
+        if self.dfl_loss_weight < 0.0 or self.quality_focal_beta < 0.0:
+            raise ValueError("DFL and QFL parameters must be non-negative")
         if not 0.0 < self.progressive_box_start <= 1.0:
             raise ValueError("progressive_box_start must be in (0, 1]")
-        if self.progressive_objectness_start < 1.0:
-            raise ValueError("progressive_objectness_start must be at least 1")
-        if not 0.0 <= self.focal_alpha <= 1.0:
-            raise ValueError("focal_alpha must be in [0, 1]")
-        if self.focal_gamma < 0.0:
-            raise ValueError("focal_gamma must be non-negative")
-        if self.objectness_loss_type not in {"focal", "varifocal"}:
-            raise ValueError("objectness_loss_type must be focal or varifocal")
-        if not 0.0 <= self.varifocal_alpha <= 1.0 or self.varifocal_gamma < 0.0:
-            raise ValueError("invalid varifocal parameters")
-        if not 0.0 <= self.class_label_smoothing < 1.0:
-            raise ValueError("class_label_smoothing must be in [0, 1)")
+        if self.progressive_quality_start < 1.0:
+            raise ValueError("progressive_quality_start must be at least 1")
 
     @property
     def grid_size(self) -> int:
@@ -118,6 +107,22 @@ class TRHashDetectorConfig:
     @property
     def num_cells(self) -> int:
         return sum(grid**2 for grid in self.grid_sizes)
+
+    @property
+    def dfl_bins(self) -> int:
+        return self.reg_max + 1 if self.reg_max else 1
+
+    @property
+    def regression_width(self) -> int:
+        return 4 * self.dfl_bins
+
+    @property
+    def prediction_width(self) -> int:
+        return self.regression_width + self.num_classes
+
+    @property
+    def resolved_head_hidden_size(self) -> int:
+        return self.head_hidden_size or max(32, self.vision_hidden_size // 2)
 
     @property
     def grid_sizes(self) -> Tuple[int, ...]:
@@ -151,22 +156,6 @@ class TRHashDetectorConfig:
     @classmethod
     def from_dict(cls, values: Dict[str, Any]) -> "TRHashDetectorConfig":
         values = dict(values)
-        for deprecated in (
-            "one_to_one_loss_weight",
-            "one_to_one_loss_warmup_fraction",
-            "one_to_one_teacher_assignment",
-            "one_to_one_multiscale_candidates",
-            "one_to_one_iou_power",
-        ):
-            values.pop(deprecated, None)
-        # Checkpoints written before center-offset versioning used cell-bounded
-        # sigmoid offsets. Preserve their inference semantics on load.
-        values.setdefault("center_offset_mode", "sigmoid")
-        # New training-only branches are opt-in for unversioned checkpoints so
-        # their state dictionaries and inference outputs remain unchanged.
-        values.setdefault("stal_enabled", False)
-        values["end_to_end"] = False
-        values.setdefault("progressive_loss_enabled", False)
         allowed = {item.name for item in fields(cls)}
         unknown = sorted(set(values) - allowed)
         if unknown:

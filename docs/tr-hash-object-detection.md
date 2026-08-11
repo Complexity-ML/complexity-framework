@@ -1,22 +1,23 @@
 # TR-Hash Object Detection and Serving
 
-The v0.3 detector is a compact, anchor-free, single-stage model. A TR-Hash
+The v0.4 detector is a compact, anchor-free, single-stage model. A TR-Hash
 vision tower feeds a lightweight prediction pyramid. Its one-to-many branch
 provides dense supervision during training and class-aware batched NMS removes
 duplicate predictions at inference. Dynamic STAL-style assignment sends small
-objects to the finest grid and Varifocal objectness learns an IoU-aware score.
+objects to the finest grid. Decoupled branches predict stride-local LTRB box
+distributions and unified sigmoid quality-class scores trained with DFL/QFL.
 
 ```text
 TR-Hash vision tower
         |
-        +-- P2 (optional) -- one-to-many head
-        +-- P3            -- one-to-many head
-        +-- P4            -- one-to-many head
-        +-- P5            -- one-to-many head
+        +-- P2 -- regression (LTRB/DFL) + quality-class (QFL)
+        +-- P3 -- regression (LTRB/DFL) + quality-class (QFL)
+        +-- P4 -- regression (LTRB/DFL) + quality-class (QFL)
+        +-- P5 -- regression (LTRB/DFL) + quality-class (QFL)
 ```
 
 For a 128 px input, width 128, four tower layers, and four routed experts, the
-model has approximately 0.71 million parameters. Parameter count is not a
+model has approximately 0.76 million parameters with 20 classes. Parameter count is not a
 quality metric by itself: compare accuracy, latency, memory, and deployment
 size using the same dataset and evaluation protocol.
 
@@ -69,28 +70,23 @@ cf-detector-train \
   --validation-yolo-labels data/objects/labels/val \
   --image-size 128 --patch-size 8 \
   --vision-hidden-size 128 --vision-layers 4 \
-  --vision-heads 4 --vision-expert-width 48 --p2-head \
-  --optimizer sgd --lr 1e-2 --momentum 0.937 \
+  --vision-heads 4 --vision-expert-width 48 \
+  --lr 1e-2 --momentum 0.937 \
   --weight-decay 5e-4 --expert-lr-multiplier 1.5 \
   --device mps
 ```
 
 Progressive loss balancing and STAL assignment are enabled by default.
-Progressive loss begins
-with stronger objectness supervision and half-strength box regression, then
-linearly reaches the configured final weights. Old unversioned checkpoints
-load with their legacy sigmoid center decoding. Use `--no-progressive-loss`
-or `--no-stal` for controlled ablations. AdamW remains selectable only to reproduce an older baseline; the
-v0.3 default is SGD with Nesterov momentum and a separate expert LR group.
+Progressive loss begins with stronger quality supervision and half-strength
+box regression, then linearly reaches the configured final weights. P2 and
+strong photometric/geometric augmentation are also enabled by default. Use
+`--no-progressive-loss`, `--no-stal`, `--no-p2-head`, or
+`--augmentation light` for controlled ablations. Training uses SGD with
+Nesterov momentum and a separate expert LR group.
 
-The unsuccessful one-to-one/NMS-free experiment was removed after controlled
-validation measured mAP50 0.0630 versus 0.0995 for the same checkpoint's
-one-to-many branch. Legacy checkpoints containing `one_to_one_heads.*` remain
-loadable: those obsolete tensors are discarded and inference uses the validated
-one-to-many head with `torchvision.ops.batched_nms`.
-
-Training logs report one unambiguous loss total and its objectness, box, and
-class components. There is no hidden auxiliary loss added to the total.
+Training logs report one unambiguous loss total and its quality, box, and DFL
+components. The validated inference path remains O2M with
+`torchvision.ops.batched_nms`.
 
 The trainer writes `metrics.jsonl`, a validated `best/` checkpoint, and a final
 step checkpoint. Validation reports mAP50, precision, recall, F1, the best F1,
@@ -103,7 +99,7 @@ keeps a single learning rate for controlled comparisons.
 ## Fine-tune a detector on a new label set
 
 `--detector-checkpoint` implements YOLO-style detector transfer. It keeps all
-compatible tower, feature-pyramid, hidden-head, box-regression, and objectness
+compatible tower, feature-pyramid, hidden-head, and LTRB/DFL regression
 weights. When the class count changes, new class rows stay freshly initialized.
 An optional JSON class map copies known class rows; keys are target class IDs
 and values are source class IDs.
@@ -130,7 +126,7 @@ cf-detector-train \
   --device cuda
 ```
 
-Without `--class-map`, box/objectness transfer still occurs but every target
+Without `--class-map`, localization transfer still occurs but every target
 class row is initialized for the new dataset. With an unchanged class count,
 all class rows transfer automatically.
 

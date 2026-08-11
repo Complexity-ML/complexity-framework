@@ -14,11 +14,70 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
-from PIL import Image, ImageDraw, ImageEnhance
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 from torch.utils.data import Dataset
 
 SHAPE_CLASSES = ("rectangle", "ellipse", "triangle")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+
+def _random_scale_translate(
+    image: Image.Image,
+    targets: torch.Tensor,
+    rng: random.Random,
+) -> tuple[Image.Image, torch.Tensor]:
+    """Apply detection-safe scale/translation and clip invalid boxes."""
+
+    width, height = image.size
+    scale = rng.uniform(0.75, 1.25)
+    resized_w = max(1, round(width * scale))
+    resized_h = max(1, round(height * scale))
+    resized = image.resize((resized_w, resized_h), Image.BILINEAR)
+    canvas = Image.new("RGB", (width, height), (114, 114, 114))
+
+    if resized_w >= width:
+        source_x = rng.randint(0, resized_w - width)
+        paste_x = -source_x
+    else:
+        source_x = 0
+        paste_x = rng.randint(0, width - resized_w)
+    if resized_h >= height:
+        source_y = rng.randint(0, resized_h - height)
+        paste_y = -source_y
+    else:
+        source_y = 0
+        paste_y = rng.randint(0, height - resized_h)
+    crop = resized.crop(
+        (
+            source_x,
+            source_y,
+            min(source_x + width, resized_w),
+            min(source_y + height, resized_h),
+        )
+    )
+    canvas.paste(crop, (max(paste_x, 0), max(paste_y, 0)))
+
+    if not targets.numel():
+        return canvas, targets
+    classes = targets[:, 4:]
+    centers = targets[:, :2] * targets.new_tensor((width, height))
+    sizes = targets[:, 2:4] * targets.new_tensor((width, height))
+    top_left = (centers - sizes / 2) * scale + targets.new_tensor((paste_x, paste_y))
+    bottom_right = (centers + sizes / 2) * scale + targets.new_tensor((paste_x, paste_y))
+    top_left = torch.maximum(top_left, targets.new_zeros(2))
+    bottom_right = torch.minimum(bottom_right, targets.new_tensor((width, height)))
+    sizes = bottom_right - top_left
+    keep = (sizes[:, 0] >= 2.0) & (sizes[:, 1] >= 2.0)
+    centers = (top_left + bottom_right) / 2
+    remapped = torch.cat(
+        (
+            centers / targets.new_tensor((width, height)),
+            sizes / targets.new_tensor((width, height)),
+            classes,
+        ),
+        dim=-1,
+    )
+    return canvas, remapped[keep]
 
 
 def _normalize_image(image: Image.Image) -> torch.Tensor:
@@ -179,13 +238,15 @@ class YoloDetectionDataset(Dataset):
         labels_dir: Path,
         image_size: int = 224,
         *,
-        augment: bool = False,
+        augmentation: str | None = None,
         seed: int = 0,
     ):
         self.images_dir = Path(images_dir)
         self.labels_dir = Path(labels_dir)
         self.image_size = image_size
-        self.augment = augment
+        if augmentation not in {None, "light", "strong"}:
+            raise ValueError("augmentation must be light, strong, or None")
+        self.augmentation = augmentation
         self.seed = seed
         self.epoch = 0
         self.image_paths = sorted(
@@ -229,14 +290,21 @@ class YoloDetectionDataset(Dataset):
         image = Image.open(self.image_paths[index]).convert("RGB")
         targets = self._load_targets(self.label_paths[index])
         rng = random.Random(self.seed + self.epoch * len(self) + index)
-        if self.augment:
+        if self.augmentation:
             if rng.random() < 0.5:
                 image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
                 if targets.numel():
                     targets[:, 0] = 1.0 - targets[:, 0]
-            image = ImageEnhance.Brightness(image).enhance(rng.uniform(0.8, 1.2))
-            image = ImageEnhance.Contrast(image).enhance(rng.uniform(0.8, 1.2))
-            image = ImageEnhance.Color(image).enhance(rng.uniform(0.8, 1.2))
+            jitter = (0.65, 1.35) if self.augmentation == "strong" else (0.8, 1.2)
+            image = ImageEnhance.Brightness(image).enhance(rng.uniform(*jitter))
+            image = ImageEnhance.Contrast(image).enhance(rng.uniform(*jitter))
+            image = ImageEnhance.Color(image).enhance(rng.uniform(*jitter))
+            if self.augmentation == "strong":
+                image, targets = _random_scale_translate(image, targets, rng)
+                if rng.random() < 0.10:
+                    image = ImageEnhance.Color(image).enhance(0.0)
+                if rng.random() < 0.10:
+                    image = image.filter(ImageFilter.GaussianBlur(rng.uniform(0.1, 1.2)))
         image, targets = _letterbox(image, targets, self.image_size)
         return _normalize_image(image), targets
 

@@ -82,16 +82,13 @@ def parse_args() -> argparse.Namespace:
         "--detector-checkpoint",
         type=Path,
         default=None,
-        help=("Transfer a detector checkpoint while adapting a class-dependent output head"),
+        help="Transfer a v2 detector checkpoint, optionally onto new classes",
     )
     parser.add_argument(
         "--class-map",
         type=Path,
         default=None,
-        help=(
-            "Optional JSON object mapping target class IDs to source class IDs; "
-            "only valid with --detector-checkpoint"
-        ),
+        help="JSON object mapping target class IDs to source class IDs",
     )
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--patch-size", type=int, default=16)
@@ -103,7 +100,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vision-top-k", type=int, default=2)
     parser.add_argument("--vision-expert-width", type=int, default=48)
     parser.add_argument("--single-scale", action="store_true")
-    parser.add_argument("--p2-head", action="store_true")
+    parser.add_argument(
+        "--p2-head",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="enable the stride-8-equivalent fine prediction level",
+    )
     parser.add_argument("--static-assignment", action="store_true")
     parser.add_argument("--assignment-top-k", type=int, default=5)
     parser.add_argument(
@@ -117,31 +119,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--expert-lr-multiplier", type=float, default=1.0)
-    parser.add_argument(
-        "--optimizer",
-        choices=("sgd", "adamw"),
-        default="sgd",
-        help="SGD/Nesterov is the v0.3 default; AdamW reproduces older baselines",
-    )
     parser.add_argument("--momentum", type=float, default=0.937)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--warmup-steps", type=int, default=50)
     parser.add_argument("--min-lr-ratio", type=float, default=0.05)
     parser.add_argument("--eval-confidence", type=float, default=0.20)
     parser.add_argument("--box-loss-weight", type=float, default=5.0)
-    parser.add_argument("--objectness-loss-weight", type=float, default=1.0)
-    parser.add_argument("--class-loss-weight", type=float, default=1.0)
+    parser.add_argument("--quality-loss-weight", type=float, default=1.0)
     parser.add_argument("--box-l1-weight", type=float, default=0.25)
     parser.add_argument("--box-iou-weight", type=float, default=1.0)
-    parser.add_argument("--focal-alpha", type=float, default=0.5)
-    parser.add_argument("--focal-gamma", type=float, default=2.0)
+    parser.add_argument("--reg-max", type=int, default=16)
     parser.add_argument(
-        "--objectness-loss-type",
-        choices=("focal", "varifocal"),
-        default="varifocal",
+        "--head-hidden-size",
+        type=int,
+        default=0,
+        help="0 uses half the backbone width, with a minimum of 32",
     )
-    parser.add_argument("--varifocal-alpha", type=float, default=0.75)
-    parser.add_argument("--varifocal-gamma", type=float, default=2.0)
+    parser.add_argument("--dfl-loss-weight", type=float, default=0.5)
+    parser.add_argument("--quality-focal-beta", type=float, default=2.0)
+    parser.add_argument(
+        "--augmentation",
+        choices=("light", "strong"),
+        default="strong",
+    )
     parser.add_argument("--no-stal", action="store_true")
     parser.add_argument("--no-progressive-loss", action="store_true")
     parser.add_argument("--log-steps", type=int, default=20)
@@ -251,16 +251,7 @@ def load_pretrained_detector(
     *,
     class_mapping: Dict[int, int] | None = None,
 ) -> None:
-    """Transfer a detector while adapting class-dependent output rows.
-
-    Compatible tower, feature-pyramid, and hidden head parameters are copied.
-    Each final prediction layer preserves its box rows and objectness row when
-    center decoding matches. When migrating from legacy sigmoid centers to
-    linear offsets, center rows are reinitialized while size and objectness
-    rows remain transferable. Class rows are copied wholesale when class
-    counts match, or selectively through ``class_mapping`` when adapting to a
-    new label set.
-    """
+    """Transfer a v2 detector and optionally remap classification rows."""
 
     source_config = TRHashDetectorConfig.from_dict(
         json.loads((checkpoint / "config.json").read_text())
@@ -297,8 +288,8 @@ def load_pretrained_detector(
         )
 
     output_parameter_names = {
-        f"scale_heads.{level}.{len(head) - 1}.{suffix}"
-        for level, head in enumerate(model.scale_heads)
+        f"head.classification_heads.{level}.3.{suffix}"
+        for level in range(len(model.config.grid_sizes))
         for suffix in ("weight", "bias")
     }
     pyramid_compatible = source_config.grid_sizes == model.config.grid_sizes
@@ -308,7 +299,7 @@ def load_pretrained_detector(
         source = source_state.get(name)
         if source is None:
             continue
-        if not pyramid_compatible and name.startswith("scale_heads."):
+        if not pyramid_compatible and name.startswith("head."):
             continue
         is_output = name in output_parameter_names
         if not is_output and source.shape == parameter.shape:
@@ -320,23 +311,16 @@ def load_pretrained_detector(
             or source.shape[1:] != parameter.shape[1:]
         ):
             continue
-        if source.shape[0] < 5 or parameter.shape[0] < 5:
-            continue
-
         adapted = parameter.detach().cpu().clone()
-        if source_config.center_offset_mode == model.config.center_offset_mode:
-            adapted[:5].copy_(source[:5])
-        else:
-            adapted[2:5].copy_(source[2:5])
         if class_mapping is None and source_config.num_classes == model.config.num_classes:
-            adapted[5:].copy_(source[5:])
+            adapted.copy_(source)
         elif class_mapping is not None:
             for target_class, source_class in class_mapping.items():
                 if not 0 <= target_class < model.config.num_classes:
                     raise ValueError(f"target class ID out of range: {target_class}")
                 if not 0 <= source_class < source_config.num_classes:
                     raise ValueError(f"source class ID out of range: {source_class}")
-                adapted[5 + target_class].copy_(source[5 + source_class])
+                adapted[target_class].copy_(source[source_class])
         compatible[name] = adapted
         adapted_outputs.append(name)
 
@@ -437,7 +421,6 @@ def evaluate_detector(
     confidence_threshold: float,
     use_amp: bool = False,
     show_progress: bool = False,
-    prediction_branch: str = "auto",
 ) -> Dict[str, float]:
     model.eval()
     scores_by_class: Dict[int, List[torch.Tensor]] = {
@@ -462,10 +445,9 @@ def evaluate_detector(
         with autocast:
             detections = model.predict(
                 pixel_values.to(device, non_blocking=device.type == "cuda"),
-                objectness_threshold=0.001,
+                confidence_threshold=0.001,
                 iou_threshold=0.5,
                 postprocess_on_cpu=device.type == "mps",
-                prediction_branch=prediction_branch,
             )
         for detection, image_targets in zip(detections, targets):
             target_boxes = _xywh_to_xyxy(image_targets[:, :4]).cpu()
@@ -567,7 +549,7 @@ def main() -> None:
             args.yolo_images,
             args.yolo_labels,
             image_size=args.image_size,
-            augment=True,
+            augmentation=args.augmentation,
             seed=args.seed,
         )
         validation_paths = (
@@ -673,16 +655,14 @@ def main() -> None:
         assignment_top_k=args.assignment_top_k,
         stal_enabled=not args.no_stal,
         progressive_loss_enabled=not args.no_progressive_loss,
+        reg_max=args.reg_max,
+        head_hidden_size=args.head_hidden_size,
+        dfl_loss_weight=args.dfl_loss_weight,
+        quality_focal_beta=args.quality_focal_beta,
         box_loss_weight=args.box_loss_weight,
-        objectness_loss_weight=args.objectness_loss_weight,
-        class_loss_weight=args.class_loss_weight,
+        quality_loss_weight=args.quality_loss_weight,
         box_l1_weight=args.box_l1_weight,
         box_iou_weight=args.box_iou_weight,
-        focal_alpha=args.focal_alpha,
-        focal_gamma=args.focal_gamma,
-        objectness_loss_type=args.objectness_loss_type,
-        varifocal_alpha=args.varifocal_alpha,
-        varifocal_gamma=args.varifocal_gamma,
     )
     model = TRHashObjectDetector(config).to(device)
     initialization_modes = (
@@ -723,25 +703,16 @@ def main() -> None:
             "group_name": "experts",
         },
     )
-    if args.optimizer == "sgd":
-        optimizer = torch.optim.SGD(
-            parameter_groups,
-            momentum=args.momentum,
-            nesterov=True,
-            weight_decay=args.weight_decay,
-            foreach=False if device.type == "mps" else None,
-        )
-    else:
-        optimizer_options = {
-            "weight_decay": args.weight_decay,
-            "foreach": False if device.type == "mps" else None,
-        }
-        if device.type == "cuda":
-            optimizer_options["fused"] = True
-        optimizer = torch.optim.AdamW(parameter_groups, **optimizer_options)
+    optimizer = torch.optim.SGD(
+        parameter_groups,
+        momentum=args.momentum,
+        nesterov=True,
+        weight_decay=args.weight_decay,
+        foreach=False if device.type == "mps" else None,
+    )
     LOGGER.info(
         "Optimizer: %s (base_lr=%.2e expert_lr=%.2e)",
-        args.optimizer,
+        "sgd",
         args.lr,
         args.lr * args.expert_lr_multiplier,
     )
@@ -803,14 +774,14 @@ def main() -> None:
                 averages = {name: value / args.log_steps for name, value in running_losses.items()}
                 elapsed = time.monotonic() - started
                 LOGGER.info(
-                    "epoch=%d step=%d loss_total=%.4f obj=%.4f box=%.4f cls=%.4f "
+                    "epoch=%d step=%d loss_total=%.4f quality=%.4f box=%.4f dfl=%.4f "
                     "lr=%.2e expert_lr=%.2e elapsed=%.1fs",
                     epoch,
                     step,
                     averages["loss"],
-                    averages["objectness_loss"],
+                    averages["quality_loss"],
                     averages["box_loss"],
-                    averages["class_loss"],
+                    averages["dfl_loss"],
                     scheduler.get_last_lr()[0],
                     scheduler.get_last_lr()[1],
                     elapsed,

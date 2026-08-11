@@ -75,7 +75,7 @@ def main() -> None:
         with torch.inference_mode():
             detections = model.predict(
                 pixel_values.unsqueeze(0),
-                objectness_threshold=args.threshold,
+                confidence_threshold=args.threshold,
                 iou_threshold=args.iou_threshold,
             )[0]
 

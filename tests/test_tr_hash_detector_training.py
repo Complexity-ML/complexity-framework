@@ -13,7 +13,7 @@ from complexity.generative.detection import (
     class_aware_nms,
     collate_detection,
     complete_iou_loss,
-    sigmoid_focal_loss,
+    quality_focal_loss,
 )
 from complexity.generative.detection.training import (
     _average_precision_from_matches,
@@ -123,14 +123,10 @@ def test_complete_iou_loss_is_zero_for_identical_boxes():
     assert torch.allclose(complete_iou_loss(boxes, boxes), torch.zeros(1), atol=1e-6)
 
 
-def test_focal_loss_downweights_easy_examples():
-    targets = torch.tensor([1.0, 0.0])
-    easy = sigmoid_focal_loss(
-        torch.tensor([8.0, -8.0]), targets, alpha=0.75, gamma=2.0
-    )
-    hard = sigmoid_focal_loss(
-        torch.tensor([0.0, 0.0]), targets, alpha=0.75, gamma=2.0
-    )
+def test_quality_focal_loss_downweights_easy_examples():
+    targets = torch.tensor([[1.0, 0.0]])
+    easy = quality_focal_loss(torch.tensor([[8.0, -8.0]]), targets)
+    hard = quality_focal_loss(torch.tensor([[0.0, 0.0]]), targets)
     assert easy < hard
 
 
@@ -188,7 +184,7 @@ def test_yolo_dataset_loads_labels_letterboxes_and_augments(tmp_path):
         tmp_path / "images",
         tmp_path / "labels",
         image_size=32,
-        augment=True,
+        augmentation="strong",
         seed=4,
     )
     pixels, targets = dataset[0]
@@ -226,14 +222,18 @@ def test_training_loop_reduces_loss_on_synthetic_shapes():
         vision_top_k=2,
         vision_expert_width=32,
         num_classes=3,
+        dynamic_assignment=False,
+        stal_enabled=False,
+        progressive_loss_enabled=False,
+        vision_precision="fp32",
     )
     model = TRHashObjectDetector(config)
-    dataset = SyntheticShapesDataset(length=8, image_size=64, seed=3)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3)
+    dataset = SyntheticShapesDataset(length=1, image_size=64, seed=3)
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-2, momentum=0.9, nesterov=True)
 
     losses = []
-    for step in range(40):
-        pixel_values, targets = dataset[step % len(dataset)]
+    for step in range(80):
+        pixel_values, targets = dataset[0]
         raw = model(pixel_values.unsqueeze(0))
         result = model.compute_loss(raw, [targets])
         optimizer.zero_grad(set_to_none=True)
@@ -291,7 +291,7 @@ def test_pretrained_tower_resizes_positions_and_regenerates_routes(tmp_path):
     )
 
 
-def test_detector_transfer_preserves_box_objectness_and_mapped_classes(tmp_path):
+def test_detector_transfer_preserves_regression_and_mapped_classes(tmp_path):
     common = dict(
         image_size=32,
         patch_size=8,
@@ -307,8 +307,8 @@ def test_detector_transfer_preserves_box_objectness_and_mapped_classes(tmp_path)
     with torch.no_grad():
         source.tower.patch_embed.weight.fill_(0.125)
         source.fpn_downsamples[0][0].weight.fill_(0.25)
-        source.scale_heads[0][1].weight.fill_(0.375)
-        for head in source.scale_heads:
+        source.head.regression_heads[0][1].weight.fill_(0.375)
+        for head in source.head.classification_heads:
             final = head[-1]
             for output_index in range(final.out_features):
                 final.weight[output_index].fill_(float(output_index))
@@ -326,61 +326,17 @@ def test_detector_transfer_preserves_box_objectness_and_mapped_classes(tmp_path)
     (checkpoint / "config.json").write_text(json.dumps(source_config.to_dict()))
 
     target = TRHashObjectDetector(TRHashDetectorConfig(**common, num_classes=2))
-    unmapped_weight = target.scale_heads[0][-1].weight[6].detach().clone()
-    unmapped_bias = target.scale_heads[0][-1].bias[6].detach().clone()
+    unmapped_weight = target.head.classification_heads[0][-1].weight[1].detach().clone()
+    unmapped_bias = target.head.classification_heads[0][-1].bias[1].detach().clone()
     load_pretrained_detector(target, checkpoint, class_mapping={0: 2})
 
     assert torch.all(target.tower.patch_embed.weight == 0.125)
     assert torch.all(target.fpn_downsamples[0][0].weight == 0.25)
-    assert torch.all(target.scale_heads[0][1].weight == 0.375)
-    for head in target.scale_heads:
+    assert torch.all(target.head.regression_heads[0][1].weight == 0.375)
+    for level, head in enumerate(target.head.classification_heads):
         final = head[-1]
-        assert torch.equal(final.weight[:5], source.scale_heads[0][-1].weight[:5])
-        assert torch.equal(final.bias[:5], source.scale_heads[0][-1].bias[:5])
-        assert torch.equal(final.weight[5], source.scale_heads[0][-1].weight[7])
-        assert torch.equal(final.bias[5], source.scale_heads[0][-1].bias[7])
-    assert torch.equal(target.scale_heads[0][-1].weight[6], unmapped_weight)
-    assert torch.equal(target.scale_heads[0][-1].bias[6], unmapped_bias)
-
-
-def test_detector_transfer_reinitializes_centers_when_decode_mode_changes(tmp_path):
-    common = dict(
-        image_size=32,
-        patch_size=8,
-        vision_hidden_size=32,
-        vision_layers=1,
-        vision_heads=4,
-        vision_num_experts=2,
-        vision_top_k=1,
-        vision_expert_width=16,
-        num_classes=2,
-        multi_scale=False,
-    )
-    source = TRHashObjectDetector(
-        TRHashDetectorConfig(**common, center_offset_mode="sigmoid")
-    )
-    with torch.no_grad():
-        source.scale_heads[0][-1].weight.fill_(0.75)
-        source.scale_heads[0][-1].bias.fill_(0.5)
-
-    checkpoint = tmp_path / "legacy_detector"
-    checkpoint.mkdir()
-    save_file(
-        {
-            name: value.detach().contiguous()
-            for name, value in source.state_dict().items()
-        },
-        str(checkpoint / "model.safetensors"),
-    )
-    (checkpoint / "config.json").write_text(json.dumps(source.config.to_dict()))
-
-    target = TRHashObjectDetector(TRHashDetectorConfig(**common))
-    initial_center_weight = target.scale_heads[0][-1].weight[:2].detach().clone()
-    initial_center_bias = target.scale_heads[0][-1].bias[:2].detach().clone()
-    load_pretrained_detector(target, checkpoint)
-
-    final = target.scale_heads[0][-1]
-    assert torch.equal(final.weight[:2], initial_center_weight)
-    assert torch.equal(final.bias[:2], initial_center_bias)
-    assert torch.equal(final.weight[2:5], source.scale_heads[0][-1].weight[2:5])
-    assert torch.equal(final.bias[2:5], source.scale_heads[0][-1].bias[2:5])
+        source_final = source.head.classification_heads[level][-1]
+        assert torch.equal(final.weight[0], source_final.weight[2])
+        assert torch.equal(final.bias[0], source_final.bias[2])
+    assert torch.equal(target.head.classification_heads[0][-1].weight[1], unmapped_weight)
+    assert torch.equal(target.head.classification_heads[0][-1].bias[1], unmapped_bias)

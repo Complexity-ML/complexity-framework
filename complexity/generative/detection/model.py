@@ -1,7 +1,8 @@
 """TR-Hash single-stage object detector — YOLO-style, anchor-free.
 
-Predicts objectness + box + class directly per backbone patch/grid cell
-(no anchors, no region proposals). The backbone is ``TRHashVisionTower``, so
+Predicts local LTRB box distributions and joint quality-class scores directly
+per backbone patch/grid cell (no anchors or region proposals). The backbone is
+``TRHashVisionTower``, so
 detection gets the same real multi-expert TR-Hash MoE routing as
 classification — this is a detection *head* bolted onto a compliant
 backbone, not a separate architecture with its own routing scheme.
@@ -18,42 +19,10 @@ import torch.nn.functional as F
 
 from ..vision_language.vision_tower import TRHashVisionTower
 from .config import TRHashDetectorConfig
+from .head import DecoupledDetectionHead
+from .losses import distribution_focal_loss, quality_focal_loss
 from .ops import box_iou, class_aware_nms
 from .ops import greedy_nms as greedy_nms
-
-
-def sigmoid_focal_loss(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-    *,
-    alpha: float,
-    gamma: float,
-) -> torch.Tensor:
-    """Binary focal loss, averaged over all grid cells."""
-
-    cross_entropy = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
-    probabilities = torch.sigmoid(logits)
-    probability_target = probabilities * targets + (1.0 - probabilities) * (1.0 - targets)
-    loss = cross_entropy * (1.0 - probability_target).pow(gamma)
-    alpha_target = alpha * targets + (1.0 - alpha) * (1.0 - targets)
-    return (alpha_target * loss).mean()
-
-
-def varifocal_loss(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-    *,
-    alpha: float,
-    gamma: float,
-) -> torch.Tensor:
-    """Quality-aware objectness loss with IoU-like target values in ``[0, 1]``."""
-
-    probabilities = torch.sigmoid(logits)
-    negative_weight = alpha * probabilities.pow(gamma) * (targets <= 0).to(logits.dtype)
-    positive_weight = targets * (targets > 0).to(logits.dtype)
-    weight = negative_weight + positive_weight
-    loss = F.binary_cross_entropy_with_logits(logits, targets, reduction="none") * weight
-    return loss.sum() / (targets.sum().clamp_min(1.0))
 
 
 def complete_iou_loss(predicted_cxcywh: torch.Tensor, target_cxcywh: torch.Tensor) -> torch.Tensor:
@@ -99,7 +68,6 @@ class TRHashObjectDetector(nn.Module):
         self.config = config or TRHashDetectorConfig()
         self.tower = TRHashVisionTower(self.config.vision_tower_config())
         hidden = self.config.vision_hidden_size
-        output_width = 5 + self.config.num_classes
         self.fpn_upsample = (
             nn.Sequential(
                 nn.Conv2d(hidden, hidden, 3, padding=1, groups=hidden),
@@ -118,23 +86,7 @@ class TRHashObjectDetector(nn.Module):
             )
             for _ in coarse_grids[1:]
         )
-        self.scale_heads = nn.ModuleList(
-            nn.Sequential(
-                nn.LayerNorm(hidden, eps=self.config.layer_norm_eps),
-                nn.Linear(hidden, hidden),
-                nn.SiLU(),
-                nn.Linear(hidden, output_width),
-            )
-            for _ in self.config.grid_sizes
-        )
-        for head in self.scale_heads:
-            self._initialize_prediction_layer(head[-1])
-
-    @staticmethod
-    def _initialize_prediction_layer(layer: nn.Linear) -> None:
-        nn.init.zeros_(layer.bias)
-        with torch.no_grad():
-            layer.bias[4] = math.log(0.01 / 0.99)
+        self.head = DecoupledDetectionHead(self.config)
 
     def _feature_pyramid(self, features: torch.Tensor) -> List[torch.Tensor]:
         """Build the prediction pyramid from already-encoded patch features."""
@@ -166,16 +118,7 @@ class TRHashObjectDetector(nn.Module):
 
         feature_maps = self._feature_pyramid(features)
 
-        outputs = []
-        hidden_outputs = []
-        for level, (head, feature_map) in enumerate(zip(self.scale_heads, feature_maps)):
-            tokens = feature_map.flatten(2).transpose(1, 2)
-            hidden_tokens = head[2](head[1](head[0](tokens)))
-            if return_hidden:
-                hidden_outputs.append(hidden_tokens)
-            outputs.append(head[3](hidden_tokens))
-        one_to_many = torch.cat(outputs, dim=1)
-        return one_to_many, hidden_outputs if return_hidden else None
+        return self.head(feature_maps, return_hidden=return_hidden)
 
     def forward_predictions(self, pixel_values: torch.Tensor) -> torch.Tensor:
         """Return stable one-to-many predictions."""
@@ -210,37 +153,43 @@ class TRHashObjectDetector(nn.Module):
         return tuple(offsets)
 
     def decode(self, raw: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """Turn raw head output into boxes/objectness/class probabilities.
+        """Decode stride-local LTRB distributions and quality-class scores.
 
-        Returns ``boxes`` (xyxy, normalized [0, 1]), ``objectness`` (prob),
-        and ``class_probs``, each shaped ``[batch, num_cells, ...]``.
+        Returns normalized ``boxes``/``boxes_cxcywh`` and independent sigmoid
+        ``class_scores`` shaped ``[batch, num_cells, num_classes]``.
         """
 
-        tx, ty, tw, th, obj_logit = raw[..., 0], raw[..., 1], raw[..., 2], raw[..., 3], raw[..., 4]
-        class_logits = raw[..., 5:]
+        regression = raw[..., : self.config.regression_width]
+        class_logits = raw[..., self.config.regression_width :]
         rows, cols, denominators, levels = self._cell_geometry(raw.device)
-        if self.config.center_offset_mode == "linear":
-            # YOLOX-style unconstrained center offsets. Dynamic assignment may
-            # mark neighbouring cells as positives, so a positive cell must be
-            # able to regress an object center outside its own boundaries.
-            cx = (cols + 0.5 + tx) / denominators
-            cy = (rows + 0.5 + ty) / denominators
+        centers_x = (cols + 0.5) / denominators
+        centers_y = (rows + 0.5) / denominators
+        if self.config.reg_max:
+            distributions = regression.reshape(
+                *regression.shape[:-1], 4, self.config.dfl_bins
+            ).softmax(-1)
+            bins = torch.arange(
+                self.config.dfl_bins,
+                device=raw.device,
+                dtype=raw.dtype,
+            )
+            distances = (distributions * bins).sum(-1) / denominators[None, :, None]
         else:
-            # Compatibility path for checkpoints trained before center-offset
-            # versioning, whose logits were learned with cell-bounded centers.
-            cx = (cols + torch.sigmoid(tx)) / denominators
-            cy = (rows + torch.sigmoid(ty)) / denominators
-        w = torch.sigmoid(tw)
-        h = torch.sigmoid(th)
-        boxes_cxcywh = torch.stack((cx, cy, w, h), dim=-1)
-        boxes = torch.stack((cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2), dim=-1).clamp(
-            0.0, 1.0
-        )
+            distances = F.softplus(regression) / denominators[None, :, None]
+        left, top, right, bottom = distances.unbind(-1)
+        boxes = torch.stack(
+            (centers_x - left, centers_y - top, centers_x + right, centers_y + bottom),
+            dim=-1,
+        ).clamp(0.0, 1.0)
+        sizes = (boxes[..., 2:] - boxes[..., :2]).clamp_min(0.0)
+        centers = (boxes[..., 2:] + boxes[..., :2]) / 2
+        boxes_cxcywh = torch.cat((centers, sizes), dim=-1)
         return {
             "boxes": boxes,
             "boxes_cxcywh": boxes_cxcywh,
-            "objectness": torch.sigmoid(obj_logit),
-            "class_probs": F.softmax(class_logits, dim=-1),
+            "class_scores": class_logits.sigmoid(),
+            "class_logits": class_logits,
+            "regression_logits": regression,
             "levels": levels,
         }
 
@@ -261,12 +210,13 @@ class TRHashObjectDetector(nn.Module):
         """Build per-cell training targets from ``[N_i, 5]`` (cx, cy, w, h, class_id) boxes.
 
         With dynamic assignment enabled, candidate cells near each object are
-        ranked using class confidence and predicted box IoU. Their objectness
-        targets are the detached prediction quality, which calibrates scores.
+        ranked using class confidence and predicted box IoU. Positive class
+        targets receive detached IoU quality, calibrating classification and
+        localization in one score.
         """
 
         batch = len(targets)
-        objectness_target = torch.zeros(batch, self.config.num_cells, device=device)
+        quality_target = torch.zeros(batch, self.config.num_cells, device=device)
         box_target = torch.zeros(batch, self.config.num_cells, 4, device=device)
         class_target = torch.zeros(batch, self.config.num_cells, dtype=torch.long, device=device)
         target_indices = torch.full(
@@ -311,11 +261,22 @@ class TRHashObjectDetector(nn.Module):
                     candidate_mask = ((level_cols - center_col).abs() <= center_radius) & (
                         (level_rows - center_row).abs() <= center_radius
                     )
+                    anchor_x = (level_cols + 0.5) / grid
+                    anchor_y = (level_rows + 0.5) / grid
+                    inside_box = (
+                        (anchor_x >= cx - width / 2)
+                        & (anchor_x <= cx + width / 2)
+                        & (anchor_y >= cy - height / 2)
+                        & (anchor_y <= cy + height / 2)
+                    )
+                    candidate_mask &= inside_box
                     local_indices = torch.nonzero(candidate_mask, as_tuple=False).flatten()
                     if not len(local_indices):
                         distances = (level_cols - center_col).square() + (
                             level_rows - center_row
                         ).square()
+                        if inside_box.any():
+                            distances = distances.masked_fill(~inside_box, float("inf"))
                         local_indices = distances.argmin().reshape(1)
                     candidate_indices = local_indices + offset
                     target_xyxy = torch.stack(
@@ -328,7 +289,7 @@ class TRHashObjectDetector(nn.Module):
                     ).reshape(1, 4)
                     predicted_boxes = decoded["boxes"][image_index, candidate_indices].detach()
                     ious = box_iou(predicted_boxes, target_xyxy).flatten()
-                    class_scores = decoded["class_probs"][
+                    class_scores = decoded["class_scores"][
                         image_index, candidate_indices, int(class_id)
                     ].detach()
                     alignment = class_scores.clamp_min(1e-6).pow(
@@ -340,19 +301,19 @@ class TRHashObjectDetector(nn.Module):
                     top_k = min(requested_top_k, len(candidate_indices))
                     candidate_scores, selected = alignment.topk(top_k)
                     candidate_indices = candidate_indices[selected]
-                    candidate_quality = ious[selected].clamp_min(0.2)
+                    candidate_quality = ious[selected].clamp_min(0.05)
 
                 replace = candidate_scores > assignment_score[image_index, candidate_indices]
                 selected_cells = candidate_indices[replace]
                 assignment_score[image_index, selected_cells] = candidate_scores[replace]
-                objectness_target[image_index, selected_cells] = candidate_quality[replace]
+                quality_target[image_index, selected_cells] = candidate_quality[replace]
                 box_target[image_index, selected_cells] = image_box[:4]
                 class_target[image_index, selected_cells] = class_id.long()
                 target_indices[image_index, selected_cells] = target_index
                 positive_mask[image_index, selected_cells] = True
 
         return {
-            "objectness": objectness_target,
+            "quality": quality_target,
             "boxes": box_target,
             "classes": class_target,
             "target_indices": target_indices,
@@ -377,24 +338,24 @@ class TRHashObjectDetector(nn.Module):
             allow_stal=allow_stal,
         )
         positive = assigned["positive_mask"]
-        positive_weights = assigned["objectness"] * positive
+        positive_weights = assigned["quality"] * positive
         num_positive = positive_weights.sum().clamp_min(1.0)
 
-        obj_logit = raw[..., 4]
-        if self.config.objectness_loss_type == "varifocal":
-            objectness_loss = varifocal_loss(
-                obj_logit,
-                assigned["objectness"],
-                alpha=self.config.varifocal_alpha,
-                gamma=self.config.varifocal_gamma,
-            )
-        else:
-            objectness_loss = sigmoid_focal_loss(
-                obj_logit,
-                assigned["objectness"],
-                alpha=self.config.focal_alpha,
-                gamma=self.config.focal_gamma,
-            )
+        quality_targets = raw.new_zeros(
+            raw.size(0), self.config.num_cells, self.config.num_classes
+        )
+        if positive.any():
+            batch_indices, cell_indices = torch.nonzero(positive, as_tuple=True)
+            quality_targets[
+                batch_indices,
+                cell_indices,
+                assigned["classes"][positive],
+            ] = assigned["quality"][positive]
+        quality_loss = quality_focal_loss(
+            decoded["class_logits"],
+            quality_targets,
+            beta=self.config.quality_focal_beta,
+        )
 
         pred_boxes = decoded["boxes_cxcywh"]
 
@@ -405,18 +366,39 @@ class TRHashObjectDetector(nn.Module):
             box_iou_loss = (box_iou_error * positive_weights[positive]).sum() / num_positive
         else:
             box_iou_loss = raw.sum() * 0.0
+        dfl_loss = raw.sum() * 0.0
+        if positive.any() and self.config.reg_max:
+            rows, cols, denominators, _ = self._cell_geometry(raw.device)
+            centers_x = (cols + 0.5) / denominators
+            centers_y = (rows + 0.5) / denominators
+            target_boxes = assigned["boxes"]
+            target_x1 = target_boxes[..., 0] - target_boxes[..., 2] / 2
+            target_y1 = target_boxes[..., 1] - target_boxes[..., 3] / 2
+            target_x2 = target_boxes[..., 0] + target_boxes[..., 2] / 2
+            target_y2 = target_boxes[..., 1] + target_boxes[..., 3] / 2
+            target_distances = torch.stack(
+                (
+                    centers_x[None] - target_x1,
+                    centers_y[None] - target_y1,
+                    target_x2 - centers_x[None],
+                    target_y2 - centers_y[None],
+                ),
+                dim=-1,
+            ) * denominators[None, :, None]
+            regression_logits = decoded["regression_logits"].reshape(
+                raw.size(0), self.config.num_cells, 4, self.config.dfl_bins
+            )
+            dfl_error = distribution_focal_loss(
+                regression_logits[positive],
+                target_distances[positive],
+                reg_max=self.config.reg_max,
+            )
+            dfl_loss = (dfl_error * positive_weights[positive]).sum() / num_positive
         box_loss = (
-            self.config.box_l1_weight * box_l1_loss + self.config.box_iou_weight * box_iou_loss
+            self.config.box_l1_weight * box_l1_loss
+            + self.config.box_iou_weight * box_iou_loss
+            + self.config.dfl_loss_weight * dfl_loss
         )
-
-        class_logits = raw[..., 5:]
-        class_error = F.cross_entropy(
-            class_logits.reshape(-1, self.config.num_classes),
-            assigned["classes"].reshape(-1),
-            reduction="none",
-            label_smoothing=self.config.class_label_smoothing,
-        ).reshape(positive.shape)
-        class_loss = (class_error * positive_weights).sum() / num_positive
 
         progress = min(max(float(training_progress), 0.0), 1.0)
         if self.config.progressive_loss_enabled:
@@ -424,25 +406,24 @@ class TRHashObjectDetector(nn.Module):
                 self.config.progressive_box_start
                 + (1.0 - self.config.progressive_box_start) * progress
             )
-            objectness_scale = (
-                self.config.progressive_objectness_start
-                + (1.0 - self.config.progressive_objectness_start) * progress
+            quality_scale = (
+                self.config.progressive_quality_start
+                + (1.0 - self.config.progressive_quality_start) * progress
             )
         else:
             box_scale = 1.0
-            objectness_scale = 1.0
+            quality_scale = 1.0
         total = (
-            self.config.objectness_loss_weight * objectness_scale * objectness_loss
+            self.config.quality_loss_weight * quality_scale * quality_loss
             + self.config.box_loss_weight * box_scale * box_loss
-            + self.config.class_loss_weight * class_loss
         )
         return {
             "loss": total,
-            "objectness_loss": objectness_loss,
+            "quality_loss": quality_loss,
             "box_loss": box_loss,
             "box_l1_loss": box_l1_loss,
             "box_iou_loss": box_iou_loss,
-            "class_loss": class_loss,
+            "dfl_loss": dfl_loss,
         }
 
     def compute_loss(
@@ -473,11 +454,10 @@ class TRHashObjectDetector(nn.Module):
         self,
         pixel_values: torch.Tensor,
         *,
-        objectness_threshold: float = 0.25,
+        confidence_threshold: float = 0.25,
         iou_threshold: float = 0.45,
         postprocess_on_cpu: bool = False,
         max_detections: int = 300,
-        prediction_branch: str = "auto",
     ) -> List[Dict[str, torch.Tensor]]:
         """Decode detections with class-aware NMS.
 
@@ -485,8 +465,6 @@ class TRHashObjectDetector(nn.Module):
         normalized), ``scores``, and ``labels``.
         """
 
-        if prediction_branch not in {"auto", "one_to_many"}:
-            raise ValueError("only the one_to_many prediction branch is supported")
         raw = self.forward_predictions(pixel_values)
         if postprocess_on_cpu:
             raw = raw.cpu()
@@ -494,13 +472,11 @@ class TRHashObjectDetector(nn.Module):
         batch = pixel_values.size(0)
         results = []
         for image_index in range(batch):
-            objectness = decoded["objectness"][image_index]
-            class_probs = decoded["class_probs"][image_index]
+            class_scores = decoded["class_scores"][image_index]
             boxes = decoded["boxes"][image_index]
 
-            class_confidence, labels = class_probs.max(dim=-1)
-            scores = objectness * class_confidence
-            keep = scores >= objectness_threshold
+            scores, labels = class_scores.max(dim=-1)
+            keep = scores >= confidence_threshold
             boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
 
             kept_indices = class_aware_nms(

@@ -2,21 +2,20 @@
 
 Built on ``TRHashVisionTower`` (real multi-expert MoE routing by patch
 position — see ``complexity.generative.vision_language``), with a detection
-head predicting objectness + box + class directly per grid cell. No
-anchors, no region-proposal stage, no multi-scale feature pyramid (a
-single-scale first pass — see ``TRHashDetectorConfig``'s docstring).
+head predicting local LTRB box distributions and joint quality-class scores
+directly per grid cell. No anchors or region-proposal stage.
 
 Usage:
     from complexity.generative.detection import TRHashDetectorConfig, TRHashObjectDetector
 
     model = TRHashObjectDetector(TRHashDetectorConfig(num_classes=80))
-    raw = model(pixel_values)  # [batch, num_cells, 5 + num_classes]
+    raw = model(pixel_values)  # [batch, num_cells, 4 * DFL bins + num_classes]
 
     # targets: list of [N_i, 5] (cx, cy, w, h, class_id), normalized [0, 1]
     losses = model.compute_loss(raw, targets)
     losses["loss"].backward()
 
-    detections = model.predict(pixel_values, objectness_threshold=0.25)
+    detections = model.predict(pixel_values, confidence_threshold=0.25)
 """
 
 from .config import TRHashDetectorConfig
@@ -41,9 +40,8 @@ from .model import (
     box_iou,
     class_aware_nms,
     complete_iou_loss,
-    sigmoid_focal_loss,
-    varifocal_loss,
 )
+from .losses import distribution_focal_loss, quality_focal_loss
 from .ops import greedy_nms
 
 __all__ = [
@@ -53,8 +51,8 @@ __all__ = [
     "class_aware_nms",
     "complete_iou_loss",
     "greedy_nms",
-    "sigmoid_focal_loss",
-    "varifocal_loss",
+    "distribution_focal_loss",
+    "quality_focal_loss",
     "CocoDetectionDataset",
     "SyntheticShapesDataset",
     "YoloDetectionDataset",

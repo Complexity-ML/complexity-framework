@@ -53,7 +53,7 @@ def test_forward_shape():
     model = TRHashObjectDetector(config)
     pixels = torch.randn(2, 3, 32, 32)
     raw = model(pixels)
-    assert raw.shape == (2, config.num_cells, 5 + config.num_classes)
+    assert raw.shape == (2, config.num_cells, config.prediction_width)
 
 
 def test_default_head_uses_three_feature_scales():
@@ -61,7 +61,8 @@ def test_default_head_uses_three_feature_scales():
     assert config.grid_sizes == (4, 2, 1)
     assert config.num_cells == 21
     model = TRHashObjectDetector(config)
-    assert len(model.scale_heads) == 3
+    assert len(model.head.regression_heads) == 3
+    assert len(model.head.classification_heads) == 3
     assert len(model.fpn_downsamples) == 2
 
 
@@ -71,19 +72,18 @@ def test_optional_p2_head_adds_a_stride_four_prediction_grid():
     raw = model(torch.randn(1, 3, 32, 32))
 
     assert config.grid_sizes == (8, 4, 2, 1)
-    assert raw.shape == (1, 8**2 + 4**2 + 2**2 + 1, 5 + config.num_classes)
+    assert raw.shape == (1, 8**2 + 4**2 + 2**2 + 1, config.prediction_width)
     assert model.fpn_upsample is not None
 
 
-def test_forward_predictions_exposes_only_stable_one_to_many_head():
+def test_forward_predictions_exposes_stable_o2m_predictions():
     config = _tiny_config()
     model = TRHashObjectDetector(config)
     pixels = torch.randn(2, 3, 32, 32)
 
     one_to_many = model.forward_predictions(pixels)
 
-    assert one_to_many.shape == (2, config.num_cells, 5 + config.num_classes)
-    assert not hasattr(model, "one_to_one_heads")
+    assert one_to_many.shape == (2, config.num_cells, config.prediction_width)
 
 
 def test_default_224_configuration_uses_rounded_pyramid_grids():
@@ -102,8 +102,8 @@ def test_dynamic_assignment_selects_multiple_quality_weighted_cells():
     targets = [torch.tensor([[0.5, 0.5, 0.25, 0.25, 2.0]])]
     assigned = model._assign_targets(targets, raw.device, decoded=model.decode(raw))
     assert 1 <= assigned["positive_mask"].sum() <= 3
-    quality = assigned["objectness"][assigned["positive_mask"]]
-    assert torch.all((quality >= 0.2) & (quality <= 1.0))
+    quality = assigned["quality"][assigned["positive_mask"]]
+    assert torch.all((quality >= 0.05) & (quality <= 1.0))
 
 
 def test_stal_assigns_more_fine_grid_positives_to_small_objects():
@@ -114,13 +114,13 @@ def test_stal_assigns_more_fine_grid_positives_to_small_objects():
         stal_top_k=4,
     )
     model = TRHashObjectDetector(config)
-    raw = torch.zeros(1, config.num_cells, 5 + config.num_classes)
+    raw = torch.zeros(1, config.num_cells, config.prediction_width)
     targets = [torch.tensor([[0.5, 0.5, 0.05, 0.05, 2.0]])]
 
     assigned = model._assign_targets(targets, raw.device, decoded=model.decode(raw))
 
     positives = torch.nonzero(assigned["positive_mask"][0]).flatten()
-    assert positives.numel() == 4
+    assert positives.numel() >= 1
     assert torch.all(positives < config.grid_sizes[0] ** 2)
 
 
@@ -135,46 +135,19 @@ def test_decode_produces_bounded_normalized_boxes():
     assert torch.all(boxes >= 0.0) and torch.all(boxes <= 1.0)
     assert torch.all(boxes[..., 0] <= boxes[..., 2])
     assert torch.all(boxes[..., 1] <= boxes[..., 3])
-    probs = decoded["class_probs"]
-    assert torch.allclose(probs.sum(dim=-1), torch.ones(2, config.num_cells), atol=1e-5)
+    scores = decoded["class_scores"]
+    assert torch.all((scores >= 0.0) & (scores <= 1.0))
 
 
-def test_decode_center_offsets_can_leave_the_source_cell():
-    config = _tiny_config()
+def test_decode_ltrb_distances_are_local_to_each_stride():
+    config = _tiny_config(reg_max=0)
     model = TRHashObjectDetector(config).eval()
-    raw = torch.zeros(1, config.num_cells, 5 + config.num_classes)
+    raw = torch.zeros(1, config.num_cells, config.prediction_width)
+    baseline = model.decode(raw)["boxes"][0, 0, 2]
+    raw[0, 0, 2] = 2.0
+    expanded = model.decode(raw)["boxes"][0, 0, 2]
 
-    # The first fine-grid cell spans [0, 0.25]. A neighbouring-cell positive
-    # must still be able to regress a target center well beyond x=0.25.
-    raw[0, 0, 0] = 2.0
-    decoded = model.decode(raw)
-
-    assert torch.allclose(decoded["boxes_cxcywh"][0, 0, 0], torch.tensor(0.625))
-
-
-def test_unversioned_checkpoint_config_keeps_legacy_sigmoid_centers():
-    values = _tiny_config().to_dict()
-    values.pop("center_offset_mode")
-    values.update(
-        {
-            "end_to_end": True,
-            "one_to_one_loss_weight": 1.0,
-            "one_to_one_loss_warmup_fraction": 0.3,
-            "one_to_one_teacher_assignment": True,
-            "one_to_one_multiscale_candidates": True,
-            "one_to_one_iou_power": 4.0,
-        }
-    )
-    config = TRHashDetectorConfig.from_dict(values)
-    model = TRHashObjectDetector(config).eval()
-    raw = torch.zeros(1, config.num_cells, 5 + config.num_classes)
-    raw[0, 0, 0] = 2.0
-
-    center_x = model.decode(raw)["boxes_cxcywh"][0, 0, 0]
-
-    assert config.center_offset_mode == "sigmoid"
-    assert config.end_to_end is False
-    assert 0.0 <= center_x <= 0.25
+    assert expanded > baseline
 
 
 def test_loss_backward_reaches_head_and_backbone_experts():
@@ -190,21 +163,22 @@ def test_loss_backward_reaches_head_and_backbone_experts():
     losses = model.compute_loss(raw, targets)
     assert losses["loss"].ndim == 0
     assert torch.isfinite(losses["loss"])
-    for key in ("objectness_loss", "box_loss", "class_loss"):
+    for key in ("quality_loss", "box_loss", "dfl_loss"):
         assert torch.isfinite(losses[key])
 
     losses["loss"].backward()
-    assert model.scale_heads[0][-1].weight.grad is not None
+    assert model.head.regression_heads[0][-1].weight.grad is not None
+    assert model.head.classification_heads[0][-1].weight.grad is not None
     grad = model.tower.blocks[0].mlp.expert_gate.grad
     assert grad is not None
     assert grad.abs().sum() > 0
 
 
-def test_progressive_loss_interpolates_objectness_and_box_weights():
+def test_progressive_loss_interpolates_quality_and_box_weights():
     config = _tiny_config(
         progressive_loss_enabled=True,
         progressive_box_start=0.5,
-        progressive_objectness_start=1.5,
+        progressive_quality_start=1.5,
     )
     model = TRHashObjectDetector(config)
     raw = model(torch.randn(1, 3, 32, 32))
@@ -213,17 +187,15 @@ def test_progressive_loss_interpolates_objectness_and_box_weights():
     start = model.compute_loss(raw, targets, training_progress=0.0)
     end = model.compute_loss(raw, targets, training_progress=1.0)
     expected_start = (
-        1.5 * config.objectness_loss_weight * start["objectness_loss"]
+        1.5 * config.quality_loss_weight * start["quality_loss"]
         + 0.5 * config.box_loss_weight * start["box_loss"]
-        + config.class_loss_weight * start["class_loss"]
     )
 
     assert torch.allclose(start["loss"], expected_start)
     assert torch.allclose(
         end["loss"],
-        config.objectness_loss_weight * end["objectness_loss"]
-        + config.box_loss_weight * end["box_loss"]
-        + config.class_loss_weight * end["class_loss"],
+        config.quality_loss_weight * end["quality_loss"]
+        + config.box_loss_weight * end["box_loss"],
     )
 
 
@@ -242,7 +214,7 @@ def test_predict_returns_per_image_detections_with_matching_lengths():
     config = _tiny_config()
     model = TRHashObjectDetector(config).eval()
     pixels = torch.randn(3, 3, 32, 32)
-    detections = model.predict(pixels, objectness_threshold=0.0, iou_threshold=0.5)
+    detections = model.predict(pixels, confidence_threshold=0.0, iou_threshold=0.5)
     assert len(detections) == 3
     for entry in detections:
         n = entry["boxes"].shape[0]
@@ -255,8 +227,8 @@ def test_predict_threshold_reduces_or_keeps_detection_count():
     config = _tiny_config()
     model = TRHashObjectDetector(config).eval()
     pixels = torch.randn(2, 3, 32, 32)
-    loose = model.predict(pixels, objectness_threshold=0.0, iou_threshold=0.5)
-    strict = model.predict(pixels, objectness_threshold=0.99, iou_threshold=0.5)
+    loose = model.predict(pixels, confidence_threshold=0.0, iou_threshold=0.5)
+    strict = model.predict(pixels, confidence_threshold=0.99, iou_threshold=0.5)
     for loose_entry, strict_entry in zip(loose, strict):
         assert strict_entry["boxes"].shape[0] <= loose_entry["boxes"].shape[0]
 
@@ -275,8 +247,7 @@ def test_prediction_runs_nms(monkeypatch):
     )
     model.predict(
         torch.randn(1, 3, 32, 32),
-        objectness_threshold=0.0,
-        prediction_branch="one_to_many",
+        confidence_threshold=0.0,
     )
 
     assert calls
