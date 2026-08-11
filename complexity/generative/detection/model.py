@@ -16,6 +16,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+try:
+    from torchvision.ops import batched_nms as _torchvision_batched_nms
+except (ImportError, OSError, RuntimeError):  # Optional; keep the framework backend-neutral.
+    _torchvision_batched_nms = None
+
 from ..vision_language.vision_tower import TRHashVisionTower
 from .config import TRHashDetectorConfig
 
@@ -60,8 +65,28 @@ def class_aware_nms(
     scores: torch.Tensor,
     labels: torch.Tensor,
     iou_threshold: float,
+    max_detections: Optional[int] = None,
 ) -> torch.Tensor:
-    """Apply greedy NMS independently per class and return score-sorted indices."""
+    """Apply class-aware NMS and return score-sorted indices.
+
+    Torchvision's compiled operator avoids a device synchronization for every
+    candidate box. The pure PyTorch implementation remains as a portable
+    fallback for installations without torchvision and for unsupported
+    accelerator backends.
+    """
+
+    if boxes.numel() == 0:
+        return torch.empty(0, dtype=torch.long, device=boxes.device)
+    if max_detections is not None and max_detections <= 0:
+        raise ValueError("max_detections must be positive")
+
+    if _torchvision_batched_nms is not None and boxes.device.type in {"cpu", "cuda"}:
+        # torchvision NMS expects floating-point boxes supported by its native
+        # kernel; detector inference may otherwise leave them in BF16.
+        kept_indices = _torchvision_batched_nms(
+            boxes.float(), scores.float(), labels, iou_threshold
+        )
+        return kept_indices[:max_detections] if max_detections is not None else kept_indices
 
     kept = []
     for label in labels.unique():
@@ -71,7 +96,8 @@ def class_aware_nms(
     if not kept:
         return torch.empty(0, dtype=torch.long, device=boxes.device)
     kept_indices = torch.cat(kept)
-    return kept_indices[torch.argsort(scores[kept_indices], descending=True)]
+    kept_indices = kept_indices[torch.argsort(scores[kept_indices], descending=True)]
+    return kept_indices[:max_detections] if max_detections is not None else kept_indices
 
 
 def sigmoid_focal_loss(
@@ -422,6 +448,7 @@ class TRHashObjectDetector(nn.Module):
         objectness_threshold: float = 0.25,
         iou_threshold: float = 0.45,
         postprocess_on_cpu: bool = False,
+        max_detections: int = 300,
     ) -> List[Dict[str, torch.Tensor]]:
         """Decoded, NMS-filtered detections per image.
 
@@ -445,7 +472,13 @@ class TRHashObjectDetector(nn.Module):
             keep = scores >= objectness_threshold
             boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
 
-            kept_indices = class_aware_nms(boxes, scores, labels, iou_threshold)
+            kept_indices = class_aware_nms(
+                boxes,
+                scores,
+                labels,
+                iou_threshold,
+                max_detections=max_detections,
+            )
             results.append(
                 {
                     "boxes": boxes[kept_indices],

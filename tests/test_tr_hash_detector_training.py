@@ -76,6 +76,18 @@ def test_class_aware_nms_preserves_overlapping_different_classes():
     assert kept.tolist() == [0, 1]
 
 
+def test_class_aware_nms_caps_detections_after_score_sorting():
+    boxes = torch.tensor(
+        [[0.0, 0.0, 0.1, 0.1], [0.2, 0.2, 0.3, 0.3], [0.4, 0.4, 0.5, 0.5]]
+    )
+    scores = torch.tensor([0.7, 0.9, 0.8])
+    labels = torch.tensor([0, 0, 0])
+    kept = class_aware_nms(
+        boxes, scores, labels, iou_threshold=0.5, max_detections=2
+    )
+    assert kept.tolist() == [1, 2]
+
+
 def test_complete_iou_loss_is_zero_for_identical_boxes():
     boxes = torch.tensor([[0.5, 0.5, 0.25, 0.4]])
     assert torch.allclose(complete_iou_loss(boxes, boxes), torch.zeros(1), atol=1e-6)
