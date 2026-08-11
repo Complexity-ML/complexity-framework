@@ -1,0 +1,86 @@
+TITLE
+
+TR-HASH Vision v6: a compact routed-MoE detector built with CUDA and Triton
+
+
+POST
+
+[![GitHub](https://img.shields.io/github/stars/Complexity-ML/complexity-framework?style=for-the-badge&logo=github&label=COMPLEXITY%20FRAMEWORK&color=181717)](https://github.com/Complexity-ML/complexity-framework)
+[![Hugging Face](https://img.shields.io/badge/HUGGING%20FACE-AETHORIA%20AI-FFD21E?style=for-the-badge&logo=huggingface&logoColor=000000)](https://huggingface.co/AETHORIA-AI)
+[![Vision model](https://img.shields.io/badge/TR--HASH%20VISION-v6%20MODEL-5B5FEF?style=for-the-badge)](https://huggingface.co/AETHORIA-AI/TR-HASH-Vision-v6-1M-COCO)
+[![Website](https://img.shields.io/badge/PROJECT-COMPLEXITY--AI.FR-111827?style=for-the-badge&logo=googlechrome&logoColor=white)](https://www.complexity-ai.fr/)
+
+We are building **TR-HASH Vision v6**, a compact anchor-free object detector that extends deterministic token-routed Mixture-of-Experts into a hierarchical vision architecture.
+
+The goal is not to publish another unverified “YOLO killer.” Our goal is to explore whether deterministic expert specialization can provide useful model capacity while keeping active computation, memory use, and deployment complexity low. The target detector is approximately **1 million parameters**, and we will publish accuracy claims only after a reproducible, equal-budget evaluation.
+
+### What is different?
+
+TR-HASH replaces a learned expert router with stable, identity-based routing. Each spatial token selects a small expert subspace deterministically, while shared computation continues to process the complete contextual representation.
+
+```text
+spatial token identity
+        |
+        v
+deterministic, layer-specific routing ---> selected expert parameters
+        |                                      |
+        +---- shared contextual features ------+----> output
+```
+
+Vision v6 combines:
+
+- a hierarchical TR-HASH tower producing native P3/P4/P5 features;
+- shifted-window attention, with global context retained at the coarsest stage;
+- a lightweight top-down and bottom-up PAN for cross-scale fusion;
+- an optional P2 path and STAL-style assignment for small objects;
+- decoupled quality-class and LTRB/DFL regression heads;
+- one-to-many supervision during training;
+- an optional one-to-one branch for end-to-end, NMS-free inference;
+- EMA, multi-resolution training, Mosaic, MixUp, Copy-Paste and random erasing.
+
+### NVIDIA acceleration work
+
+The implementation is written in PyTorch and includes:
+
+- CUDA/BF16 training;
+- custom fused CUDA and Triton paths for routed expert computation;
+- PyTorch fallbacks for portability and correctness checks;
+- multi-GPU DDP with sharded validation;
+- exact checkpoint resume, including optimizer, scheduler, data cursor and per-rank RNG state;
+- ONNX and TorchScript deployment paths, with Core ML parity work for Apple silicon.
+
+We have validated the v6 training path on **4x NVIDIA GeForce RTX 5060 Ti GPUs** with NCCL DDP and the fused TR-HASH backend active. ImageNet-1K backbone pretraining and the detector training pipeline are still research runs, so the public model page intentionally does not report final mAP yet.
+
+### What we will measure
+
+The meaningful comparison is a controlled one: the same dataset, input resolution, augmentation budget, training duration and evaluation protocol. We plan to report:
+
+- mAP50 and mAP50-95;
+- AP small, medium and large;
+- parameter count and checkpoint size;
+- latency, throughput and peak VRAM;
+- results for the PyTorch, ONNX and optimized CUDA paths.
+
+We are especially interested in feedback from CUDA and Triton developers on routed-kernel shapes, profiling methodology, TensorRT export, and efficient shifted-window attention at 640 px.
+
+Source code: https://github.com/Complexity-ML/complexity-framework
+
+GitHub organization: https://github.com/Complexity-ML
+
+Hugging Face organization: https://huggingface.co/AETHORIA-AI
+
+Vision v6 model page: https://huggingface.co/AETHORIA-AI/TR-HASH-Vision-v6-1M-COCO
+
+Project website: https://www.complexity-ai.fr/
+
+The framework and research artifacts are released under **CC BY-NC 4.0**. Contributions, profiling results, critical feedback and reproducible comparisons are welcome.
+
+
+SUGGESTED TAG
+
+CUDA
+
+
+NOTE BEFORE POSTING
+
+The four badges above use standard Markdown image links. If the NVIDIA forum preview blocks external SVG badges, remove only the badge block; the complete plain links at the end remain available.
