@@ -70,7 +70,7 @@ class StackSFTRunner:
         cmd = [
             sys.executable,
             "-m",
-            "scripts.sft_100m_o200k_tr_local",
+            "scripts.sft_500m_32k_tr",
             "--checkpoint",
             checkpoint,
             "--tokenizer",

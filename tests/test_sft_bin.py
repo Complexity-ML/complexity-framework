@@ -12,7 +12,7 @@ from complexity.inference.chat_template import (
     default_chat_template,
     render_inference_prompt,
 )
-from scripts.sft_100m_o200k_tr_local import (
+from scripts.sft_500m_32k_tr import (
     SFTBinDataset,
     SFTJsonlDataset,
     build_parser,
@@ -24,6 +24,7 @@ from scripts.sft_100m_o200k_tr_local import (
     pad_epoch_items,
     resolve_sft_bin_evaluation_partitions,
     update_early_stopping,
+    validate_resume_state,
     validation_baseline,
 )
 
@@ -218,6 +219,34 @@ def test_sft_bin_epoch_padding_preserves_every_batch_boundary(
     assert len(list(dataset)) == 9
 
 
+def test_sft_bin_resume_cursor_skips_completed_batches(tmp_path: Path) -> None:
+    _write_shard(tmp_path)
+    complete = SFTBinDataset(
+        tmp_path,
+        seq_len=5,
+        seed=42,
+        rank=0,
+        world_size=1,
+        epochs=2,
+        epoch_batch_size=1,
+    )
+    resumed = SFTBinDataset(
+        tmp_path,
+        seq_len=5,
+        seed=42,
+        rank=0,
+        world_size=1,
+        epochs=2,
+        epoch_batch_size=1,
+        start_step=1,
+    )
+
+    complete_ids = [item["input_ids"].tolist() for item in complete]
+    resumed_ids = [item["input_ids"].tolist() for item in resumed]
+
+    assert resumed_ids == complete_ids[1:]
+
+
 def test_epoch_padding_gives_sparse_distributed_ranks_equal_batch_counts() -> None:
     all_items = [0, 1, 2]
     first_rank = pad_epoch_items(
@@ -407,7 +436,55 @@ def test_sft_parser_exposes_conservative_training_controls() -> None:
 
 
 def test_sft_parser_supports_a_finite_epoch_budget() -> None:
-    args = build_parser().parse_args(
-        ["--checkpoint", "checkpoint", "--epochs", "3"]
-    )
+    args = build_parser().parse_args(["--checkpoint", "checkpoint", "--epochs", "3"])
     assert args.epochs == 3
+
+
+def test_sft_parser_and_state_support_exact_resume() -> None:
+    args = build_parser().parse_args(
+        [
+            "--checkpoint",
+            "base/checkpoint.pt",
+            "--resume",
+            "sft/step_000100/checkpoint.pt",
+            "--steps",
+            "200",
+        ]
+    )
+    saved_args = {
+        name: getattr(args, name)
+        for name in (
+            "jsonl",
+            "sft_bin",
+            "curriculum_config",
+            "curriculum_stage",
+            "epochs",
+            "batch_size",
+            "seq_len",
+            "lr",
+            "weight_decay",
+            "beta1",
+            "beta2",
+            "warmup_ratio",
+            "bf16",
+            "freeze_token_io",
+            "use_custom_kernels",
+            "grad_ckpt",
+            "loss_chunk_tokens",
+            "sft_fp32_loss",
+            "seed",
+        )
+    }
+    validate_resume_state(
+        args,
+        {
+            "step": 100,
+            "optimizer": {},
+            "scheduler": {},
+            "world_size": 4,
+            "args": saved_args,
+        },
+        world_size=4,
+    )
+
+    assert args.resume.endswith("checkpoint.pt")

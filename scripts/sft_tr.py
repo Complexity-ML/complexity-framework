@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
-"""Generic TR-MoE supervised fine-tuning entry point.
-
-The implementation remains in the historical module for import compatibility,
-but this neutral entry point makes clear that model size and tokenizer are read
-from the supplied checkpoint rather than fixed to the original 100M/o200k
-experiment.
-"""
+"""Generic entry point for the maintained 500M/32k TR-HASH SFT runner."""
 
 if __package__:
-    from scripts.sft_100m_o200k_tr_local import main
+    from scripts.sft_500m_32k_tr import main
 else:
-    from sft_100m_o200k_tr_local import main
+    from sft_500m_32k_tr import main
 
 
 if __name__ == "__main__":

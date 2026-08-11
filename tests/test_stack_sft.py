@@ -160,6 +160,6 @@ def test_stack_sft_runner_dry_command(tmp_path: Path):
     runner = StackSFTRunner(config, dry_run=True)
     stage = config.stages[0]
     cmd = runner._stage_command(stage, config.base_checkpoint, tmp_path / "data.jsonl")
-    assert "scripts.sft_100m_o200k_tr_local" in cmd
+    assert "scripts.sft_500m_32k_tr" in cmd
     assert "--checkpoint" in cmd
     assert str(tmp_path / "checkpoints" / "toy-stack-finalization") in cmd

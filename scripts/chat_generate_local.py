@@ -21,7 +21,7 @@ from complexity.inference.chat_template import (  # noqa: E402
 from complexity.models import ComplexityModel  # noqa: E402
 from complexity.tokenizer import Tokenizer  # noqa: E402
 from complexity.utils.device import configure_torch_acceleration  # noqa: E402
-from scripts.sft_100m_o200k_tr_local import (  # noqa: E402
+from scripts.sft_500m_32k_tr import (  # noqa: E402
     checkpoint_config,
     load_checkpoint_state,
 )

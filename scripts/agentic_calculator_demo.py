@@ -33,7 +33,7 @@ if str(REPO_ROOT) not in sys.path:
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
 from complexity.utils.device import configure_torch_acceleration
-from scripts.sft_100m_o200k_tr_local import checkpoint_config, load_checkpoint_state
+from scripts.sft_500m_32k_tr import checkpoint_config, load_checkpoint_state
 
 
 TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)

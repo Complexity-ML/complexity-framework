@@ -30,7 +30,7 @@ if [[ ! -f "$DATA" ]]; then
 fi
 
 COMMON_ARGS=(
-  -m scripts.sft_100m_o200k_tr_local
+  -m scripts.sft_500m_32k_tr
   --checkpoint "$CHECKPOINT"
   --tokenizer "$TOKENIZER"
   --jsonl "$DATA"
