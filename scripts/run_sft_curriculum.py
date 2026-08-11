@@ -156,7 +156,14 @@ def main() -> None:
     metadata = load_projected_metadata(Path(args.sft_bin) / "projected.parquet")
     plans: list[dict[str, int | float | str]] = []
     for stage in stages:
-        count = selected_count(args.sft_bin, curriculum_path, stage.name)
+        count = len(
+            select_stage_examples(
+                examples,
+                curriculum,
+                stage.name,
+                metadata,
+            )
+        )
         plans.append(
             stage_plan(
                 stage,
