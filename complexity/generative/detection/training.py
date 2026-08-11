@@ -195,53 +195,82 @@ def _xywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
     return torch.cat((centers - sizes / 2, centers + sizes / 2), dim=-1)
 
 
-def _box_iou_one_to_many(box: torch.Tensor, boxes: torch.Tensor) -> torch.Tensor:
-    top_left = torch.maximum(box[:2], boxes[:, :2])
-    bottom_right = torch.minimum(box[2:], boxes[:, 2:])
-    intersection = (bottom_right - top_left).clamp_min(0).prod(-1)
-    box_area = (box[2:] - box[:2]).clamp_min(0).prod()
-    boxes_area = (boxes[:, 2:] - boxes[:, :2]).clamp_min(0).prod(-1)
-    return intersection / (box_area + boxes_area - intersection).clamp_min(1e-9)
+def _match_image_detections(
+    boxes: torch.Tensor,
+    scores: torch.Tensor,
+    labels: torch.Tensor,
+    target_boxes: torch.Tensor,
+    target_labels: torch.Tensor,
+    num_classes: int,
+) -> Dict[int, tuple[torch.Tensor, torch.Tensor]]:
+    """Greedily match one image's detections after computing IoUs once.
+
+    Only predictions that overlap any target by at least 0.5 enter the small
+    greedy loop. All other predictions are known false positives immediately.
+    """
+
+    matches_by_class = {}
+    for class_id in range(num_classes):
+        prediction_mask = labels == class_id
+        class_scores = scores[prediction_mask]
+        class_boxes = boxes[prediction_mask]
+        order = torch.argsort(class_scores, descending=True)
+        class_scores = class_scores[order]
+        class_boxes = class_boxes[order]
+        matches = torch.zeros(len(class_scores), dtype=torch.float32)
+        class_targets = target_boxes[target_labels == class_id]
+
+        if len(class_boxes) and len(class_targets):
+            top_left = torch.maximum(
+                class_boxes[:, None, :2], class_targets[None, :, :2]
+            )
+            bottom_right = torch.minimum(
+                class_boxes[:, None, 2:], class_targets[None, :, 2:]
+            )
+            intersections = (bottom_right - top_left).clamp_min(0).prod(-1)
+            prediction_areas = (
+                (class_boxes[:, 2:] - class_boxes[:, :2]).clamp_min(0).prod(-1)
+            )
+            target_areas = (
+                (class_targets[:, 2:] - class_targets[:, :2]).clamp_min(0).prod(-1)
+            )
+            ious = intersections / (
+                prediction_areas[:, None] + target_areas[None, :] - intersections
+            ).clamp_min(1e-9)
+            candidate_predictions = torch.nonzero(
+                (ious >= 0.5).any(dim=1), as_tuple=False
+            ).flatten()
+            used_targets = torch.zeros(len(class_targets), dtype=torch.bool)
+            for prediction_index in candidate_predictions.tolist():
+                available_ious = ious[prediction_index].masked_fill(used_targets, -1.0)
+                best_iou, target_index = available_ious.max(dim=0)
+                if float(best_iou) >= 0.5:
+                    matches[prediction_index] = 1.0
+                    used_targets[int(target_index)] = True
+
+        matches_by_class[class_id] = (class_scores, matches)
+    return matches_by_class
 
 
-def _average_precision(
-    predictions: List[tuple[float, int, torch.Tensor]],
-    ground_truth: Dict[int, torch.Tensor],
+def _average_precision_from_matches(
+    scores: torch.Tensor,
+    true_positives: torch.Tensor,
+    total_ground_truth: int,
 ) -> float:
-    total_ground_truth = sum(len(boxes) for boxes in ground_truth.values())
     if total_ground_truth == 0:
         return float("nan")
-
-    matched = {image_index: set() for image_index in ground_truth}
-    true_positives = []
-    false_positives = []
-    for _, image_index, predicted_box in sorted(predictions, reverse=True, key=lambda item: item[0]):
-        target_boxes = ground_truth.get(image_index)
-        if target_boxes is None or not len(target_boxes):
-            true_positives.append(0.0)
-            false_positives.append(1.0)
-            continue
-        ious = _box_iou_one_to_many(predicted_box, target_boxes)
-        best_iou, best_index = ious.max(dim=0)
-        target_index = int(best_index)
-        is_match = float(best_iou) >= 0.5 and target_index not in matched[image_index]
-        true_positives.append(float(is_match))
-        false_positives.append(float(not is_match))
-        if is_match:
-            matched[image_index].add(target_index)
-
-    if not true_positives:
+    if not len(scores):
         return 0.0
-    true_positive_cumulative = torch.tensor(true_positives).cumsum(0)
-    false_positive_cumulative = torch.tensor(false_positives).cumsum(0)
+    order = torch.argsort(scores, descending=True)
+    true_positive_cumulative = true_positives[order].cumsum(0)
+    false_positive_cumulative = (1.0 - true_positives[order]).cumsum(0)
     recall = true_positive_cumulative / total_ground_truth
     precision = true_positive_cumulative / (
         true_positive_cumulative + false_positive_cumulative
     ).clamp_min(1e-9)
     recall = torch.cat((torch.tensor([0.0]), recall, torch.tensor([1.0])))
     precision = torch.cat((torch.tensor([1.0]), precision, torch.tensor([0.0])))
-    for index in range(len(precision) - 2, -1, -1):
-        precision[index] = torch.maximum(precision[index], precision[index + 1])
+    precision = torch.cummax(precision.flip(0), dim=0).values.flip(0)
     changing = torch.nonzero(recall[1:] != recall[:-1], as_tuple=False).flatten()
     return float(((recall[changing + 1] - recall[changing]) * precision[changing + 1]).sum())
 
@@ -256,14 +285,13 @@ def evaluate_detector(
     use_amp: bool = False,
 ) -> Dict[str, float]:
     model.eval()
-    predictions_by_class: Dict[int, List[tuple[float, int, torch.Tensor]]] = {
+    scores_by_class: Dict[int, List[torch.Tensor]] = {
         class_id: [] for class_id in range(model.config.num_classes)
     }
-    targets_by_class: Dict[int, Dict[int, torch.Tensor]] = {
-        class_id: {} for class_id in range(model.config.num_classes)
+    matches_by_class: Dict[int, List[torch.Tensor]] = {
+        class_id: [] for class_id in range(model.config.num_classes)
     }
-    image_index = 0
-    scored_matches: List[tuple[float, bool]] = []
+    target_counts = [0 for _ in range(model.config.num_classes)]
     total_targets = 0
 
     for pixel_values, targets in loader:
@@ -282,54 +310,52 @@ def evaluate_detector(
             target_labels = image_targets[:, 4].long().cpu()
             total_targets += len(image_targets)
             for class_id in range(model.config.num_classes):
-                targets_by_class[class_id][image_index] = target_boxes[
-                    target_labels == class_id
-                ]
+                target_counts[class_id] += int((target_labels == class_id).sum())
 
             boxes = detection["boxes"].cpu()
             scores = detection["scores"].cpu()
             labels = detection["labels"].cpu()
-            for box, score, label in zip(boxes, scores, labels):
-                predictions_by_class[int(label)].append((float(score), image_index, box))
+            image_matches = _match_image_detections(
+                boxes,
+                scores,
+                labels,
+                target_boxes,
+                target_labels,
+                model.config.num_classes,
+            )
+            for class_id, (class_scores, class_matches) in image_matches.items():
+                scores_by_class[class_id].append(class_scores)
+                matches_by_class[class_id].append(class_matches)
 
-            used_targets = set()
-            for prediction_index in torch.argsort(scores, descending=True).tolist():
-                is_match = False
-                candidates = torch.nonzero(
-                    target_labels == labels[prediction_index], as_tuple=False
-                ).flatten()
-                candidates = [int(index) for index in candidates if int(index) not in used_targets]
-                if candidates:
-                    candidate_tensor = torch.tensor(candidates, dtype=torch.long)
-                    candidate_ious = _box_iou_one_to_many(
-                        boxes[prediction_index], target_boxes[candidate_tensor]
-                    )
-                    best_iou, relative_index = candidate_ious.max(dim=0)
-                    if float(best_iou) >= 0.5:
-                        used_targets.add(candidates[int(relative_index)])
-                        is_match = True
-                scored_matches.append((float(scores[prediction_index]), is_match))
-            image_index += 1
-
+    class_scores = [
+        torch.cat(scores_by_class[class_id])
+        for class_id in range(model.config.num_classes)
+    ]
+    class_matches = [
+        torch.cat(matches_by_class[class_id])
+        for class_id in range(model.config.num_classes)
+    ]
     average_precisions = [
-        _average_precision(predictions_by_class[class_id], targets_by_class[class_id])
+        _average_precision_from_matches(
+            class_scores[class_id], class_matches[class_id], target_counts[class_id]
+        )
         for class_id in range(model.config.num_classes)
     ]
     valid_average_precisions = [value for value in average_precisions if not math.isnan(value)]
-    scored_matches.sort(reverse=True, key=lambda item: item[0])
-    scores_tensor = torch.tensor([item[0] for item in scored_matches])
-    matches_tensor = torch.tensor(
-        [float(item[1]) for item in scored_matches], dtype=torch.float32
-    )
+    scores_tensor = torch.cat(class_scores)
+    matches_tensor = torch.cat(class_matches)
+    score_order = torch.argsort(scores_tensor, descending=True)
+    scores_tensor = scores_tensor[score_order]
+    matches_tensor = matches_tensor[score_order]
     fixed_mask = scores_tensor >= confidence_threshold
     fixed_true_positives = float(matches_tensor[fixed_mask].sum())
     fixed_predictions = int(fixed_mask.sum())
     precision = fixed_true_positives / max(fixed_predictions, 1)
     recall = fixed_true_positives / max(total_targets, 1)
     f1 = 2.0 * precision * recall / max(precision + recall, 1e-9)
-    if len(scored_matches):
+    if len(scores_tensor):
         cumulative_true_positives = matches_tensor.cumsum(0)
-        prediction_counts = torch.arange(1, len(scored_matches) + 1)
+        prediction_counts = torch.arange(1, len(scores_tensor) + 1)
         f1_curve = 2.0 * cumulative_true_positives / (
             prediction_counts + total_targets
         ).clamp_min(1)

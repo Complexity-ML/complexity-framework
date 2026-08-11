@@ -15,7 +15,11 @@ from complexity.generative.detection import (
     complete_iou_loss,
     sigmoid_focal_loss,
 )
-from complexity.generative.detection.training import load_pretrained_tower
+from complexity.generative.detection.training import (
+    _average_precision_from_matches,
+    _match_image_detections,
+    load_pretrained_tower,
+)
 
 
 def test_synthetic_dataset_yields_valid_targets():
@@ -86,6 +90,31 @@ def test_class_aware_nms_caps_detections_after_score_sorting():
         boxes, scores, labels, iou_threshold=0.5, max_detections=2
     )
     assert kept.tolist() == [1, 2]
+
+
+def test_vectorized_evaluation_matching_preserves_score_greedy_assignment():
+    boxes = torch.tensor(
+        [
+            [0.0, 0.0, 1.0, 1.0],
+            [0.05, 0.05, 1.0, 1.0],
+            [2.0, 2.0, 3.0, 3.0],
+        ]
+    )
+    scores = torch.tensor([0.9, 0.8, 0.7])
+    labels = torch.tensor([0, 0, 0])
+    target_boxes = torch.tensor([[0.0, 0.0, 1.0, 1.0], [2.0, 2.0, 3.0, 3.0]])
+    target_labels = torch.tensor([0, 0])
+
+    matched = _match_image_detections(
+        boxes, scores, labels, target_boxes, target_labels, num_classes=1
+    )
+    class_scores, true_positives = matched[0]
+    assert torch.equal(class_scores, scores)
+    assert true_positives.tolist() == [1.0, 0.0, 1.0]
+    average_precision = _average_precision_from_matches(
+        class_scores, true_positives, total_ground_truth=2
+    )
+    assert abs(average_precision - 5.0 / 6.0) < 1e-6
 
 
 def test_complete_iou_loss_is_zero_for_identical_boxes():
