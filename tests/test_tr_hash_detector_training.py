@@ -1,5 +1,6 @@
 import json
 
+import pytest
 import torch
 from PIL import Image
 from safetensors.torch import save_file
@@ -15,12 +16,83 @@ from complexity.generative.detection import (
     complete_iou_loss,
     quality_focal_loss,
 )
+from complexity.generative.detection.checkpointing import (
+    load_training_state,
+    save_training_state,
+)
 from complexity.generative.detection.training import (
     _average_precision_from_matches,
     _match_image_detections,
     load_pretrained_detector,
     load_pretrained_tower,
 )
+
+
+def _checkpoint_test_optimizer():
+    model = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: 0.9**step)
+    inputs = torch.tensor([[1.0, 2.0]])
+    loss = model(inputs).square().sum()
+    loss.backward()
+    optimizer.step()
+    scheduler.step()
+    return model, optimizer, scheduler
+
+
+def test_exact_training_state_roundtrip_restores_cursor_optimizer_scheduler_and_rng(tmp_path):
+    _, optimizer, scheduler = _checkpoint_test_optimizer()
+    checkpoint = tmp_path / "step_000001"
+    checkpoint.mkdir()
+    options = {"optimizer": "sgd", "batch_size": 2}
+    torch.manual_seed(1234)
+    save_training_state(
+        checkpoint,
+        optimizer,
+        scheduler,
+        epoch=2,
+        batch_in_epoch=3,
+        step=11,
+        best_map50=0.25,
+        running_losses={"loss": 1.5},
+        running_loss_steps=1,
+        total_epochs=5,
+        steps_per_epoch=4,
+        training_options=options,
+    )
+    expected_random = torch.rand(4)
+
+    _, restored_optimizer, restored_scheduler = _checkpoint_test_optimizer()
+    state = load_training_state(
+        checkpoint,
+        restored_optimizer,
+        restored_scheduler,
+        total_epochs=5,
+        steps_per_epoch=4,
+        training_options=options,
+    )
+
+    assert (state["epoch"], state["batch_in_epoch"], state["step"]) == (2, 3, 11)
+    assert restored_scheduler.last_epoch == scheduler.last_epoch
+    original_momentum = next(iter(optimizer.state.values()))["momentum_buffer"]
+    restored_momentum = next(iter(restored_optimizer.state.values()))["momentum_buffer"]
+    assert torch.equal(restored_momentum, original_momentum)
+    assert torch.equal(torch.rand(4), expected_random)
+
+
+def test_exact_resume_rejects_weights_only_checkpoint(tmp_path):
+    checkpoint = tmp_path / "old_checkpoint"
+    checkpoint.mkdir()
+    _, optimizer, scheduler = _checkpoint_test_optimizer()
+    with pytest.raises(ValueError, match="weights-only"):
+        load_training_state(
+            checkpoint,
+            optimizer,
+            scheduler,
+            total_epochs=5,
+            steps_per_epoch=4,
+            training_options={},
+        )
 
 
 def test_synthetic_dataset_yields_valid_targets():

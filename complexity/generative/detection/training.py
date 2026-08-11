@@ -22,6 +22,7 @@ from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
+from .checkpointing import load_training_state, save_training_state
 from .config import TRHashDetectorConfig
 from .data import (
     CocoDetectionDataset,
@@ -70,7 +71,7 @@ def parse_args() -> argparse.Namespace:
         "--resume",
         type=Path,
         default=None,
-        help="Load model.safetensors from a checkpoint directory before training",
+        help="Exactly resume model, optimizer, scheduler and data cursor from a checkpoint",
     )
     parser.add_argument(
         "--backbone-checkpoint",
@@ -168,6 +169,16 @@ def save_checkpoint(
     config: TRHashDetectorConfig,
     step: int,
     *,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    epoch: int,
+    batch_in_epoch: int,
+    best_map50: float,
+    running_losses: Dict[str, float],
+    running_loss_steps: int,
+    total_epochs: int,
+    steps_per_epoch: int,
+    training_options: Dict[str, object],
     name: str | None = None,
     validation_metrics: Dict[str, float] | None = None,
 ) -> None:
@@ -182,6 +193,20 @@ def save_checkpoint(
     (target / "config.json").write_text(json.dumps(config.to_dict(), indent=2) + "\n")
     if validation_metrics is not None:
         (target / "validation.json").write_text(json.dumps(validation_metrics, indent=2) + "\n")
+    save_training_state(
+        target,
+        optimizer,
+        scheduler,
+        epoch=epoch,
+        batch_in_epoch=batch_in_epoch,
+        step=step,
+        best_map50=best_map50,
+        running_losses=running_losses,
+        running_loss_steps=running_loss_steps,
+        total_epochs=total_epochs,
+        steps_per_epoch=steps_per_epoch,
+        training_options=training_options,
+    )
     LOGGER.info("Checkpoint saved: %s", target)
 
 
@@ -613,12 +638,15 @@ def main() -> None:
         epoch_dataset = dataset
         LOGGER.info("Synthetic dataset: %d images, %d classes", len(dataset), num_classes)
 
+    shuffle_generator = torch.Generator()
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=True,
+        generator=shuffle_generator,
         num_workers=args.workers,
-        persistent_workers=args.workers > 0,
+        # Recreate workers each epoch so dataset.set_epoch() reaches worker copies.
+        persistent_workers=False,
         pin_memory=device.type == "cuda",
         collate_fn=collate_detection,
     )
@@ -677,8 +705,20 @@ def main() -> None:
     if args.class_map is not None and args.detector_checkpoint is None:
         raise ValueError("--class-map requires --detector-checkpoint")
     if args.resume is not None:
+        saved_config = TRHashDetectorConfig.from_dict(
+            json.loads((args.resume / "config.json").read_text())
+        )
+        config_mismatches = sorted(
+            key
+            for key in set(saved_config.to_dict()) | set(config.to_dict())
+            if saved_config.to_dict().get(key) != config.to_dict().get(key)
+        )
+        if config_mismatches:
+            raise ValueError(
+                "exact resume requires unchanged model/loss config; mismatched: "
+                + ", ".join(config_mismatches)
+            )
         model.load_state_dict(load_file(str(args.resume / "model.safetensors")))
-        LOGGER.info("Resumed from: %s", args.resume)
     elif args.detector_checkpoint is not None:
         load_pretrained_detector(
             model,
@@ -730,22 +770,107 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     metrics_path = args.output / "metrics.jsonl"
 
+    training_options: Dict[str, object] = {
+        "optimizer": "sgd",
+        "batch_size": args.batch_size,
+        "dataset_size": len(dataset),
+        "seed": args.seed,
+        "lr": args.lr,
+        "expert_lr_multiplier": args.expert_lr_multiplier,
+        "momentum": args.momentum,
+        "weight_decay": args.weight_decay,
+        "warmup_steps": args.warmup_steps,
+        "min_lr_ratio": args.min_lr_ratio,
+        "augmentation": args.augmentation,
+        "device_type": device.type,
+        "use_amp": use_amp,
+    }
+    start_epoch = 0
+    start_batch = 0
     step = 0
-    running_losses: Dict[str, float] = {}
-    started = time.monotonic()
     best_map50 = -1.0
-    for epoch in range(args.epochs):
+    running_losses: Dict[str, float] = {}
+    running_loss_steps = 0
+    if args.resume is not None:
+        resume_state = load_training_state(
+            args.resume,
+            optimizer,
+            scheduler,
+            total_epochs=args.epochs,
+            steps_per_epoch=len(loader),
+            training_options=training_options,
+        )
+        start_epoch = int(resume_state["epoch"])
+        start_batch = int(resume_state["batch_in_epoch"])
+        step = int(resume_state["step"])
+        best_map50 = float(resume_state["best_map50"])
+        running_losses = {
+            str(name): float(value)
+            for name, value in resume_state.get("running_losses", {}).items()
+        }
+        running_loss_steps = int(resume_state.get("running_loss_steps", 0))
+        if not 0 <= start_epoch <= args.epochs:
+            raise ValueError(f"invalid resumed epoch cursor: {start_epoch}")
+        if not 0 <= start_batch <= len(loader):
+            raise ValueError(f"invalid resumed batch cursor: {start_batch}")
+        if start_epoch == args.epochs and start_batch:
+            raise ValueError("a completed run cannot have a non-zero batch cursor")
+        LOGGER.info(
+            "Resumed exactly from %s: epoch=%d batch=%d step=%d",
+            args.resume,
+            start_epoch,
+            start_batch,
+            step,
+        )
+
+    def write_checkpoint(
+        *,
+        epoch: int,
+        batch_in_epoch: int,
+        name: str | None = None,
+        validation_metrics: Dict[str, float] | None = None,
+    ) -> None:
+        save_checkpoint(
+            args.output,
+            model,
+            config,
+            step,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            epoch=epoch,
+            batch_in_epoch=batch_in_epoch,
+            best_map50=best_map50,
+            running_losses=running_losses,
+            running_loss_steps=running_loss_steps,
+            total_epochs=args.epochs,
+            steps_per_epoch=len(loader),
+            training_options=training_options,
+            name=name,
+            validation_metrics=validation_metrics,
+        )
+
+    started = time.monotonic()
+    for epoch in range(start_epoch, args.epochs):
         if epoch_dataset is not None and hasattr(epoch_dataset, "set_epoch"):
             epoch_dataset.set_epoch(epoch)
+        shuffle_generator.manual_seed(args.seed + epoch)
+        loader_iterator = iter(loader)
+        batches_to_skip = start_batch if epoch == start_epoch else 0
+        for _ in range(batches_to_skip):
+            next(loader_iterator)
         progress = tqdm(
-            loader,
+            loader_iterator,
             desc=f"detector train {epoch + 1}/{args.epochs}",
             unit="batch",
+            total=len(loader),
+            initial=batches_to_skip,
             dynamic_ncols=True,
             leave=False,
             disable=False,
         )
-        for pixel_values, targets in progress:
+        for batch_index, (pixel_values, targets) in enumerate(
+            progress, start=batches_to_skip
+        ):
             pixel_values = pixel_values.to(device, non_blocking=device.type == "cuda")
             targets = [target.to(device, non_blocking=device.type == "cuda") for target in targets]
 
@@ -770,8 +895,11 @@ def main() -> None:
             step += 1
             for name, value in losses.items():
                 running_losses[name] = running_losses.get(name, 0.0) + float(value.detach())
+            running_loss_steps += 1
             if step % args.log_steps == 0:
-                averages = {name: value / args.log_steps for name, value in running_losses.items()}
+                averages = {
+                    name: value / running_loss_steps for name, value in running_losses.items()
+                }
                 elapsed = time.monotonic() - started
                 LOGGER.info(
                     "epoch=%d step=%d loss_total=%.4f quality=%.4f box=%.4f dfl=%.4f "
@@ -805,8 +933,9 @@ def main() -> None:
                     expert_lr=f"{scheduler.get_last_lr()[1]:.2e}",
                 )
                 running_losses.clear()
+                running_loss_steps = 0
             if args.save_steps and step % args.save_steps == 0:
-                save_checkpoint(args.output, model, config, step)
+                write_checkpoint(epoch=epoch, batch_in_epoch=batch_index + 1)
 
         if validation_loader is not None:
             validation_metrics = evaluate_detector(
@@ -835,16 +964,15 @@ def main() -> None:
                 )
             if validation_metrics["map50"] > best_map50:
                 best_map50 = validation_metrics["map50"]
-                save_checkpoint(
-                    args.output,
-                    model,
-                    config,
-                    step,
+                write_checkpoint(
+                    epoch=epoch + 1,
+                    batch_in_epoch=0,
                     name="best",
                     validation_metrics=validation_metrics,
                 )
+        start_batch = 0
 
-    save_checkpoint(args.output, model, config, step)
+    write_checkpoint(epoch=args.epochs, batch_in_epoch=0)
     LOGGER.info("Training complete: %d steps over %d epochs", step, args.epochs)
 
 
