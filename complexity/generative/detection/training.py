@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Dict, List
 
@@ -107,6 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-steps", type=int, default=0, help="0 disables periodic checkpoints")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default=None, help="Override auto-detected device")
+    parser.add_argument("--no-amp", action="store_true", help="Disable CUDA BF16 autocast")
     return parser.parse_args()
 
 
@@ -251,6 +253,7 @@ def evaluate_detector(
     device: torch.device,
     *,
     confidence_threshold: float,
+    use_amp: bool = False,
 ) -> Dict[str, float]:
     model.eval()
     predictions_by_class: Dict[int, List[tuple[float, int, torch.Tensor]]] = {
@@ -264,12 +267,16 @@ def evaluate_detector(
     total_targets = 0
 
     for pixel_values, targets in loader:
-        detections = model.predict(
-            pixel_values.to(device, non_blocking=device.type == "cuda"),
-            objectness_threshold=0.001,
-            iou_threshold=0.5,
-            postprocess_on_cpu=device.type == "mps",
+        autocast = (
+            torch.autocast("cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
         )
+        with autocast:
+            detections = model.predict(
+                pixel_values.to(device, non_blocking=device.type == "cuda"),
+                objectness_threshold=0.001,
+                iou_threshold=0.5,
+                postprocess_on_cpu=device.type == "mps",
+            )
         for detection, image_targets in zip(detections, targets):
             target_boxes = _xywh_to_xyxy(image_targets[:, :4]).cpu()
             target_labels = image_targets[:, 4].long().cpu()
@@ -355,6 +362,9 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s", datefmt="%H:%M:%S")
     torch.manual_seed(args.seed)
     device = resolve_device(args.device)
+    use_amp = device.type == "cuda" and not args.no_amp
+    if device.type == "cuda":
+        torch.set_float32_matmul_precision("high")
 
     validation_dataset = None
     epoch_dataset = None
@@ -435,6 +445,7 @@ def main() -> None:
         shuffle=True,
         num_workers=args.workers,
         persistent_workers=args.workers > 0,
+        pin_memory=device.type == "cuda",
         collate_fn=collate_detection,
     )
     validation_loader = (
@@ -443,6 +454,7 @@ def main() -> None:
             batch_size=args.batch_size,
             num_workers=args.workers,
             persistent_workers=args.workers > 0,
+            pin_memory=device.type == "cuda",
             collate_fn=collate_detection,
         )
         if validation_dataset is not None
@@ -493,6 +505,12 @@ def main() -> None:
     for name, parameter in model.named_parameters():
         target = expert_parameters if ".mlp.expert_" in name else base_parameters
         target.append(parameter)
+    optimizer_options = {
+        "weight_decay": args.weight_decay,
+        "foreach": False if device.type == "mps" else None,
+    }
+    if device.type == "cuda":
+        optimizer_options["fused"] = True
     optimizer = torch.optim.AdamW(
         (
             {"params": base_parameters, "lr": args.lr, "group_name": "base"},
@@ -502,8 +520,7 @@ def main() -> None:
                 "group_name": "experts",
             },
         ),
-        weight_decay=args.weight_decay,
-        foreach=False if device.type == "mps" else None,
+        **optimizer_options,
     )
     total_steps = len(loader) * args.epochs
     scheduler = torch.optim.lr_scheduler.LambdaLR(
@@ -535,8 +552,14 @@ def main() -> None:
                 for target in targets
             ]
 
-            raw = model(pixel_values)
-            losses = model.compute_loss(raw, targets)
+            autocast = (
+                torch.autocast("cuda", dtype=torch.bfloat16)
+                if use_amp
+                else nullcontext()
+            )
+            with autocast:
+                raw = model(pixel_values)
+                losses = model.compute_loss(raw, targets)
             optimizer.zero_grad(set_to_none=True)
             losses["loss"].backward()
             torch.nn.utils.clip_grad_norm_(
@@ -591,6 +614,7 @@ def main() -> None:
                 validation_loader,
                 device,
                 confidence_threshold=args.eval_confidence,
+                use_amp=use_amp,
             )
             LOGGER.info(
                 "validation epoch=%d mAP50=%.4f precision=%.4f recall=%.4f "
