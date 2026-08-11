@@ -44,4 +44,5 @@ exec python -u -m complexity.generative.detection.training \
   --save-steps 1000 \
   --eval-confidence 0.10 \
   --seed 3 \
+  --require-triton \
   --device cuda

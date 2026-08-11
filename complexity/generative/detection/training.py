@@ -30,6 +30,7 @@ from .metrics import DetectionMetricsAccumulator
 from .model import TRHashObjectDetector
 
 LOGGER = logging.getLogger("tr_hash_detector")
+TRITON_BACKENDS = frozenset({"fused_cuda", "cggr"})
 
 
 class TqdmLoggingHandler(logging.StreamHandler):
@@ -183,7 +184,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default=None, help="Override auto-detected device")
     parser.add_argument("--no-amp", action="store_true", help="Disable CUDA BF16 autocast")
+    parser.add_argument(
+        "--require-triton",
+        action="store_true",
+        help="Fail at startup instead of silently using the PyTorch TR-Hash fallback",
+    )
     return parser.parse_args()
+
+
+def vision_backend_summary(
+    model: TRHashObjectDetector,
+    device_type: str,
+    *,
+    require_triton: bool = False,
+) -> dict:
+    """Resolve and optionally enforce the execution backend for every vision block."""
+
+    summaries = [
+        block.mlp.capability_summary(device_type)
+        for block in model.tower.blocks
+    ]
+    selected = {summary["selected_backend"] for summary in summaries}
+    if len(selected) != 1:
+        raise RuntimeError(
+            "vision blocks selected inconsistent TR-Hash backends: "
+            + ", ".join(sorted(selected))
+        )
+    summary = summaries[0]
+    if require_triton and summary["selected_backend"] not in TRITON_BACKENDS:
+        reasons = "; ".join(summary["backend_reasons"]) or "no backend reason reported"
+        raise RuntimeError(
+            "Triton is required for this run, but the vision tower selected "
+            f"{summary['selected_backend']}: {reasons}"
+        )
+    return summary
 
 
 def resolve_device(override: str | None) -> torch.device:
@@ -732,6 +766,19 @@ def main() -> None:
     elif args.backbone_checkpoint is not None:
         load_pretrained_tower(model, args.backbone_checkpoint)
     LOGGER.info("Model: %.2fM parameters", model.num_parameters() / 1e6)
+    backend_summary = vision_backend_summary(
+        model,
+        device.type,
+        require_triton=args.require_triton,
+    )
+    LOGGER.info(
+        "TR-Hash vision backend: %s (requested=%s experts=%d top_k=%d precision=%s)",
+        backend_summary["selected_backend"],
+        backend_summary["requested_backend"],
+        backend_summary["experts"],
+        backend_summary["top_k"],
+        backend_summary["precision"],
+    )
     if args.expert_lr_multiplier <= 0.0:
         raise ValueError("--expert-lr-multiplier must be positive")
     expert_parameters = []

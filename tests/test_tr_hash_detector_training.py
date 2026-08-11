@@ -27,6 +27,7 @@ from complexity.generative.detection.training import (
     load_pretrained_detector,
     load_pretrained_tower,
     should_validate_epoch,
+    vision_backend_summary,
 )
 
 
@@ -49,6 +50,24 @@ def test_validation_cadence_always_includes_final_epoch():
         if should_validate_epoch(epoch, total_epochs=12, eval_every=5)
     ]
     assert selected == [4, 9, 11]
+
+
+def test_vision_backend_summary_reports_and_can_require_triton():
+    model = TRHashObjectDetector(
+        TRHashDetectorConfig(
+            image_size=32,
+            patch_size=8,
+            vision_hidden_size=32,
+            vision_layers=2,
+            vision_heads=4,
+            vision_expert_width=8,
+        )
+    )
+
+    summary = vision_backend_summary(model, "cpu")
+    assert summary["selected_backend"] == "pytorch"
+    with pytest.raises(RuntimeError, match="Triton is required"):
+        vision_backend_summary(model, "cpu", require_triton=True)
 
 
 def test_distributed_validation_sampler_has_no_padding_duplicates():
