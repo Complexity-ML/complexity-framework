@@ -7,7 +7,6 @@ import json
 import logging
 import math
 import random
-import time
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Dict, Mapping, Sequence
@@ -1100,7 +1099,6 @@ def main() -> None:
             )
         distributed.barrier()
 
-    started = time.monotonic()
     for epoch in range(start_epoch, args.epochs):
         if epoch_dataset is not None and hasattr(epoch_dataset, "set_epoch"):
             epoch_dataset.set_epoch(epoch)
@@ -1177,21 +1175,7 @@ def main() -> None:
                     name: value / running_loss_steps for name, value in running_losses.items()
                 }
                 averages = distributed.mean_scalars(averages)
-                elapsed = time.monotonic() - started
                 if distributed.is_main:
-                    LOGGER.info(
-                        "epoch=%d step=%d loss_total=%.4f quality=%.4f box=%.4f dfl=%.4f "
-                        "lr=%.2e expert_lr=%.2e elapsed=%.1fs",
-                        epoch,
-                        step,
-                        averages["loss"],
-                        averages["quality_loss"],
-                        averages["box_loss"],
-                        averages["dfl_loss"],
-                        scheduler.get_last_lr()[0],
-                        scheduler.get_last_lr()[1],
-                        elapsed,
-                    )
                     with metrics_path.open("a") as handle:
                         handle.write(
                             json.dumps(

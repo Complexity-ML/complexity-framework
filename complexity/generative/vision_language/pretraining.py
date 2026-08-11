@@ -14,7 +14,7 @@ from typing import Callable
 
 import torch
 from safetensors.torch import load_file, save_file
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler
 from tqdm import tqdm
 
 from ..detection.checkpointing import load_training_state, save_training_state
@@ -25,6 +25,30 @@ from ..detection.training import TqdmLoggingHandler, vision_backend_summary
 from .vision_tower import TRHashVisionClassifier, TRHashVisionTowerConfig
 
 LOGGER = logging.getLogger("tr_hash_vision_pretraining")
+
+
+class ResumableBatchSampler:
+    """Skip consumed batches at the index level without decoding their images."""
+
+    def __init__(self, batch_sampler: BatchSampler) -> None:
+        self.batch_sampler = batch_sampler
+        self.start_batch = 0
+
+    def set_start_batch(self, start_batch: int) -> None:
+        if not 0 <= start_batch <= len(self.batch_sampler):
+            raise ValueError("start_batch is outside the epoch")
+        self.start_batch = start_batch
+
+    def __iter__(self):
+        iterator = iter(self.batch_sampler)
+        for _ in range(self.start_batch):
+            next(iterator)
+        yield from iterator
+
+    def __len__(self) -> int:
+        # Keep the full epoch length: the training cursor and tqdm initial value
+        # account for the skipped prefix separately.
+        return len(self.batch_sampler)
 
 
 def parse_args() -> argparse.Namespace:
@@ -373,12 +397,16 @@ def main() -> None:
         )
     train_sampler = distributed.train_sampler(train_dataset, args.seed)
     shuffle_generator = torch.Generator()
+    sample_sampler = train_sampler or RandomSampler(
+        train_dataset,
+        generator=shuffle_generator,
+    )
+    train_batch_sampler = ResumableBatchSampler(
+        BatchSampler(sample_sampler, args.batch_size, drop_last=False)
+    )
     train_loader = DataLoader(
         train_dataset,
-        batch_size=args.batch_size,
-        shuffle=train_sampler is None,
-        sampler=train_sampler,
-        generator=shuffle_generator if train_sampler is None else None,
+        batch_sampler=train_batch_sampler,
         num_workers=args.workers,
         # Recreate workers so train_dataset.set_epoch() reaches worker copies.
         persistent_workers=False,
@@ -576,10 +604,9 @@ def main() -> None:
             train_sampler.set_epoch(epoch)
         else:
             shuffle_generator.manual_seed(args.seed + epoch)
-        loader_iterator = iter(train_loader)
         batches_to_skip = start_batch if epoch == start_epoch else 0
-        for _ in range(batches_to_skip):
-            next(loader_iterator)
+        train_batch_sampler.set_start_batch(batches_to_skip)
+        loader_iterator = iter(train_loader)
         progress = tqdm(
             loader_iterator,
             desc=f"vision train {epoch + 1}/{args.epochs}",
