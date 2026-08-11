@@ -26,6 +26,16 @@ from .data import (
     YoloDetectionDataset,
     collate_detection,
 )
+from .hub import (
+    VOC_CLASS_NAMES,
+    DetectionImageMetadata,
+    export_detector_for_hub,
+    load_detector_checkpoint,
+    load_detector_from_hub,
+    preprocess_detector_image,
+    restore_detector_boxes,
+    upload_detector_to_hub,
+)
 from .model import (
     TRHashObjectDetector,
     box_iou,
@@ -49,4 +59,12 @@ __all__ = [
     "SyntheticShapesDataset",
     "YoloDetectionDataset",
     "collate_detection",
+    "VOC_CLASS_NAMES",
+    "DetectionImageMetadata",
+    "export_detector_for_hub",
+    "load_detector_checkpoint",
+    "load_detector_from_hub",
+    "preprocess_detector_image",
+    "restore_detector_boxes",
+    "upload_detector_to_hub",
 ]

@@ -222,3 +222,30 @@ The task heads and differentiable losses are implemented. Detection has the
 complete VOC/YOLO trainer and serving path described above. The other task
 families still need dataset-specific loaders, augmentation, metrics, export,
 and serving endpoints before they should be called production pipelines.
+
+## Publish a validated detector to Hugging Face
+
+The publishing helper builds the model card, preprocessing metadata, VOC class
+names, metrics, and `safetensors` checkpoint folder. A private card-only draft
+can be created while a run is active:
+
+```bash
+python scripts/publish_tr_hash_vision_hf.py \
+  --repo-id AETHORIA-AI/TR-HASH-Vision-0.8M-VOC \
+  --training --push
+```
+
+After selecting the final validated checkpoint, replace the draft with the
+complete release. Repositories are private by default; add `--public` only when
+the model card and metrics have been reviewed.
+
+```bash
+python scripts/publish_tr_hash_vision_hf.py \
+  --repo-id AETHORIA-AI/TR-HASH-Vision-0.8M-VOC \
+  --checkpoint artifacts/detector_voc_5090_v03/best \
+  --push --public
+```
+
+Consumers can use `load_detector_from_hub`, `preprocess_detector_image`, and
+`restore_detector_boxes` to reproduce the training letterbox geometry and map
+normalized predictions back to source-image pixels.
