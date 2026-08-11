@@ -1189,6 +1189,7 @@ def main():
             find_unused_parameters=False,
         )
 
+    evaluation_enabled = args.eval_at_start or args.eval_steps > 0
     if args.sft_bin is not None:
         train_ds = SFTBinDataset(
             args.sft_bin,
@@ -1203,7 +1204,11 @@ def main():
             curriculum_config=args.curriculum_config,
             curriculum_stage=args.curriculum_stage,
         )
-        matched_eval_path, natural_eval_path = resolve_sft_bin_evaluation_partitions(args.sft_bin)
+        matched_eval_path, natural_eval_path = (
+            resolve_sft_bin_evaluation_partitions(args.sft_bin)
+            if evaluation_enabled
+            else (None, None)
+        )
         matched_eval_ds = (
             SFTBinDataset(
                 matched_eval_path,
@@ -1253,7 +1258,7 @@ def main():
                 args.min_completion_tokens,
                 repeat=False,
             )
-            if args.eval_jsonl is not None
+            if evaluation_enabled and args.eval_jsonl is not None
             else None
         )
         natural_eval_ds = None
@@ -1367,11 +1372,16 @@ def main():
                 f"({len(train_ds.examples):,} examples, "
                 f"stage={train_ds.curriculum_stage or 'full-shard'})"
             )
-            logger.info(
-                "Coverage: "
-                f"{steps_per_epoch:,} steps/epoch; best-checkpoint selection "
-                f"and early stopping start at step {minimum_selection_step:,}"
-            )
+            if evaluation_enabled:
+                logger.info(
+                    "Coverage: "
+                    f"{steps_per_epoch:,} steps/epoch; best-checkpoint selection "
+                    f"and early stopping start at step {minimum_selection_step:,}"
+                )
+            else:
+                logger.info(
+                    f"Coverage: {steps_per_epoch:,} steps/epoch; validation disabled"
+                )
             if train_ds.metadata["supervised_tokens"] < 3_000_000:
                 logger.warning(
                     "Training shard contains fewer than 3,000,000 supervised "
