@@ -20,6 +20,7 @@ import torch
 import torch.nn.functional as F
 from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader, Subset
+from tqdm import tqdm
 
 from .config import TRHashDetectorConfig
 from .data import (
@@ -283,6 +284,7 @@ def evaluate_detector(
     *,
     confidence_threshold: float,
     use_amp: bool = False,
+    show_progress: bool = False,
 ) -> Dict[str, float]:
     model.eval()
     scores_by_class: Dict[int, List[torch.Tensor]] = {
@@ -294,7 +296,15 @@ def evaluate_detector(
     target_counts = [0 for _ in range(model.config.num_classes)]
     total_targets = 0
 
-    for pixel_values, targets in loader:
+    progress = tqdm(
+        loader,
+        desc="detector validation",
+        unit="batch",
+        dynamic_ncols=True,
+        leave=False,
+        disable=False if show_progress else True,
+    )
+    for pixel_values, targets in progress:
         autocast = (
             torch.autocast("cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
         )
@@ -569,7 +579,15 @@ def main() -> None:
     for epoch in range(args.epochs):
         if epoch_dataset is not None and hasattr(epoch_dataset, "set_epoch"):
             epoch_dataset.set_epoch(epoch)
-        for pixel_values, targets in loader:
+        progress = tqdm(
+            loader,
+            desc=f"detector train {epoch + 1}/{args.epochs}",
+            unit="batch",
+            dynamic_ncols=True,
+            leave=False,
+            disable=False,
+        )
+        for pixel_values, targets in progress:
             pixel_values = pixel_values.to(
                 device, non_blocking=device.type == "cuda"
             )
@@ -630,6 +648,11 @@ def main() -> None:
                         )
                         + "\n"
                     )
+                progress.set_postfix(
+                    loss=f"{averages['loss']:.4f}",
+                    lr=f"{scheduler.get_last_lr()[0]:.2e}",
+                    expert_lr=f"{scheduler.get_last_lr()[1]:.2e}",
+                )
                 running_losses.clear()
             if args.save_steps and step % args.save_steps == 0:
                 save_checkpoint(args.output, model, config, step)
@@ -641,6 +664,7 @@ def main() -> None:
                 device,
                 confidence_threshold=args.eval_confidence,
                 use_amp=use_amp,
+                show_progress=True,
             )
             LOGGER.info(
                 "validation epoch=%d mAP50=%.4f precision=%.4f recall=%.4f "

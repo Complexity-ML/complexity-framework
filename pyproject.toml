@@ -87,6 +87,7 @@ image = [
     "Pillow>=10.0.0",
     "diffusers>=0.30.0",
     "accelerate>=0.30.0",
+    "hf-xet>=1.1.0",
 ]
 dev = [
     "pytest>=7.0.0",

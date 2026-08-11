@@ -20,9 +20,11 @@ size using the same dataset and evaluation protocol.
 
 ## Pretrain the vision tower
 
-Pretraining accepts CIFAR-10 or an ImageFolder containing `train/` and `val/`
-class directories. On Apple Silicon, `--device mps` uses the Mac GPU and keeps
-the vision computation in fp32 for stability.
+Pretraining accepts CIFAR-10, a Hugging Face image-classification dataset, or
+an ImageFolder containing `train/` and `val/` class directories. On Apple
+Silicon, `--device mps` uses the Mac GPU and keeps the vision computation in
+fp32 for stability. CUDA uses BF16 autocast, pinned persistent data workers,
+and fused AdamW.
 
 ```bash
 cf-vision-pretrain \
@@ -32,6 +34,21 @@ cf-vision-pretrain \
   --image-size 128 --patch-size 8 \
   --hidden-size 128 --layers 4 --heads 4 --expert-width 48 \
   --device mps
+```
+
+For a stronger real-image initialization, ImageNet-100 provides roughly
+127,000 training images across 100 classes:
+
+```bash
+pip install datasets 'huggingface_hub[hf_xet]'
+HF_XET_HIGH_PERFORMANCE=1 cf-vision-pretrain \
+  --hf-dataset clane9/imagenet-100 \
+  --data-root artifacts/hf-cache \
+  --output artifacts/tr_hash_vision_imagenet100 \
+  --image-size 224 --patch-size 8 \
+  --hidden-size 128 --layers 4 --heads 4 --expert-width 48 \
+  --epochs 30 --batch-size 512 --workers 8 \
+  --expert-lr-multiplier 1.5 --device cuda
 ```
 
 ## Train on detection data
