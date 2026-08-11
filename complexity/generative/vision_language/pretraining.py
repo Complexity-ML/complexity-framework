@@ -17,6 +17,8 @@ from safetensors.torch import save_file
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
+from ..detection.config import TRHashDetectorConfig
+from ..detection.hierarchical_tower import HierarchicalTRHashVisionClassifier
 from .vision_tower import TRHashVisionClassifier, TRHashVisionTowerConfig
 
 LOGGER = logging.getLogger("tr_hash_vision_pretraining")
@@ -36,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--data-root", type=Path, default=Path("data/vision"))
     parser.add_argument("--image-size", type=int, default=128)
+    parser.add_argument("--architecture-version", type=int, choices=(5, 6), default=5)
     parser.add_argument("--patch-size", type=int, default=8)
     parser.add_argument("--hidden-size", type=int, default=128)
     parser.add_argument("--layers", type=int, default=4)
@@ -43,6 +46,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-experts", type=int, default=4)
     parser.add_argument("--top-k", type=int, default=2)
     parser.add_argument("--expert-width", type=int, default=48)
+    parser.add_argument("--stage-depths", type=int, nargs="+", default=(1, 1, 2))
+    parser.add_argument("--window-size", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=0)
@@ -161,8 +166,8 @@ def build_datasets(args: argparse.Namespace):
 
 def save_tower(
     output: Path,
-    model: TRHashVisionClassifier,
-    config: TRHashVisionTowerConfig,
+    model,
+    config,
     *,
     epoch: int,
     accuracy: float,
@@ -173,8 +178,11 @@ def save_tower(
         for name, value in model.tower.state_dict().items()
     }
     save_file(state, str(output / "tower.safetensors"))
-    config_values = asdict(config)
-    config_values["precision"] = config.precision.value
+    if isinstance(config, TRHashDetectorConfig):
+        config_values = config.to_dict()
+    else:
+        config_values = asdict(config)
+        config_values["precision"] = config.precision.value
     (output / "config.json").write_text(
         json.dumps(
             {"tower": config_values, "epoch": epoch, "validation_accuracy": accuracy},
@@ -263,18 +271,36 @@ def main() -> None:
         pin_memory=device.type == "cuda",
     )
     precision = "fp32" if device.type == "mps" else "bf16"
-    config = TRHashVisionTowerConfig(
-        image_size=args.image_size,
-        patch_size=args.patch_size,
-        hidden_size=args.hidden_size,
-        num_hidden_layers=args.layers,
-        num_attention_heads=args.heads,
-        num_experts=args.num_experts,
-        top_k=args.top_k,
-        expert_width=args.expert_width,
-        precision=precision,
-    )
-    model = TRHashVisionClassifier(config, num_classes).to(device)
+    if args.architecture_version == 6:
+        config = TRHashDetectorConfig(
+            architecture_version=6,
+            image_size=args.image_size,
+            patch_size=args.patch_size,
+            vision_hidden_size=args.hidden_size,
+            vision_layers=args.layers,
+            vision_heads=args.heads,
+            vision_num_experts=args.num_experts,
+            vision_top_k=args.top_k,
+            vision_expert_width=args.expert_width,
+            vision_stage_depths=tuple(args.stage_depths),
+            vision_window_size=args.window_size,
+            vision_precision=precision,
+            num_classes=num_classes,
+        )
+        model = HierarchicalTRHashVisionClassifier(config, num_classes).to(device)
+    else:
+        config = TRHashVisionTowerConfig(
+            image_size=args.image_size,
+            patch_size=args.patch_size,
+            hidden_size=args.hidden_size,
+            num_hidden_layers=args.layers,
+            num_attention_heads=args.heads,
+            num_experts=args.num_experts,
+            top_k=args.top_k,
+            expert_width=args.expert_width,
+            precision=precision,
+        )
+        model = TRHashVisionClassifier(config, num_classes).to(device)
     LOGGER.info(
         "Vision model: %.2fM parameters on %s",
         sum(parameter.numel() for parameter in model.parameters()) / 1e6,

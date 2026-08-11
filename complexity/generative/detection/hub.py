@@ -103,7 +103,12 @@ def load_detector_checkpoint(
     checkpoint = Path(checkpoint)
     config = TRHashDetectorConfig.from_dict(json.loads((checkpoint / "config.json").read_text()))
     model = TRHashObjectDetector(config)
-    state = load_file(str(checkpoint / "model.safetensors"), device=str(device))
+    weights = (
+        checkpoint / "ema.safetensors"
+        if (checkpoint / "ema.safetensors").is_file()
+        else checkpoint / "model.safetensors"
+    )
+    state = load_file(str(weights), device=str(device))
     model.load_state_dict(state, strict=True)
     return model.to(device).eval()
 
@@ -125,7 +130,7 @@ def load_detector_from_hub(
         repo_id=repo_id,
         revision=revision,
         token=token,
-        allow_patterns=("config.json", "model.safetensors"),
+        allow_patterns=("config.json", "model.safetensors", "ema.safetensors"),
     )
     return load_detector_checkpoint(checkpoint, device=device)
 
@@ -140,6 +145,7 @@ def _model_card(
 ) -> str:
     model_name = repo_id.split("/")[-1]
     image_size = config.image_size if config is not None else 224
+    architecture_version = config.architecture_version if config is not None else 6
     parameter_text = "0.83M" if config is None else "compact"
     metrics_yaml = ""
     metrics_table = "Training is currently in progress; validated metrics will be added here."
@@ -195,8 +201,9 @@ tags:
 
 {status}
 
-TR-Hash Vision v5 is a compact anchor-free detector built on a deterministic
-token-routed MoE vision tower. The architecture combines a lightweight PAN
+TR-Hash Vision v{architecture_version} is a compact anchor-free detector built on a deterministic
+token-routed MoE vision tower. The architecture combines a hierarchical,
+window-attention backbone with a lightweight PAN
 cross-scale neck, dynamic one-to-many assignment, class-aware batched NMS,
 a P2 small-object scale, STAL-style
 assignment, decoupled LTRB/DFL regression, unified QFL quality-class scores,
@@ -274,7 +281,13 @@ def export_detector_for_hub(
         )
         if len(class_names) != config.num_classes:
             raise ValueError("class_names length must match detector num_classes")
-        for name in ("config.json", "model.safetensors", "tower.safetensors"):
+        for name in (
+            "config.json",
+            "model.safetensors",
+            "tower.safetensors",
+            "ema.safetensors",
+            "ema_tower.safetensors",
+        ):
             source = checkpoint / name
             if source.exists():
                 shutil.copy2(source, output / name)

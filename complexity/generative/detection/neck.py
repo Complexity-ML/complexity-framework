@@ -8,8 +8,8 @@ import torch.nn.functional as F
 
 
 def _identity_channel_projection(channels: int) -> nn.Conv2d:
-    projection = nn.Conv2d(channels, channels, 1, groups=channels)
-    nn.init.ones_(projection.weight)
+    projection = nn.Conv2d(channels, channels, 1)
+    nn.init.dirac_(projection.weight)
     nn.init.zeros_(projection.bias)
     return projection
 
@@ -20,7 +20,7 @@ class _ResidualSpatialRefinement(nn.Module):
         self.layers = nn.Sequential(
             nn.Conv2d(channels, channels, 3, padding=1, groups=channels),
             nn.GELU(),
-            nn.Conv2d(channels, channels, 1, groups=channels),
+            nn.Conv2d(channels, channels, 1),
         )
         nn.init.zeros_(self.layers[-1].weight)
         nn.init.zeros_(self.layers[-1].bias)

@@ -65,7 +65,10 @@ class DecoupledDetectionHead(nn.Module):
         feature_maps: list[torch.Tensor],
         *,
         return_hidden: bool = False,
-    ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
+        return_branch_hidden: bool = False,
+    ) -> tuple[torch.Tensor, list | None]:
+        if return_hidden and return_branch_hidden:
+            raise ValueError("request either feature tokens or branch hidden states, not both")
         outputs = []
         hidden_outputs = []
         for regression, classification, feature_map in zip(
@@ -84,4 +87,61 @@ class DecoupledDetectionHead(nn.Module):
             )
             if return_hidden:
                 hidden_outputs.append(tokens)
-        return torch.cat(outputs, dim=1), hidden_outputs if return_hidden else None
+            elif return_branch_hidden:
+                hidden_outputs.append((regression_hidden, classification_hidden))
+        return (
+            torch.cat(outputs, dim=1),
+            hidden_outputs if return_hidden or return_branch_hidden else None,
+        )
+
+
+class OneToOnePredictionHead(nn.Module):
+    """Cheap output-only branch sharing the trained decoupled head features."""
+
+    def __init__(self, config: TRHashDetectorConfig):
+        super().__init__()
+        hidden = config.resolved_head_hidden_size
+        self.regression_outputs = nn.ModuleList(
+            nn.Linear(hidden, config.regression_width) for _ in config.grid_sizes
+        )
+        self.classification_outputs = nn.ModuleList(
+            nn.Linear(hidden, config.num_classes) for _ in config.grid_sizes
+        )
+        class_prior = math.log(0.01 / 0.99)
+        for regression, classification in zip(
+            self.regression_outputs,
+            self.classification_outputs,
+        ):
+            nn.init.normal_(regression.weight, std=0.01)
+            nn.init.zeros_(regression.bias)
+            if config.reg_max:
+                bins = torch.arange(
+                    config.dfl_bins,
+                    dtype=regression.bias.dtype,
+                    device=regression.bias.device,
+                )
+                with torch.no_grad():
+                    regression.bias.copy_((-(bins - 2.0).abs()).repeat(4))
+            nn.init.normal_(classification.weight, std=0.01)
+            nn.init.constant_(classification.bias, class_prior)
+
+    def forward(
+        self,
+        hidden_outputs: list[tuple[torch.Tensor, torch.Tensor]],
+    ) -> torch.Tensor:
+        outputs = []
+        for (regression_hidden, classification_hidden), regression, classification in zip(
+            hidden_outputs,
+            self.regression_outputs,
+            self.classification_outputs,
+        ):
+            outputs.append(
+                torch.cat(
+                    (
+                        regression(regression_hidden),
+                        classification(classification_hidden),
+                    ),
+                    dim=-1,
+                )
+            )
+        return torch.cat(outputs, dim=1)

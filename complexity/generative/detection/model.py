@@ -19,7 +19,8 @@ import torch.nn.functional as F
 
 from ..vision_language.vision_tower import TRHashVisionTower
 from .config import TRHashDetectorConfig
-from .head import DecoupledDetectionHead
+from .head import DecoupledDetectionHead, OneToOnePredictionHead
+from .hierarchical_tower import HierarchicalTRHashVisionTower
 from .losses import distribution_focal_loss, quality_focal_loss
 from .neck import CrossScaleFusionNeck
 from .ops import box_iou, class_aware_nms
@@ -67,7 +68,11 @@ class TRHashObjectDetector(nn.Module):
     def __init__(self, config: Optional[TRHashDetectorConfig] = None):
         super().__init__()
         self.config = config or TRHashDetectorConfig()
-        self.tower = TRHashVisionTower(self.config.vision_tower_config())
+        self.tower = (
+            HierarchicalTRHashVisionTower(self.config)
+            if self.config.architecture_version == 6
+            else TRHashVisionTower(self.config.vision_tower_config())
+        )
         hidden = self.config.vision_hidden_size
         self.fpn_upsample = (
             nn.Sequential(
@@ -85,7 +90,7 @@ class TRHashObjectDetector(nn.Module):
                 nn.GELU(),
                 nn.Conv2d(hidden, hidden, 1),
             )
-            for _ in coarse_grids[1:]
+            for _ in (() if self.config.architecture_version == 6 else coarse_grids[1:])
         )
         self.neck = (
             None
@@ -97,30 +102,48 @@ class TRHashObjectDetector(nn.Module):
             )
         )
         self.head = DecoupledDetectionHead(self.config)
+        self.one_to_one_head = (
+            OneToOnePredictionHead(self.config)
+            if self.config.end_to_end
+            else None
+        )
 
-    def _feature_pyramid(self, features: torch.Tensor) -> List[torch.Tensor]:
+    def _feature_pyramid(
+        self,
+        features: torch.Tensor | List[torch.Tensor],
+    ) -> List[torch.Tensor]:
         """Build the prediction pyramid from already-encoded patch features."""
 
-        batch = features.size(0)
-        grid = self.config.grid_size
-        feature_map = features.transpose(1, 2).reshape(
-            batch, self.config.vision_hidden_size, grid, grid
-        )
-        feature_maps = []
+        if isinstance(features, list):
+            source_maps = list(features)
+            feature_map = source_maps[0]
+            feature_maps = []
+        else:
+            batch = features.size(0)
+            grid = math.isqrt(features.size(1))
+            if grid * grid != features.size(1):
+                raise ValueError("vision tokens must form a square feature grid")
+            feature_map = features.transpose(1, 2).reshape(
+                batch, self.config.vision_hidden_size, grid, grid
+            )
+            feature_maps = []
         if self.fpn_upsample is not None:
             fine_map = F.interpolate(
                 feature_map, scale_factor=2.0, mode="bilinear", align_corners=False
             )
             feature_maps.append(self.fpn_upsample(fine_map))
-        feature_maps.append(feature_map)
-        for downsample in self.fpn_downsamples:
-            feature_map = downsample(feature_map)
+        if isinstance(features, list):
+            feature_maps.extend(source_maps)
+        else:
             feature_maps.append(feature_map)
+            for downsample in self.fpn_downsamples:
+                feature_map = downsample(feature_map)
+                feature_maps.append(feature_map)
         return feature_maps if self.neck is None else self.neck(feature_maps)
 
     def _predictions_from_features(
         self,
-        features: torch.Tensor,
+        features: torch.Tensor | List[torch.Tensor],
         *,
         return_hidden: bool = False,
     ) -> tuple[torch.Tensor, Optional[List[torch.Tensor]]]:
@@ -130,6 +153,28 @@ class TRHashObjectDetector(nn.Module):
 
         return self.head(feature_maps, return_hidden=return_hidden)
 
+    def forward_branches(
+        self,
+        pixel_values: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        features = self.tower(pixel_values)
+        feature_maps = self._feature_pyramid(features)
+        one_to_many, hidden_outputs = self.head(
+            feature_maps,
+            return_branch_hidden=self.one_to_one_head is not None,
+        )
+        one_to_one = (
+            self.one_to_one_head(
+                [
+                    (regression.detach(), classification.detach())
+                    for regression, classification in hidden_outputs
+                ]
+            )
+            if self.one_to_one_head is not None
+            else None
+        )
+        return one_to_many, one_to_one
+
     def forward_predictions(self, pixel_values: torch.Tensor) -> torch.Tensor:
         """Return stable one-to-many predictions."""
 
@@ -137,28 +182,60 @@ class TRHashObjectDetector(nn.Module):
         one_to_many, _ = self._predictions_from_features(features)
         return one_to_many
 
-    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        pixel_values: torch.Tensor,
+        *,
+        return_branches: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor | None]:
         """Raw one-to-many predictions, preserving the original public API."""
 
-        return self.forward_predictions(pixel_values)
+        branches = self.forward_branches(pixel_values)
+        return branches if return_branches else branches[0]
+
+    def _grid_sizes_for_raw(self, raw: torch.Tensor) -> tuple[int, ...]:
+        """Infer the runtime pyramid geometry for variable-resolution inputs."""
+
+        cells = raw.size(1)
+        if cells == self.config.num_cells:
+            return self.config.grid_sizes
+        for base_grid in range(1, self.config.grid_size + 1):
+            grids = tuple(
+                (base_grid + factor - 1) // factor
+                for factor in self.config.scale_factors
+            )
+            if self.config.p2_head:
+                grids = (base_grid * 2, *grids)
+            if sum(grid * grid for grid in grids) == cells:
+                return grids
+        raise ValueError(
+            f"cannot infer prediction pyramid geometry from {cells} cells"
+        )
 
     def _cell_geometry(
-        self, device: torch.device
+        self,
+        device: torch.device,
+        grid_sizes: tuple[int, ...] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        grid_sizes = grid_sizes or self.config.grid_sizes
         rows = []
         cols = []
         denominators = []
         levels = []
-        for level, grid in enumerate(self.config.grid_sizes):
+        for level, grid in enumerate(grid_sizes):
             rows.append(torch.arange(grid, device=device).repeat_interleave(grid))
             cols.append(torch.arange(grid, device=device).repeat(grid))
             denominators.append(torch.full((grid * grid,), grid, device=device))
             levels.append(torch.full((grid * grid,), level, device=device, dtype=torch.long))
         return tuple(torch.cat(values) for values in (rows, cols, denominators, levels))
 
-    def _level_offsets(self) -> tuple[int, ...]:
+    def _level_offsets(
+        self,
+        grid_sizes: tuple[int, ...] | None = None,
+    ) -> tuple[int, ...]:
+        grid_sizes = grid_sizes or self.config.grid_sizes
         offsets = [0]
-        for grid in self.config.grid_sizes[:-1]:
+        for grid in grid_sizes[:-1]:
             offsets.append(offsets[-1] + grid * grid)
         return tuple(offsets)
 
@@ -171,7 +248,8 @@ class TRHashObjectDetector(nn.Module):
 
         regression = raw[..., : self.config.regression_width]
         class_logits = raw[..., self.config.regression_width :]
-        rows, cols, denominators, levels = self._cell_geometry(raw.device)
+        grid_sizes = self._grid_sizes_for_raw(raw)
+        rows, cols, denominators, levels = self._cell_geometry(raw.device, grid_sizes)
         centers_x = (cols + 0.5) / denominators
         centers_y = (rows + 0.5) / denominators
         if self.config.reg_max:
@@ -201,11 +279,17 @@ class TRHashObjectDetector(nn.Module):
             "class_logits": class_logits,
             "regression_logits": regression,
             "levels": levels,
+            "grid_sizes": grid_sizes,
         }
 
-    def _level_for_box(self, width: float, height: float) -> int:
+    def _level_for_box(
+        self,
+        width: float,
+        height: float,
+        grid_sizes: tuple[int, ...],
+    ) -> int:
         desired_grid = self.config.assignment_object_cells / max(width, height, 1e-6)
-        distances = [abs(math.log(grid / desired_grid)) for grid in self.config.grid_sizes]
+        distances = [abs(math.log(grid / desired_grid)) for grid in grid_sizes]
         return min(range(len(distances)), key=distances.__getitem__)
 
     def _assign_targets(
@@ -226,16 +310,22 @@ class TRHashObjectDetector(nn.Module):
         """
 
         batch = len(targets)
-        quality_target = torch.zeros(batch, self.config.num_cells, device=device)
-        box_target = torch.zeros(batch, self.config.num_cells, 4, device=device)
-        class_target = torch.zeros(batch, self.config.num_cells, dtype=torch.long, device=device)
-        target_indices = torch.full(
-            (batch, self.config.num_cells), -1, dtype=torch.long, device=device
+        grid_sizes = (
+            tuple(decoded["grid_sizes"])
+            if decoded is not None
+            else self.config.grid_sizes
         )
-        positive_mask = torch.zeros(batch, self.config.num_cells, dtype=torch.bool, device=device)
-        assignment_score = torch.full((batch, self.config.num_cells), -1.0, device=device)
-        rows, cols, _, _ = self._cell_geometry(device)
-        offsets = self._level_offsets()
+        num_cells = sum(grid * grid for grid in grid_sizes)
+        quality_target = torch.zeros(batch, num_cells, device=device)
+        box_target = torch.zeros(batch, num_cells, 4, device=device)
+        class_target = torch.zeros(batch, num_cells, dtype=torch.long, device=device)
+        target_indices = torch.full(
+            (batch, num_cells), -1, dtype=torch.long, device=device
+        )
+        positive_mask = torch.zeros(batch, num_cells, dtype=torch.bool, device=device)
+        assignment_score = torch.full((batch, num_cells), -1.0, device=device)
+        rows, cols, _, _ = self._cell_geometry(device, grid_sizes)
+        offsets = self._level_offsets(grid_sizes)
 
         for image_index, image_boxes in enumerate(targets):
             if image_boxes.numel() == 0:
@@ -247,8 +337,12 @@ class TRHashObjectDetector(nn.Module):
                     and self.config.stal_enabled
                     and max(float(width), float(height)) <= self.config.stal_small_object_threshold
                 )
-                level = 0 if small_object else self._level_for_box(float(width), float(height))
-                grid = self.config.grid_sizes[level]
+                level = (
+                    0
+                    if small_object
+                    else self._level_for_box(float(width), float(height), grid_sizes)
+                )
+                grid = grid_sizes[level]
                 offset = offsets[level]
                 level_slice = slice(offset, offset + grid * grid)
                 level_rows = rows[level_slice]
@@ -352,7 +446,7 @@ class TRHashObjectDetector(nn.Module):
         num_positive = positive_weights.sum().clamp_min(1.0)
 
         quality_targets = raw.new_zeros(
-            raw.size(0), self.config.num_cells, self.config.num_classes
+            raw.size(0), raw.size(1), self.config.num_classes
         )
         if positive.any():
             batch_indices, cell_indices = torch.nonzero(positive, as_tuple=True)
@@ -378,7 +472,8 @@ class TRHashObjectDetector(nn.Module):
             box_iou_loss = raw.sum() * 0.0
         dfl_loss = raw.sum() * 0.0
         if positive.any() and self.config.reg_max:
-            rows, cols, denominators, _ = self._cell_geometry(raw.device)
+            grid_sizes = tuple(decoded["grid_sizes"])
+            rows, cols, denominators, _ = self._cell_geometry(raw.device, grid_sizes)
             centers_x = (cols + 0.5) / denominators
             centers_y = (rows + 0.5) / denominators
             target_boxes = assigned["boxes"]
@@ -396,7 +491,7 @@ class TRHashObjectDetector(nn.Module):
                 dim=-1,
             ) * denominators[None, :, None]
             regression_logits = decoded["regression_logits"].reshape(
-                raw.size(0), self.config.num_cells, 4, self.config.dfl_bins
+                raw.size(0), raw.size(1), 4, self.config.dfl_bins
             )
             dfl_error = distribution_focal_loss(
                 regression_logits[positive],
@@ -438,7 +533,7 @@ class TRHashObjectDetector(nn.Module):
 
     def compute_loss(
         self,
-        raw: torch.Tensor,
+        raw: torch.Tensor | tuple[torch.Tensor, torch.Tensor | None],
         targets: List[torch.Tensor],
         *,
         training_progress: float = 1.0,
@@ -449,15 +544,59 @@ class TRHashObjectDetector(nn.Module):
         normalized ``(cx, cy, w, h, class_id)`` format.
         """
 
-        if len(targets) != raw.size(0):
+        one_to_many, one_to_one = raw if isinstance(raw, tuple) else (raw, None)
+        if len(targets) != one_to_many.size(0):
             raise ValueError("one target tensor is required per batch image")
         losses = self._compute_branch_loss(
-            raw,
+            one_to_many,
             targets,
             training_progress=training_progress,
         )
         losses["one_to_many_loss"] = losses["loss"]
+        if one_to_one is not None:
+            one_to_one_losses = self._compute_branch_loss(
+                one_to_one,
+                targets,
+                assignment_top_k=1,
+                allow_stal=False,
+                training_progress=training_progress,
+            )
+            losses["one_to_one_loss"] = one_to_one_losses["loss"]
+            losses["loss"] = (
+                losses["one_to_many_loss"]
+                + self.config.one_to_one_loss_weight * one_to_one_losses["loss"]
+            )
         return losses
+
+    @torch.no_grad()
+    def predict_end_to_end(
+        self,
+        pixel_values: torch.Tensor,
+        *,
+        confidence_threshold: float = 0.25,
+        max_detections: int = 300,
+    ) -> List[Dict[str, torch.Tensor]]:
+        """Decode the one-to-one branch directly without NMS."""
+
+        if self.one_to_one_head is None:
+            raise RuntimeError("NMS-free inference requires end_to_end=True")
+        _, raw = self.forward_branches(pixel_values)
+        assert raw is not None
+        decoded = self.decode(raw)
+        results = []
+        for image_index in range(pixel_values.size(0)):
+            scores, labels = decoded["class_scores"][image_index].max(dim=-1)
+            keep = torch.nonzero(scores >= confidence_threshold, as_tuple=False).flatten()
+            if len(keep) > max_detections:
+                keep = keep[scores[keep].topk(max_detections).indices]
+            results.append(
+                {
+                    "boxes": decoded["boxes"][image_index, keep],
+                    "scores": scores[keep],
+                    "labels": labels[keep],
+                }
+            )
+        return results
 
     @torch.no_grad()
     def predict(

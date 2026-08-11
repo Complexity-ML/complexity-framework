@@ -28,6 +28,8 @@ class TRHashDetectorConfig:
     vision_top_k: int = 2
     vision_shared_width: int = 0
     vision_expert_width: int = 96
+    vision_stage_depths: Tuple[int, ...] = (1, 1, 4)
+    vision_window_size: int = 8
     vision_precision: str = "bf16"
     route_seed: int = 0x71D5A17
     num_classes: int = 80
@@ -49,6 +51,8 @@ class TRHashDetectorConfig:
     head_hidden_size: int = 0
     dfl_loss_weight: float = 0.5
     quality_focal_beta: float = 2.0
+    end_to_end: bool = False
+    one_to_one_loss_weight: float = 0.5
     progressive_loss_enabled: bool = True
     progressive_box_start: float = 0.5
     progressive_quality_start: float = 1.5
@@ -61,8 +65,9 @@ class TRHashDetectorConfig:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "scale_factors", tuple(self.scale_factors))
-        if self.architecture_version != 5:
-            raise ValueError("only detector architecture_version=5 is supported")
+        object.__setattr__(self, "vision_stage_depths", tuple(self.vision_stage_depths))
+        if self.architecture_version not in {5, 6}:
+            raise ValueError("detector architecture_version must be 5 or 6")
         if self.num_classes <= 0:
             raise ValueError("num_classes must be positive")
         if self.image_size <= 0 or self.patch_size <= 0:
@@ -73,6 +78,17 @@ class TRHashDetectorConfig:
             raise ValueError("vision_hidden_size must be divisible by vision_heads")
         if self.vision_top_k > self.vision_num_experts:
             raise ValueError("vision_top_k cannot exceed vision_num_experts")
+        if not self.vision_stage_depths or any(
+            depth <= 0 for depth in self.vision_stage_depths
+        ):
+            raise ValueError("vision_stage_depths must contain positive depths")
+        if self.architecture_version == 6:
+            if sum(self.vision_stage_depths) != self.vision_layers:
+                raise ValueError("v6 vision_layers must equal sum(vision_stage_depths)")
+            if len(self.vision_stage_depths) != len(self.scale_factors):
+                raise ValueError("v6 stages must match the configured feature pyramid")
+            if self.vision_window_size <= 0:
+                raise ValueError("v6 vision_window_size must be positive")
         if self.vision_precision not in {"fp32", "bf16", "fp16"}:
             raise ValueError("vision_precision must be fp32, bf16, or fp16")
         if self.neck_mode not in {"baseline", "fpn", "pan"}:
@@ -101,6 +117,8 @@ class TRHashDetectorConfig:
             raise ValueError("head_hidden_size must be non-negative")
         if self.dfl_loss_weight < 0.0 or self.quality_focal_beta < 0.0:
             raise ValueError("DFL and QFL parameters must be non-negative")
+        if self.one_to_one_loss_weight < 0.0:
+            raise ValueError("one_to_one_loss_weight must be non-negative")
         if not 0.0 < self.progressive_box_start <= 1.0:
             raise ValueError("progressive_box_start must be in (0, 1]")
         if self.progressive_quality_start < 1.0:
@@ -162,8 +180,8 @@ class TRHashDetectorConfig:
     @classmethod
     def from_dict(cls, values: Dict[str, Any]) -> "TRHashDetectorConfig":
         values = dict(values)
-        if values.get("architecture_version") != 5:
-            raise ValueError("only TR-Hash detector architecture v5 checkpoints are supported")
+        if values.get("architecture_version") not in {5, 6}:
+            raise ValueError("only TR-Hash detector architecture v5/v6 checkpoints are supported")
         allowed = {item.name for item in fields(cls)}
         unknown = sorted(set(values) - allowed)
         if unknown:

@@ -17,8 +17,9 @@ import torch
 from PIL import Image
 from safetensors.torch import load_file
 
+from .augmentations import letterbox
 from .config import TRHashDetectorConfig
-from .data import _letterbox, _normalize_image
+from .data import _normalize_image
 from .model import TRHashObjectDetector
 
 
@@ -51,7 +52,12 @@ class ModelRuntime:
             json.loads((checkpoint / "config.json").read_text())
         )
         model = TRHashObjectDetector(config)
-        model.load_state_dict(load_file(str(checkpoint / "model.safetensors")))
+        weights = (
+            checkpoint / "ema.safetensors"
+            if (checkpoint / "ema.safetensors").is_file()
+            else checkpoint / "model.safetensors"
+        )
+        model.load_state_dict(load_file(str(weights)))
         model.to(self.device).eval()
         validation_path = checkpoint / "validation.json"
         validation = json.loads(validation_path.read_text()) if validation_path.exists() else {}
@@ -76,7 +82,7 @@ class ModelRuntime:
             if self.model is None or self.config is None:
                 raise RuntimeError("model is not loaded")
             original_w, original_h = image.size
-            image, _ = _letterbox(image.convert("RGB"), torch.empty(0, 5), self.config.image_size)
+            image, _ = letterbox(image.convert("RGB"), torch.empty(0, 5), self.config.image_size)
             pixels = _normalize_image(image).unsqueeze(0).to(self.device)
             detection = self.model.predict(
                 pixels,
@@ -213,7 +219,7 @@ class TrainingJobManager:
                 "--eval-max-detections",
                 str(request.eval_max_detections),
                 "--architecture-version",
-                "5",
+                str(request.architecture_version),
                 "--vision-hidden-size",
                 str(request.vision_hidden_size),
                 "--vision-layers",
@@ -222,6 +228,10 @@ class TrainingJobManager:
                 str(request.vision_heads),
                 "--vision-expert-width",
                 str(request.vision_expert_width),
+                "--vision-stage-depths",
+                *(str(depth) for depth in request.vision_stage_depths),
+                "--vision-window-size",
+                str(request.vision_window_size),
                 "--assignment-top-k",
                 str(request.assignment_top_k),
                 "--neck-mode",
@@ -236,6 +246,16 @@ class TrainingJobManager:
                 str(request.quality_focal_beta),
                 "--augmentation",
                 request.augmentation,
+                "--mosaic",
+                str(request.mosaic_probability),
+                "--mixup",
+                str(request.mixup_probability),
+                "--copy-paste",
+                str(request.copy_paste_probability),
+                "--random-erasing",
+                str(request.random_erasing_probability),
+                "--close-mosaic-epochs",
+                str(request.close_mosaic_epochs),
                 "--momentum",
                 str(request.momentum),
                 "--weight-decay",
@@ -247,6 +267,23 @@ class TrainingJobManager:
                 "--seed",
                 str(request.seed),
             ]
+            if request.end_to_end:
+                command.extend(
+                    ("--end-to-end", "--one-to-one-loss-weight", str(request.one_to_one_loss_weight))
+                )
+            if request.ema_decay > 0.0:
+                command.extend(("--ema-decay", str(request.ema_decay)))
+            if request.multi_scale_min > 0:
+                command.extend(
+                    (
+                        "--multi-scale-min",
+                        str(request.multi_scale_min),
+                        "--multi-scale-max",
+                        str(request.multi_scale_max),
+                        "--multi-scale-step",
+                        str(request.multi_scale_step),
+                    )
+                )
             if not request.p2_head:
                 command.append("--no-p2-head")
             if not request.stal:
@@ -388,16 +425,30 @@ def create_app(
         validation_fraction: float = Field(default=0.2, gt=0.0, lt=1.0)
         eval_every: int = Field(default=5, ge=1)
         eval_max_detections: int = Field(default=100, ge=1, le=1000)
+        architecture_version: int = Field(default=6, ge=5, le=6)
         vision_hidden_size: int = Field(default=128, ge=32)
         vision_layers: int = Field(default=4, ge=1)
         vision_heads: int = Field(default=4, ge=1)
         vision_expert_width: int = Field(default=48, ge=8)
+        vision_stage_depths: List[int] = Field(default_factory=lambda: [1, 1, 2])
+        vision_window_size: int = Field(default=8, ge=1)
         assignment_top_k: int = Field(default=5, ge=1, le=64)
         reg_max: int = Field(default=16, ge=0, le=32)
         head_hidden_size: int = Field(default=0, ge=0)
         dfl_loss_weight: float = Field(default=0.5, ge=0.0)
         quality_focal_beta: float = Field(default=2.0, ge=0.0)
         augmentation: str = Field(default="strong", pattern="^(light|strong)$")
+        mosaic_probability: float = Field(default=0.7, ge=0.0, le=1.0)
+        mixup_probability: float = Field(default=0.15, ge=0.0, le=1.0)
+        copy_paste_probability: float = Field(default=0.1, ge=0.0, le=1.0)
+        random_erasing_probability: float = Field(default=0.1, ge=0.0, le=1.0)
+        close_mosaic_epochs: int = Field(default=10, ge=0)
+        multi_scale_min: int = Field(default=0, ge=0)
+        multi_scale_max: int = Field(default=0, ge=0)
+        multi_scale_step: int = Field(default=32, ge=1)
+        ema_decay: float = Field(default=0.9999, ge=0.0, lt=1.0)
+        end_to_end: bool = True
+        one_to_one_loss_weight: float = Field(default=0.5, ge=0.0)
         p2_head: bool = True
         neck_mode: str = Field(default="pan", pattern="^(baseline|fpn|pan)$")
         stal: bool = True
@@ -417,7 +468,7 @@ def create_app(
     resolved_device = resolve_device(device)
     runtime = ModelRuntime(checkpoint, resolved_device)
     jobs = TrainingJobManager(jobs_root, sys.executable)
-    app = FastAPI(title="TR-Hash Detector Service", version="0.5.0")
+    app = FastAPI(title="TR-Hash Detector Service", version="0.6.0")
 
     def authenticate(x_api_key: Optional[str] = Header(default=None)) -> None:
         if api_key and x_api_key != api_key:

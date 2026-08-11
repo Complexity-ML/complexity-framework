@@ -68,6 +68,11 @@ def test_preprocess_and_restore_boxes_round_trip():
 
 def test_export_and_strict_reload_hub_folder(tmp_path: Path):
     checkpoint = _checkpoint(tmp_path / "checkpoint")
+    raw_state = load_file(str(checkpoint / "model.safetensors"))
+    save_file(
+        {name: torch.zeros_like(value) for name, value in raw_state.items()},
+        str(checkpoint / "ema.safetensors"),
+    )
     output = export_detector_for_hub(
         tmp_path / "hub",
         "AETHORIA-AI/TR-HASH-Vision-Test",
@@ -76,11 +81,13 @@ def test_export_and_strict_reload_hub_folder(tmp_path: Path):
 
     assert (output / "README.md").exists()
     assert (output / "model.safetensors").exists()
+    assert (output / "ema.safetensors").exists()
     assert json.loads((output / "class_names.json").read_text()) == list(VOC_CLASS_NAMES)
     assert json.loads((output / "preprocessor_config.json").read_text())["letterbox"]
     assert "0.2500" in (output / "README.md").read_text()
     loaded = load_detector_checkpoint(output)
     assert loaded.config.num_classes == len(VOC_CLASS_NAMES)
+    assert all(torch.count_nonzero(parameter) == 0 for parameter in loaded.parameters())
 
 
 def test_training_draft_does_not_publish_checkpoint_weights(tmp_path: Path):

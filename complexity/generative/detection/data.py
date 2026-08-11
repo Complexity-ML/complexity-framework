@@ -14,101 +14,18 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw
 from torch.utils.data import Dataset
+
+from .augmentations import DetectionAugmenter
 
 SHAPE_CLASSES = ("rectangle", "ellipse", "triangle")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
-def _random_scale_translate(
-    image: Image.Image,
-    targets: torch.Tensor,
-    rng: random.Random,
-) -> tuple[Image.Image, torch.Tensor]:
-    """Apply detection-safe scale/translation and clip invalid boxes."""
-
-    width, height = image.size
-    scale = rng.uniform(0.75, 1.25)
-    resized_w = max(1, round(width * scale))
-    resized_h = max(1, round(height * scale))
-    resized = image.resize((resized_w, resized_h), Image.BILINEAR)
-    canvas = Image.new("RGB", (width, height), (114, 114, 114))
-
-    if resized_w >= width:
-        source_x = rng.randint(0, resized_w - width)
-        paste_x = -source_x
-    else:
-        source_x = 0
-        paste_x = rng.randint(0, width - resized_w)
-    if resized_h >= height:
-        source_y = rng.randint(0, resized_h - height)
-        paste_y = -source_y
-    else:
-        source_y = 0
-        paste_y = rng.randint(0, height - resized_h)
-    crop = resized.crop(
-        (
-            source_x,
-            source_y,
-            min(source_x + width, resized_w),
-            min(source_y + height, resized_h),
-        )
-    )
-    canvas.paste(crop, (max(paste_x, 0), max(paste_y, 0)))
-
-    if not targets.numel():
-        return canvas, targets
-    classes = targets[:, 4:]
-    centers = targets[:, :2] * targets.new_tensor((width, height))
-    sizes = targets[:, 2:4] * targets.new_tensor((width, height))
-    top_left = (centers - sizes / 2) * scale + targets.new_tensor((paste_x, paste_y))
-    bottom_right = (centers + sizes / 2) * scale + targets.new_tensor((paste_x, paste_y))
-    top_left = torch.maximum(top_left, targets.new_zeros(2))
-    bottom_right = torch.minimum(bottom_right, targets.new_tensor((width, height)))
-    sizes = bottom_right - top_left
-    keep = (sizes[:, 0] >= 2.0) & (sizes[:, 1] >= 2.0)
-    centers = (top_left + bottom_right) / 2
-    remapped = torch.cat(
-        (
-            centers / targets.new_tensor((width, height)),
-            sizes / targets.new_tensor((width, height)),
-            classes,
-        ),
-        dim=-1,
-    )
-    return canvas, remapped[keep]
-
-
 def _normalize_image(image: Image.Image) -> torch.Tensor:
     pixels = torch.from_numpy(np.array(image)).float().permute(2, 0, 1) / 255.0
     return (pixels - 0.5) / 0.5
-
-
-def _letterbox(
-    image: Image.Image,
-    boxes: torch.Tensor,
-    image_size: int,
-) -> Tuple[Image.Image, torch.Tensor]:
-    """Resize without distortion and remap normalized ``cxcywh`` boxes."""
-
-    original_w, original_h = image.size
-    scale = min(image_size / original_w, image_size / original_h)
-    resized_w = max(1, round(original_w * scale))
-    resized_h = max(1, round(original_h * scale))
-    left = (image_size - resized_w) // 2
-    top = (image_size - resized_h) // 2
-    resized = image.resize((resized_w, resized_h), Image.BILINEAR)
-    canvas = Image.new("RGB", (image_size, image_size), (114, 114, 114))
-    canvas.paste(resized, (left, top))
-
-    if boxes.numel():
-        boxes = boxes.clone()
-        boxes[:, 0] = (boxes[:, 0] * original_w * scale + left) / image_size
-        boxes[:, 1] = (boxes[:, 1] * original_h * scale + top) / image_size
-        boxes[:, 2] = boxes[:, 2] * original_w * scale / image_size
-        boxes[:, 3] = boxes[:, 3] * original_h * scale / image_size
-    return canvas, boxes
 
 
 class SyntheticShapesDataset(Dataset):
@@ -186,16 +103,43 @@ class CocoDetectionDataset(Dataset):
     with a letterbox transform that preserves aspect ratio.
     """
 
-    def __init__(self, annotations_path: Path, images_dir: Path, image_size: int = 224):
+    def __init__(
+        self,
+        annotations_path: Path,
+        images_dir: Path,
+        image_size: int = 224,
+        *,
+        augmentation: str | None = None,
+        seed: int = 0,
+        mosaic_probability: float = 0.0,
+        mixup_probability: float = 0.0,
+        copy_paste_probability: float = 0.0,
+        random_erasing_probability: float = 0.0,
+        total_epochs: int = 0,
+        close_mosaic_epochs: int = 0,
+    ):
         self.images_dir = Path(images_dir)
         self.image_size = image_size
+        self.augmenter = DetectionAugmenter(
+            image_size,
+            mode=augmentation,
+            seed=seed,
+            mosaic_probability=mosaic_probability,
+            mixup_probability=mixup_probability,
+            copy_paste_probability=copy_paste_probability,
+            random_erasing_probability=random_erasing_probability,
+            total_epochs=total_epochs,
+            close_mosaic_epochs=close_mosaic_epochs,
+        )
         coco: Dict[str, Any] = json.loads(Path(annotations_path).read_text())
 
         self.images: Dict[int, Dict[str, Any]] = {item["id"]: item for item in coco["images"]}
         self.image_ids: List[int] = list(self.images.keys())
 
         category_ids = sorted({annotation["category_id"] for annotation in coco["annotations"]})
-        self.category_to_class = {category_id: index for index, category_id in enumerate(category_ids)}
+        self.category_to_class = {
+            category_id: index for index, category_id in enumerate(category_ids)
+        }
         self.num_classes = len(category_ids)
 
         self.annotations_by_image: Dict[int, List[Dict[str, Any]]] = {
@@ -207,7 +151,10 @@ class CocoDetectionDataset(Dataset):
     def __len__(self) -> int:
         return len(self.image_ids)
 
-    def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def set_epoch(self, epoch: int) -> None:
+        self.augmenter.set_epoch(epoch)
+
+    def _load_raw(self, index: int) -> tuple[Image.Image, torch.Tensor]:
         image_id = self.image_ids[index]
         meta = self.images[image_id]
         image = Image.open(self.images_dir / meta["file_name"]).convert("RGB")
@@ -224,9 +171,11 @@ class CocoDetectionDataset(Dataset):
             boxes.append([cx, cy, nw, nh, float(class_id)])
 
         targets = torch.tensor(boxes, dtype=torch.float32) if boxes else torch.empty(0, 5)
-        image, targets = _letterbox(image, targets, self.image_size)
-        pixel_values = _normalize_image(image)
-        return pixel_values, targets
+        return image, targets
+
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        image, targets = self.augmenter(index, len(self), self._load_raw)
+        return _normalize_image(image), targets
 
 
 class YoloDetectionDataset(Dataset):
@@ -240,15 +189,27 @@ class YoloDetectionDataset(Dataset):
         *,
         augmentation: str | None = None,
         seed: int = 0,
+        mosaic_probability: float = 0.0,
+        mixup_probability: float = 0.0,
+        copy_paste_probability: float = 0.0,
+        random_erasing_probability: float = 0.0,
+        total_epochs: int = 0,
+        close_mosaic_epochs: int = 0,
     ):
         self.images_dir = Path(images_dir)
         self.labels_dir = Path(labels_dir)
         self.image_size = image_size
-        if augmentation not in {None, "light", "strong"}:
-            raise ValueError("augmentation must be light, strong, or None")
-        self.augmentation = augmentation
-        self.seed = seed
-        self.epoch = 0
+        self.augmenter = DetectionAugmenter(
+            image_size,
+            mode=augmentation,
+            seed=seed,
+            mosaic_probability=mosaic_probability,
+            mixup_probability=mixup_probability,
+            copy_paste_probability=copy_paste_probability,
+            random_erasing_probability=random_erasing_probability,
+            total_epochs=total_epochs,
+            close_mosaic_epochs=close_mosaic_epochs,
+        )
         self.image_paths = sorted(
             path
             for path in self.images_dir.rglob("*")
@@ -270,7 +231,7 @@ class YoloDetectionDataset(Dataset):
         self.num_classes = max(class_ids, default=-1) + 1
 
     def set_epoch(self, epoch: int) -> None:
-        self.epoch = epoch
+        self.augmenter.set_epoch(epoch)
 
     def __len__(self) -> int:
         return len(self.image_paths)
@@ -286,26 +247,14 @@ class YoloDetectionDataset(Dataset):
             boxes.append((cx, cy, width, height, class_id))
         return torch.tensor(boxes, dtype=torch.float32) if boxes else torch.empty(0, 5)
 
+    def _load_raw(self, index: int) -> tuple[Image.Image, torch.Tensor]:
+        return (
+            Image.open(self.image_paths[index]).convert("RGB"),
+            self._load_targets(self.label_paths[index]),
+        )
+
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        image = Image.open(self.image_paths[index]).convert("RGB")
-        targets = self._load_targets(self.label_paths[index])
-        rng = random.Random(self.seed + self.epoch * len(self) + index)
-        if self.augmentation:
-            if rng.random() < 0.5:
-                image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-                if targets.numel():
-                    targets[:, 0] = 1.0 - targets[:, 0]
-            jitter = (0.65, 1.35) if self.augmentation == "strong" else (0.8, 1.2)
-            image = ImageEnhance.Brightness(image).enhance(rng.uniform(*jitter))
-            image = ImageEnhance.Contrast(image).enhance(rng.uniform(*jitter))
-            image = ImageEnhance.Color(image).enhance(rng.uniform(*jitter))
-            if self.augmentation == "strong":
-                image, targets = _random_scale_translate(image, targets, rng)
-                if rng.random() < 0.10:
-                    image = ImageEnhance.Color(image).enhance(0.0)
-                if rng.random() < 0.10:
-                    image = image.filter(ImageFilter.GaussianBlur(rng.uniform(0.1, 1.2)))
-        image, targets = _letterbox(image, targets, self.image_size)
+        image, targets = self.augmenter(index, len(self), self._load_raw)
         return _normalize_image(image), targets
 
 

@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import math
+import random
 import time
 from contextlib import nullcontext
 from pathlib import Path
@@ -26,6 +27,7 @@ from .data import (
     collate_detection,
 )
 from .distributed import DistributedContext
+from .ema import ModelEMA
 from .metrics import DetectionMetricsAccumulator
 from .model import TRHashObjectDetector
 
@@ -49,6 +51,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--images", type=Path, default=None, help="Directory of images for --annotations"
     )
+    parser.add_argument("--validation-annotations", type=Path, default=None)
+    parser.add_argument("--validation-images", type=Path, default=None)
     parser.add_argument("--yolo-images", type=Path, default=None)
     parser.add_argument("--yolo-labels", type=Path, default=None)
     parser.add_argument("--validation-yolo-images", type=Path, default=None)
@@ -81,7 +85,7 @@ def parse_args() -> argparse.Namespace:
         "--detector-checkpoint",
         type=Path,
         default=None,
-        help="Transfer a v5 detector checkpoint, optionally onto new classes",
+        help="Transfer a v5/v6 detector checkpoint, optionally onto new classes",
     )
     parser.add_argument(
         "--class-map",
@@ -93,8 +97,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--architecture-version",
         type=int,
-        choices=(5,),
-        default=5,
+        choices=(5, 6),
+        default=6,
         help="detector architecture version",
     )
     parser.add_argument("--patch-size", type=int, default=16)
@@ -105,6 +109,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vision-num-experts", type=int, default=4)
     parser.add_argument("--vision-top-k", type=int, default=2)
     parser.add_argument("--vision-expert-width", type=int, default=48)
+    parser.add_argument(
+        "--vision-stage-depths",
+        type=int,
+        nargs="+",
+        default=(1, 1, 2),
+        help="v6 TR-Hash block counts for the hierarchical stages",
+    )
+    parser.add_argument("--vision-window-size", type=int, default=8)
     parser.add_argument("--single-scale", action="store_true")
     parser.add_argument(
         "--neck-mode",
@@ -144,6 +156,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expert-lr-multiplier", type=float, default=1.0)
     parser.add_argument("--momentum", type=float, default=0.937)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
+    parser.add_argument(
+        "--ema-decay",
+        type=float,
+        default=0.0,
+        help="EMA decay used for validation/export; 0 disables EMA",
+    )
     parser.add_argument("--warmup-steps", type=int, default=50)
     parser.add_argument("--min-lr-ratio", type=float, default=0.05)
     parser.add_argument("--eval-confidence", type=float, default=0.20)
@@ -173,9 +191,44 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dfl-loss-weight", type=float, default=0.5)
     parser.add_argument("--quality-focal-beta", type=float, default=2.0)
     parser.add_argument(
+        "--end-to-end",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="train a one-to-one branch for NMS-free inference",
+    )
+    parser.add_argument("--one-to-one-loss-weight", type=float, default=0.5)
+    parser.add_argument(
         "--augmentation",
         choices=("light", "strong"),
         default="strong",
+    )
+    parser.add_argument("--mosaic", type=float, default=0.0)
+    parser.add_argument("--mixup", type=float, default=0.0)
+    parser.add_argument("--copy-paste", type=float, default=0.0)
+    parser.add_argument("--random-erasing", type=float, default=0.0)
+    parser.add_argument(
+        "--close-mosaic-epochs",
+        type=int,
+        default=0,
+        help="disable Mosaic for the final N epochs",
+    )
+    parser.add_argument(
+        "--multi-scale-min",
+        type=int,
+        default=0,
+        help="minimum square training resolution; 0 disables input resizing",
+    )
+    parser.add_argument(
+        "--multi-scale-max",
+        type=int,
+        default=0,
+        help="maximum square training resolution; 0 uses --image-size",
+    )
+    parser.add_argument(
+        "--multi-scale-step",
+        type=int,
+        default=0,
+        help="resolution interval; 0 uses --patch-size",
     )
     parser.add_argument("--no-stal", action="store_true")
     parser.add_argument("--no-progressive-loss", action="store_true")
@@ -249,6 +302,7 @@ def save_checkpoint(
     name: str | None = None,
     validation_metrics: Dict[str, float] | None = None,
     distributed_rng_states: Sequence[Mapping[str, torch.Tensor]] | None = None,
+    ema_model: TRHashObjectDetector | None = None,
 ) -> None:
     target = output / (name or f"step_{step:06d}")
     target.mkdir(parents=True, exist_ok=True)
@@ -258,6 +312,17 @@ def save_checkpoint(
         name: value.detach().cpu().contiguous() for name, value in model.tower.state_dict().items()
     }
     save_file(tower_state, str(target / "tower.safetensors"))
+    if ema_model is not None:
+        ema_state = {
+            name: value.detach().cpu().contiguous()
+            for name, value in ema_model.state_dict().items()
+        }
+        save_file(ema_state, str(target / "ema.safetensors"))
+        ema_tower_state = {
+            name: value.detach().cpu().contiguous()
+            for name, value in ema_model.tower.state_dict().items()
+        }
+        save_file(ema_tower_state, str(target / "ema_tower.safetensors"))
     (target / "config.json").write_text(json.dumps(config.to_dict(), indent=2) + "\n")
     if validation_metrics is not None:
         (target / "validation.json").write_text(json.dumps(validation_metrics, indent=2) + "\n")
@@ -311,6 +376,21 @@ def load_pretrained_tower(model: TRHashObjectDetector, checkpoint: Path) -> None
             .reshape(1, new_grid**2, old_positions.shape[-1])
             .to(old_positions.dtype)
         )
+    for name, parameter in parameters.items():
+        source = state.get(name)
+        if (
+            source is not None
+            and name.startswith(("position_rows.", "position_cols."))
+            and source.shape != parameter.shape
+        ):
+            if source.ndim != 3 or source.shape[:2] != parameter.shape[:2]:
+                continue
+            state[name] = F.interpolate(
+                source.float(),
+                size=parameter.shape[-1],
+                mode="linear",
+                align_corners=False,
+            ).to(source.dtype)
 
     compatible = {
         name: state[name]
@@ -345,12 +425,17 @@ def load_pretrained_detector(
     *,
     class_mapping: Dict[int, int] | None = None,
 ) -> None:
-    """Transfer a v5 detector and optionally remap classification rows."""
+    """Transfer a v5/v6 detector and optionally remap classification rows."""
 
     source_config = TRHashDetectorConfig.from_dict(
         json.loads((checkpoint / "config.json").read_text())
     )
-    source_state = load_file(str(checkpoint / "model.safetensors"))
+    source_weights = (
+        checkpoint / "ema.safetensors"
+        if (checkpoint / "ema.safetensors").is_file()
+        else checkpoint / "model.safetensors"
+    )
+    source_state = load_file(str(source_weights))
     parameters = dict(model.named_parameters())
 
     position_name = "tower.position_embedding"
@@ -380,6 +465,21 @@ def load_pretrained_detector(
             .reshape(1, new_grid**2, old_positions.shape[-1])
             .to(old_positions.dtype)
         )
+    for name, parameter in parameters.items():
+        source = source_state.get(name)
+        if (
+            source is not None
+            and name.startswith(("tower.position_rows.", "tower.position_cols."))
+            and source.shape != parameter.shape
+        ):
+            if source.ndim != 3 or source.shape[:2] != parameter.shape[:2]:
+                continue
+            source_state[name] = F.interpolate(
+                source.float(),
+                size=parameter.shape[-1],
+                mode="linear",
+                align_corners=False,
+            ).to(source.dtype)
 
     output_parameter_names = {
         f"head.classification_heads.{level}.3.{suffix}"
@@ -603,6 +703,12 @@ def main() -> None:
             image_size=args.image_size,
             augmentation=args.augmentation,
             seed=args.seed,
+            mosaic_probability=args.mosaic,
+            mixup_probability=args.mixup,
+            copy_paste_probability=args.copy_paste,
+            random_erasing_probability=args.random_erasing,
+            total_epochs=args.epochs,
+            close_mosaic_epochs=args.close_mosaic_epochs,
         )
         validation_paths = (
             args.validation_yolo_images,
@@ -646,8 +752,34 @@ def main() -> None:
     elif args.annotations is not None:
         if args.images is None:
             raise ValueError("--images is required alongside --annotations")
-        dataset = CocoDetectionDataset(args.annotations, args.images, image_size=args.image_size)
+        dataset = CocoDetectionDataset(
+            args.annotations,
+            args.images,
+            image_size=args.image_size,
+            augmentation=args.augmentation,
+            seed=args.seed,
+            mosaic_probability=args.mosaic,
+            mixup_probability=args.mixup,
+            copy_paste_probability=args.copy_paste,
+            random_erasing_probability=args.random_erasing,
+            total_epochs=args.epochs,
+            close_mosaic_epochs=args.close_mosaic_epochs,
+        )
+        epoch_dataset = dataset
         num_classes = dataset.num_classes
+        validation_coco_paths = (args.validation_annotations, args.validation_images)
+        if all(path is not None for path in validation_coco_paths):
+            validation_dataset = CocoDetectionDataset(
+                args.validation_annotations,
+                args.validation_images,
+                image_size=args.image_size,
+            )
+            if validation_dataset.num_classes != num_classes:
+                raise ValueError("COCO train/validation class counts differ")
+        elif any(path is not None for path in validation_coco_paths):
+            raise ValueError(
+                "both validation COCO annotations and image dirs are required"
+            )
         LOGGER.info("COCO dataset: %d images, %d classes", len(dataset), num_classes)
     else:
         dataset = SyntheticShapesDataset(
@@ -671,6 +803,19 @@ def main() -> None:
         raise ValueError("--eval-max-detections must be positive")
     if args.eval_batch_size < 0:
         raise ValueError("--eval-batch-size cannot be negative")
+    multi_scale_max = args.multi_scale_max or args.image_size
+    multi_scale_step = args.multi_scale_step or args.patch_size
+    if args.multi_scale_min:
+        if args.architecture_version != 6:
+            raise ValueError("variable-resolution training requires architecture v6")
+        if not args.multi_scale_min <= multi_scale_max <= args.image_size:
+            raise ValueError("multi-scale resolutions must satisfy min <= max <= image-size")
+        if (
+            args.multi_scale_min % args.patch_size
+            or multi_scale_max % args.patch_size
+            or multi_scale_step % args.patch_size
+        ):
+            raise ValueError("multi-scale resolutions must be divisible by patch-size")
     shuffle_generator = torch.Generator()
     train_sampler = distributed.train_sampler(dataset, args.seed)
     loader = DataLoader(
@@ -712,6 +857,12 @@ def main() -> None:
         vision_num_experts=args.vision_num_experts,
         vision_top_k=args.vision_top_k,
         vision_expert_width=args.vision_expert_width,
+        vision_stage_depths=(
+            tuple(args.vision_stage_depths)
+            if args.architecture_version == 6
+            else TRHashDetectorConfig.__dataclass_fields__["vision_stage_depths"].default
+        ),
+        vision_window_size=args.vision_window_size,
         vision_precision=vision_precision,
         num_classes=num_classes,
         multi_scale=not args.single_scale,
@@ -725,6 +876,8 @@ def main() -> None:
         head_hidden_size=args.head_hidden_size,
         dfl_loss_weight=args.dfl_loss_weight,
         quality_focal_beta=args.quality_focal_beta,
+        end_to_end=args.end_to_end,
+        one_to_one_loss_weight=args.one_to_one_loss_weight,
         box_loss_weight=args.box_loss_weight,
         quality_loss_weight=args.quality_loss_weight,
         box_l1_weight=args.box_l1_weight,
@@ -807,6 +960,9 @@ def main() -> None:
         args.lr,
         args.lr * args.expert_lr_multiplier,
     )
+    ema = ModelEMA(model, args.ema_decay) if args.ema_decay else None
+    if ema is not None:
+        LOGGER.info("EMA enabled: decay=%.6f", args.ema_decay)
     total_steps = len(loader) * args.epochs
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
@@ -839,6 +995,32 @@ def main() -> None:
         "device_type": device.type,
         "use_amp": use_amp,
     }
+    if args.architecture_version == 6 or any(
+        (
+            args.ema_decay,
+            args.mosaic,
+            args.mixup,
+            args.copy_paste,
+            args.random_erasing,
+            args.close_mosaic_epochs,
+            args.multi_scale_min,
+            args.multi_scale_max,
+            args.multi_scale_step,
+        )
+    ):
+        training_options.update(
+            {
+                "ema_decay": args.ema_decay,
+                "mosaic": args.mosaic,
+                "mixup": args.mixup,
+                "copy_paste": args.copy_paste,
+                "random_erasing": args.random_erasing,
+                "close_mosaic_epochs": args.close_mosaic_epochs,
+                "multi_scale_min": args.multi_scale_min,
+                "multi_scale_max": multi_scale_max,
+                "multi_scale_step": multi_scale_step,
+            }
+        )
     if distributed.enabled:
         training_options["world_size"] = distributed.world_size
     start_epoch = 0
@@ -881,6 +1063,11 @@ def main() -> None:
             start_batch,
             step,
         )
+        if ema is not None:
+            ema_path = args.resume / "ema.safetensors"
+            if not ema_path.is_file():
+                raise ValueError("EMA-enabled resume requires ema.safetensors")
+            ema.load_state_dict(load_file(str(ema_path)), updates=step)
 
     def write_checkpoint(
         *,
@@ -909,6 +1096,7 @@ def main() -> None:
                 name=name,
                 validation_metrics=validation_metrics,
                 distributed_rng_states=distributed_rng_states,
+                ema_model=ema.module if ema is not None else None,
             )
         distributed.barrier()
 
@@ -938,11 +1126,31 @@ def main() -> None:
             progress, start=batches_to_skip
         ):
             pixel_values = pixel_values.to(device, non_blocking=device.type == "cuda")
+            if args.multi_scale_min:
+                choices = range(
+                    args.multi_scale_min,
+                    multi_scale_max + 1,
+                    multi_scale_step,
+                )
+                resize_rng = random.Random(
+                    args.seed + epoch * len(loader) + batch_index
+                )
+                runtime_size = resize_rng.choice(tuple(choices))
+                if tuple(pixel_values.shape[-2:]) != (runtime_size, runtime_size):
+                    pixel_values = F.interpolate(
+                        pixel_values,
+                        size=(runtime_size, runtime_size),
+                        mode="bilinear",
+                        align_corners=False,
+                    )
             targets = [target.to(device, non_blocking=device.type == "cuda") for target in targets]
 
             autocast = torch.autocast("cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
             with autocast:
-                raw = training_model(pixel_values)
+                raw = training_model(
+                    pixel_values,
+                    return_branches=config.end_to_end,
+                )
                 losses = model.compute_loss(
                     raw,
                     targets,
@@ -957,6 +1165,8 @@ def main() -> None:
             )
             optimizer.step()
             scheduler.step()
+            if ema is not None:
+                ema.update(model)
 
             step += 1
             for name, value in losses.items():
@@ -1012,7 +1222,7 @@ def main() -> None:
         )
         if should_validate:
             validation_metrics = evaluate_detector(
-                model,
+                ema.module if ema is not None else model,
                 validation_loader,
                 device,
                 confidence_threshold=args.eval_confidence,
