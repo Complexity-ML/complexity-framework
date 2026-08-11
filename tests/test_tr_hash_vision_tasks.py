@@ -208,3 +208,20 @@ def test_depth_checkpoint_round_trip(tmp_path):
     torch.testing.assert_close(restored(pixels)["depth"], expected)
     assert restored.vision_task == "depth"
     assert json.loads((checkpoint / "class_names.json").read_text()) == []
+
+
+def test_pose_checkpoint_round_trip(tmp_path):
+    model = TRHashPoseEstimator(_config(), num_keypoints=5).eval()
+    pixels = torch.randn(1, 3, 32, 32)
+    expected = model(pixels)["heatmaps"]
+
+    checkpoint = save_vision_task_checkpoint(
+        model,
+        tmp_path / "pose",
+        task="pose",
+        class_names=("nose", "left_eye", "right_eye", "left_ear", "right_ear"),
+    )
+    restored = load_vision_task_checkpoint(checkpoint)
+
+    torch.testing.assert_close(restored(pixels)["heatmaps"], expected)
+    assert restored.vision_task == "pose"
