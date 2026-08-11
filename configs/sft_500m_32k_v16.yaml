@@ -1,0 +1,116 @@
+version: 1
+seed: 42
+
+# Planned exposure contract for the complete three-stage run. Shares count
+# selected examples once per epoch; the canonical V16 dataset is never copied.
+exposure_groups:
+  distilled_reasoning:
+    tasks:
+      - reasoning_verification
+      - planning_comparison
+      - explanation_learning
+      - critique_revision
+      - troubleshooting
+    target_share: 0.20
+    tolerance: 0.005
+  natural_conversation:
+    tasks:
+      - casual_conversation
+      - conversation_empathy
+    target_share: 0.25
+    tolerance: 0.005
+  instruction_and_structured:
+    tasks:
+      - practical_action
+      - grounded_qa
+      - context_clarification
+      - brainstorming_creativity
+      - writing_transformation
+      - summarization_synthesis
+      - extraction_classification
+      - safety_uncertainty
+    target_share: 0.55
+    tolerance: 0.005
+
+stages:
+  - name: generalist-core
+    max_examples: 8000
+    epochs: 1
+    lr: 1.0e-6
+    include_previous: false
+    balance_by: weighted_task
+    task_weights:
+      reasoning_verification: 0.09
+      planning_comparison: 0.05
+      explanation_learning: 0.04
+      critique_revision: 0.04
+      troubleshooting: 0.03
+      conversation_empathy: 0.0625
+      practical_action: 0.10
+      grounded_qa: 0.10
+      context_clarification: 0.075
+      brainstorming_creativity: 0.075
+      writing_transformation: 0.09
+      summarization_synthesis: 0.08
+      extraction_classification: 0.08
+      safety_uncertainty: 0.0875
+    batch_size: 32
+    seq_len: 512
+    filters:
+      max_num_tokens: 512
+      max_supervised_tokens: 192
+      exclude_response_substrings:
+        - "let's think step by step"
+        - "chain of thought"
+        - "reasoning:"
+        - "analysis:"
+
+  # Five passes over the 400 authored casual rows create 2,000 exposures
+  # without introducing duplicate rows into the source dataset.
+  - name: casual-adaptation
+    max_examples: 400
+    epochs: 5
+    lr: 2.0e-6
+    include_previous: false
+    balance_by: task
+    batch_size: 32
+    seq_len: 384
+    filters:
+      tasks: [casual_conversation]
+      max_num_tokens: 384
+      max_supervised_tokens: 160
+
+  # Return to all capabilities after adaptation. Exactly 400 of the 2,000
+  # selected rows are casual, so the complete run lands at 20/25/55.
+  - name: generalist-consolidation
+    max_examples: 2000
+    epochs: 1
+    lr: 5.0e-7
+    include_previous: false
+    balance_by: weighted_task
+    task_weights:
+      casual_conversation: 0.20
+      conversation_empathy: 0.05
+      reasoning_verification: 0.07
+      planning_comparison: 0.04
+      explanation_learning: 0.03
+      critique_revision: 0.03
+      troubleshooting: 0.03
+      practical_action: 0.08
+      grounded_qa: 0.08
+      context_clarification: 0.06
+      brainstorming_creativity: 0.06
+      writing_transformation: 0.07
+      summarization_synthesis: 0.06
+      extraction_classification: 0.06
+      safety_uncertainty: 0.08
+    batch_size: 32
+    seq_len: 512
+    filters:
+      max_num_tokens: 512
+      max_supervised_tokens: 192
+      exclude_response_substrings:
+        - "let's think step by step"
+        - "chain of thought"
+        - "reasoning:"
+        - "analysis:"

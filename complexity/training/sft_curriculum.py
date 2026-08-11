@@ -10,6 +10,7 @@ boilerplate and cap repeated response surfaces.
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -95,12 +96,8 @@ class CurriculumFilters:
                 raise ValueError(f"curriculum {name} must be a positive integer")
         return cls(
             tasks=_string_tuple(raw.get("tasks"), "filters.tasks"),
-            exclude_tasks=_string_tuple(
-                raw.get("exclude_tasks"), "filters.exclude_tasks"
-            ),
-            difficulties=_string_tuple(
-                raw.get("difficulties"), "filters.difficulties"
-            ),
+            exclude_tasks=_string_tuple(raw.get("exclude_tasks"), "filters.exclude_tasks"),
+            difficulties=_string_tuple(raw.get("difficulties"), "filters.difficulties"),
             modes=_string_tuple(raw.get("modes"), "filters.modes"),
             training_representations=_string_tuple(
                 raw.get("training_representations"),
@@ -112,12 +109,8 @@ class CurriculumFilters:
                 raw.get("exclude_response_substrings"),
                 "filters.exclude_response_substrings",
             ),
-            max_structure_occurrences_per_task=raw.get(
-                "max_structure_occurrences_per_task"
-            ),
-            max_opening_occurrences_per_task=raw.get(
-                "max_opening_occurrences_per_task"
-            ),
+            max_structure_occurrences_per_task=raw.get("max_structure_occurrences_per_task"),
+            max_opening_occurrences_per_task=raw.get("max_opening_occurrences_per_task"),
             opening_words=raw.get("opening_words", 6),
             opening_cap_exempt_tasks=_string_tuple(
                 raw.get("opening_cap_exempt_tasks"),
@@ -159,18 +152,12 @@ class CurriculumStage:
             raise ValueError(f"stage {name}: lr must be positive")
         balance_by = str(raw.get("balance_by", "task"))
         if balance_by not in {"task", "weighted_task", "none"}:
-            raise ValueError(
-                f"stage {name}: balance_by must be 'task', 'weighted_task', or 'none'"
-            )
+            raise ValueError(f"stage {name}: balance_by must be 'task', 'weighted_task', or 'none'")
         task_weights = _task_weights(raw.get("task_weights"), name)
         if balance_by == "weighted_task" and not task_weights:
-            raise ValueError(
-                f"stage {name}: weighted_task balancing requires task_weights"
-            )
+            raise ValueError(f"stage {name}: weighted_task balancing requires task_weights")
         if balance_by != "weighted_task" and task_weights:
-            raise ValueError(
-                f"stage {name}: task_weights require balance_by=weighted_task"
-            )
+            raise ValueError(f"stage {name}: task_weights require balance_by=weighted_task")
 
         optional_positive: dict[str, int | None] = {}
         for key in ("batch_size", "seq_len", "eval_steps", "save_steps"):
@@ -192,9 +179,58 @@ class CurriculumStage:
 
 
 @dataclass(frozen=True)
+class CurriculumExposureGroup:
+    """Expected share of planned training exposures for a task group."""
+
+    name: str
+    tasks: tuple[str, ...]
+    target_share: float
+    tolerance: float = 0.01
+
+
+def _exposure_groups(value: Any) -> tuple[CurriculumExposureGroup, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, dict) or not value:
+        raise ValueError("curriculum exposure_groups must be a non-empty object")
+
+    groups: list[CurriculumExposureGroup] = []
+    assigned_tasks: set[str] = set()
+    for raw_name, raw_group in value.items():
+        name = str(raw_name).strip()
+        if not name or not isinstance(raw_group, dict):
+            raise ValueError("every exposure group needs a name and an object")
+        tasks = _string_tuple(raw_group.get("tasks"), f"exposure_groups.{name}.tasks")
+        if not tasks:
+            raise ValueError(f"exposure group {name}: tasks must not be empty")
+        overlap = assigned_tasks.intersection(tasks)
+        if overlap:
+            raise ValueError(f"exposure groups assign tasks more than once: {sorted(overlap)}")
+        assigned_tasks.update(tasks)
+        target_share = raw_group.get("target_share")
+        tolerance = raw_group.get("tolerance", 0.01)
+        if not isinstance(target_share, (int, float)) or not 0 < target_share <= 1:
+            raise ValueError(f"exposure group {name}: target_share must be in (0, 1]")
+        if not isinstance(tolerance, (int, float)) or not 0 <= tolerance < 1:
+            raise ValueError(f"exposure group {name}: tolerance must be in [0, 1)")
+        groups.append(
+            CurriculumExposureGroup(
+                name=name,
+                tasks=tasks,
+                target_share=float(target_share),
+                tolerance=float(tolerance),
+            )
+        )
+    if abs(sum(group.target_share for group in groups) - 1.0) > 1e-9:
+        raise ValueError("curriculum exposure group target shares must sum to 1")
+    return tuple(groups)
+
+
+@dataclass(frozen=True)
 class SFTCurriculum:
     seed: int
     stages: tuple[CurriculumStage, ...]
+    exposure_groups: tuple[CurriculumExposureGroup, ...] = ()
 
     def stage(self, name: str) -> CurriculumStage:
         for stage in self.stages:
@@ -225,7 +261,11 @@ def load_curriculum(path: str | Path) -> SFTCurriculum:
     seed = raw.get("seed", 42)
     if not isinstance(seed, int):
         raise ValueError("curriculum seed must be an integer")
-    return SFTCurriculum(seed=seed, stages=stages)
+    return SFTCurriculum(
+        seed=seed,
+        stages=stages,
+        exposure_groups=_exposure_groups(raw.get("exposure_groups")),
+    )
 
 
 def load_projected_metadata(path: str | Path | None) -> dict[str, dict[str, Any]]:
@@ -260,9 +300,7 @@ def load_projected_metadata(path: str | Path | None) -> dict[str, dict[str, Any]
     result: dict[str, dict[str, Any]] = {}
     for row_index, example_id in enumerate(material["example_id"]):
         result[str(example_id)] = {
-            name: material[name][row_index]
-            for name in columns
-            if name != "example_id"
+            name: material[name][row_index] for name in columns if name != "example_id"
         }
     return result
 
@@ -288,8 +326,7 @@ def _eligible(example: dict[str, Any], filters: CurriculumFilters) -> bool:
         return False
     if (
         filters.training_representations
-        and str(example.get("training_representation", ""))
-        not in filters.training_representations
+        and str(example.get("training_representation", "")) not in filters.training_representations
     ):
         return False
     if (
@@ -317,8 +354,7 @@ def _score(example: dict[str, Any], seed: int) -> bytes:
 
 def _response_opening(response: str, words: int) -> str:
     normalized = "".join(
-        character.casefold() if character.isalnum() else " "
-        for character in response
+        character.casefold() if character.isalnum() else " " for character in response
     )
     return " ".join(normalized.split()[:words])
 
@@ -346,9 +382,7 @@ def _limit_repeated_surfaces(
         opening_counts: dict[str, int] = {}
         for example in sorted(group, key=lambda item: _score(item, seed)):
             structure = str(example.get("structure_signature", "")).strip()
-            opening = _response_opening(
-                str(example.get("response", "")), filters.opening_words
-            )
+            opening = _response_opening(str(example.get("response", "")), filters.opening_words)
             if (
                 structure_cap is not None
                 and structure
@@ -404,8 +438,7 @@ def _balanced_limit(
             active = [
                 name
                 for name, group in groups.items()
-                if selected_counts.get(name, 0) - retained_counts.get(name, 0)
-                < len(group)
+                if selected_counts.get(name, 0) - retained_counts.get(name, 0) < len(group)
             ]
             if not active:
                 break
@@ -415,8 +448,7 @@ def _balanced_limit(
             task = max(
                 active,
                 key=lambda name: (
-                    weights[name] * total_after / total_weight
-                    - selected_counts.get(name, 0),
+                    weights[name] * total_after / total_weight - selected_counts.get(name, 0),
                     name,
                 ),
             )
@@ -483,9 +515,7 @@ def select_stage_examples(
     ]
     retained_ids = {str(example["example_id"]) for example in retained}
     candidates = [
-        example
-        for example_id, example in by_id.items()
-        if example_id not in retained_ids
+        example for example_id, example in by_id.items() if example_id not in retained_ids
     ]
 
     if stage.max_examples is None:
@@ -503,3 +533,69 @@ def select_stage_examples(
     if not selected:
         raise ValueError(f"curriculum stage {stage.name!r} selected zero examples")
     return selected
+
+
+def audit_planned_exposures(
+    examples: Iterable[dict[str, Any]],
+    curriculum: SFTCurriculum,
+    metadata: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Audit the selected-example exposure mix across all configured stages.
+
+    One exposure is one selected row in one epoch. This deliberately counts a
+    small, high-quality adaptation set again when a stage repeats it, without
+    duplicating that row in the canonical dataset.
+    """
+
+    material = list(examples)
+    metadata = metadata or {}
+    task_exposures: Counter[str] = Counter()
+    stage_exposures: dict[str, dict[str, Any]] = {}
+    for stage in curriculum.stages:
+        selected = select_stage_examples(
+            material,
+            curriculum,
+            stage.name,
+            metadata,
+        )
+        counts = Counter(str(row.get("task", "unknown")) for row in selected)
+        exposures = {task: count * stage.epochs for task, count in sorted(counts.items())}
+        task_exposures.update(exposures)
+        stage_exposures[stage.name] = {
+            "selected_examples": len(selected),
+            "epochs": stage.epochs,
+            "total_exposures": len(selected) * stage.epochs,
+            "task_exposures": exposures,
+        }
+
+    total = sum(task_exposures.values())
+    assigned_tasks = {task for group in curriculum.exposure_groups for task in group.tasks}
+    unassigned = sorted(set(task_exposures).difference(assigned_tasks))
+    group_results: dict[str, dict[str, Any]] = {}
+    checks: dict[str, bool] = {}
+    for group in curriculum.exposure_groups:
+        count = sum(task_exposures[task] for task in group.tasks)
+        share = count / total if total else 0.0
+        passed = abs(share - group.target_share) <= group.tolerance
+        checks[f"{group.name}_within_tolerance"] = passed
+        group_results[group.name] = {
+            "tasks": list(group.tasks),
+            "exposures": count,
+            "share": round(share, 6),
+            "target_share": group.target_share,
+            "tolerance": group.tolerance,
+            "passed": passed,
+        }
+    if curriculum.exposure_groups:
+        checks["every_selected_task_is_assigned"] = not unassigned
+
+    return {
+        "unit": "selected_examples_x_epochs",
+        "total_exposures": total,
+        "task_exposures": dict(sorted(task_exposures.items())),
+        "stage_exposures": stage_exposures,
+        "groups": group_results,
+        "unassigned_tasks": unassigned,
+        "checks": checks,
+        "passed": bool(checks) and all(checks.values()),
+    }

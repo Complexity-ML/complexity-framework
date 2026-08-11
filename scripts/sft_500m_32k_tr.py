@@ -40,6 +40,14 @@ from complexity.inference.chat_template import (
 )
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
+from complexity.training.lora import (
+    LoRAConfig,
+    adapter_state_dict,
+    apply_lora,
+    load_adapter_state_dict,
+    merged_model_state_dict,
+    unmerge_adapter_from_base,
+)
 from complexity.training.sft_curriculum import (
     load_curriculum,
     load_projected_metadata,
@@ -378,8 +386,16 @@ class SFTBinDataset(IterableDataset):
             )
         self.root = root
         self.metadata = json.loads(index_path.read_text())
-        if self.metadata.get("format") != "complexity-sft-token-shard-v1":
+        supported_formats = {
+            "complexity-sft-token-shard-v1",
+            "complexity-sft-token-shard-v2",
+        }
+        if self.metadata.get("format") not in supported_formats:
             raise ValueError(f"Unsupported SFT shard format: {self.metadata.get('format')}")
+        if self.metadata.get("format") == "complexity-sft-token-shard-v2" and (
+            self.metadata.get("assistant_supervision") != "all_assistant_turns"
+        ):
+            raise ValueError("SFT shard v2 requires all-assistant-turn supervision")
         self.chat_template = load_chat_template(dataset_root)
         metadata_template = self.metadata.get("chat_template_id")
         if metadata_template and metadata_template != self.chat_template["id"]:
@@ -562,6 +578,10 @@ RESUME_ARGUMENTS = (
     "grad_ckpt",
     "loss_chunk_tokens",
     "sft_fp32_loss",
+    "lora_rank",
+    "lora_alpha",
+    "lora_dropout",
+    "lora_targets",
     "seed",
 )
 
@@ -827,9 +847,14 @@ def save_checkpoint(
     if not is_main:
         distributed_barrier(distributed)
         return
+    adapters = adapter_state_dict(raw_model)
     checkpoint_state = {
         "step": step,
-        "model": {k: v.detach().cpu() for k, v in raw_model.state_dict().items()},
+        "model": (
+            merged_model_state_dict(raw_model)
+            if adapters
+            else {k: v.detach().cpu() for k, v in raw_model.state_dict().items()}
+        ),
         "config": config.to_dict(),
         "args": vars(args),
         "sft_source_checkpoint": source_checkpoint,
@@ -840,6 +865,14 @@ def save_checkpoint(
         "best_eval_loss": best_eval_loss,
         "evaluations_without_improvement": evaluations_without_improvement,
     }
+    if adapters:
+        checkpoint_state["lora_adapter"] = adapters
+        checkpoint_state["lora_config"] = LoRAConfig(
+            rank=args.lora_rank,
+            alpha=args.lora_alpha,
+            dropout=args.lora_dropout,
+            targets=tuple(args.lora_targets.split(",")),
+        ).to_dict()
     if eval_loss is not None:
         checkpoint_state["sft_matched_eval_loss"] = float(eval_loss)
         # Kept for compatibility with earlier exported SFT checkpoints.
@@ -953,6 +986,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--beta1", type=float, default=0.9)
     parser.add_argument("--beta2", type=float, default=0.95)
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
+    parser.add_argument(
+        "--lora-rank",
+        type=int,
+        default=0,
+        help="LoRA rank; 0 keeps ordinary full-parameter SFT.",
+    )
+    parser.add_argument("--lora-alpha", type=float, default=32.0)
+    parser.add_argument("--lora-dropout", type=float, default=0.05)
+    parser.add_argument(
+        "--lora-targets",
+        default="q_proj,v_proj,o_proj,shared_gate,shared_up,shared_down",
+        help="Comma-separated linear module suffixes adapted by LoRA.",
+    )
     parser.add_argument("--min-completion-tokens", type=int, default=32)
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument(
@@ -1069,6 +1115,8 @@ def main():
         raise ValueError("runtime curriculum selection requires --sft-bin")
     if args.early_stopping_min_epochs < 0:
         raise ValueError("--early-stopping-min-epochs cannot be negative")
+    if args.lora_rank < 0:
+        raise ValueError("--lora-rank cannot be negative")
     if args.cpu:
         device = torch.device("cpu")
         distributed = False
@@ -1106,10 +1154,29 @@ def main():
     load_model_state_compat(raw_model, state["model"])
     if args.grad_ckpt:
         raw_model.gradient_checkpointing_enable()
-    parameter_stats = configure_trainable_parameters(
-        raw_model,
-        freeze_token_io=args.freeze_token_io,
-    )
+    if args.lora_rank:
+        targets = tuple(name.strip() for name in args.lora_targets.split(",") if name.strip())
+        parameter_stats = apply_lora(
+            raw_model,
+            rank=args.lora_rank,
+            alpha=args.lora_alpha,
+            dropout=args.lora_dropout,
+            targets=targets,
+        )
+        parameter_stats["token_io_frozen"] = True
+        if args.resume is not None:
+            saved_adapter = state.get("lora_adapter")
+            if saved_adapter is None:
+                raise ValueError("LoRA resume checkpoint does not contain adapter state")
+            load_adapter_state_dict(raw_model, saved_adapter)
+            # ``model`` is deliberately canonical/merged so it works in the
+            # normal runtime. Undo that merge before continuing LoRA training.
+            unmerge_adapter_from_base(raw_model)
+    else:
+        parameter_stats = configure_trainable_parameters(
+            raw_model,
+            freeze_token_io=args.freeze_token_io,
+        )
     if parameter_stats["trainable"] == 0:
         raise ValueError("SFT configuration froze every model parameter")
 
@@ -1263,6 +1330,12 @@ def main():
             f"SFT source: {ckpt_dir} "
             f"(checkpoint step={loaded_checkpoint_step}, resume step={resume_step})"
         )
+        if args.lora_rank:
+            logger.info(
+                f"LoRA: rank={args.lora_rank} alpha={args.lora_alpha:g} "
+                f"dropout={args.lora_dropout:g} modules={parameter_stats['modules']} "
+                f"trainable={parameter_stats['trainable']:,}"
+            )
         if args.resume is not None:
             logger.info(
                 "Resumed exactly: optimizer, scheduler, data cursor, and "
@@ -1286,7 +1359,7 @@ def main():
         logger.info(
             f"Config: vocab={config.vocab_size}, hidden={config.hidden_size}, layers={config.num_hidden_layers}, "
             f"GQA={config.num_attention_heads}/{config.num_key_value_heads}, "
-            f"TR experts={config.num_experts}, top_k={config.top_k}, use_mu={config.use_mu_guidance}"
+            f"TR experts={config.num_experts}, top_k={config.top_k}"
         )
         if args.sft_bin is not None:
             logger.info(

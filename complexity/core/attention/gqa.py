@@ -5,21 +5,19 @@ GQA uses fewer KV heads than Q heads, reducing memory and compute
 while maintaining quality. When num_kv_heads=1, it becomes MQA.
 When num_kv_heads=num_heads, it becomes standard MHA.
 
-Supports optional Mu-guided attention by adding learned projections from the
-previous layer's Mu state into K, Q, and V.
 """
 
 import math
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple
 
-from .base import AttentionBase, AttentionConfig
-from ..registry import register_attention
-from ..position.rotary import RotaryEmbedding, PartialRoPE
 from ...utils.device import sdpa_kernel_context
-
+from ..position.rotary import PartialRoPE, RotaryEmbedding
+from ..registry import register_attention
+from .base import AttentionBase, AttentionConfig
 
 HAS_SDPA = hasattr(F, "scaled_dot_product_attention")
 
@@ -49,14 +47,6 @@ class GroupedQueryAttention(AttentionBase):
         self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
-
-        # Mu-to-KQV projections are allocated only when Mu is enabled; dense
-        # baselines should not count dead parameters that never run.
-        self.use_mu_guidance = bool(getattr(config, "use_mu_guidance", False))
-        if self.use_mu_guidance:
-            self.mu_to_k = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
-            self.mu_to_q = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
-            self.mu_to_v = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
 
         # QK normalization stabilizes attention logits on small and large runs.
         self.use_qk_norm = config.use_qk_norm
@@ -100,7 +90,6 @@ class GroupedQueryAttention(AttentionBase):
         attention_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
-        mu_prev: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         """
@@ -120,7 +109,6 @@ class GroupedQueryAttention(AttentionBase):
         batch_size, seq_len, _ = hidden_states.shape
         k, q, v = self._project_kqv(
             hidden_states,
-            mu_prev=mu_prev,
             token_ids=kwargs.get("token_ids"),
         )
 
@@ -181,7 +169,6 @@ class GroupedQueryAttention(AttentionBase):
         self,
         hidden_states: torch.Tensor,
         *,
-        mu_prev: Optional[torch.Tensor] = None,
         token_ids: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Project K/Q/V before head shaping.
@@ -191,6 +178,18 @@ class GroupedQueryAttention(AttentionBase):
         """
 
         del token_ids
+        # LoRA projections must execute their residual branch. The standard
+        # path concatenates raw weights for one fused GEMM, which would bypass
+        # adapter ``forward`` methods.
+        if any(
+            getattr(projection, "is_lora_adapter", False)
+            for projection in (self.k_proj, self.q_proj, self.v_proj)
+        ):
+            return (
+                self.k_proj(hidden_states),
+                self.q_proj(hidden_states),
+                self.v_proj(hidden_states),
+            )
         k_dim = self.num_kv_heads * self.head_dim
         q_dim = self.num_heads * self.head_dim
         v_dim = self.num_kv_heads * self.head_dim
@@ -200,15 +199,6 @@ class GroupedQueryAttention(AttentionBase):
         )
         kqv = F.linear(hidden_states, w_kqv)
         k, q, v = kqv.split([k_dim, q_dim, v_dim], dim=-1)
-        if self.use_mu_guidance and mu_prev is not None:
-            if mu_prev.shape != hidden_states.shape:
-                raise ValueError(
-                    "mu_prev must match hidden_states shape "
-                    f"{tuple(hidden_states.shape)}, got {tuple(mu_prev.shape)}"
-                )
-            k = k + self.mu_to_k(mu_prev)
-            q = q + self.mu_to_q(mu_prev)
-            v = v + self.mu_to_v(mu_prev)
         return k, q, v
 
     def _modify_qk(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from complexity.training.sft_curriculum import CurriculumStage
 from scripts.run_sft_curriculum import selected_checkpoint, stage_plan
 
@@ -35,6 +37,24 @@ def test_stage_plan_scales_steps_by_world_size() -> None:
 
     assert plan["steps_per_epoch"] == 782
     assert plan["total_steps"] == 2346
+
+
+def test_stage_plan_allows_runtime_batch_override() -> None:
+    stage = CurriculumStage(name="reasoning", max_examples=8_000, epochs=1, lr=1e-6)
+
+    plan = stage_plan(stage, examples=8_000, world_size=2, batch_size_override=24)
+
+    assert plan["batch_size"] == 24
+    assert plan["steps_per_epoch"] == 167
+    assert plan["total_steps"] == 167
+
+
+def test_stage_plan_preserves_schedule_with_lora_lr_multiplier() -> None:
+    stage = CurriculumStage(name="reasoning", max_examples=8_000, epochs=1, lr=1e-6)
+
+    plan = stage_plan(stage, examples=8_000, world_size=2, lr_multiplier=20.0)
+
+    assert plan["lr"] == pytest.approx(2e-5)
 
 
 def test_stage_without_validation_improvement_keeps_its_source(tmp_path) -> None:
