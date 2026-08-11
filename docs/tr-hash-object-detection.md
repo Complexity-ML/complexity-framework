@@ -84,6 +84,16 @@ Use `--no-progressive-loss`, `--no-stal`, or `--no-end-to-end` for controlled
 ablations. AdamW remains selectable only to reproduce an older baseline; the
 v0.3 default is SGD with Nesterov momentum and a separate expert LR group.
 
+The v2 end-to-end assignment uses the mature one-to-many branch as a detached
+teacher, globally gives each target a unique cell across all feature scales,
+and ramps the one-to-one loss over the first 30% of training. This prevents
+nearby objects from fighting for one cell before the box predictions are
+useful. Validation reports the production one-to-one/NMS-free result first and
+the one-to-many/NMS result separately, so a regression can be localized to the
+head instead of being hidden by the combined training loss. The main controls
+are `--one-to-one-loss-warmup-fraction`, `--one-to-one-iou-power`,
+`--no-one-to-one-teacher-assignment`, and `--one-to-one-single-scale`.
+
 The trainer writes `metrics.jsonl`, a validated `best/` checkpoint, and a final
 step checkpoint. Validation reports mAP50, precision, recall, F1, the best F1,
 and its confidence threshold. The service uses that calibrated threshold by

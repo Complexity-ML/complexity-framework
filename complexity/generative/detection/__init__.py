@@ -41,10 +41,10 @@ from .model import (
     box_iou,
     class_aware_nms,
     complete_iou_loss,
-    greedy_nms,
     sigmoid_focal_loss,
     varifocal_loss,
 )
+from .ops import greedy_nms
 
 __all__ = [
     "TRHashDetectorConfig",

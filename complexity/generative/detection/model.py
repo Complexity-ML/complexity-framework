@@ -16,88 +16,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-try:
-    from torchvision.ops import batched_nms as _torchvision_batched_nms
-except (ImportError, OSError, RuntimeError):  # Optional; keep the framework backend-neutral.
-    _torchvision_batched_nms = None
-
 from ..vision_language.vision_tower import TRHashVisionTower
 from .config import TRHashDetectorConfig
-
-
-def box_iou(boxes_a: torch.Tensor, boxes_b: torch.Tensor) -> torch.Tensor:
-    """Pairwise IoU between two sets of ``xyxy`` boxes: ``[Na, 4]``, ``[Nb, 4]`` -> ``[Na, Nb]``."""
-
-    area_a = (boxes_a[:, 2] - boxes_a[:, 0]).clamp_min(0) * (
-        boxes_a[:, 3] - boxes_a[:, 1]
-    ).clamp_min(0)
-    area_b = (boxes_b[:, 2] - boxes_b[:, 0]).clamp_min(0) * (
-        boxes_b[:, 3] - boxes_b[:, 1]
-    ).clamp_min(0)
-
-    top_left = torch.maximum(boxes_a[:, None, :2], boxes_b[None, :, :2])
-    bottom_right = torch.minimum(boxes_a[:, None, 2:], boxes_b[None, :, 2:])
-    intersection = (bottom_right - top_left).clamp_min(0).prod(dim=-1)
-    union = area_a[:, None] + area_b[None, :] - intersection
-    return intersection / union.clamp_min(1e-9)
-
-
-def greedy_nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float) -> torch.Tensor:
-    """Return indices (score-descending) of boxes kept after greedy NMS."""
-
-    if boxes.numel() == 0:
-        return torch.empty(0, dtype=torch.long, device=boxes.device)
-    order = torch.argsort(scores, descending=True)
-    keep: List[int] = []
-    while order.numel() > 0:
-        current = int(order[0])
-        keep.append(current)
-        if order.numel() == 1:
-            break
-        rest = order[1:]
-        ious = box_iou(boxes[current : current + 1], boxes[rest])[0]
-        order = rest[ious <= iou_threshold]
-    return torch.tensor(keep, dtype=torch.long, device=boxes.device)
-
-
-def class_aware_nms(
-    boxes: torch.Tensor,
-    scores: torch.Tensor,
-    labels: torch.Tensor,
-    iou_threshold: float,
-    max_detections: Optional[int] = None,
-) -> torch.Tensor:
-    """Apply class-aware NMS and return score-sorted indices.
-
-    Torchvision's compiled operator avoids a device synchronization for every
-    candidate box. The pure PyTorch implementation remains as a portable
-    fallback for installations without torchvision and for unsupported
-    accelerator backends.
-    """
-
-    if boxes.numel() == 0:
-        return torch.empty(0, dtype=torch.long, device=boxes.device)
-    if max_detections is not None and max_detections <= 0:
-        raise ValueError("max_detections must be positive")
-
-    if _torchvision_batched_nms is not None and boxes.device.type in {"cpu", "cuda"}:
-        # torchvision NMS expects floating-point boxes supported by its native
-        # kernel; detector inference may otherwise leave them in BF16.
-        kept_indices = _torchvision_batched_nms(
-            boxes.float(), scores.float(), labels, iou_threshold
-        )
-        return kept_indices[:max_detections] if max_detections is not None else kept_indices
-
-    kept = []
-    for label in labels.unique():
-        class_indices = torch.nonzero(labels == label, as_tuple=False).flatten()
-        class_keep = greedy_nms(boxes[class_indices], scores[class_indices], iou_threshold)
-        kept.append(class_indices[class_keep])
-    if not kept:
-        return torch.empty(0, dtype=torch.long, device=boxes.device)
-    kept_indices = torch.cat(kept)
-    kept_indices = kept_indices[torch.argsort(scores[kept_indices], descending=True)]
-    return kept_indices[:max_detections] if max_detections is not None else kept_indices
+from .matching import assign_one_to_one_targets
+from .ops import box_iou, class_aware_nms
+from .ops import greedy_nms as greedy_nms
 
 
 def sigmoid_focal_loss(
@@ -459,15 +382,24 @@ class TRHashObjectDetector(nn.Module):
         *,
         assignment_top_k: Optional[int] = None,
         allow_stal: bool = True,
+        one_to_one_teacher: Optional[Dict[str, torch.Tensor]] = None,
         training_progress: float = 1.0,
     ) -> Dict[str, torch.Tensor]:
         decoded = self.decode(raw)
-        assigned = self._assign_targets(
-            targets,
-            raw.device,
-            decoded=decoded,
-            assignment_top_k=assignment_top_k,
-            allow_stal=allow_stal,
+        assigned = (
+            self._assign_one_to_one_targets(
+                targets,
+                student_decoded=decoded,
+                teacher_decoded=one_to_one_teacher,
+            )
+            if one_to_one_teacher is not None
+            else self._assign_targets(
+                targets,
+                raw.device,
+                decoded=decoded,
+                assignment_top_k=assignment_top_k,
+                allow_stal=allow_stal,
+            )
         )
         positive = assigned["positive_mask"]
         positive_weights = assigned["objectness"] * positive
@@ -538,6 +470,26 @@ class TRHashObjectDetector(nn.Module):
             "class_loss": class_loss,
         }
 
+    def _assign_one_to_one_targets(
+        self,
+        targets: List[torch.Tensor],
+        *,
+        student_decoded: Dict[str, torch.Tensor],
+        teacher_decoded: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        rows, cols, denominators, _ = self._cell_geometry(student_decoded["boxes"].device)
+        return assign_one_to_one_targets(
+            targets,
+            student_decoded=student_decoded,
+            teacher_decoded=teacher_decoded,
+            config=self.config,
+            rows=rows,
+            cols=cols,
+            denominators=denominators,
+            level_offsets=self._level_offsets(),
+            level_for_box=self._level_for_box,
+        )
+
     def compute_loss(
         self,
         raw: torch.Tensor,
@@ -563,15 +515,29 @@ class TRHashObjectDetector(nn.Module):
             return losses
         if one_to_one_raw.shape != raw.shape:
             raise ValueError("one-to-one predictions must match one-to-many shape")
+        if self.config.one_to_one_teacher_assignment:
+            with torch.no_grad():
+                teacher_decoded = self.decode(raw)
+        else:
+            teacher_decoded = None
         one_to_one = self._compute_branch_loss(
             one_to_one_raw,
             targets,
             assignment_top_k=1,
             allow_stal=False,
+            one_to_one_teacher=teacher_decoded,
             training_progress=training_progress,
         )
+        warmup_fraction = self.config.one_to_one_loss_warmup_fraction
+        one_to_one_scale = (
+            1.0
+            if warmup_fraction == 0.0
+            else min(max(float(training_progress) / warmup_fraction, 0.0), 1.0)
+        )
+        effective_weight = self.config.one_to_one_loss_weight * one_to_one_scale
         losses["one_to_one_loss"] = one_to_one["loss"]
-        losses["loss"] = losses["loss"] + self.config.one_to_one_loss_weight * one_to_one["loss"]
+        losses["one_to_one_weight"] = raw.new_tensor(effective_weight)
+        losses["loss"] = losses["loss"] + effective_weight * one_to_one["loss"]
         return losses
 
     @torch.no_grad()
@@ -583,6 +549,7 @@ class TRHashObjectDetector(nn.Module):
         iou_threshold: float = 0.45,
         postprocess_on_cpu: bool = False,
         max_detections: int = 300,
+        prediction_branch: str = "auto",
     ) -> List[Dict[str, torch.Tensor]]:
         """Decode detections, using the one-to-one NMS-free head when enabled.
 
@@ -590,8 +557,13 @@ class TRHashObjectDetector(nn.Module):
         normalized), ``scores``, and ``labels``.
         """
 
+        if prediction_branch not in {"auto", "one_to_one", "one_to_many"}:
+            raise ValueError("prediction_branch must be auto, one_to_one, or one_to_many")
         one_to_many_raw, one_to_one_raw = self.forward_predictions(pixel_values)
-        raw = one_to_one_raw if one_to_one_raw is not None else one_to_many_raw
+        use_one_to_one = one_to_one_raw is not None and prediction_branch != "one_to_many"
+        if prediction_branch == "one_to_one" and one_to_one_raw is None:
+            raise ValueError("this detector has no one-to-one prediction branch")
+        raw = one_to_one_raw if use_one_to_one else one_to_many_raw
         if postprocess_on_cpu:
             raw = raw.cpu()
         decoded = self.decode(raw)
@@ -607,7 +579,7 @@ class TRHashObjectDetector(nn.Module):
             keep = scores >= objectness_threshold
             boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
 
-            if one_to_one_raw is not None:
+            if use_one_to_one:
                 kept_indices = torch.argsort(scores, descending=True)[:max_detections]
             else:
                 kept_indices = class_aware_nms(

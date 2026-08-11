@@ -45,6 +45,10 @@ class TRHashDetectorConfig:
     center_offset_mode: str = "linear"
     end_to_end: bool = True
     one_to_one_loss_weight: float = 1.0
+    one_to_one_loss_warmup_fraction: float = 0.30
+    one_to_one_teacher_assignment: bool = True
+    one_to_one_multiscale_candidates: bool = True
+    one_to_one_iou_power: float = 4.0
     progressive_loss_enabled: bool = True
     progressive_box_start: float = 0.5
     progressive_objectness_start: float = 1.5
@@ -96,6 +100,10 @@ class TRHashDetectorConfig:
             raise ValueError("center_offset_mode must be linear or sigmoid")
         if self.one_to_one_loss_weight < 0.0:
             raise ValueError("one_to_one_loss_weight must be non-negative")
+        if not 0.0 <= self.one_to_one_loss_warmup_fraction <= 1.0:
+            raise ValueError("one_to_one_loss_warmup_fraction must be in [0, 1]")
+        if self.one_to_one_iou_power < 0.0:
+            raise ValueError("one_to_one_iou_power must be non-negative")
         if not 0.0 < self.progressive_box_start <= 1.0:
             raise ValueError("progressive_box_start must be in (0, 1]")
         if self.progressive_objectness_start < 1.0:

@@ -209,6 +209,60 @@ def test_one_to_one_loss_reaches_end_to_end_head():
     assert model.one_to_one_heads[0].weight.grad is not None
 
 
+def test_global_one_to_one_assignment_keeps_close_objects_unique():
+    config = _tiny_config(
+        one_to_one_teacher_assignment=True,
+        one_to_one_multiscale_candidates=True,
+    )
+    model = TRHashObjectDetector(config)
+    raw = torch.zeros(1, config.num_cells, 5 + config.num_classes)
+    decoded = model.decode(raw)
+    targets = [
+        torch.tensor(
+            [
+                [0.50, 0.50, 0.20, 0.20, 1.0],
+                [0.51, 0.50, 0.20, 0.20, 2.0],
+            ]
+        )
+    ]
+
+    assigned = model._assign_one_to_one_targets(
+        targets,
+        student_decoded=decoded,
+        teacher_decoded=decoded,
+    )
+
+    positives = assigned["positive_mask"][0]
+    assert positives.sum() == 2
+    assert sorted(assigned["target_indices"][0, positives].tolist()) == [0, 1]
+
+
+def test_one_to_one_loss_weight_warms_up_without_changing_main_loss():
+    config = _tiny_config(one_to_one_loss_weight=1.0, one_to_one_loss_warmup_fraction=0.4)
+    model = TRHashObjectDetector(config)
+    pixels = torch.randn(1, 3, 32, 32)
+    targets = [torch.tensor([[0.5, 0.5, 0.25, 0.25, 1.0]])]
+    raw, one_to_one = model.forward_predictions(pixels)
+
+    main = model.compute_loss(raw, targets, training_progress=0.0)
+    start = model.compute_loss(
+        raw,
+        targets,
+        one_to_one_raw=one_to_one,
+        training_progress=0.0,
+    )
+    middle = model.compute_loss(
+        raw,
+        targets,
+        one_to_one_raw=one_to_one,
+        training_progress=0.2,
+    )
+
+    assert torch.allclose(start["loss"], main["loss"])
+    assert start["one_to_one_weight"].item() == 0.0
+    assert torch.allclose(middle["one_to_one_weight"], torch.tensor(0.5))
+
+
 def test_progressive_loss_interpolates_objectness_and_box_weights():
     config = _tiny_config(
         progressive_loss_enabled=True,
@@ -286,3 +340,24 @@ def test_end_to_end_predict_does_not_call_nms(monkeypatch):
 
     assert len(detections) == 1
     assert detections[0]["boxes"].shape[0] == 5
+
+
+def test_one_to_many_prediction_branch_still_runs_nms(monkeypatch):
+    model = TRHashObjectDetector(_tiny_config(end_to_end=True)).eval()
+    calls = []
+
+    def record_nms(boxes, scores, labels, iou_threshold, max_detections):
+        calls.append(len(boxes))
+        return torch.argsort(scores, descending=True)[:max_detections]
+
+    monkeypatch.setattr(
+        "complexity.generative.detection.model.class_aware_nms",
+        record_nms,
+    )
+    model.predict(
+        torch.randn(1, 3, 32, 32),
+        objectness_threshold=0.0,
+        prediction_branch="one_to_many",
+    )
+
+    assert calls
