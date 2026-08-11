@@ -18,6 +18,7 @@ from complexity.generative.detection import (
 from complexity.generative.detection.training import (
     _average_precision_from_matches,
     _match_image_detections,
+    load_pretrained_detector,
     load_pretrained_tower,
 )
 
@@ -288,3 +289,55 @@ def test_pretrained_tower_resizes_positions_and_regenerates_routes(tmp_path):
         target.tower.blocks[0].mlp.expert_gate,
         source.tower.blocks[0].mlp.expert_gate,
     )
+
+
+def test_detector_transfer_preserves_box_objectness_and_mapped_classes(tmp_path):
+    common = dict(
+        image_size=32,
+        patch_size=8,
+        vision_hidden_size=32,
+        vision_layers=1,
+        vision_heads=4,
+        vision_num_experts=4,
+        vision_top_k=2,
+        vision_expert_width=16,
+    )
+    source_config = TRHashDetectorConfig(**common, num_classes=3)
+    source = TRHashObjectDetector(source_config)
+    with torch.no_grad():
+        source.tower.patch_embed.weight.fill_(0.125)
+        source.fpn_downsamples[0][0].weight.fill_(0.25)
+        source.scale_heads[0][1].weight.fill_(0.375)
+        for head in source.scale_heads:
+            final = head[-1]
+            for output_index in range(final.out_features):
+                final.weight[output_index].fill_(float(output_index))
+                final.bias[output_index] = float(output_index)
+
+    checkpoint = tmp_path / "source_detector"
+    checkpoint.mkdir()
+    save_file(
+        {
+            name: value.detach().contiguous()
+            for name, value in source.state_dict().items()
+        },
+        str(checkpoint / "model.safetensors"),
+    )
+    (checkpoint / "config.json").write_text(json.dumps(source_config.to_dict()))
+
+    target = TRHashObjectDetector(TRHashDetectorConfig(**common, num_classes=2))
+    unmapped_weight = target.scale_heads[0][-1].weight[6].detach().clone()
+    unmapped_bias = target.scale_heads[0][-1].bias[6].detach().clone()
+    load_pretrained_detector(target, checkpoint, class_mapping={0: 2})
+
+    assert torch.all(target.tower.patch_embed.weight == 0.125)
+    assert torch.all(target.fpn_downsamples[0][0].weight == 0.25)
+    assert torch.all(target.scale_heads[0][1].weight == 0.375)
+    for head in target.scale_heads:
+        final = head[-1]
+        assert torch.equal(final.weight[:5], source.scale_heads[0][-1].weight[:5])
+        assert torch.equal(final.bias[:5], source.scale_heads[0][-1].bias[:5])
+        assert torch.equal(final.weight[5], source.scale_heads[0][-1].weight[7])
+        assert torch.equal(final.bias[5], source.scale_heads[0][-1].bias[7])
+    assert torch.equal(target.scale_heads[0][-1].weight[6], unmapped_weight)
+    assert torch.equal(target.scale_heads[0][-1].bias[6], unmapped_bias)

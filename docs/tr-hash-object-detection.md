@@ -79,6 +79,40 @@ default when `confidence` is omitted.
 learning rate than the shared tower and detection heads; the default `1.0`
 keeps a single learning rate for controlled comparisons.
 
+## Fine-tune a detector on a new label set
+
+`--detector-checkpoint` implements YOLO-style detector transfer. It keeps all
+compatible tower, feature-pyramid, hidden-head, box-regression, and objectness
+weights. When the class count changes, new class rows stay freshly initialized.
+An optional JSON class map copies known class rows; keys are target class IDs
+and values are source class IDs.
+
+```json
+{
+  "0": 14,
+  "1": 6
+}
+```
+
+```bash
+cf-detector-train \
+  --detector-checkpoint artifacts/detector_voc_5090_imagenet100/best \
+  --class-map data/custom/class-map.json \
+  --yolo-images data/custom/images/train \
+  --yolo-labels data/custom/labels/train \
+  --validation-yolo-images data/custom/images/val \
+  --validation-yolo-labels data/custom/labels/val \
+  --output artifacts/detector_custom \
+  --image-size 224 --patch-size 8 \
+  --vision-hidden-size 128 --vision-layers 4 \
+  --vision-heads 4 --vision-expert-width 48 \
+  --device cuda
+```
+
+Without `--class-map`, box/objectness transfer still occurs but every target
+class row is initialized for the new dataset. With an unchanged class count,
+all class rows transfer automatically.
+
 For a practical public corpus, prepare Pascal VOC 2007+2012 (16,551 training
 images, 4,952 validation images, 20 classes):
 

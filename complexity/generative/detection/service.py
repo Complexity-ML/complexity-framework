@@ -227,8 +227,18 @@ class TrainingJobManager:
                 "--seed",
                 str(request.seed),
             ]
+            if request.backbone_checkpoint and request.detector_checkpoint:
+                raise ValueError(
+                    "backbone_checkpoint and detector_checkpoint are mutually exclusive"
+                )
+            if request.class_map and not request.detector_checkpoint:
+                raise ValueError("class_map requires detector_checkpoint")
             if request.backbone_checkpoint:
                 command.extend(("--backbone-checkpoint", request.backbone_checkpoint))
+            if request.detector_checkpoint:
+                command.extend(("--detector-checkpoint", request.detector_checkpoint))
+            if request.class_map:
+                command.extend(("--class-map", request.class_map))
             if request.dataset == "synthetic":
                 command.extend(("--synthetic-samples", str(request.synthetic_samples)))
             else:
@@ -360,6 +370,8 @@ def create_app(
         validation_yolo_images: Optional[str] = None
         validation_yolo_labels: Optional[str] = None
         backbone_checkpoint: Optional[str] = None
+        detector_checkpoint: Optional[str] = None
+        class_map: Optional[str] = None
 
     resolved_device = resolve_device(device)
     runtime = ModelRuntime(checkpoint, resolved_device)

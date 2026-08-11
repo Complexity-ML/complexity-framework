@@ -64,6 +64,23 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Directory containing a pretrained tower.safetensors",
     )
+    parser.add_argument(
+        "--detector-checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Transfer a detector checkpoint while adapting a class-dependent output head"
+        ),
+    )
+    parser.add_argument(
+        "--class-map",
+        type=Path,
+        default=None,
+        help=(
+            "Optional JSON object mapping target class IDs to source class IDs; "
+            "only valid with --detector-checkpoint"
+        ),
+    )
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--patch-size", type=int, default=16)
     parser.add_argument("--num-classes", type=int, default=3)
@@ -188,6 +205,105 @@ def load_pretrained_tower(model: TRHashObjectDetector, checkpoint: Path) -> None
         len(compatible),
         checkpoint,
         f" (skipped incompatible: {', '.join(skipped)})" if skipped else "",
+    )
+
+
+def load_class_mapping(path: Path | None) -> Dict[int, int] | None:
+    if path is None:
+        return None
+    values = json.loads(path.read_text())
+    if not isinstance(values, dict):
+        raise ValueError("class map must be a JSON object of target_id: source_id")
+    try:
+        return {int(target): int(source) for target, source in values.items()}
+    except (TypeError, ValueError) as error:
+        raise ValueError("class map IDs must be integers") from error
+
+
+def load_pretrained_detector(
+    model: TRHashObjectDetector,
+    checkpoint: Path,
+    *,
+    class_mapping: Dict[int, int] | None = None,
+) -> None:
+    """Transfer a detector while adapting class-dependent output rows.
+
+    Compatible tower, feature-pyramid, and hidden head parameters are copied.
+    Each final prediction layer always preserves its four box rows and
+    objectness row. Class rows are copied wholesale when class counts match,
+    or selectively through ``class_mapping`` when adapting to a new label set.
+    """
+
+    source_config = TRHashDetectorConfig.from_dict(
+        json.loads((checkpoint / "config.json").read_text())
+    )
+    source_state = load_file(str(checkpoint / "model.safetensors"))
+    parameters = dict(model.named_parameters())
+
+    position_name = "tower.position_embedding"
+    if (
+        position_name in source_state
+        and position_name in parameters
+        and source_state[position_name].shape != parameters[position_name].shape
+    ):
+        old_positions = source_state[position_name]
+        old_grid = math.isqrt(old_positions.shape[1])
+        new_grid = math.isqrt(parameters[position_name].shape[1])
+        if old_grid**2 != old_positions.shape[1] or new_grid**2 != parameters[position_name].shape[1]:
+            raise ValueError("vision position embeddings must form square patch grids")
+        source_state[position_name] = F.interpolate(
+            old_positions.reshape(1, old_grid, old_grid, old_positions.shape[-1])
+            .permute(0, 3, 1, 2)
+            .float(),
+            size=(new_grid, new_grid),
+            mode="bicubic",
+            align_corners=False,
+        ).permute(0, 2, 3, 1).reshape(
+            1, new_grid**2, old_positions.shape[-1]
+        ).to(old_positions.dtype)
+
+    output_parameter_names = {
+        f"scale_heads.{level}.{len(head) - 1}.{suffix}"
+        for level, head in enumerate(model.scale_heads)
+        for suffix in ("weight", "bias")
+    }
+    compatible = {}
+    adapted_outputs = []
+    for name, parameter in parameters.items():
+        source = source_state.get(name)
+        if source is None:
+            continue
+        is_output = name in output_parameter_names
+        if not is_output and source.shape == parameter.shape:
+            compatible[name] = source
+            continue
+        if not is_output or source.ndim != parameter.ndim or source.shape[1:] != parameter.shape[1:]:
+            continue
+        if source.shape[0] < 5 or parameter.shape[0] < 5:
+            continue
+
+        adapted = parameter.detach().cpu().clone()
+        adapted[:5].copy_(source[:5])
+        if class_mapping is None and source_config.num_classes == model.config.num_classes:
+            adapted[5:].copy_(source[5:])
+        elif class_mapping is not None:
+            for target_class, source_class in class_mapping.items():
+                if not 0 <= target_class < model.config.num_classes:
+                    raise ValueError(f"target class ID out of range: {target_class}")
+                if not 0 <= source_class < source_config.num_classes:
+                    raise ValueError(f"source class ID out of range: {source_class}")
+                adapted[5 + target_class].copy_(source[5 + source_class])
+        compatible[name] = adapted
+        adapted_outputs.append(name)
+
+    model.load_state_dict(compatible, strict=False)
+    skipped = sorted(set(parameters) - set(compatible))
+    LOGGER.info(
+        "Transferred detector from %s: %d parameter tensors, %d adapted output tensors%s",
+        checkpoint,
+        len(compatible),
+        len(adapted_outputs),
+        f" (left initialized: {', '.join(skipped)})" if skipped else "",
     )
 
 
@@ -526,11 +642,26 @@ def main() -> None:
         varifocal_gamma=args.varifocal_gamma,
     )
     model = TRHashObjectDetector(config).to(device)
-    if args.resume is not None and args.backbone_checkpoint is not None:
-        raise ValueError("--resume and --backbone-checkpoint are mutually exclusive")
+    initialization_modes = (
+        args.resume,
+        args.backbone_checkpoint,
+        args.detector_checkpoint,
+    )
+    if sum(value is not None for value in initialization_modes) > 1:
+        raise ValueError(
+            "--resume, --backbone-checkpoint, and --detector-checkpoint are mutually exclusive"
+        )
+    if args.class_map is not None and args.detector_checkpoint is None:
+        raise ValueError("--class-map requires --detector-checkpoint")
     if args.resume is not None:
         model.load_state_dict(load_file(str(args.resume / "model.safetensors")))
         LOGGER.info("Resumed from: %s", args.resume)
+    elif args.detector_checkpoint is not None:
+        load_pretrained_detector(
+            model,
+            args.detector_checkpoint,
+            class_mapping=load_class_mapping(args.class_map),
+        )
     elif args.backbone_checkpoint is not None:
         load_pretrained_tower(model, args.backbone_checkpoint)
     LOGGER.info("Model: %.2fM parameters", model.num_parameters() / 1e6)
