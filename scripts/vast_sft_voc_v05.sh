@@ -4,9 +4,14 @@ set -euo pipefail
 source /venv/main/bin/activate
 cd /workspace/complexity-framework
 
+INITIALIZATION=(--backbone-checkpoint artifacts/tr_hash_vision_imagenet100/best)
+if [[ -n "${RESUME_CHECKPOINT:-}" ]]; then
+  INITIALIZATION=(--resume "$RESUME_CHECKPOINT")
+fi
+
 exec python -u -m complexity.generative.detection.training \
   --output artifacts/detector_voc_5090_v05_pan \
-  --backbone-checkpoint artifacts/tr_hash_vision_imagenet100/best \
+  "${INITIALIZATION[@]}" \
   --yolo-images artifacts/VOC/images/train \
   --yolo-labels artifacts/VOC/labels/train \
   --validation-yolo-images artifacts/VOC/images/val \
@@ -26,6 +31,9 @@ exec python -u -m complexity.generative.detection.training \
   --augmentation strong \
   --epochs 50 \
   --batch-size 64 \
+  --eval-batch-size 256 \
+  --eval-every 5 \
+  --eval-max-detections 100 \
   --workers 8 \
   --lr 1e-2 \
   --momentum 0.937 \
