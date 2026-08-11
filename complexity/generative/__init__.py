@@ -15,6 +15,16 @@ from .vision_language import (
     TRHashVisionTower,
     TRHashVisionTowerConfig,
 )
+from .vision_tasks import (
+    SUPPORTED_VISION_TASKS,
+    TRHashDepthEstimator,
+    TRHashImageClassifier,
+    TRHashInstanceSegmenter,
+    TRHashOBBDetector,
+    TRHashPoseEstimator,
+    TRHashSemanticSegmenter,
+    create_vision_model,
+)
 
 __all__ = [
     "TRHashImageTextToText",
@@ -31,4 +41,12 @@ __all__ = [
     "TRHashVideoClassifier",
     "TRHashObjectDetector",
     "TRHashDetectorConfig",
+    "SUPPORTED_VISION_TASKS",
+    "TRHashDepthEstimator",
+    "TRHashImageClassifier",
+    "TRHashInstanceSegmenter",
+    "TRHashOBBDetector",
+    "TRHashPoseEstimator",
+    "TRHashSemanticSegmenter",
+    "create_vision_model",
 ]

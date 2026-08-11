@@ -1,16 +1,18 @@
 # TR-Hash Object Detection and Serving
 
-The detector is a compact, anchor-free, single-stage model. A TR-Hash vision
-tower feeds three lightweight prediction grids. Dynamic positive assignment
-selects several useful cells per object, and Varifocal objectness learns an
-IoU-aware confidence score.
+The v0.3 detector is a compact, anchor-free, single-stage model. A TR-Hash
+vision tower feeds a lightweight prediction pyramid. Its one-to-many branch
+provides dense supervision during training, while a one-to-one branch is used
+for NMS-free inference. Dynamic STAL-style assignment sends small objects to
+the finest grid and Varifocal objectness learns an IoU-aware confidence score.
 
 ```text
 TR-Hash vision tower
         |
-        +-- 16 x 16 -- prediction head
-        +--  8 x 8  -- prediction head
-        +--  4 x 4  -- prediction head
+        +-- P2 (optional) -- one-to-many + one-to-one heads
+        +-- P3            -- one-to-many + one-to-one heads
+        +-- P4            -- one-to-many + one-to-one heads
+        +-- P5            -- one-to-many + one-to-one heads
 ```
 
 For a 128 px input, width 128, four tower layers, and four routed experts, the
@@ -24,7 +26,7 @@ Pretraining accepts CIFAR-10, a Hugging Face image-classification dataset, or
 an ImageFolder containing `train/` and `val/` class directories. On Apple
 Silicon, `--device mps` uses the Mac GPU and keeps the vision computation in
 fp32 for stability. CUDA uses BF16 autocast, pinned persistent data workers,
-and fused AdamW.
+and accelerated optimizer kernels when available.
 
 ```bash
 cf-vision-pretrain \
@@ -67,9 +69,20 @@ cf-detector-train \
   --validation-yolo-labels data/objects/labels/val \
   --image-size 128 --patch-size 8 \
   --vision-hidden-size 128 --vision-layers 4 \
-  --vision-heads 4 --vision-expert-width 48 \
+  --vision-heads 4 --vision-expert-width 48 --p2-head \
+  --optimizer sgd --lr 1e-2 --momentum 0.937 \
+  --weight-decay 5e-4 --expert-lr-multiplier 1.5 \
   --device mps
 ```
+
+Progressive loss balancing, STAL assignment, and the one-to-one end-to-end
+branch are enabled by default for new v0.3 configs. Progressive loss begins
+with stronger objectness supervision and half-strength box regression, then
+linearly reaches the configured final weights. Old unversioned checkpoints
+load with their legacy sigmoid center decoding and without the new branches.
+Use `--no-progressive-loss`, `--no-stal`, or `--no-end-to-end` for controlled
+ablations. AdamW remains selectable only to reproduce an older baseline; the
+v0.3 default is SGD with Nesterov momentum and a separate expert LR group.
 
 The trainer writes `metrics.jsonl`, a validated `best/` checkpoint, and a final
 step checkpoint. Validation reports mAP50, precision, recall, F1, the best F1,
@@ -175,3 +188,37 @@ endpoints. The built-in job manager deliberately runs one training process at
 a time and persists metadata and logs. For a public or multi-machine service,
 place the API behind TLS/authentication and replace the local process manager
 with a durable queue and isolated workers.
+
+## Other vision tasks
+
+The same routed tower now exposes model variants for detection, instance
+segmentation, semantic segmentation, monocular depth, classification, pose,
+and oriented bounding boxes (OBB):
+
+```python
+from complexity.generative import TRHashDetectorConfig, create_vision_model
+
+config = TRHashDetectorConfig(
+    image_size=224,
+    patch_size=8,
+    vision_hidden_size=128,
+    vision_layers=4,
+    vision_heads=4,
+    vision_expert_width=48,
+    num_classes=20,
+    p2_head=True,
+)
+
+detector = create_vision_model("detection", config)
+instances = create_vision_model("instance_segmentation", config)
+semantic = create_vision_model("semantic_segmentation", config, num_classes=21)
+depth = create_vision_model("depth", config, max_depth=80.0)
+classifier = create_vision_model("classification", config, num_classes=1000)
+pose = create_vision_model("pose", config, num_keypoints=17)
+obb = create_vision_model("obb", config)
+```
+
+The task heads and differentiable losses are implemented. Detection has the
+complete VOC/YOLO trainer and serving path described above. The other task
+families still need dataset-specific loaders, augmentation, metrics, export,
+and serving endpoints before they should be called production pipelines.

@@ -30,6 +30,7 @@ class TRHashDetectorConfig:
     route_seed: int = 0x71D5A17
     num_classes: int = 80
     multi_scale: bool = True
+    p2_head: bool = False
     scale_factors: Tuple[int, ...] = (1, 2, 4)
     dynamic_assignment: bool = True
     assignment_top_k: int = 5
@@ -37,7 +38,16 @@ class TRHashDetectorConfig:
     assignment_object_cells: float = 4.0
     assignment_class_power: float = 1.0
     assignment_iou_power: float = 6.0
+    stal_enabled: bool = True
+    stal_small_object_threshold: float = 0.08
+    stal_top_k: int = 9
+    stal_center_radius: float = 3.5
     center_offset_mode: str = "linear"
+    end_to_end: bool = True
+    one_to_one_loss_weight: float = 1.0
+    progressive_loss_enabled: bool = True
+    progressive_box_start: float = 0.5
+    progressive_objectness_start: float = 1.5
     box_loss_weight: float = 5.0
     objectness_loss_weight: float = 1.0
     class_loss_weight: float = 1.0
@@ -78,8 +88,18 @@ class TRHashDetectorConfig:
             raise ValueError("assignment_top_k must be positive")
         if self.assignment_center_radius <= 0.0 or self.assignment_object_cells <= 0.0:
             raise ValueError("assignment radii must be positive")
+        if not 0.0 < self.stal_small_object_threshold <= 1.0:
+            raise ValueError("stal_small_object_threshold must be in (0, 1]")
+        if self.stal_top_k <= 0 or self.stal_center_radius <= 0.0:
+            raise ValueError("STAL top-k and center radius must be positive")
         if self.center_offset_mode not in {"linear", "sigmoid"}:
             raise ValueError("center_offset_mode must be linear or sigmoid")
+        if self.one_to_one_loss_weight < 0.0:
+            raise ValueError("one_to_one_loss_weight must be non-negative")
+        if not 0.0 < self.progressive_box_start <= 1.0:
+            raise ValueError("progressive_box_start must be in (0, 1]")
+        if self.progressive_objectness_start < 1.0:
+            raise ValueError("progressive_objectness_start must be at least 1")
         if not 0.0 <= self.focal_alpha <= 1.0:
             raise ValueError("focal_alpha must be in [0, 1]")
         if self.focal_gamma < 0.0:
@@ -101,11 +121,12 @@ class TRHashDetectorConfig:
 
     @property
     def grid_sizes(self) -> Tuple[int, ...]:
-        if not self.multi_scale:
-            return (self.grid_size,)
-        return tuple(
-            (self.grid_size + factor - 1) // factor for factor in self.scale_factors
+        grids = (
+            (self.grid_size,)
+            if not self.multi_scale
+            else tuple((self.grid_size + factor - 1) // factor for factor in self.scale_factors)
         )
+        return ((self.grid_size * 2,) + grids) if self.p2_head else grids
 
     def vision_tower_config(self) -> TRHashVisionTowerConfig:
         return TRHashVisionTowerConfig(
@@ -133,6 +154,11 @@ class TRHashDetectorConfig:
         # Checkpoints written before center-offset versioning used cell-bounded
         # sigmoid offsets. Preserve their inference semantics on load.
         values.setdefault("center_offset_mode", "sigmoid")
+        # New training-only branches are opt-in for unversioned checkpoints so
+        # their state dictionaries and inference outputs remain unchanged.
+        values.setdefault("stal_enabled", False)
+        values.setdefault("end_to_end", False)
+        values.setdefault("progressive_loss_enabled", False)
         allowed = {item.name for item in fields(cls)}
         unknown = sorted(set(values) - allowed)
         if unknown:

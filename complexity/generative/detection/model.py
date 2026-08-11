@@ -134,9 +134,7 @@ def varifocal_loss(
     return loss.sum() / (targets.sum().clamp_min(1.0))
 
 
-def complete_iou_loss(
-    predicted_cxcywh: torch.Tensor, target_cxcywh: torch.Tensor
-) -> torch.Tensor:
+def complete_iou_loss(predicted_cxcywh: torch.Tensor, target_cxcywh: torch.Tensor) -> torch.Tensor:
     """Elementwise Complete-IoU loss for normalized ``cxcywh`` boxes."""
 
     pred_center = predicted_cxcywh[:, :2]
@@ -157,7 +155,9 @@ def complete_iou_loss(
 
     enclosing_top_left = torch.minimum(pred_xyxy[:, :2], target_xyxy[:, :2])
     enclosing_bottom_right = torch.maximum(pred_xyxy[:, 2:], target_xyxy[:, 2:])
-    enclosing_diagonal = (enclosing_bottom_right - enclosing_top_left).square().sum(-1).clamp_min(1e-7)
+    enclosing_diagonal = (
+        (enclosing_bottom_right - enclosing_top_left).square().sum(-1).clamp_min(1e-7)
+    )
     center_distance = (pred_center - target_center).square().sum(-1)
 
     aspect_penalty = (4.0 / math.pi**2) * (
@@ -178,13 +178,23 @@ class TRHashObjectDetector(nn.Module):
         self.tower = TRHashVisionTower(self.config.vision_tower_config())
         hidden = self.config.vision_hidden_size
         output_width = 5 + self.config.num_classes
+        self.fpn_upsample = (
+            nn.Sequential(
+                nn.Conv2d(hidden, hidden, 3, padding=1, groups=hidden),
+                nn.GELU(),
+                nn.Conv2d(hidden, hidden, 1),
+            )
+            if self.config.p2_head
+            else None
+        )
+        coarse_grids = self.config.grid_sizes[1:] if self.config.p2_head else self.config.grid_sizes
         self.fpn_downsamples = nn.ModuleList(
             nn.Sequential(
                 nn.Conv2d(hidden, hidden, 3, stride=2, padding=1, groups=hidden),
                 nn.GELU(),
                 nn.Conv2d(hidden, hidden, 1),
             )
-            for _ in self.config.grid_sizes[1:]
+            for _ in coarse_grids[1:]
         )
         self.scale_heads = nn.ModuleList(
             nn.Sequential(
@@ -195,27 +205,82 @@ class TRHashObjectDetector(nn.Module):
             )
             for _ in self.config.grid_sizes
         )
+        self.one_to_one_heads = (
+            nn.ModuleList(nn.Linear(hidden, output_width) for _ in self.config.grid_sizes)
+            if self.config.end_to_end
+            else None
+        )
         for head in self.scale_heads:
-            final = head[-1]
-            nn.init.zeros_(final.bias)
-            with torch.no_grad():
-                final.bias[4] = math.log(0.01 / 0.99)
+            self._initialize_prediction_layer(head[-1])
+        if self.one_to_one_heads is not None:
+            for head in self.one_to_one_heads:
+                self._initialize_prediction_layer(head)
 
-    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        """Raw predictions concatenated across fine-to-coarse feature grids."""
-        features = self.tower(pixel_values)
+    @staticmethod
+    def _initialize_prediction_layer(layer: nn.Linear) -> None:
+        nn.init.zeros_(layer.bias)
+        with torch.no_grad():
+            layer.bias[4] = math.log(0.01 / 0.99)
+
+    def _feature_pyramid(self, features: torch.Tensor) -> List[torch.Tensor]:
+        """Build the prediction pyramid from already-encoded patch features."""
+
         batch = features.size(0)
         grid = self.config.grid_size
         feature_map = features.transpose(1, 2).reshape(
             batch, self.config.vision_hidden_size, grid, grid
         )
+        feature_maps = []
+        if self.fpn_upsample is not None:
+            fine_map = F.interpolate(
+                feature_map, scale_factor=2.0, mode="bilinear", align_corners=False
+            )
+            feature_maps.append(self.fpn_upsample(fine_map))
+        feature_maps.append(feature_map)
+        for downsample in self.fpn_downsamples:
+            feature_map = downsample(feature_map)
+            feature_maps.append(feature_map)
+        return feature_maps
+
+    def _predictions_from_features(
+        self,
+        features: torch.Tensor,
+        *,
+        return_hidden: bool = False,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[List[torch.Tensor]]]:
+        """Run detector heads without recomputing the shared vision tower."""
+
+        feature_maps = self._feature_pyramid(features)
+
         outputs = []
-        for level, head in enumerate(self.scale_heads):
-            if level:
-                feature_map = self.fpn_downsamples[level - 1](feature_map)
+        one_to_one_outputs = []
+        hidden_outputs = []
+        for level, (head, feature_map) in enumerate(zip(self.scale_heads, feature_maps)):
             tokens = feature_map.flatten(2).transpose(1, 2)
-            outputs.append(head(tokens))
-        return torch.cat(outputs, dim=1)
+            hidden_tokens = head[2](head[1](head[0](tokens)))
+            if return_hidden:
+                hidden_outputs.append(hidden_tokens)
+            outputs.append(head[3](hidden_tokens))
+            if self.one_to_one_heads is not None:
+                one_to_one_outputs.append(self.one_to_one_heads[level](hidden_tokens))
+        one_to_many = torch.cat(outputs, dim=1)
+        one_to_one = torch.cat(one_to_one_outputs, dim=1) if one_to_one_outputs else None
+        return one_to_many, one_to_one, hidden_outputs if return_hidden else None
+
+    def forward_predictions(
+        self, pixel_values: torch.Tensor
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Return one-to-many training predictions and optional one-to-one outputs."""
+
+        features = self.tower(pixel_values)
+        one_to_many, one_to_one, _ = self._predictions_from_features(features)
+        return one_to_many, one_to_one
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        """Raw one-to-many predictions, preserving the original public API."""
+
+        one_to_many, _ = self.forward_predictions(pixel_values)
+        return one_to_many
 
     def _cell_geometry(
         self, device: torch.device
@@ -261,9 +326,9 @@ class TRHashObjectDetector(nn.Module):
         w = torch.sigmoid(tw)
         h = torch.sigmoid(th)
         boxes_cxcywh = torch.stack((cx, cy, w, h), dim=-1)
-        boxes = torch.stack(
-            (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2), dim=-1
-        ).clamp(0.0, 1.0)
+        boxes = torch.stack((cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2), dim=-1).clamp(
+            0.0, 1.0
+        )
         return {
             "boxes": boxes,
             "boxes_cxcywh": boxes_cxcywh,
@@ -282,6 +347,9 @@ class TRHashObjectDetector(nn.Module):
         targets: List[torch.Tensor],
         device: torch.device,
         decoded: Optional[Dict[str, torch.Tensor]] = None,
+        *,
+        assignment_top_k: Optional[int] = None,
+        allow_stal: bool = True,
     ) -> Dict[str, torch.Tensor]:
         """Build per-cell training targets from ``[N_i, 5]`` (cx, cy, w, h, class_id) boxes.
 
@@ -294,19 +362,25 @@ class TRHashObjectDetector(nn.Module):
         objectness_target = torch.zeros(batch, self.config.num_cells, device=device)
         box_target = torch.zeros(batch, self.config.num_cells, 4, device=device)
         class_target = torch.zeros(batch, self.config.num_cells, dtype=torch.long, device=device)
-        positive_mask = torch.zeros(batch, self.config.num_cells, dtype=torch.bool, device=device)
-        assignment_score = torch.full(
-            (batch, self.config.num_cells), -1.0, device=device
+        target_indices = torch.full(
+            (batch, self.config.num_cells), -1, dtype=torch.long, device=device
         )
+        positive_mask = torch.zeros(batch, self.config.num_cells, dtype=torch.bool, device=device)
+        assignment_score = torch.full((batch, self.config.num_cells), -1.0, device=device)
         rows, cols, _, _ = self._cell_geometry(device)
         offsets = self._level_offsets()
 
         for image_index, image_boxes in enumerate(targets):
             if image_boxes.numel() == 0:
                 continue
-            for image_box in image_boxes:
+            for target_index, image_box in enumerate(image_boxes):
                 cx, cy, width, height, class_id = image_box
-                level = self._level_for_box(float(width), float(height))
+                small_object = (
+                    allow_stal
+                    and self.config.stal_enabled
+                    and max(float(width), float(height)) <= self.config.stal_small_object_threshold
+                )
+                level = 0 if small_object else self._level_for_box(float(width), float(height))
                 grid = self.config.grid_sizes[level]
                 offset = offsets[level]
                 level_slice = slice(offset, offset + grid * grid)
@@ -316,20 +390,19 @@ class TRHashObjectDetector(nn.Module):
                 if not self.config.dynamic_assignment or decoded is None:
                     col = int(torch.floor(cx * grid).clamp(0, grid - 1))
                     row = int(torch.floor(cy * grid).clamp(0, grid - 1))
-                    candidate_indices = torch.tensor(
-                        [offset + row * grid + col], device=device
-                    )
+                    candidate_indices = torch.tensor([offset + row * grid + col], device=device)
                     candidate_scores = torch.ones(1, device=device)
                     candidate_quality = torch.ones(1, device=device)
                 else:
                     center_col = cx * grid - 0.5
                     center_row = cy * grid - 0.5
-                    candidate_mask = (
-                        (level_cols - center_col).abs()
-                        <= self.config.assignment_center_radius
-                    ) & (
-                        (level_rows - center_row).abs()
-                        <= self.config.assignment_center_radius
+                    center_radius = (
+                        self.config.stal_center_radius
+                        if small_object
+                        else self.config.assignment_center_radius
+                    )
+                    candidate_mask = ((level_cols - center_col).abs() <= center_radius) & (
+                        (level_rows - center_row).abs() <= center_radius
                     )
                     local_indices = torch.nonzero(candidate_mask, as_tuple=False).flatten()
                     if not len(local_indices):
@@ -354,38 +427,48 @@ class TRHashObjectDetector(nn.Module):
                     alignment = class_scores.clamp_min(1e-6).pow(
                         self.config.assignment_class_power
                     ) * ious.clamp_min(1e-6).pow(self.config.assignment_iou_power)
-                    top_k = min(self.config.assignment_top_k, len(candidate_indices))
+                    requested_top_k = assignment_top_k or self.config.assignment_top_k
+                    if small_object and assignment_top_k is None:
+                        requested_top_k = max(requested_top_k, self.config.stal_top_k)
+                    top_k = min(requested_top_k, len(candidate_indices))
                     candidate_scores, selected = alignment.topk(top_k)
                     candidate_indices = candidate_indices[selected]
                     candidate_quality = ious[selected].clamp_min(0.2)
 
-                replace = candidate_scores > assignment_score[
-                    image_index, candidate_indices
-                ]
+                replace = candidate_scores > assignment_score[image_index, candidate_indices]
                 selected_cells = candidate_indices[replace]
                 assignment_score[image_index, selected_cells] = candidate_scores[replace]
                 objectness_target[image_index, selected_cells] = candidate_quality[replace]
                 box_target[image_index, selected_cells] = image_box[:4]
                 class_target[image_index, selected_cells] = class_id.long()
+                target_indices[image_index, selected_cells] = target_index
                 positive_mask[image_index, selected_cells] = True
 
         return {
             "objectness": objectness_target,
             "boxes": box_target,
             "classes": class_target,
+            "target_indices": target_indices,
             "positive_mask": positive_mask,
         }
 
-    def compute_loss(
-        self, raw: torch.Tensor, targets: List[torch.Tensor]
+    def _compute_branch_loss(
+        self,
+        raw: torch.Tensor,
+        targets: List[torch.Tensor],
+        *,
+        assignment_top_k: Optional[int] = None,
+        allow_stal: bool = True,
+        training_progress: float = 1.0,
     ) -> Dict[str, torch.Tensor]:
-        """``targets``: length-``batch`` list of ``[N_i, 5]`` (cx, cy, w, h, class_id) tensors,
-        normalized [0, 1] box coordinates."""
-
-        if len(targets) != raw.size(0):
-            raise ValueError("one target tensor is required per batch image")
         decoded = self.decode(raw)
-        assigned = self._assign_targets(targets, raw.device, decoded=decoded)
+        assigned = self._assign_targets(
+            targets,
+            raw.device,
+            decoded=decoded,
+            assignment_top_k=assignment_top_k,
+            allow_stal=allow_stal,
+        )
         positive = assigned["positive_mask"]
         positive_weights = assigned["objectness"] * positive
         num_positive = positive_weights.sum().clamp_min(1.0)
@@ -408,22 +491,15 @@ class TRHashObjectDetector(nn.Module):
 
         pred_boxes = decoded["boxes_cxcywh"]
 
-        box_l1_error = F.smooth_l1_loss(
-            pred_boxes, assigned["boxes"], reduction="none"
-        ).sum(-1)
+        box_l1_error = F.smooth_l1_loss(pred_boxes, assigned["boxes"], reduction="none").sum(-1)
         box_l1_loss = (box_l1_error * positive_weights).sum() / num_positive
         if positive.any():
-            box_iou_error = complete_iou_loss(
-                pred_boxes[positive], assigned["boxes"][positive]
-            )
-            box_iou_loss = (
-                box_iou_error * positive_weights[positive]
-            ).sum() / num_positive
+            box_iou_error = complete_iou_loss(pred_boxes[positive], assigned["boxes"][positive])
+            box_iou_loss = (box_iou_error * positive_weights[positive]).sum() / num_positive
         else:
             box_iou_loss = raw.sum() * 0.0
         box_loss = (
-            self.config.box_l1_weight * box_l1_loss
-            + self.config.box_iou_weight * box_iou_loss
+            self.config.box_l1_weight * box_l1_loss + self.config.box_iou_weight * box_iou_loss
         )
 
         class_logits = raw[..., 5:]
@@ -435,9 +511,22 @@ class TRHashObjectDetector(nn.Module):
         ).reshape(positive.shape)
         class_loss = (class_error * positive_weights).sum() / num_positive
 
+        progress = min(max(float(training_progress), 0.0), 1.0)
+        if self.config.progressive_loss_enabled:
+            box_scale = (
+                self.config.progressive_box_start
+                + (1.0 - self.config.progressive_box_start) * progress
+            )
+            objectness_scale = (
+                self.config.progressive_objectness_start
+                + (1.0 - self.config.progressive_objectness_start) * progress
+            )
+        else:
+            box_scale = 1.0
+            objectness_scale = 1.0
         total = (
-            self.config.objectness_loss_weight * objectness_loss
-            + self.config.box_loss_weight * box_loss
+            self.config.objectness_loss_weight * objectness_scale * objectness_loss
+            + self.config.box_loss_weight * box_scale * box_loss
             + self.config.class_loss_weight * class_loss
         )
         return {
@@ -449,6 +538,42 @@ class TRHashObjectDetector(nn.Module):
             "class_loss": class_loss,
         }
 
+    def compute_loss(
+        self,
+        raw: torch.Tensor,
+        targets: List[torch.Tensor],
+        *,
+        one_to_one_raw: Optional[torch.Tensor] = None,
+        training_progress: float = 1.0,
+    ) -> Dict[str, torch.Tensor]:
+        """Compute one-to-many and optional one-to-one detector losses.
+
+        ``targets`` is a length-``batch`` list of ``[N_i, 5]`` tensors in
+        normalized ``(cx, cy, w, h, class_id)`` format.
+        """
+
+        if len(targets) != raw.size(0):
+            raise ValueError("one target tensor is required per batch image")
+        losses = self._compute_branch_loss(
+            raw,
+            targets,
+            training_progress=training_progress,
+        )
+        if one_to_one_raw is None:
+            return losses
+        if one_to_one_raw.shape != raw.shape:
+            raise ValueError("one-to-one predictions must match one-to-many shape")
+        one_to_one = self._compute_branch_loss(
+            one_to_one_raw,
+            targets,
+            assignment_top_k=1,
+            allow_stal=False,
+            training_progress=training_progress,
+        )
+        losses["one_to_one_loss"] = one_to_one["loss"]
+        losses["loss"] = losses["loss"] + self.config.one_to_one_loss_weight * one_to_one["loss"]
+        return losses
+
     @torch.no_grad()
     def predict(
         self,
@@ -459,13 +584,14 @@ class TRHashObjectDetector(nn.Module):
         postprocess_on_cpu: bool = False,
         max_detections: int = 300,
     ) -> List[Dict[str, torch.Tensor]]:
-        """Decoded, NMS-filtered detections per image.
+        """Decode detections, using the one-to-one NMS-free head when enabled.
 
         Returns a list (length = batch) of dicts with ``boxes`` (xyxy,
         normalized), ``scores``, and ``labels``.
         """
 
-        raw = self(pixel_values)
+        one_to_many_raw, one_to_one_raw = self.forward_predictions(pixel_values)
+        raw = one_to_one_raw if one_to_one_raw is not None else one_to_many_raw
         if postprocess_on_cpu:
             raw = raw.cpu()
         decoded = self.decode(raw)
@@ -481,13 +607,16 @@ class TRHashObjectDetector(nn.Module):
             keep = scores >= objectness_threshold
             boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
 
-            kept_indices = class_aware_nms(
-                boxes,
-                scores,
-                labels,
-                iou_threshold,
-                max_detections=max_detections,
-            )
+            if one_to_one_raw is not None:
+                kept_indices = torch.argsort(scores, descending=True)[:max_detections]
+            else:
+                kept_indices = class_aware_nms(
+                    boxes,
+                    scores,
+                    labels,
+                    iou_threshold,
+                    max_detections=max_detections,
+                )
             results.append(
                 {
                     "boxes": boxes[kept_indices],

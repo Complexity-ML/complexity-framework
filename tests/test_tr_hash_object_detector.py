@@ -65,6 +65,29 @@ def test_default_head_uses_three_feature_scales():
     assert len(model.fpn_downsamples) == 2
 
 
+def test_optional_p2_head_adds_a_stride_four_prediction_grid():
+    config = _tiny_config(p2_head=True)
+    model = TRHashObjectDetector(config)
+    raw = model(torch.randn(1, 3, 32, 32))
+
+    assert config.grid_sizes == (8, 4, 2, 1)
+    assert raw.shape == (1, 8**2 + 4**2 + 2**2 + 1, 5 + config.num_classes)
+    assert model.fpn_upsample is not None
+
+
+def test_end_to_end_head_adds_lightweight_one_to_one_predictions():
+    config = _tiny_config()
+    model = TRHashObjectDetector(config)
+    pixels = torch.randn(2, 3, 32, 32)
+
+    one_to_many, one_to_one = model.forward_predictions(pixels)
+    legacy = TRHashObjectDetector(_tiny_config(end_to_end=False))
+
+    assert one_to_one is not None
+    assert one_to_one.shape == one_to_many.shape
+    assert model.num_parameters() - legacy.num_parameters() < 20_000
+
+
 def test_default_224_configuration_uses_rounded_pyramid_grids():
     config = TRHashDetectorConfig()
     assert config.grid_sizes == (14, 7, 4)
@@ -83,6 +106,24 @@ def test_dynamic_assignment_selects_multiple_quality_weighted_cells():
     assert 1 <= assigned["positive_mask"].sum() <= 3
     quality = assigned["objectness"][assigned["positive_mask"]]
     assert torch.all((quality >= 0.2) & (quality <= 1.0))
+
+
+def test_stal_assigns_more_fine_grid_positives_to_small_objects():
+    config = _tiny_config(
+        assignment_top_k=1,
+        stal_enabled=True,
+        stal_small_object_threshold=0.10,
+        stal_top_k=4,
+    )
+    model = TRHashObjectDetector(config)
+    raw = torch.zeros(1, config.num_cells, 5 + config.num_classes)
+    targets = [torch.tensor([[0.5, 0.5, 0.05, 0.05, 2.0]])]
+
+    assigned = model._assign_targets(targets, raw.device, decoded=model.decode(raw))
+
+    positives = torch.nonzero(assigned["positive_mask"][0]).flatten()
+    assert positives.numel() == 4
+    assert torch.all(positives < config.grid_sizes[0] ** 2)
 
 
 def test_decode_produces_bounded_normalized_boxes():
@@ -110,9 +151,7 @@ def test_decode_center_offsets_can_leave_the_source_cell():
     raw[0, 0, 0] = 2.0
     decoded = model.decode(raw)
 
-    assert torch.allclose(
-        decoded["boxes_cxcywh"][0, 0, 0], torch.tensor(0.625)
-    )
+    assert torch.allclose(decoded["boxes_cxcywh"][0, 0, 0], torch.tensor(0.625))
 
 
 def test_unversioned_checkpoint_config_keeps_legacy_sigmoid_centers():
@@ -152,6 +191,51 @@ def test_loss_backward_reaches_head_and_backbone_experts():
     assert grad.abs().sum() > 0
 
 
+def test_one_to_one_loss_reaches_end_to_end_head():
+    config = _tiny_config()
+    model = TRHashObjectDetector(config)
+    pixels = torch.randn(2, 3, 32, 32)
+    targets = [
+        torch.tensor([[0.3, 0.4, 0.2, 0.3, 1.0]]),
+        torch.tensor([[0.6, 0.5, 0.3, 0.2, 2.0]]),
+    ]
+
+    raw, one_to_one = model.forward_predictions(pixels)
+    losses = model.compute_loss(raw, targets, one_to_one_raw=one_to_one)
+    losses["loss"].backward()
+
+    assert "one_to_one_loss" in losses
+    assert model.one_to_one_heads is not None
+    assert model.one_to_one_heads[0].weight.grad is not None
+
+
+def test_progressive_loss_interpolates_objectness_and_box_weights():
+    config = _tiny_config(
+        progressive_loss_enabled=True,
+        progressive_box_start=0.5,
+        progressive_objectness_start=1.5,
+    )
+    model = TRHashObjectDetector(config)
+    raw = model(torch.randn(1, 3, 32, 32))
+    targets = [torch.tensor([[0.5, 0.5, 0.3, 0.3, 1.0]])]
+
+    start = model.compute_loss(raw, targets, training_progress=0.0)
+    end = model.compute_loss(raw, targets, training_progress=1.0)
+    expected_start = (
+        1.5 * config.objectness_loss_weight * start["objectness_loss"]
+        + 0.5 * config.box_loss_weight * start["box_loss"]
+        + config.class_loss_weight * start["class_loss"]
+    )
+
+    assert torch.allclose(start["loss"], expected_start)
+    assert torch.allclose(
+        end["loss"],
+        config.objectness_loss_weight * end["objectness_loss"]
+        + config.box_loss_weight * end["box_loss"]
+        + config.class_loss_weight * end["class_loss"],
+    )
+
+
 def test_loss_handles_images_with_no_ground_truth_boxes():
     config = _tiny_config()
     model = TRHashObjectDetector(config)
@@ -184,3 +268,21 @@ def test_predict_threshold_reduces_or_keeps_detection_count():
     strict = model.predict(pixels, objectness_threshold=0.99, iou_threshold=0.5)
     for loose_entry, strict_entry in zip(loose, strict):
         assert strict_entry["boxes"].shape[0] <= loose_entry["boxes"].shape[0]
+
+
+def test_end_to_end_predict_does_not_call_nms(monkeypatch):
+    config = _tiny_config(end_to_end=True)
+    model = TRHashObjectDetector(config).eval()
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("NMS must not run for one-to-one inference")
+
+    monkeypatch.setattr("complexity.generative.detection.model.class_aware_nms", fail_if_called)
+    detections = model.predict(
+        torch.randn(1, 3, 32, 32),
+        objectness_threshold=0.0,
+        max_detections=5,
+    )
+
+    assert len(detections) == 1
+    assert detections[0]["boxes"].shape[0] == 5

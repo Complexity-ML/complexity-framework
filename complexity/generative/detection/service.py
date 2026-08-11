@@ -76,9 +76,7 @@ class ModelRuntime:
             if self.model is None or self.config is None:
                 raise RuntimeError("model is not loaded")
             original_w, original_h = image.size
-            image, _ = _letterbox(
-                image.convert("RGB"), torch.empty(0, 5), self.config.image_size
-            )
+            image, _ = _letterbox(image.convert("RGB"), torch.empty(0, 5), self.config.image_size)
             pixels = _normalize_image(image).unsqueeze(0).to(self.device)
             detection = self.model.predict(
                 pixels,
@@ -220,6 +218,12 @@ class TrainingJobManager:
                 str(request.vision_expert_width),
                 "--assignment-top-k",
                 str(request.assignment_top_k),
+                "--optimizer",
+                request.optimizer,
+                "--momentum",
+                str(request.momentum),
+                "--weight-decay",
+                str(request.weight_decay),
                 "--lr",
                 str(request.learning_rate),
                 "--expert-lr-multiplier",
@@ -227,6 +231,14 @@ class TrainingJobManager:
                 "--seed",
                 str(request.seed),
             ]
+            if request.p2_head:
+                command.append("--p2-head")
+            if not request.stal:
+                command.append("--no-stal")
+            if not request.progressive_loss:
+                command.append("--no-progressive-loss")
+            if not request.end_to_end:
+                command.append("--no-end-to-end")
             if request.backbone_checkpoint and request.detector_checkpoint:
                 raise ValueError(
                     "backbone_checkpoint and detector_checkpoint are mutually exclusive"
@@ -295,8 +307,10 @@ class TrainingJobManager:
             record = self.jobs[job_id]
             record.return_code = return_code
             record.finished_at = time.time()
-            record.status = "cancelled" if record.status == "cancelling" else (
-                "completed" if return_code == 0 else "failed"
+            record.status = (
+                "cancelled"
+                if record.status == "cancelling"
+                else ("completed" if return_code == 0 else "failed")
             )
             self.processes.pop(job_id, None)
             self._persist(record)
@@ -363,7 +377,14 @@ def create_app(
         vision_heads: int = Field(default=4, ge=1)
         vision_expert_width: int = Field(default=48, ge=8)
         assignment_top_k: int = Field(default=5, ge=1, le=64)
-        learning_rate: float = Field(default=3e-4, gt=0.0)
+        p2_head: bool = False
+        stal: bool = True
+        progressive_loss: bool = True
+        end_to_end: bool = True
+        optimizer: str = Field(default="sgd", pattern="^(sgd|adamw)$")
+        momentum: float = Field(default=0.937, ge=0.0, lt=1.0)
+        weight_decay: float = Field(default=5e-4, ge=0.0)
+        learning_rate: float = Field(default=1e-2, gt=0.0)
         expert_lr_multiplier: float = Field(default=1.0, gt=0.0, le=10.0)
         yolo_images: Optional[str] = None
         yolo_labels: Optional[str] = None
@@ -376,7 +397,7 @@ def create_app(
     resolved_device = resolve_device(device)
     runtime = ModelRuntime(checkpoint, resolved_device)
     jobs = TrainingJobManager(jobs_root, sys.executable)
-    app = FastAPI(title="TR-Hash Detector Service", version="0.2.0")
+    app = FastAPI(title="TR-Hash Detector Service", version="0.3.0")
 
     def authenticate(x_api_key: Optional[str] = Header(default=None)) -> None:
         if api_key and x_api_key != api_key:

@@ -37,13 +37,17 @@ LOGGER = logging.getLogger("tr_hash_detector")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--annotations", type=Path, default=None, help="COCO-format JSON")
-    parser.add_argument("--images", type=Path, default=None, help="Directory of images for --annotations")
+    parser.add_argument(
+        "--images", type=Path, default=None, help="Directory of images for --annotations"
+    )
     parser.add_argument("--yolo-images", type=Path, default=None)
     parser.add_argument("--yolo-labels", type=Path, default=None)
     parser.add_argument("--validation-yolo-images", type=Path, default=None)
     parser.add_argument("--validation-yolo-labels", type=Path, default=None)
     parser.add_argument("--validation-fraction", type=float, default=0.2)
-    parser.add_argument("--synthetic-samples", type=int, default=512, help="Used when --annotations is omitted")
+    parser.add_argument(
+        "--synthetic-samples", type=int, default=512, help="Used when --annotations is omitted"
+    )
     parser.add_argument("--validation-samples", type=int, default=256)
     parser.add_argument("--validation-seed", type=int, default=1_000_000)
     parser.add_argument(
@@ -68,9 +72,7 @@ def parse_args() -> argparse.Namespace:
         "--detector-checkpoint",
         type=Path,
         default=None,
-        help=(
-            "Transfer a detector checkpoint while adapting a class-dependent output head"
-        ),
+        help=("Transfer a detector checkpoint while adapting a class-dependent output head"),
     )
     parser.add_argument(
         "--class-map",
@@ -91,6 +93,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vision-top-k", type=int, default=2)
     parser.add_argument("--vision-expert-width", type=int, default=48)
     parser.add_argument("--single-scale", action="store_true")
+    parser.add_argument("--p2-head", action="store_true")
     parser.add_argument("--static-assignment", action="store_true")
     parser.add_argument("--assignment-top-k", type=int, default=5)
     parser.add_argument(
@@ -102,9 +105,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--workers", type=int, default=0)
-    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--expert-lr-multiplier", type=float, default=1.0)
-    parser.add_argument("--weight-decay", type=float, default=0.05)
+    parser.add_argument(
+        "--optimizer",
+        choices=("sgd", "adamw"),
+        default="sgd",
+        help="SGD/Nesterov is the v0.3 default; AdamW reproduces older baselines",
+    )
+    parser.add_argument("--momentum", type=float, default=0.937)
+    parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--warmup-steps", type=int, default=50)
     parser.add_argument("--min-lr-ratio", type=float, default=0.05)
     parser.add_argument("--eval-confidence", type=float, default=0.20)
@@ -122,6 +132,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--varifocal-alpha", type=float, default=0.75)
     parser.add_argument("--varifocal-gamma", type=float, default=2.0)
+    parser.add_argument("--no-stal", action="store_true")
+    parser.add_argument("--no-progressive-loss", action="store_true")
+    parser.add_argument("--no-end-to-end", action="store_true")
+    parser.add_argument("--one-to-one-loss-weight", type=float, default=1.0)
     parser.add_argument("--log-steps", type=int, default=20)
     parser.add_argument("--save-steps", type=int, default=0, help="0 disables periodic checkpoints")
     parser.add_argument("--seed", type=int, default=42)
@@ -154,15 +168,12 @@ def save_checkpoint(
     state = {name: value.detach().cpu().contiguous() for name, value in model.state_dict().items()}
     save_file(state, str(target / "model.safetensors"))
     tower_state = {
-        name: value.detach().cpu().contiguous()
-        for name, value in model.tower.state_dict().items()
+        name: value.detach().cpu().contiguous() for name, value in model.tower.state_dict().items()
     }
     save_file(tower_state, str(target / "tower.safetensors"))
     (target / "config.json").write_text(json.dumps(config.to_dict(), indent=2) + "\n")
     if validation_metrics is not None:
-        (target / "validation.json").write_text(
-            json.dumps(validation_metrics, indent=2) + "\n"
-        )
+        (target / "validation.json").write_text(json.dumps(validation_metrics, indent=2) + "\n")
     LOGGER.info("Checkpoint saved: %s", target)
 
 
@@ -180,17 +191,23 @@ def load_pretrained_tower(model: TRHashObjectDetector, checkpoint: Path) -> None
         old_positions = state[position_name]
         old_grid = math.isqrt(old_positions.shape[1])
         new_grid = math.isqrt(parameters[position_name].shape[1])
-        if old_grid**2 != old_positions.shape[1] or new_grid**2 != parameters[position_name].shape[1]:
+        if (
+            old_grid**2 != old_positions.shape[1]
+            or new_grid**2 != parameters[position_name].shape[1]
+        ):
             raise ValueError("vision position embeddings must form square patch grids")
-        state[position_name] = F.interpolate(
-            old_positions.reshape(1, old_grid, old_grid, old_positions.shape[-1])
-            .permute(0, 3, 1, 2)
-            .float(),
-            size=(new_grid, new_grid),
-            mode="bicubic",
-            align_corners=False,
-        ).permute(0, 2, 3, 1).reshape(1, new_grid**2, old_positions.shape[-1]).to(
-            old_positions.dtype
+        state[position_name] = (
+            F.interpolate(
+                old_positions.reshape(1, old_grid, old_grid, old_positions.shape[-1])
+                .permute(0, 3, 1, 2)
+                .float(),
+                size=(new_grid, new_grid),
+                mode="bicubic",
+                align_corners=False,
+            )
+            .permute(0, 2, 3, 1)
+            .reshape(1, new_grid**2, old_positions.shape[-1])
+            .to(old_positions.dtype)
         )
 
     compatible = {
@@ -252,35 +269,56 @@ def load_pretrained_detector(
         old_positions = source_state[position_name]
         old_grid = math.isqrt(old_positions.shape[1])
         new_grid = math.isqrt(parameters[position_name].shape[1])
-        if old_grid**2 != old_positions.shape[1] or new_grid**2 != parameters[position_name].shape[1]:
+        if (
+            old_grid**2 != old_positions.shape[1]
+            or new_grid**2 != parameters[position_name].shape[1]
+        ):
             raise ValueError("vision position embeddings must form square patch grids")
-        source_state[position_name] = F.interpolate(
-            old_positions.reshape(1, old_grid, old_grid, old_positions.shape[-1])
-            .permute(0, 3, 1, 2)
-            .float(),
-            size=(new_grid, new_grid),
-            mode="bicubic",
-            align_corners=False,
-        ).permute(0, 2, 3, 1).reshape(
-            1, new_grid**2, old_positions.shape[-1]
-        ).to(old_positions.dtype)
+        source_state[position_name] = (
+            F.interpolate(
+                old_positions.reshape(1, old_grid, old_grid, old_positions.shape[-1])
+                .permute(0, 3, 1, 2)
+                .float(),
+                size=(new_grid, new_grid),
+                mode="bicubic",
+                align_corners=False,
+            )
+            .permute(0, 2, 3, 1)
+            .reshape(1, new_grid**2, old_positions.shape[-1])
+            .to(old_positions.dtype)
+        )
 
     output_parameter_names = {
         f"scale_heads.{level}.{len(head) - 1}.{suffix}"
         for level, head in enumerate(model.scale_heads)
         for suffix in ("weight", "bias")
     }
+    if model.one_to_one_heads is not None:
+        output_parameter_names.update(
+            f"one_to_one_heads.{level}.{suffix}"
+            for level in range(len(model.one_to_one_heads))
+            for suffix in ("weight", "bias")
+        )
+    pyramid_compatible = source_config.grid_sizes == model.config.grid_sizes
     compatible = {}
     adapted_outputs = []
     for name, parameter in parameters.items():
         source = source_state.get(name)
         if source is None:
             continue
+        if not pyramid_compatible and (
+            name.startswith("scale_heads.") or name.startswith("one_to_one_heads.")
+        ):
+            continue
         is_output = name in output_parameter_names
         if not is_output and source.shape == parameter.shape:
             compatible[name] = source
             continue
-        if not is_output or source.ndim != parameter.ndim or source.shape[1:] != parameter.shape[1:]:
+        if (
+            not is_output
+            or source.ndim != parameter.ndim
+            or source.shape[1:] != parameter.shape[1:]
+        ):
             continue
         if source.shape[0] < 5 or parameter.shape[0] < 5:
             continue
@@ -344,19 +382,11 @@ def _match_image_detections(
         class_targets = target_boxes[target_labels == class_id]
 
         if len(class_boxes) and len(class_targets):
-            top_left = torch.maximum(
-                class_boxes[:, None, :2], class_targets[None, :, :2]
-            )
-            bottom_right = torch.minimum(
-                class_boxes[:, None, 2:], class_targets[None, :, 2:]
-            )
+            top_left = torch.maximum(class_boxes[:, None, :2], class_targets[None, :, :2])
+            bottom_right = torch.minimum(class_boxes[:, None, 2:], class_targets[None, :, 2:])
             intersections = (bottom_right - top_left).clamp_min(0).prod(-1)
-            prediction_areas = (
-                (class_boxes[:, 2:] - class_boxes[:, :2]).clamp_min(0).prod(-1)
-            )
-            target_areas = (
-                (class_targets[:, 2:] - class_targets[:, :2]).clamp_min(0).prod(-1)
-            )
+            prediction_areas = (class_boxes[:, 2:] - class_boxes[:, :2]).clamp_min(0).prod(-1)
+            target_areas = (class_targets[:, 2:] - class_targets[:, :2]).clamp_min(0).prod(-1)
             ious = intersections / (
                 prediction_areas[:, None] + target_areas[None, :] - intersections
             ).clamp_min(1e-9)
@@ -427,9 +457,7 @@ def evaluate_detector(
         disable=False if show_progress else True,
     )
     for pixel_values, targets in progress:
-        autocast = (
-            torch.autocast("cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
-        )
+        autocast = torch.autocast("cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
         with autocast:
             detections = model.predict(
                 pixel_values.to(device, non_blocking=device.type == "cuda"),
@@ -460,12 +488,10 @@ def evaluate_detector(
                 matches_by_class[class_id].append(class_matches)
 
     class_scores = [
-        torch.cat(scores_by_class[class_id])
-        for class_id in range(model.config.num_classes)
+        torch.cat(scores_by_class[class_id]) for class_id in range(model.config.num_classes)
     ]
     class_matches = [
-        torch.cat(matches_by_class[class_id])
-        for class_id in range(model.config.num_classes)
+        torch.cat(matches_by_class[class_id]) for class_id in range(model.config.num_classes)
     ]
     average_precisions = [
         _average_precision_from_matches(
@@ -488,9 +514,9 @@ def evaluate_detector(
     if len(scores_tensor):
         cumulative_true_positives = matches_tensor.cumsum(0)
         prediction_counts = torch.arange(1, len(scores_tensor) + 1)
-        f1_curve = 2.0 * cumulative_true_positives / (
-            prediction_counts + total_targets
-        ).clamp_min(1)
+        f1_curve = (
+            2.0 * cumulative_true_positives / (prediction_counts + total_targets).clamp_min(1)
+        )
         best_f1, best_index = f1_curve.max(dim=0)
         best_confidence = float(scores_tensor[int(best_index)])
     else:
@@ -517,7 +543,9 @@ def cosine_schedule(step: int, *, warmup_steps: int, total_steps: int, min_ratio
 
 def main() -> None:
     args = parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s", datefmt="%H:%M:%S")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s", datefmt="%H:%M:%S"
+    )
     torch.manual_seed(args.seed)
     device = resolve_device(args.device)
     use_amp = device.type == "cuda" and not args.no_amp
@@ -634,8 +662,13 @@ def main() -> None:
         vision_precision=vision_precision,
         num_classes=num_classes,
         multi_scale=not args.single_scale,
+        p2_head=args.p2_head,
         dynamic_assignment=not args.static_assignment,
         assignment_top_k=args.assignment_top_k,
+        stal_enabled=not args.no_stal,
+        end_to_end=not args.no_end_to_end,
+        one_to_one_loss_weight=args.one_to_one_loss_weight,
+        progressive_loss_enabled=not args.no_progressive_loss,
         box_loss_weight=args.box_loss_weight,
         objectness_loss_weight=args.objectness_loss_weight,
         class_loss_weight=args.class_loss_weight,
@@ -678,22 +711,35 @@ def main() -> None:
     for name, parameter in model.named_parameters():
         target = expert_parameters if ".mlp.expert_" in name else base_parameters
         target.append(parameter)
-    optimizer_options = {
-        "weight_decay": args.weight_decay,
-        "foreach": False if device.type == "mps" else None,
-    }
-    if device.type == "cuda":
-        optimizer_options["fused"] = True
-    optimizer = torch.optim.AdamW(
-        (
-            {"params": base_parameters, "lr": args.lr, "group_name": "base"},
-            {
-                "params": expert_parameters,
-                "lr": args.lr * args.expert_lr_multiplier,
-                "group_name": "experts",
-            },
-        ),
-        **optimizer_options,
+    parameter_groups = (
+        {"params": base_parameters, "lr": args.lr, "group_name": "base"},
+        {
+            "params": expert_parameters,
+            "lr": args.lr * args.expert_lr_multiplier,
+            "group_name": "experts",
+        },
+    )
+    if args.optimizer == "sgd":
+        optimizer = torch.optim.SGD(
+            parameter_groups,
+            momentum=args.momentum,
+            nesterov=True,
+            weight_decay=args.weight_decay,
+            foreach=False if device.type == "mps" else None,
+        )
+    else:
+        optimizer_options = {
+            "weight_decay": args.weight_decay,
+            "foreach": False if device.type == "mps" else None,
+        }
+        if device.type == "cuda":
+            optimizer_options["fused"] = True
+        optimizer = torch.optim.AdamW(parameter_groups, **optimizer_options)
+    LOGGER.info(
+        "Optimizer: %s (base_lr=%.2e expert_lr=%.2e)",
+        args.optimizer,
+        args.lr,
+        args.lr * args.expert_lr_multiplier,
     )
     total_steps = len(loader) * args.epochs
     scheduler = torch.optim.lr_scheduler.LambdaLR(
@@ -725,22 +771,18 @@ def main() -> None:
             disable=False,
         )
         for pixel_values, targets in progress:
-            pixel_values = pixel_values.to(
-                device, non_blocking=device.type == "cuda"
-            )
-            targets = [
-                target.to(device, non_blocking=device.type == "cuda")
-                for target in targets
-            ]
+            pixel_values = pixel_values.to(device, non_blocking=device.type == "cuda")
+            targets = [target.to(device, non_blocking=device.type == "cuda") for target in targets]
 
-            autocast = (
-                torch.autocast("cuda", dtype=torch.bfloat16)
-                if use_amp
-                else nullcontext()
-            )
+            autocast = torch.autocast("cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
             with autocast:
-                raw = model(pixel_values)
-                losses = model.compute_loss(raw, targets)
+                raw, one_to_one_raw = model.forward_predictions(pixel_values)
+                losses = model.compute_loss(
+                    raw,
+                    targets,
+                    one_to_one_raw=one_to_one_raw,
+                    training_progress=step / max(total_steps - 1, 1),
+                )
             optimizer.zero_grad(set_to_none=True)
             losses["loss"].backward()
             torch.nn.utils.clip_grad_norm_(
@@ -755,9 +797,7 @@ def main() -> None:
             for name, value in losses.items():
                 running_losses[name] = running_losses.get(name, 0.0) + float(value.detach())
             if step % args.log_steps == 0:
-                averages = {
-                    name: value / args.log_steps for name, value in running_losses.items()
-                }
+                averages = {name: value / args.log_steps for name, value in running_losses.items()}
                 elapsed = time.monotonic() - started
                 LOGGER.info(
                     "epoch=%d step=%d loss=%.4f obj=%.4f box=%.4f cls=%.4f "
