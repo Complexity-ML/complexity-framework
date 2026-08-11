@@ -16,6 +16,17 @@ export HF_XET_HIGH_PERFORMANCE=1
 INITIALIZATION=()
 if [[ -n "${RESUME_CHECKPOINT:-}" ]]; then
   INITIALIZATION=(--resume "$RESUME_CHECKPOINT")
+elif [[ "${AUTO_RESUME:-1}" == "1" ]]; then
+  shopt -s nullglob
+  checkpoints=("$OUTPUT"/step_*)
+  shopt -u nullglob
+  if (( ${#checkpoints[@]} > 0 )); then
+    latest_checkpoint="${checkpoints[${#checkpoints[@]} - 1]}"
+    if [[ -f "$latest_checkpoint/training_state.pt" ]]; then
+      echo "Auto-resuming from $latest_checkpoint"
+      INITIALIZATION=(--resume "$latest_checkpoint")
+    fi
+  fi
 fi
 
 exec torchrun \

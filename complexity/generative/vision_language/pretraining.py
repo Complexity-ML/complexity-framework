@@ -21,7 +21,7 @@ from ..detection.checkpointing import load_training_state, save_training_state
 from ..detection.config import TRHashDetectorConfig
 from ..detection.distributed import DistributedContext
 from ..detection.hierarchical_tower import HierarchicalTRHashVisionClassifier
-from ..detection.training import vision_backend_summary
+from ..detection.training import TqdmLoggingHandler, vision_backend_summary
 from .vision_tower import TRHashVisionClassifier, TRHashVisionTowerConfig
 
 LOGGER = logging.getLogger("tr_hash_vision_pretraining")
@@ -355,6 +355,8 @@ def main() -> None:
         level=logging.INFO if distributed.is_main else logging.ERROR,
         format="%(asctime)s | %(levelname)s | %(message)s",
         datefmt="%H:%M:%S",
+        handlers=[TqdmLoggingHandler()],
+        force=True,
     )
     torch.manual_seed(args.seed + distributed.rank)
     device = distributed.device
@@ -626,17 +628,6 @@ def main() -> None:
                     "elapsed": time.monotonic() - started,
                 }
                 if distributed.is_main:
-                    LOGGER.info(
-                        "epoch=%d step=%d/%d loss=%.4f lr=%.2e "
-                        "expert_lr=%.2e elapsed=%.1fs",
-                        epoch,
-                        step,
-                        total_steps,
-                        average_loss,
-                        record["lr"],
-                        record["expert_lr"],
-                        record["elapsed"],
-                    )
                     with metrics_path.open("a") as handle:
                         handle.write(json.dumps(record) + "\n")
                     progress.set_postfix(
