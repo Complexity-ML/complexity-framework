@@ -32,7 +32,7 @@ pip install -e '.[cuda,image]'
 Download only the training shards from the public Atlas Images repository:
 
 ```bash
-hf download Pacific-i64/complexity-atlas-images \
+hf download AETHORIA-AI/complexity-atlas-images \
   --repo-type dataset \
   --include 'train/*.tar' \
   --local-dir /workspace/data/complexity-atlas-images
