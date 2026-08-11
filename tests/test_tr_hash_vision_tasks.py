@@ -244,3 +244,22 @@ def test_instance_segmentation_checkpoint_round_trip(tmp_path):
     for name in ("raw", "mask_coefficients", "prototypes"):
         torch.testing.assert_close(actual[name], expected[name])
     assert restored.vision_task == "instance_segmentation"
+
+
+def test_obb_checkpoint_round_trip(tmp_path):
+    model = TRHashOBBDetector(_config()).eval()
+    pixels = torch.randn(1, 3, 32, 32)
+    expected = model.forward_obb(pixels)
+
+    checkpoint = save_vision_task_checkpoint(
+        model,
+        tmp_path / "obb",
+        task="obb",
+        class_names=("a", "b", "c", "d"),
+    )
+    restored = load_vision_task_checkpoint(checkpoint)
+    actual = restored.forward_obb(pixels)
+
+    for name in ("raw", "angle_vectors", "angles"):
+        torch.testing.assert_close(actual[name], expected[name])
+    assert restored.vision_task == "obb"
