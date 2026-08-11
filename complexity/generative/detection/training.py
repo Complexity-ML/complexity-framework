@@ -810,17 +810,23 @@ def main() -> None:
                 averages = {name: value / args.log_steps for name, value in running_losses.items()}
                 elapsed = time.monotonic() - started
                 one_to_one_log = (
-                    " o2o=%.4f o2o_w=%.2f"
-                    % (averages["one_to_one_loss"], averages["one_to_one_weight"])
+                    " o2o_raw=%.4f o2o_w=%.2f o2o_contrib=%.4f"
+                    % (
+                        averages["one_to_one_loss"],
+                        averages["one_to_one_weight"],
+                        averages["one_to_one_weighted_loss"],
+                    )
                     if "one_to_one_loss" in averages
                     else ""
                 )
                 LOGGER.info(
-                    "epoch=%d step=%d loss=%.4f obj=%.4f box=%.4f cls=%.4f "
+                    "epoch=%d step=%d loss_total=%.4f loss_o2m=%.4f "
+                    "o2m_obj=%.4f o2m_box=%.4f o2m_cls=%.4f "
                     "lr=%.2e expert_lr=%.2e elapsed=%.1fs%s",
                     epoch,
                     step,
                     averages["loss"],
+                    averages["one_to_many_loss"],
                     averages["objectness_loss"],
                     averages["box_loss"],
                     averages["class_loss"],
@@ -843,9 +849,10 @@ def main() -> None:
                         + "\n"
                     )
                 progress.set_postfix(
-                    loss=f"{averages['loss']:.4f}",
+                    total=f"{averages['loss']:.4f}",
+                    o2m=f"{averages['one_to_many_loss']:.4f}",
                     o2o=(
-                        f"{averages['one_to_one_loss']:.4f}"
+                        f"{averages['one_to_one_weighted_loss']:.4f}"
                         if "one_to_one_loss" in averages
                         else "off"
                     ),

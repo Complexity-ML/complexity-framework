@@ -94,6 +94,11 @@ head instead of being hidden by the combined training loss. The main controls
 are `--one-to-one-loss-warmup-fraction`, `--one-to-one-iou-power`,
 `--no-one-to-one-teacher-assignment`, and `--one-to-one-single-scale`.
 
+Training logs keep the loss accounting explicit: `loss_total = loss_o2m +
+o2o_w * o2o_raw`. The weighted one-to-one term is printed as `o2o_contrib`;
+the JSONL record additionally contains the objectness, box, and class losses for
+both branches. This avoids comparing a combined loss with O2M-only components.
+
 The trainer writes `metrics.jsonl`, a validated `best/` checkpoint, and a final
 step checkpoint. Validation reports mAP50, precision, recall, F1, the best F1,
 and its confidence threshold. The service uses that calibrated threshold by

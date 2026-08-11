@@ -261,6 +261,14 @@ def test_one_to_one_loss_weight_warms_up_without_changing_main_loss():
     assert torch.allclose(start["loss"], main["loss"])
     assert start["one_to_one_weight"].item() == 0.0
     assert torch.allclose(middle["one_to_one_weight"], torch.tensor(0.5))
+    assert torch.allclose(
+        middle["loss"],
+        middle["one_to_many_loss"] + middle["one_to_one_weighted_loss"],
+    )
+    assert torch.allclose(
+        middle["one_to_one_weighted_loss"],
+        middle["one_to_one_weight"] * middle["one_to_one_loss"],
+    )
 
 
 def test_progressive_loss_interpolates_objectness_and_box_weights():

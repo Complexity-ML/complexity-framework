@@ -511,6 +511,7 @@ class TRHashObjectDetector(nn.Module):
             targets,
             training_progress=training_progress,
         )
+        losses["one_to_many_loss"] = losses["loss"]
         if one_to_one_raw is None:
             return losses
         if one_to_one_raw.shape != raw.shape:
@@ -536,8 +537,12 @@ class TRHashObjectDetector(nn.Module):
         )
         effective_weight = self.config.one_to_one_loss_weight * one_to_one_scale
         losses["one_to_one_loss"] = one_to_one["loss"]
+        losses["one_to_one_objectness_loss"] = one_to_one["objectness_loss"]
+        losses["one_to_one_box_loss"] = one_to_one["box_loss"]
+        losses["one_to_one_class_loss"] = one_to_one["class_loss"]
         losses["one_to_one_weight"] = raw.new_tensor(effective_weight)
-        losses["loss"] = losses["loss"] + effective_weight * one_to_one["loss"]
+        losses["one_to_one_weighted_loss"] = effective_weight * one_to_one["loss"]
+        losses["loss"] = losses["one_to_many_loss"] + losses["one_to_one_weighted_loss"]
         return losses
 
     @torch.no_grad()
