@@ -24,6 +24,8 @@ from .vision_tasks import (
     TRHashPoseEstimator,
     TRHashSemanticSegmenter,
     create_vision_model,
+    load_vision_task_checkpoint,
+    save_vision_task_checkpoint,
 )
 
 __all__ = [
@@ -49,4 +51,6 @@ __all__ = [
     "TRHashPoseEstimator",
     "TRHashSemanticSegmenter",
     "create_vision_model",
+    "load_vision_task_checkpoint",
+    "save_vision_task_checkpoint",
 ]

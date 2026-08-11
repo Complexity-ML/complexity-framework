@@ -1,3 +1,4 @@
+import json
 import math
 
 import pytest
@@ -13,6 +14,8 @@ from complexity.generative.vision_tasks import (
     TRHashPoseEstimator,
     TRHashSemanticSegmenter,
     create_vision_model,
+    load_vision_task_checkpoint,
+    save_vision_task_checkpoint,
 )
 
 
@@ -153,3 +156,21 @@ def test_obb_periodic_angle_loss_and_nms_prediction(monkeypatch):
 def test_unknown_task_is_rejected():
     with pytest.raises(ValueError, match="unsupported vision task"):
         create_vision_model("optical_flow", _config())
+
+
+def test_classification_checkpoint_round_trip(tmp_path):
+    model = TRHashImageClassifier(_config(), num_classes=6).eval()
+    pixels = torch.randn(2, 3, 32, 32)
+    expected = model(pixels)["logits"]
+
+    checkpoint = save_vision_task_checkpoint(
+        model,
+        tmp_path / "classifier",
+        task="classification",
+        class_names=("a", "b", "c", "d", "e", "f"),
+    )
+    restored = load_vision_task_checkpoint(checkpoint)
+
+    torch.testing.assert_close(restored(pixels)["logits"], expected)
+    assert restored.vision_task == "classification"
+    assert json.loads((checkpoint / "vision_task.json").read_text())["format_version"] == 4

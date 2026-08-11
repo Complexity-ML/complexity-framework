@@ -1,5 +1,6 @@
 """TR-Hash model variants for seven common vision task families."""
 
+from .checkpoint import load_vision_task_checkpoint, save_vision_task_checkpoint
 from .model import (
     SUPPORTED_VISION_TASKS,
     TRHashDepthEstimator,
@@ -22,4 +23,6 @@ __all__ = [
     "TRHashPoseEstimator",
     "TRHashSemanticSegmenter",
     "create_vision_model",
+    "load_vision_task_checkpoint",
+    "save_vision_task_checkpoint",
 ]
