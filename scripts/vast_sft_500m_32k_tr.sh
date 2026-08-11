@@ -41,8 +41,7 @@ exec torchrun \
   --eval-at-start \
   --eval-steps 2000 \
   --eval-batches 0 \
-  --save-best \
-  --early-stopping-min-epochs 1 \
+  --early-stopping-patience 0 \
   --save-steps 1000 \
   --save-total-limit 3 \
   --save-dir "$SAVE_DIR" \
