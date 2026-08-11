@@ -88,6 +88,70 @@ TOY_RECORDS = [
     },
 ]
 
+REASONING_ENVELOPE_PLANS = {
+    "reasoning_verification": (
+        "I should solve the requested relation, then verify the result independently."
+    ),
+    "planning_comparison": (
+        "I should test each option against every binding constraint before selecting a plan."
+    ),
+    "explanation_learning": (
+        "I should identify the core idea, explain it simply, and check transfer."
+    ),
+    "critique_revision": (
+        "I should locate the highest-impact defect, then revise without adding unsupported claims."
+    ),
+    "troubleshooting": (
+        "I should isolate the likely cause, propose one bounded test, and state the next action."
+    ),
+}
+
+
+def apply_reasoning_envelope(
+    input_ids: np.ndarray,
+    labels: np.ndarray,
+    *,
+    prefix_ids: list[int],
+    suffix_ids: list[int],
+    eos_token_id: int,
+    seq_len: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Wrap the final supervised assistant span in ``think``/``final`` tags."""
+
+    active = np.flatnonzero(labels != -100)
+    if not active.size:
+        raise ValueError("reasoning envelope requires supervised assistant tokens")
+    discontinuities = np.flatnonzero(np.diff(active) > 1)
+    final_start = int(discontinuities[-1] + 1) if discontinuities.size else 0
+    final_active = active[final_start:]
+    prompt = np.asarray(input_ids[: int(final_active[0]) + 1], dtype=np.int64)
+    response = [
+        int(token)
+        for token in labels[final_active]
+        if int(token) != int(eos_token_id)
+    ]
+    fixed_tokens = len(prefix_ids) + len(suffix_ids) + 1
+    response = response[: max(1, seq_len - fixed_tokens)]
+    completion = [*prefix_ids, *response, *suffix_ids, int(eos_token_id)]
+    prompt = prompt[-max(1, seq_len + 1 - len(completion)) :]
+    full = np.asarray([*prompt.tolist(), *completion], dtype=np.int64)[: seq_len + 1]
+    rebuilt_inputs = full[:-1]
+    rebuilt_labels = full[1:].copy()
+    rebuilt_labels[: max(0, len(prompt) - 1)] = -100
+    if rebuilt_inputs.size < seq_len:
+        padding = seq_len - rebuilt_inputs.size
+        rebuilt_inputs = np.pad(
+            rebuilt_inputs,
+            (0, padding),
+            constant_values=int(eos_token_id),
+        )
+        rebuilt_labels = np.pad(
+            rebuilt_labels,
+            (0, padding),
+            constant_values=-100,
+        )
+    return rebuilt_inputs, rebuilt_labels
+
 
 def load_checkpoint_state(
     path: str | Path, map_location: str | torch.device = "cpu"
@@ -371,6 +435,8 @@ class SFTBinDataset(IterableDataset):
         start_step: int = 0,
         curriculum_config: str | Path | None = None,
         curriculum_stage: str | None = None,
+        reasoning_envelope: bool = False,
+        reasoning_tokenizer: Tokenizer | None = None,
     ):
         root = Path(root)
         dataset_root = root
@@ -435,6 +501,22 @@ class SFTBinDataset(IterableDataset):
         self.epoch_batch_size = epoch_batch_size
         self.start_step = start_step
         self.pad_id = int(self.metadata["eos_token_id"])
+        self.reasoning_prefix_ids: dict[str, list[int]] = {}
+        self.reasoning_suffix_ids: list[int] = []
+        if reasoning_envelope:
+            if reasoning_tokenizer is None:
+                raise ValueError("reasoning envelope requires a tokenizer")
+            self.reasoning_prefix_ids = {
+                task: reasoning_tokenizer.encode(
+                    f"<think>\n{plan}\n</think>\n<final>\n",
+                    add_special_tokens=False,
+                )
+                for task, plan in REASONING_ENVELOPE_PLANS.items()
+            }
+            self.reasoning_suffix_ids = reasoning_tokenizer.encode(
+                "\n</final>",
+                add_special_tokens=False,
+            )
 
     def _tensor_example(self, example: dict[str, Any]) -> dict[str, torch.Tensor]:
         start = int(example["offset"])
@@ -444,6 +526,17 @@ class SFTBinDataset(IterableDataset):
             raise ValueError(f"Invalid SFT example bounds: {example}")
         input_ids = np.asarray(self.input_ids[start:end], dtype=np.int64)
         labels = np.asarray(self.labels[start:end], dtype=np.int64)
+        task = str(example.get("task", ""))
+        if task in self.reasoning_prefix_ids:
+            input_ids, labels = apply_reasoning_envelope(
+                input_ids,
+                labels,
+                prefix_ids=self.reasoning_prefix_ids[task],
+                suffix_ids=self.reasoning_suffix_ids,
+                eos_token_id=self.pad_id,
+                seq_len=self.seq_len,
+            )
+            length = len(input_ids)
         if length > self.seq_len:
             # Retain the final assistant response and its EOS target.
             input_ids = input_ids[-self.seq_len :]
@@ -541,19 +634,34 @@ def load_records(path: str | None) -> list[dict[str, Any]]:
 
 
 def build_optimizer(args, raw_model):
-    decay, no_decay = [], []
+    groups = {
+        "base_decay": [],
+        "base_no_decay": [],
+        "expert_decay": [],
+        "expert_no_decay": [],
+    }
     for name, param in raw_model.named_parameters():
         if not param.requires_grad:
             continue
-        if param.ndim < 2 or "bias" in name or "norm" in name:
-            no_decay.append(param)
-        else:
-            decay.append(param)
+        expert = "parametrizations.expert_" in name and ".lora_" in name
+        no_decay = param.ndim < 2 or "bias" in name or "norm" in name
+        prefix = "expert" if expert else "base"
+        groups[f"{prefix}_{'no_decay' if no_decay else 'decay'}"].append(param)
+    optimizer_groups = []
+    for name, parameters in groups.items():
+        if not parameters:
+            continue
+        expert = name.startswith("expert_")
+        optimizer_groups.append(
+            {
+                "name": name,
+                "params": parameters,
+                "weight_decay": 0.0 if name.endswith("no_decay") else args.weight_decay,
+                "lr": args.lr * (args.expert_lr_multiplier if expert else 1.0),
+            }
+        )
     return torch.optim.AdamW(
-        [
-            {"params": decay, "weight_decay": args.weight_decay},
-            {"params": no_decay, "weight_decay": 0.0},
-        ],
+        optimizer_groups,
         lr=args.lr,
         betas=(args.beta1, args.beta2),
     )
@@ -582,6 +690,8 @@ RESUME_ARGUMENTS = (
     "lora_alpha",
     "lora_dropout",
     "lora_targets",
+    "expert_lr_multiplier",
+    "reasoning_envelope",
     "seed",
 )
 
@@ -995,9 +1105,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lora-alpha", type=float, default=32.0)
     parser.add_argument("--lora-dropout", type=float, default=0.05)
     parser.add_argument(
+        "--expert-lr-multiplier",
+        type=float,
+        default=1.0,
+        help="LR multiplier applied only to TR-Hash expert LoRA factors.",
+    )
+    parser.add_argument(
         "--lora-targets",
         default="q_proj,v_proj,o_proj,shared_gate,shared_up,shared_down",
-        help="Comma-separated linear module suffixes adapted by LoRA.",
+        help=(
+            "Comma-separated linear suffixes or TR-Hash expert tensors "
+            "(expert_gate, expert_up, expert_down) adapted by LoRA."
+        ),
+    )
+    parser.add_argument(
+        "--reasoning-envelope",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Wrap reasoning-task targets in "
+            "<think>...</think><final>...</final> at runtime."
+        ),
     )
     parser.add_argument("--min-completion-tokens", type=int, default=32)
     parser.add_argument("--bf16", action="store_true")
@@ -1117,6 +1245,8 @@ def main():
         raise ValueError("--early-stopping-min-epochs cannot be negative")
     if args.lora_rank < 0:
         raise ValueError("--lora-rank cannot be negative")
+    if args.expert_lr_multiplier <= 0:
+        raise ValueError("--expert-lr-multiplier must be positive")
     if args.cpu:
         device = torch.device("cpu")
         distributed = False
@@ -1190,6 +1320,9 @@ def main():
         )
 
     evaluation_enabled = args.eval_at_start or args.eval_steps > 0
+    reasoning_tokenizer = (
+        Tokenizer.load(args.tokenizer) if args.reasoning_envelope else None
+    )
     if args.sft_bin is not None:
         train_ds = SFTBinDataset(
             args.sft_bin,
@@ -1203,6 +1336,8 @@ def main():
             start_step=resume_step,
             curriculum_config=args.curriculum_config,
             curriculum_stage=args.curriculum_stage,
+            reasoning_envelope=args.reasoning_envelope,
+            reasoning_tokenizer=reasoning_tokenizer,
         )
         matched_eval_path, natural_eval_path = (
             resolve_sft_bin_evaluation_partitions(args.sft_bin)
@@ -1217,6 +1352,8 @@ def main():
                 rank,
                 world_size,
                 repeat=False,
+                reasoning_envelope=args.reasoning_envelope,
+                reasoning_tokenizer=reasoning_tokenizer,
             )
             if matched_eval_path is not None
             else None
@@ -1229,6 +1366,8 @@ def main():
                 rank,
                 world_size,
                 repeat=False,
+                reasoning_envelope=args.reasoning_envelope,
+                reasoning_tokenizer=reasoning_tokenizer,
             )
             if natural_eval_path is not None
             else None
@@ -1414,6 +1553,11 @@ def main():
                     f"({len(matched_eval_ds.records)} held-out records)"
                 )
         logger.info(f"Chat template: {chat_template['id']}")
+        if args.reasoning_envelope:
+            logger.info(
+                "Reasoning envelope: <think>/<final> enabled for "
+                + ", ".join(sorted(REASONING_ENVELOPE_PLANS))
+            )
         metrics_path = run_dir / "metrics.csv"
         append_metrics = args.resume is not None and metrics_path.exists()
         csv_file = metrics_path.open("a" if append_metrics else "w", newline="")
@@ -1427,6 +1571,7 @@ def main():
                     "matched_eval_loss",
                     "matched_eval_ppl",
                     "lr",
+                    "expert_lr",
                     "tok_s",
                     "supervised_tokens",
                     "min_label",
@@ -1498,6 +1643,7 @@ def main():
                     f"{initial_eval_loss:.6f}",
                     f"{math.exp(min(initial_eval_loss, 20)):.2f}",
                     f"{optimizer.param_groups[0]['lr']:.6e}",
+                    "",
                     "",
                     "",
                     "",
@@ -1697,6 +1843,17 @@ def main():
                 train_loss = float(loss_tensor.item())
             train_ppl = math.exp(min(train_loss, 20))
             lr_now = scheduler.get_last_lr()[0]
+            expert_lr_now = next(
+                (
+                    lr
+                    for group, lr in zip(
+                        optimizer.param_groups,
+                        scheduler.get_last_lr(),
+                    )
+                    if str(group.get("name", "")).startswith("expert_")
+                ),
+                None,
+            )
             if is_main:
                 writer.writerow(
                     [
@@ -1706,6 +1863,7 @@ def main():
                         "" if eval_loss is None else f"{eval_loss:.6f}",
                         "" if eval_loss is None else f"{math.exp(min(eval_loss, 20)):.2f}",
                         f"{lr_now:.6e}",
+                        "" if expert_lr_now is None else f"{expert_lr_now:.6e}",
                         f"{tok_s:.0f}",
                         stats["supervised_tokens"],
                         stats["min_label"],

@@ -117,6 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lora-rank", type=int, default=0)
     parser.add_argument("--lora-alpha", type=float, default=32.0)
     parser.add_argument("--lora-dropout", type=float, default=0.05)
+    parser.add_argument("--expert-lr-multiplier", type=float, default=1.0)
     parser.add_argument(
         "--lora-lr-multiplier",
         type=float,
@@ -126,6 +127,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--lora-targets",
         default="q_proj,v_proj,o_proj,shared_gate,shared_up,shared_down",
+    )
+    parser.add_argument(
+        "--reasoning-envelope",
+        action=argparse.BooleanOptionalAction,
+        default=False,
     )
     parser.add_argument(
         "--no-eval",
@@ -271,8 +277,12 @@ def main() -> None:
                     str(args.lora_dropout),
                     "--lora-targets",
                     args.lora_targets,
+                    "--expert-lr-multiplier",
+                    str(args.expert_lr_multiplier),
                 ]
             )
+        if args.reasoning_envelope:
+            command.append("--reasoning-envelope")
         if args.no_eval:
             command.extend(
                 [

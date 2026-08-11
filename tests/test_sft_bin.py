@@ -15,6 +15,7 @@ from complexity.inference.chat_template import (
 from scripts.sft_500m_32k_tr import (
     SFTBinDataset,
     SFTJsonlDataset,
+    apply_reasoning_envelope,
     build_parser,
     configure_trainable_parameters,
     early_stopping_is_eligible,
@@ -80,6 +81,39 @@ def test_sft_bin_dataset_reads_and_pads_indexed_examples(tmp_path: Path) -> None
     assert first["input_ids"].tolist() == [10, 11, 12, 13, 199999]
     assert first["labels"].tolist() == [-100, -100, 12, 13, -100]
     assert dataset.chat_template["id"] == CHAT_TEMPLATE_ID
+
+
+def test_reasoning_envelope_preserves_prompt_mask_and_final_answer() -> None:
+    inputs = np.asarray([10, 11, 50, 12, 13], dtype=np.int64)
+    labels = np.asarray([-100, -100, 12, 13, 99], dtype=np.int64)
+
+    rebuilt_inputs, rebuilt_labels = apply_reasoning_envelope(
+        inputs,
+        labels,
+        prefix_ids=[20, 21],
+        suffix_ids=[30, 31],
+        eos_token_id=99,
+        seq_len=9,
+    )
+
+    assert rebuilt_inputs.tolist() == [10, 11, 50, 20, 21, 12, 13, 30, 31]
+    assert rebuilt_labels.tolist() == [-100, -100, 20, 21, 12, 13, 30, 31, 99]
+
+
+def test_reasoning_envelope_uses_only_final_assistant_span() -> None:
+    inputs = np.asarray([1, 2, 3, 4, 5, 6], dtype=np.int64)
+    labels = np.asarray([-100, 3, 99, -100, 6, 99], dtype=np.int64)
+
+    _, rebuilt_labels = apply_reasoning_envelope(
+        inputs,
+        labels,
+        prefix_ids=[20],
+        suffix_ids=[30],
+        eos_token_id=99,
+        seq_len=8,
+    )
+
+    assert rebuilt_labels[rebuilt_labels != -100].tolist() == [20, 6, 30, 99]
 
 
 def test_messages_use_the_canonical_chat_template() -> None:

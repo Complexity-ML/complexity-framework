@@ -1,4 +1,4 @@
-"""Small, framework-native LoRA adapters for ``torch.nn.Linear`` modules.
+"""Framework-native LoRA adapters for linear and TR-Hash expert tensors.
 
 Checkpoints keep a canonical, merged model state for normal inference and a
 separate adapter state for exact training resume.  This avoids making the
@@ -13,6 +13,9 @@ from typing import Iterable
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils import parametrize
+
+from complexity.tr_hash.engine import TRHashEngine
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,71 @@ class LoRALinear(nn.Module):
         return (self.lora_B @ self.lora_A) * self.scaling
 
 
+class LoRAExpertTensor(nn.Module):
+    """Per-expert low-rank update for one ``[experts, input, output]`` tensor.
+
+    TR-Hash stores its routed projections as three-dimensional parameters so
+    they can be consumed directly by the grouped Triton kernels. PyTorch
+    parametrization keeps that exact public tensor contract: fused kernels see
+    an ordinary merged tensor while only the low-rank factors are trainable.
+    """
+
+    is_lora_adapter = True
+
+    def __init__(
+        self,
+        base: torch.Tensor,
+        *,
+        rank: int,
+        alpha: float,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        if base.ndim != 3:
+            raise ValueError("expert LoRA expects [experts, input, output]")
+        if rank < 1:
+            raise ValueError("LoRA rank must be positive")
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError("LoRA dropout must be in [0, 1)")
+        experts, input_size, output_size = base.shape
+        self.rank = int(rank)
+        self.alpha = float(alpha)
+        self.scaling = self.alpha / self.rank
+        self.dropout = float(dropout)
+        self.lora_A = nn.Parameter(
+            torch.empty(
+                experts,
+                input_size,
+                self.rank,
+                device=base.device,
+                dtype=base.dtype,
+            )
+        )
+        self.lora_B = nn.Parameter(
+            torch.zeros(
+                experts,
+                self.rank,
+                output_size,
+                device=base.device,
+                dtype=base.dtype,
+            )
+        )
+        nn.init.kaiming_uniform_(self.lora_A, a=5**0.5)
+
+    def delta_weight(self, *, regularized: bool = False) -> torch.Tensor:
+        left = self.lora_A
+        if regularized and self.dropout:
+            # Expert weights are consumed as tensors by grouped kernels, not
+            # through an nn.Linear call where input dropout could be inserted.
+            # Factor dropout provides the corresponding training-only
+            # regularization while preserving the fused tensor interface.
+            left = F.dropout(left, p=self.dropout, training=True)
+        return torch.bmm(left, self.lora_B) * self.scaling
+
+    def forward(self, base: torch.Tensor) -> torch.Tensor:
+        return base + self.delta_weight(regularized=self.training)
+
+
 def _split_parent(model: nn.Module, module_name: str) -> tuple[nn.Module, str]:
     parent_name, _, child_name = module_name.rpartition(".")
     parent = model.get_submodule(parent_name) if parent_name else model
@@ -89,30 +157,51 @@ def apply_lora(
     dropout: float,
     targets: Iterable[str],
 ) -> dict[str, int]:
-    """Freeze ``model`` and wrap matching linear projections with LoRA."""
+    """Freeze ``model`` and adapt matching linear/expert projections."""
 
     target_names = tuple(dict.fromkeys(str(name).strip() for name in targets if str(name).strip()))
     if not target_names:
         raise ValueError("LoRA needs at least one target module suffix")
     model.requires_grad_(False)
-    matches = [
+    linear_matches = [
         (name, module)
         for name, module in model.named_modules()
         if isinstance(module, nn.Linear) and name.rsplit(".", 1)[-1] in target_names
     ]
-    if not matches:
-        raise ValueError(f"no linear modules matched LoRA targets {target_names}")
-    for name, module in matches:
+    for name, module in linear_matches:
         parent, child_name = _split_parent(model, name)
         setattr(
             parent,
             child_name,
             LoRALinear(module, rank=rank, alpha=alpha, dropout=dropout),
         )
+    expert_matches: list[tuple[str, TRHashEngine, str]] = []
+    expert_targets = {"expert_gate", "expert_up", "expert_down"}.intersection(target_names)
+    if expert_targets:
+        for module_name, module in model.named_modules():
+            if not isinstance(module, TRHashEngine):
+                continue
+            for tensor_name in sorted(expert_targets):
+                expert_matches.append((module_name, module, tensor_name))
+                parametrize.register_parametrization(
+                    module,
+                    tensor_name,
+                    LoRAExpertTensor(
+                        getattr(module, tensor_name),
+                        rank=rank,
+                        alpha=alpha,
+                        dropout=dropout,
+                    ),
+                )
+                module.parametrizations[tensor_name].original.requires_grad_(False)
+    if not linear_matches and not expert_matches:
+        raise ValueError(f"no modules matched LoRA targets {target_names}")
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     total = sum(parameter.numel() for parameter in model.parameters())
     return {
-        "modules": len(matches),
+        "modules": len(linear_matches) + len(expert_matches),
+        "linear_modules": len(linear_matches),
+        "expert_tensors": len(expert_matches),
         "trainable": trainable,
         "total": total,
         "frozen": total - trainable,
@@ -127,9 +216,29 @@ def lora_modules(model: nn.Module) -> dict[str, LoRALinear]:
     }
 
 
+def expert_lora_modules(
+    model: nn.Module,
+) -> dict[str, tuple[TRHashEngine, str, LoRAExpertTensor]]:
+    adapters: dict[str, tuple[TRHashEngine, str, LoRAExpertTensor]] = {}
+    for module_name, module in model.named_modules():
+        if not isinstance(module, TRHashEngine) or not parametrize.is_parametrized(module):
+            continue
+        for tensor_name, parametrizations in module.parametrizations.items():
+            if len(parametrizations) != 1 or not isinstance(
+                parametrizations[0], LoRAExpertTensor
+            ):
+                continue
+            canonical_name = f"{module_name}.{tensor_name}" if module_name else tensor_name
+            adapters[canonical_name] = (module, tensor_name, parametrizations[0])
+    return adapters
+
+
 def adapter_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
     state: dict[str, torch.Tensor] = {}
     for name, module in lora_modules(model).items():
+        state[f"{name}.lora_A"] = module.lora_A.detach().cpu()
+        state[f"{name}.lora_B"] = module.lora_B.detach().cpu()
+    for name, (_, _, module) in expert_lora_modules(model).items():
         state[f"{name}.lora_A"] = module.lora_A.detach().cpu()
         state[f"{name}.lora_B"] = module.lora_B.detach().cpu()
     return state
@@ -137,9 +246,14 @@ def adapter_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
 
 def load_adapter_state_dict(model: nn.Module, state: dict[str, torch.Tensor]) -> None:
     modules = lora_modules(model)
+    expert_modules = expert_lora_modules(model)
     expected = {
         f"{name}.{parameter}"
         for name in modules
+        for parameter in ("lora_A", "lora_B")
+    } | {
+        f"{name}.{parameter}"
+        for name in expert_modules
         for parameter in ("lora_A", "lora_B")
     }
     if set(state) != expected:
@@ -150,6 +264,9 @@ def load_adapter_state_dict(model: nn.Module, state: dict[str, torch.Tensor]) ->
         for name, module in modules.items():
             module.lora_A.copy_(state[f"{name}.lora_A"])
             module.lora_B.copy_(state[f"{name}.lora_B"])
+        for name, (_, _, module) in expert_modules.items():
+            module.lora_A.copy_(state[f"{name}.lora_A"])
+            module.lora_B.copy_(state[f"{name}.lora_B"])
 
 
 def unmerge_adapter_from_base(model: nn.Module) -> None:
@@ -158,12 +275,16 @@ def unmerge_adapter_from_base(model: nn.Module) -> None:
     with torch.no_grad():
         for module in lora_modules(model).values():
             module.base.weight.sub_(module.delta_weight().to(module.base.weight.dtype))
+        for parent, tensor_name, module in expert_lora_modules(model).values():
+            original = parent.parametrizations[tensor_name].original
+            original.sub_(module.delta_weight().to(original.dtype))
 
 
 def merged_model_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
     """Return an ordinary model state with all adapters folded into weights."""
 
     adapters = lora_modules(model)
+    expert_adapters = expert_lora_modules(model)
     source = model.state_dict()
     merged: dict[str, torch.Tensor] = {}
     adapter_names = set(adapters)
@@ -181,5 +302,12 @@ def merged_model_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
             if module_name in adapter_names:
                 merged[f"{module_name}.bias"] = value.detach().cpu()
                 continue
+        if "parametrizations." in key:
+            continue
         merged[key] = value.detach().cpu()
+    for name, (parent, tensor_name, module) in expert_adapters.items():
+        original = parent.parametrizations[tensor_name].original
+        merged[name] = (
+            original.detach() + module.delta_weight().detach().to(original.dtype)
+        ).cpu()
     return merged
