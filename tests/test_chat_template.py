@@ -19,7 +19,7 @@ from scripts.export_tr_hash_vllm import (
 def test_template_renders_single_turn_exactly() -> None:
     template = default_chat_template()
     assert template["training_projection"] == (
-        "naturalize_card_hand_target_final_assistant"
+        "naturalize_card_hand_supervise_all_assistant_turns"
     )
     assert render_inference_prompt("Hello", template) == (
         "System:\n"
@@ -49,7 +49,8 @@ def test_huggingface_template_uses_the_same_prompt_contract() -> None:
     assert "System:\\n" in rendered
     assert "User:\\n" in rendered
     assert "Assistant:\\n" in rendered
-    assert "+ eos_token" in rendered
+    assert '"<|endoftext|>"' in rendered
+    assert "+ eos_token" not in rendered
 
 
 def test_huggingface_template_matches_sft_for_multi_turn_conversation() -> None:
@@ -72,7 +73,7 @@ def test_huggingface_template_matches_sft_for_multi_turn_conversation() -> None:
         contract["system_format"].format(content=contract["system_prompt"])
         + contract["user_format"].format(content="First")
         + contract["assistant_prefix"]
-        + "Answer</s>"
+        + "Answer<|endoftext|>"
         + contract["user_format"].format(content="Follow-up")
         + contract["assistant_prefix"]
     )
@@ -154,7 +155,8 @@ def test_export_replaces_stale_tokenizer_chat_template(tmp_path) -> None:
 
     assert config["chat_template"] != "stale"
     assert config["chat_template_id"] == CHAT_TEMPLATE_ID
-    assert "+ eos_token" in config["chat_template"]
+    assert '"<|endoftext|>"' in config["chat_template"]
+    assert "+ eos_token" not in config["chat_template"]
 
 
 def test_base_export_removes_tokenizer_chat_template(tmp_path) -> None:

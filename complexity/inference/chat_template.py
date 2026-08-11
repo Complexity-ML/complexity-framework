@@ -36,7 +36,7 @@ def default_chat_template() -> dict[str, Any]:
         "turn_separator": "\n\n",
         "eos_token": "<|endoftext|>",
         "assistant_only_loss": True,
-        "training_projection": "naturalize_card_hand_target_final_assistant",
+        "training_projection": "naturalize_card_hand_supervise_all_assistant_turns",
     }
 
 
@@ -51,6 +51,7 @@ def validate_chat_template(template: dict[str, Any]) -> dict[str, Any]:
     supported_projections = {
         "naturalize_card_hand_preserve_assistant_turns",
         "naturalize_card_hand_target_final_assistant",
+        "naturalize_card_hand_supervise_all_assistant_turns",
     }
     if template["training_projection"] not in supported_projections:
         raise ValueError(
@@ -128,6 +129,7 @@ def huggingface_chat_template(template: dict[str, Any]) -> str:
         "user_prefix": json.dumps(user_prefix),
         "user_suffix": json.dumps(user_suffix),
         "assistant": json.dumps(template["assistant_prefix"]),
+        "eos": json.dumps(template["eos_token"]),
     }
     return (
         f"{{{{- {literals['system']} -}}}}"
@@ -136,7 +138,7 @@ def huggingface_chat_template(template: dict[str, Any]) -> str:
         f"{{{{- {literals['user_prefix']} + (message['content'] | trim) + "
         f"{literals['user_suffix']} -}}}}"
         "{%- elif message['role'] == 'assistant' -%}"
-        f"{{{{- {literals['assistant']} + (message['content'] | trim) + eos_token -}}}}"
+        f"{{{{- {literals['assistant']} + (message['content'] | trim) + {literals['eos']} -}}}}"
         "{%- endif -%}"
         "{%- endfor -%}"
         "{%- if add_generation_prompt -%}"
