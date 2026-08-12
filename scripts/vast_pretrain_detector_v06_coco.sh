@@ -8,6 +8,7 @@ OUTPUT="${OUTPUT:-artifacts/detector_coco_v06}"
 BACKBONE="${BACKBONE:-artifacts/tr_hash_vision_v06_imagenet1k/best}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
 BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-4}"
+WARMUP_STEPS="${WARMUP_STEPS:-1000}"
 INITIALIZATION=(--backbone-checkpoint "$BACKBONE")
 if [[ -n "${RESUME_CHECKPOINT:-}" ]]; then
   INITIALIZATION=(--resume "$RESUME_CHECKPOINT")
@@ -57,7 +58,7 @@ exec torchrun \
   --momentum 0.947 \
   --weight-decay 6.4e-4 \
   --expert-lr-multiplier 1.5 \
-  --warmup-steps 1000 \
+  --warmup-steps "$WARMUP_STEPS" \
   --eval-every 5 \
   --save-steps 2000 \
   --require-triton \
