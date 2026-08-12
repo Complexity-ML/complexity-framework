@@ -120,7 +120,13 @@ def render_messages_before_assistant(
 
 
 def huggingface_chat_template(template: dict[str, Any]) -> str:
-    """Build a Jinja template that is byte-for-byte aligned with SFT prompts."""
+    """Build a Jinja template aligned with the exported tokenizer's EOS ID.
+
+    Native training tokenizers may spell ID 0 as ``<|endoftext|>`` while the
+    Hugging Face tokenizer exported beside the model spells the same ID as
+    ``</s>``. Referencing Jinja's ``eos_token`` preserves the trained token ID
+    instead of encoding the native spelling as ordinary text tokens.
+    """
 
     template = validate_chat_template(template)
     user_prefix, user_suffix = template["user_format"].split("{content}", 1)
@@ -129,7 +135,6 @@ def huggingface_chat_template(template: dict[str, Any]) -> str:
         "user_prefix": json.dumps(user_prefix),
         "user_suffix": json.dumps(user_suffix),
         "assistant": json.dumps(template["assistant_prefix"]),
-        "eos": json.dumps(template["eos_token"]),
     }
     return (
         f"{{{{- {literals['system']} -}}}}"
@@ -138,7 +143,7 @@ def huggingface_chat_template(template: dict[str, Any]) -> str:
         f"{{{{- {literals['user_prefix']} + (message['content'] | trim) + "
         f"{literals['user_suffix']} -}}}}"
         "{%- elif message['role'] == 'assistant' -%}"
-        f"{{{{- {literals['assistant']} + (message['content'] | trim) + {literals['eos']} -}}}}"
+        f"{{{{- {literals['assistant']} + (message['content'] | trim) + eos_token -}}}}"
         "{%- endif -%}"
         "{%- endfor -%}"
         "{%- if add_generation_prompt -%}"
