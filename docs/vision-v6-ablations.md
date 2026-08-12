@@ -44,6 +44,17 @@ bash scripts/vast_run_detector_v06_ablation_suite.sh
 Set `DATASET=coco` for a COCO suite. Start with one arm and verify its manifest
 before committing the full five-arm compute budget.
 
+The suite considers an arm complete only when its latest resumable checkpoint
+records the full epoch budget. If a run was interrupted, the suite resumes its
+model, optimizer, scheduler, data cursor and RNG state from the latest
+`step_*` checkpoint. A checkpoint created under a different epoch budget is
+rejected instead of being mixed into the report.
+
+Dataset-specific validation and optimization settings match their reference
+launchers. In particular, COCO uses a backbone LR multiplier of `1.0`, an
+evaluation confidence threshold of `0.20`, and at most `100` detections; VOC
+uses `0.1`, `0.05`, and `300`, respectively.
+
 Collect a table including the existing reference:
 
 ```bash

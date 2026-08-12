@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-source /venv/main/bin/activate
-cd /workspace/complexity-framework
+source "${VENV_ACTIVATE:-/venv/main/bin/activate}"
+cd "${WORKSPACE:-/workspace/complexity-framework}"
 
 ARM="${1:-}"
 if [[ -z "$ARM" ]]; then
@@ -32,6 +32,9 @@ case "$DATASET" in
     MOMENTUM="${MOMENTUM:-0.937}"
     WEIGHT_DECAY="${WEIGHT_DECAY:-5e-4}"
     WARMUP_STEPS="${WARMUP_STEPS:-500}"
+    BACKBONE_LR_MULTIPLIER="${BACKBONE_LR_MULTIPLIER:-0.1}"
+    EVAL_CONFIDENCE="${EVAL_CONFIDENCE:-0.05}"
+    EVAL_MAX_DETECTIONS="${EVAL_MAX_DETECTIONS:-300}"
     ;;
   coco)
     DATA_ARGS=(
@@ -50,6 +53,9 @@ case "$DATASET" in
     MOMENTUM="${MOMENTUM:-0.947}"
     WEIGHT_DECAY="${WEIGHT_DECAY:-6.4e-4}"
     WARMUP_STEPS="${WARMUP_STEPS:-1000}"
+    BACKBONE_LR_MULTIPLIER="${BACKBONE_LR_MULTIPLIER:-1.0}"
+    EVAL_CONFIDENCE="${EVAL_CONFIDENCE:-0.20}"
+    EVAL_MAX_DETECTIONS="${EVAL_MAX_DETECTIONS:-100}"
     ;;
   *)
     echo "unknown dataset: $DATASET (expected voc or coco)" >&2
@@ -63,6 +69,11 @@ if (( GLOBAL_BATCH_SIZE % NPROC_PER_NODE != 0 )); then
 fi
 BATCH_SIZE_PER_GPU=$((GLOBAL_BATCH_SIZE / NPROC_PER_NODE))
 OUTPUT="${OUTPUT:-${OUTPUT_ROOT}/${ARM}}"
+
+INITIALIZATION=(--backbone-checkpoint "$BACKBONE")
+if [[ -n "${RESUME_CHECKPOINT:-}" ]]; then
+  INITIALIZATION=(--resume "$RESUME_CHECKPOINT")
+fi
 
 ARCHITECTURE=(--neck-mode pan --p2-head --end-to-end)
 case "$ARM" in
@@ -93,7 +104,7 @@ COMMAND=(
   torchrun --standalone --nproc_per_node "$NPROC_PER_NODE"
   -m complexity.generative.detection.training
   --output "$OUTPUT"
-  --backbone-checkpoint "$BACKBONE"
+  "${INITIALIZATION[@]}"
   "${DATA_ARGS[@]}"
   --architecture-version 6
   --image-size 640
@@ -126,17 +137,17 @@ COMMAND=(
   --batch-size "$BATCH_SIZE_PER_GPU"
   --eval-batch-size 8
   --eval-every 5
-  --eval-max-detections 300
+  --eval-max-detections "$EVAL_MAX_DETECTIONS"
   --workers 6
   --lr "$LR"
-  --backbone-lr-multiplier 0.1
+  --backbone-lr-multiplier "$BACKBONE_LR_MULTIPLIER"
   --momentum "$MOMENTUM"
   --weight-decay "$WEIGHT_DECAY"
   --expert-lr-multiplier 1.5
   --warmup-steps "$WARMUP_STEPS"
   --log-steps 20
   --save-steps 1000
-  --eval-confidence 0.05
+  --eval-confidence "$EVAL_CONFIDENCE"
   --require-triton
   --device cuda
   --seed 3
