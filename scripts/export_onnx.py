@@ -1,8 +1,8 @@
 """Export a TR-Hash Vision detector to ONNX format.
 
-Exports the backbone + detection head (forward_predictions). Post-processing
-(decode + NMS) stays in Python — this is the standard approach for detection
-models (same as Ultralytics YOLO, DETR, etc.).
+Exports the backbone and one raw detection branch. End-to-end checkpoints use
+their one-to-one NMS-free branch by default; ``--branch o2m`` exports the
+one-to-many branch for runtimes that provide decode and NMS.
 
 Usage:
     python export_onnx.py /path/to/checkpoint --output model.onnx
@@ -22,23 +22,18 @@ import torch
 # Force PyTorch-only backend (no Triton/CUDA kernels — they can't be traced)
 os.environ["COMPLEXITY_DISABLE_KERNELS"] = "1"
 
-from complexity.generative.detection.config import TRHashDetectorConfig
+from complexity.generative.detection.exporting import ExportBranch, RawDetectorExport
 from complexity.generative.detection.hub import load_detector_checkpoint
-
-
-class DetectorForExport(torch.nn.Module):
-    """Thin wrapper that exposes only forward_predictions for tracing."""
-
-    def __init__(self, detector: torch.nn.Module) -> None:
-        super().__init__()
-        self.detector = detector
-
-    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        return self.detector.forward_predictions(pixel_values)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--branch",
+        choices=("auto", "nms-free", "o2m"),
+        default="auto",
+        help="Raw prediction branch; auto prefers NMS-free when available",
+    )
     parser.add_argument(
         "checkpoint",
         type=Path,
@@ -82,6 +77,7 @@ def export_onnx(
     dynamic_batch: bool = False,
     simplify: bool = False,
     check: bool = False,
+    branch: ExportBranch = "auto",
 ) -> Path:
     """Export a TR-Hash detector checkpoint to ONNX."""
 
@@ -95,8 +91,9 @@ def export_onnx(
     )
 
     # Wrap for export
-    export_model = DetectorForExport(model)
+    export_model = RawDetectorExport(model, branch)
     export_model.eval()
+    print(f"Export branch: {export_model.branch}")
 
     # Dummy input
     dummy_input = torch.randn(1, 3, config.image_size, config.image_size)
@@ -126,6 +123,7 @@ def export_onnx(
         output_names=["predictions"],
         dynamic_axes=dynamic_axes,
         do_constant_folding=True,
+        dynamo=False,
     )
 
     file_size_mb = output_path.stat().st_size / (1024 * 1024)
@@ -166,6 +164,9 @@ def export_onnx(
         "scale_factors": list(config.scale_factors),
         "grid_sizes": list(config.grid_sizes),
         "p2_head": config.p2_head,
+        "branch": export_model.branch,
+        "requires_nms": export_model.branch == "o2m",
+        "output_semantics": "raw_ltrb_dfl_and_quality_class_logits",
     }
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
     print(f"Metadata: {metadata_path}")
@@ -182,6 +183,7 @@ def main() -> None:
         dynamic_batch=args.dynamic_batch,
         simplify=args.simplify,
         check=args.check,
+        branch=args.branch,
     )
 
 
