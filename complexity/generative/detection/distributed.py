@@ -85,6 +85,8 @@ class DistributedContext:
             device_ids=[self.local_rank],
             output_device=self.local_rank,
             broadcast_buffers=False,
+            gradient_as_bucket_view=True,
+            static_graph=True,
         )
 
     def all_gather_objects(self, value: Any) -> list[Any]:

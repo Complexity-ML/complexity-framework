@@ -89,9 +89,7 @@ class TRHashObjectDetector(nn.Module):
         )
         self.head = DecoupledDetectionHead(self.config)
         self.one_to_one_head = (
-            OneToOnePredictionHead(self.config)
-            if self.config.end_to_end
-            else None
+            OneToOnePredictionHead(self.config) if self.config.end_to_end else None
         )
         if self.one_to_one_head is not None:
             self.one_to_one_head.initialize_from(self.head)
@@ -149,8 +147,7 @@ class TRHashObjectDetector(nn.Module):
                 ]
             else:
                 branch_hidden = [
-                    tuple(hidden.detach() for hidden in pair)
-                    for pair in hidden_outputs
+                    tuple(hidden.detach() for hidden in pair) for pair in hidden_outputs
                 ]
             one_to_one = self.one_to_one_head(branch_hidden)
         return one_to_many, one_to_one
@@ -181,16 +178,13 @@ class TRHashObjectDetector(nn.Module):
             return self.config.grid_sizes
         for base_grid in range(1, self.config.grid_size + 1):
             grids = tuple(
-                (base_grid + factor - 1) // factor
-                for factor in self.config.scale_factors
+                (base_grid + factor - 1) // factor for factor in self.config.scale_factors
             )
             if self.config.p2_head:
                 grids = (base_grid * 2, *grids)
             if sum(grid * grid for grid in grids) == cells:
                 return grids
-        raise ValueError(
-            f"cannot infer prediction pyramid geometry from {cells} cells"
-        )
+        raise ValueError(f"cannot infer prediction pyramid geometry from {cells} cells")
 
     def _cell_geometry(
         self,
@@ -278,6 +272,7 @@ class TRHashObjectDetector(nn.Module):
         device: torch.device,
         decoded: Optional[Dict[str, torch.Tensor]] = None,
         *,
+        target_values: Optional[List[list[list[float]]]] = None,
         assignment_top_k: Optional[int] = None,
         allow_stal: bool = True,
         unique_per_target: bool = False,
@@ -291,38 +286,55 @@ class TRHashObjectDetector(nn.Module):
         """
 
         batch = len(targets)
-        grid_sizes = (
-            tuple(decoded["grid_sizes"])
-            if decoded is not None
-            else self.config.grid_sizes
-        )
+        grid_sizes = tuple(decoded["grid_sizes"]) if decoded is not None else self.config.grid_sizes
         num_cells = sum(grid * grid for grid in grid_sizes)
         quality_target = torch.zeros(batch, num_cells, device=device)
         box_target = torch.zeros(batch, num_cells, 4, device=device)
         class_target = torch.zeros(batch, num_cells, dtype=torch.long, device=device)
-        target_indices = torch.full(
-            (batch, num_cells), -1, dtype=torch.long, device=device
-        )
+        target_indices = torch.full((batch, num_cells), -1, dtype=torch.long, device=device)
         positive_mask = torch.zeros(batch, num_cells, dtype=torch.bool, device=device)
         assignment_score = torch.full((batch, num_cells), -1.0, device=device)
         rows, cols, _, _ = self._cell_geometry(device, grid_sizes)
         offsets = self._level_offsets(grid_sizes)
 
-        for image_index, image_boxes in enumerate(targets):
+        if target_values is None:
+            target_counts = [len(image_boxes) for image_boxes in targets]
+            non_empty_targets = [image_boxes for image_boxes in targets if len(image_boxes)]
+            flat_target_values = (
+                torch.cat(non_empty_targets, dim=0).detach().float().cpu().tolist()
+                if non_empty_targets
+                else []
+            )
+            target_values = []
+            cursor = 0
+            for target_count in target_counts:
+                target_values.append(flat_target_values[cursor : cursor + target_count])
+                cursor += target_count
+
+        unique_batches: list[tuple[int, torch.Tensor, list[torch.Tensor]]] = []
+        for image_index, (image_boxes, image_box_values) in enumerate(
+            zip(targets, target_values)
+        ):
             if image_boxes.numel() == 0:
                 continue
-            unique_candidates: Dict[int, list[tuple[int, float, float]]] = {}
-            for target_index, image_box in enumerate(image_boxes):
+            unique_candidate_tensors: list[torch.Tensor] = []
+            # Materialize scalar box metadata once per image. Converting CUDA
+            # scalars with float()/int() inside the object loop otherwise
+            # introduces several host synchronizations for every target.
+            for target_index, (image_box, image_box_value) in enumerate(
+                zip(image_boxes, image_box_values)
+            ):
                 cx, cy, width, height, class_id = image_box
+                _, _, width_value, height_value, class_id_value = image_box_value
                 small_object = (
                     allow_stal
                     and self.config.stal_enabled
-                    and max(float(width), float(height)) <= self.config.stal_small_object_threshold
+                    and max(width_value, height_value) <= self.config.stal_small_object_threshold
                 )
                 level = (
                     0
                     if small_object
-                    else self._level_for_box(float(width), float(height), grid_sizes)
+                    else self._level_for_box(width_value, height_value, grid_sizes)
                 )
                 grid = grid_sizes[level]
                 offset = offsets[level]
@@ -376,7 +388,7 @@ class TRHashObjectDetector(nn.Module):
                     predicted_boxes = decoded["boxes"][image_index, candidate_indices].detach()
                     ious = box_iou(predicted_boxes, target_xyxy).flatten()
                     class_scores = decoded["class_scores"][
-                        image_index, candidate_indices, int(class_id)
+                        image_index, candidate_indices, int(class_id_value)
                     ].detach()
                     alignment = class_scores.clamp_min(1e-6).pow(
                         self.config.assignment_class_power
@@ -394,11 +406,14 @@ class TRHashObjectDetector(nn.Module):
                     candidate_quality = ious[selected].clamp_min(0.05)
 
                 if unique_per_target:
-                    unique_candidates[target_index] = list(
-                        zip(
-                            candidate_indices.tolist(),
-                            candidate_scores.float().tolist(),
-                            candidate_quality.float().tolist(),
+                    unique_candidate_tensors.append(
+                        torch.stack(
+                            (
+                                candidate_indices.float(),
+                                candidate_scores.float(),
+                                candidate_quality.float(),
+                            ),
+                            dim=-1,
                         )
                     )
                     continue
@@ -413,6 +428,31 @@ class TRHashObjectDetector(nn.Module):
                 positive_mask[image_index, selected_cells] = True
 
             if unique_per_target:
+                unique_batches.append(
+                    (image_index, image_boxes, unique_candidate_tensors)
+                )
+
+        if unique_batches:
+            # Materialize candidates from every image with one device-to-host
+            # synchronization, then perform the deterministic matching on CPU.
+            all_candidate_tensors = [
+                candidate_tensor
+                for _, _, candidate_tensors in unique_batches
+                for candidate_tensor in candidate_tensors
+            ]
+            flat_candidates = torch.cat(all_candidate_tensors, dim=0).cpu().tolist()
+            cursor = 0
+            for image_index, image_boxes, candidate_tensors in unique_batches:
+                unique_candidates: Dict[int, list[tuple[int, float, float]]] = {}
+                for target_index, candidate_tensor in enumerate(candidate_tensors):
+                    candidate_count = len(candidate_tensor)
+                    unique_candidates[target_index] = [
+                        (int(cell_index), score, quality)
+                        for cell_index, score, quality in flat_candidates[
+                            cursor : cursor + candidate_count
+                        ]
+                    ]
+                    cursor += candidate_count
                 cell_owner: Dict[int, int] = {}
                 target_match: Dict[int, tuple[int, float, float]] = {}
 
@@ -468,6 +508,7 @@ class TRHashObjectDetector(nn.Module):
         training_progress: float = 1.0,
         decoded: Optional[Dict[str, torch.Tensor]] = None,
         assignment_decoded: Optional[Dict[str, torch.Tensor]] = None,
+        target_values: Optional[List[list[list[float]]]] = None,
         unique_per_target: bool = False,
     ) -> Dict[str, torch.Tensor]:
         decoded = decoded if decoded is not None else self.decode(raw)
@@ -475,6 +516,7 @@ class TRHashObjectDetector(nn.Module):
             targets,
             raw.device,
             decoded=assignment_decoded if assignment_decoded is not None else decoded,
+            target_values=target_values,
             assignment_top_k=assignment_top_k,
             allow_stal=allow_stal,
             unique_per_target=unique_per_target,
@@ -482,12 +524,11 @@ class TRHashObjectDetector(nn.Module):
         positive = assigned["positive_mask"]
         positive_weights = assigned["quality"] * positive
         num_positive = positive_weights.sum().clamp_min(1.0)
+        batch_indices, cell_indices = torch.nonzero(positive, as_tuple=True)
+        has_positive = batch_indices.numel() > 0
 
-        quality_targets = raw.new_zeros(
-            raw.size(0), raw.size(1), self.config.num_classes
-        )
-        if positive.any():
-            batch_indices, cell_indices = torch.nonzero(positive, as_tuple=True)
+        quality_targets = raw.new_zeros(raw.size(0), raw.size(1), self.config.num_classes)
+        if has_positive:
             quality_targets[
                 batch_indices,
                 cell_indices,
@@ -503,13 +544,13 @@ class TRHashObjectDetector(nn.Module):
 
         box_l1_error = F.smooth_l1_loss(pred_boxes, assigned["boxes"], reduction="none").sum(-1)
         box_l1_loss = (box_l1_error * positive_weights).sum() / num_positive
-        if positive.any():
+        if has_positive:
             box_iou_error = complete_iou_loss(pred_boxes[positive], assigned["boxes"][positive])
             box_iou_loss = (box_iou_error * positive_weights[positive]).sum() / num_positive
         else:
             box_iou_loss = raw.sum() * 0.0
         dfl_loss = raw.sum() * 0.0
-        if positive.any() and self.config.reg_max:
+        if has_positive and self.config.reg_max:
             grid_sizes = tuple(decoded["grid_sizes"])
             rows, cols, denominators, _ = self._cell_geometry(raw.device, grid_sizes)
             centers_x = (cols + 0.5) / denominators
@@ -519,15 +560,18 @@ class TRHashObjectDetector(nn.Module):
             target_y1 = target_boxes[..., 1] - target_boxes[..., 3] / 2
             target_x2 = target_boxes[..., 0] + target_boxes[..., 2] / 2
             target_y2 = target_boxes[..., 1] + target_boxes[..., 3] / 2
-            target_distances = torch.stack(
-                (
-                    centers_x[None] - target_x1,
-                    centers_y[None] - target_y1,
-                    target_x2 - centers_x[None],
-                    target_y2 - centers_y[None],
-                ),
-                dim=-1,
-            ) * denominators[None, :, None]
+            target_distances = (
+                torch.stack(
+                    (
+                        centers_x[None] - target_x1,
+                        centers_y[None] - target_y1,
+                        target_x2 - centers_x[None],
+                        target_y2 - centers_y[None],
+                    ),
+                    dim=-1,
+                )
+                * denominators[None, :, None]
+            )
             regression_logits = decoded["regression_logits"].reshape(
                 raw.size(0), raw.size(1), 4, self.config.dfl_bins
             )
@@ -561,8 +605,7 @@ class TRHashObjectDetector(nn.Module):
             + self.config.box_loss_weight * box_scale * box_loss
         )
         monitor_loss = (
-            self.config.quality_loss_weight * quality_loss
-            + self.config.box_loss_weight * box_loss
+            self.config.quality_loss_weight * quality_loss + self.config.box_loss_weight * box_loss
         )
         return {
             "loss": total,
@@ -592,12 +635,25 @@ class TRHashObjectDetector(nn.Module):
         one_to_many, one_to_one = raw if isinstance(raw, tuple) else (raw, None)
         if len(targets) != one_to_many.size(0):
             raise ValueError("one target tensor is required per batch image")
+        target_counts = [len(image_boxes) for image_boxes in targets]
+        non_empty_targets = [image_boxes for image_boxes in targets if len(image_boxes)]
+        flat_target_values = (
+            torch.cat(non_empty_targets, dim=0).detach().float().cpu().tolist()
+            if non_empty_targets
+            else []
+        )
+        target_values: List[list[list[float]]] = []
+        cursor = 0
+        for target_count in target_counts:
+            target_values.append(flat_target_values[cursor : cursor + target_count])
+            cursor += target_count
         one_to_many_decoded = self.decode(one_to_many)
         losses = self._compute_branch_loss(
             one_to_many,
             targets,
             training_progress=training_progress,
             decoded=one_to_many_decoded,
+            target_values=target_values,
         )
         losses["one_to_many_loss"] = losses["loss"]
         losses["one_to_many_monitor_loss"] = losses["monitor_loss"]
@@ -609,6 +665,7 @@ class TRHashObjectDetector(nn.Module):
                 allow_stal=True,
                 training_progress=training_progress,
                 assignment_decoded=one_to_many_decoded,
+                target_values=target_values,
                 unique_per_target=True,
             )
             losses["one_to_one_loss"] = one_to_one_losses["loss"]
@@ -616,22 +673,15 @@ class TRHashObjectDetector(nn.Module):
             progress = min(max(float(training_progress), 0.0), 1.0)
             one_to_one_weight = (
                 self.config.one_to_one_loss_start
-                + (
-                    self.config.one_to_one_loss_weight
-                    - self.config.one_to_one_loss_start
-                )
+                + (self.config.one_to_one_loss_weight - self.config.one_to_one_loss_start)
                 * progress
             )
-            losses["one_to_one_weight"] = one_to_one_losses["loss"].new_tensor(
-                one_to_one_weight
-            )
+            losses["one_to_one_weight"] = one_to_one_losses["loss"].new_tensor(one_to_one_weight)
             losses["loss"] = (
-                losses["one_to_many_loss"]
-                + one_to_one_weight * one_to_one_losses["loss"]
+                losses["one_to_many_loss"] + one_to_one_weight * one_to_one_losses["loss"]
             )
             losses["monitor_loss"] = 0.5 * (
-                losses["one_to_many_monitor_loss"]
-                + losses["one_to_one_monitor_loss"]
+                losses["one_to_many_monitor_loss"] + losses["one_to_one_monitor_loss"]
             )
         return losses
 
