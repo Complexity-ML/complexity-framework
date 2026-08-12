@@ -23,6 +23,16 @@ ImageNet-1K initialization checkpoint is published at
 `AETHORIA-AI/TR-HASH-Vision-V6-ImageNet1K-Pretrain`; download it into the
 default `artifacts/tr_hash_vision_v06_imagenet1k/best` path or set `BACKBONE`.
 
+On a fresh Vast instance, the official COCO archives can be downloaded,
+extracted and followed immediately by the full reference run with:
+
+```bash
+bash scripts/vast_download_and_train_detector_v06_coco.sh
+```
+
+Downloads are resumable. The script uses 16 parallel HTTP ranges when `aria2c`
+is installed and falls back to `wget`; already extracted archives are skipped.
+
 The supported arms isolate one change:
 
 | Arm | Change from the full reference | Question |
