@@ -237,6 +237,12 @@ def test_progressive_loss_interpolates_quality_and_box_weights():
         config.quality_loss_weight * end["quality_loss"]
         + config.box_loss_weight * end["box_loss"],
     )
+    assert torch.allclose(start["monitor_loss"], end["monitor_loss"])
+    assert torch.allclose(
+        start["monitor_loss"],
+        config.quality_loss_weight * start["quality_loss"]
+        + config.box_loss_weight * start["box_loss"],
+    )
 
 
 def test_loss_handles_images_with_no_ground_truth_boxes():

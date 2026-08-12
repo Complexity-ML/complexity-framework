@@ -714,6 +714,28 @@ def should_validate_epoch(epoch: int, total_epochs: int, eval_every: int) -> boo
     return completed_epochs % eval_every == 0 or completed_epochs == total_epochs
 
 
+def format_loss_metrics_for_logging(averages: Mapping[str, float]) -> Dict[str, float]:
+    """Expose a stationary monitoring loss without hiding the optimized objective.
+
+    Progressive box/quality weights and the one-to-one ramp make the actual
+    optimization objective non-stationary. ``loss`` is therefore the fixed-weight
+    monitoring value, while ``optimization_loss`` remains the exact value used for
+    backpropagation.
+    """
+
+    metrics = dict(averages)
+    optimization_loss = metrics.pop("loss")
+    metrics["optimization_loss"] = optimization_loss
+    metrics["loss"] = metrics.pop("monitor_loss", optimization_loss)
+    if "one_to_many_monitor_loss" in metrics:
+        metrics["one_to_many_optimization_loss"] = metrics.pop("one_to_many_loss")
+        metrics["one_to_many_loss"] = metrics.pop("one_to_many_monitor_loss")
+    if "one_to_one_monitor_loss" in metrics:
+        metrics["one_to_one_optimization_loss"] = metrics.pop("one_to_one_loss")
+        metrics["one_to_one_loss"] = metrics.pop("one_to_one_monitor_loss")
+    return metrics
+
+
 def main() -> None:
     args = parse_args()
     distributed = DistributedContext.initialize(resolve_device(args.device))
@@ -1219,6 +1241,7 @@ def main() -> None:
                 }
                 averages = distributed.mean_scalars(averages)
                 if distributed.is_main:
+                    logged_averages = format_loss_metrics_for_logging(averages)
                     current_lrs = named_learning_rates(optimizer)
                     task_lr = current_lrs.get("task", current_lrs.get("task_experts", 0.0))
                     backbone_lr = current_lrs.get(
@@ -1234,13 +1257,14 @@ def main() -> None:
                                     "lr": task_lr,
                                     "backbone_lr": backbone_lr,
                                     "expert_lr": expert_lr,
-                                    **averages,
+                                    **logged_averages,
                                 }
                             )
                             + "\n"
                         )
                     progress.set_postfix(
-                        loss=f"{averages['loss']:.4f}",
+                        loss=f"{logged_averages['loss']:.4f}",
+                        opt=f"{logged_averages['optimization_loss']:.4f}",
                         lr=f"{task_lr:.2e}",
                         backbone_lr=f"{backbone_lr:.2e}",
                         expert_lr=f"{expert_lr:.2e}",

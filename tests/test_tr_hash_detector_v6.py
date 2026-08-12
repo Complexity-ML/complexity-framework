@@ -51,7 +51,16 @@ def test_v6_one_to_one_branch_trains_and_decodes_without_nms():
     targets = [torch.tensor([[0.5, 0.5, 0.25, 0.25, 1.0]]) for _ in range(2)]
     losses = model.compute_loss(branches, targets, training_progress=0.0)
     assert "one_to_one_loss" in losses
+    assert "one_to_one_monitor_loss" in losses
     assert losses["one_to_one_weight"].item() == 0.25
+    assert torch.allclose(
+        losses["monitor_loss"],
+        0.5
+        * (
+            losses["one_to_many_monitor_loss"]
+            + losses["one_to_one_monitor_loss"]
+        ),
+    )
     losses["loss"].backward()
     assert any(
         parameter.grad is not None and torch.count_nonzero(parameter.grad)
