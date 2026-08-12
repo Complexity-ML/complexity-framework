@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-cd "${WORKSPACE:-/workspace/complexity-framework}"
+cd "${REPO_ROOT:-/workspace/complexity-framework}"
 
 DATASET="${DATASET:-voc}"
 if [[ "$DATASET" != "voc" && "$DATASET" != "coco" ]]; then

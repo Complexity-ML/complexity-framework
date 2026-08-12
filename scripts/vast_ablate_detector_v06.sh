@@ -2,7 +2,7 @@
 set -euo pipefail
 
 source "${VENV_ACTIVATE:-/venv/main/bin/activate}"
-cd "${WORKSPACE:-/workspace/complexity-framework}"
+cd "${REPO_ROOT:-/workspace/complexity-framework}"
 
 ARM="${1:-}"
 if [[ -z "$ARM" ]]; then
