@@ -560,13 +560,20 @@ class TRHashObjectDetector(nn.Module):
             self.config.quality_loss_weight * quality_scale * quality_loss
             + self.config.box_loss_weight * box_scale * box_loss
         )
+        monitor_loss = (
+            self.config.quality_loss_weight * quality_loss
+            + self.config.box_loss_weight * box_loss
+        )
         return {
             "loss": total,
+            "monitor_loss": monitor_loss,
             "quality_loss": quality_loss,
             "box_loss": box_loss,
             "box_l1_loss": box_l1_loss,
             "box_iou_loss": box_iou_loss,
             "dfl_loss": dfl_loss,
+            "quality_weight_scale": quality_loss.new_tensor(quality_scale),
+            "box_weight_scale": quality_loss.new_tensor(box_scale),
         }
 
     def compute_loss(
@@ -593,6 +600,7 @@ class TRHashObjectDetector(nn.Module):
             decoded=one_to_many_decoded,
         )
         losses["one_to_many_loss"] = losses["loss"]
+        losses["one_to_many_monitor_loss"] = losses["monitor_loss"]
         if one_to_one is not None:
             one_to_one_losses = self._compute_branch_loss(
                 one_to_one,
@@ -604,6 +612,7 @@ class TRHashObjectDetector(nn.Module):
                 unique_per_target=True,
             )
             losses["one_to_one_loss"] = one_to_one_losses["loss"]
+            losses["one_to_one_monitor_loss"] = one_to_one_losses["monitor_loss"]
             progress = min(max(float(training_progress), 0.0), 1.0)
             one_to_one_weight = (
                 self.config.one_to_one_loss_start
@@ -619,6 +628,10 @@ class TRHashObjectDetector(nn.Module):
             losses["loss"] = (
                 losses["one_to_many_loss"]
                 + one_to_one_weight * one_to_one_losses["loss"]
+            )
+            losses["monitor_loss"] = 0.5 * (
+                losses["one_to_many_monitor_loss"]
+                + losses["one_to_one_monitor_loss"]
             )
         return losses
 

@@ -24,10 +24,36 @@ from complexity.generative.detection.distributed import DistributedEvalSampler
 from complexity.generative.detection.training import (
     _average_precision_from_matches,
     _match_image_detections,
+    format_loss_metrics_for_logging,
     load_pretrained_detector,
     should_validate_epoch,
     vision_backend_summary,
 )
+
+
+def test_loss_logger_separates_stationary_monitor_from_optimization_objective():
+    logged = format_loss_metrics_for_logging(
+        {
+            "loss": 9.5,
+            "monitor_loss": 4.2,
+            "one_to_many_loss": 5.0,
+            "one_to_many_monitor_loss": 4.1,
+            "one_to_one_loss": 4.5,
+            "one_to_one_monitor_loss": 4.3,
+            "one_to_one_weight": 1.0,
+        }
+    )
+
+    assert logged["loss"] == 4.2
+    assert logged["optimization_loss"] == 9.5
+    assert logged["one_to_many_loss"] == 4.1
+    assert logged["one_to_many_optimization_loss"] == 5.0
+    assert logged["one_to_one_loss"] == 4.3
+    assert logged["one_to_one_optimization_loss"] == 4.5
+
+    legacy = format_loss_metrics_for_logging({"loss": 7.0})
+    assert legacy["loss"] == 7.0
+    assert legacy["optimization_loss"] == 7.0
 
 
 def _checkpoint_test_optimizer():
