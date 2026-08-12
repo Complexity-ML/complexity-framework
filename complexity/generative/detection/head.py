@@ -125,6 +125,21 @@ class OneToOnePredictionHead(nn.Module):
             nn.init.normal_(classification.weight, std=0.01)
             nn.init.constant_(classification.bias, class_prior)
 
+    @torch.no_grad()
+    def initialize_from(self, one_to_many: DecoupledDetectionHead) -> None:
+        """Start from the compatible one-to-many output projections."""
+
+        for target, source in zip(
+            self.regression_outputs,
+            one_to_many.regression_heads,
+        ):
+            target.load_state_dict(source[-1].state_dict())
+        for target, source in zip(
+            self.classification_outputs,
+            one_to_many.classification_heads,
+        ):
+            target.load_state_dict(source[-1].state_dict())
+
     def forward(
         self,
         hidden_outputs: list[tuple[torch.Tensor, torch.Tensor]],

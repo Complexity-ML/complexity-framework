@@ -93,6 +93,8 @@ class TRHashObjectDetector(nn.Module):
             if self.config.end_to_end
             else None
         )
+        if self.one_to_one_head is not None:
+            self.one_to_one_head.initialize_from(self.head)
 
     def _feature_pyramid(
         self,
@@ -133,16 +135,24 @@ class TRHashObjectDetector(nn.Module):
             feature_maps,
             return_branch_hidden=self.one_to_one_head is not None,
         )
-        one_to_one = (
-            self.one_to_one_head(
-                [
-                    (regression.detach(), classification.detach())
-                    for regression, classification in hidden_outputs
+        one_to_one = None
+        if self.one_to_one_head is not None:
+            assert hidden_outputs is not None
+            gradient_scale = self.config.one_to_one_shared_gradient_scale
+            if gradient_scale:
+                branch_hidden = [
+                    tuple(
+                        hidden.detach() + gradient_scale * (hidden - hidden.detach())
+                        for hidden in pair
+                    )
+                    for pair in hidden_outputs
                 ]
-            )
-            if self.one_to_one_head is not None
-            else None
-        )
+            else:
+                branch_hidden = [
+                    tuple(hidden.detach() for hidden in pair)
+                    for pair in hidden_outputs
+                ]
+            one_to_one = self.one_to_one_head(branch_hidden)
         return one_to_many, one_to_one
 
     def forward_predictions(self, pixel_values: torch.Tensor) -> torch.Tensor:
@@ -270,6 +280,7 @@ class TRHashObjectDetector(nn.Module):
         *,
         assignment_top_k: Optional[int] = None,
         allow_stal: bool = True,
+        unique_per_target: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """Build per-cell training targets from ``[N_i, 5]`` (cx, cy, w, h, class_id) boxes.
 
@@ -300,6 +311,7 @@ class TRHashObjectDetector(nn.Module):
         for image_index, image_boxes in enumerate(targets):
             if image_boxes.numel() == 0:
                 continue
+            unique_candidates: Dict[int, list[tuple[int, float, float]]] = {}
             for target_index, image_box in enumerate(image_boxes):
                 cx, cy, width, height, class_id = image_box
                 small_object = (
@@ -369,13 +381,27 @@ class TRHashObjectDetector(nn.Module):
                     alignment = class_scores.clamp_min(1e-6).pow(
                         self.config.assignment_class_power
                     ) * ious.clamp_min(1e-6).pow(self.config.assignment_iou_power)
-                    requested_top_k = assignment_top_k or self.config.assignment_top_k
-                    if small_object and assignment_top_k is None:
-                        requested_top_k = max(requested_top_k, self.config.stal_top_k)
-                    top_k = min(requested_top_k, len(candidate_indices))
-                    candidate_scores, selected = alignment.topk(top_k)
+                    if unique_per_target:
+                        selected = torch.argsort(alignment, descending=True)
+                        candidate_scores = alignment[selected]
+                    else:
+                        requested_top_k = assignment_top_k or self.config.assignment_top_k
+                        if small_object and assignment_top_k is None:
+                            requested_top_k = max(requested_top_k, self.config.stal_top_k)
+                        top_k = min(requested_top_k, len(candidate_indices))
+                        candidate_scores, selected = alignment.topk(top_k)
                     candidate_indices = candidate_indices[selected]
                     candidate_quality = ious[selected].clamp_min(0.05)
+
+                if unique_per_target:
+                    unique_candidates[target_index] = list(
+                        zip(
+                            candidate_indices.tolist(),
+                            candidate_scores.float().tolist(),
+                            candidate_quality.float().tolist(),
+                        )
+                    )
+                    continue
 
                 replace = candidate_scores > assignment_score[image_index, candidate_indices]
                 selected_cells = candidate_indices[replace]
@@ -385,6 +411,44 @@ class TRHashObjectDetector(nn.Module):
                 class_target[image_index, selected_cells] = class_id.long()
                 target_indices[image_index, selected_cells] = target_index
                 positive_mask[image_index, selected_cells] = True
+
+            if unique_per_target:
+                cell_owner: Dict[int, int] = {}
+                target_match: Dict[int, tuple[int, float, float]] = {}
+
+                def match_target(target_index: int, visited_cells: set[int]) -> bool:
+                    for cell_index, score, quality in unique_candidates[target_index]:
+                        if cell_index in visited_cells:
+                            continue
+                        visited_cells.add(cell_index)
+                        previous_target = cell_owner.get(cell_index)
+                        if previous_target is None or match_target(
+                            previous_target,
+                            visited_cells,
+                        ):
+                            cell_owner[cell_index] = target_index
+                            target_match[target_index] = (cell_index, score, quality)
+                            return True
+                    return False
+
+                target_order = sorted(
+                    unique_candidates,
+                    key=lambda index: (
+                        -unique_candidates[index][0][1],
+                        index,
+                    ),
+                )
+                for target_index in target_order:
+                    match_target(target_index, set())
+
+                for target_index, (cell_index, score, quality) in target_match.items():
+                    image_box = image_boxes[target_index]
+                    quality_target[image_index, cell_index] = quality
+                    box_target[image_index, cell_index] = image_box[:4]
+                    class_target[image_index, cell_index] = image_box[4].long()
+                    target_indices[image_index, cell_index] = target_index
+                    positive_mask[image_index, cell_index] = True
+                    assignment_score[image_index, cell_index] = score
 
         return {
             "quality": quality_target,
@@ -402,14 +466,18 @@ class TRHashObjectDetector(nn.Module):
         assignment_top_k: Optional[int] = None,
         allow_stal: bool = True,
         training_progress: float = 1.0,
+        decoded: Optional[Dict[str, torch.Tensor]] = None,
+        assignment_decoded: Optional[Dict[str, torch.Tensor]] = None,
+        unique_per_target: bool = False,
     ) -> Dict[str, torch.Tensor]:
-        decoded = self.decode(raw)
+        decoded = decoded if decoded is not None else self.decode(raw)
         assigned = self._assign_targets(
             targets,
             raw.device,
-            decoded=decoded,
+            decoded=assignment_decoded if assignment_decoded is not None else decoded,
             assignment_top_k=assignment_top_k,
             allow_stal=allow_stal,
+            unique_per_target=unique_per_target,
         )
         positive = assigned["positive_mask"]
         positive_weights = assigned["quality"] * positive
@@ -517,10 +585,12 @@ class TRHashObjectDetector(nn.Module):
         one_to_many, one_to_one = raw if isinstance(raw, tuple) else (raw, None)
         if len(targets) != one_to_many.size(0):
             raise ValueError("one target tensor is required per batch image")
+        one_to_many_decoded = self.decode(one_to_many)
         losses = self._compute_branch_loss(
             one_to_many,
             targets,
             training_progress=training_progress,
+            decoded=one_to_many_decoded,
         )
         losses["one_to_many_loss"] = losses["loss"]
         if one_to_one is not None:
@@ -528,13 +598,27 @@ class TRHashObjectDetector(nn.Module):
                 one_to_one,
                 targets,
                 assignment_top_k=1,
-                allow_stal=False,
+                allow_stal=True,
                 training_progress=training_progress,
+                assignment_decoded=one_to_many_decoded,
+                unique_per_target=True,
             )
             losses["one_to_one_loss"] = one_to_one_losses["loss"]
+            progress = min(max(float(training_progress), 0.0), 1.0)
+            one_to_one_weight = (
+                self.config.one_to_one_loss_start
+                + (
+                    self.config.one_to_one_loss_weight
+                    - self.config.one_to_one_loss_start
+                )
+                * progress
+            )
+            losses["one_to_one_weight"] = one_to_one_losses["loss"].new_tensor(
+                one_to_one_weight
+            )
             losses["loss"] = (
                 losses["one_to_many_loss"]
-                + self.config.one_to_one_loss_weight * one_to_one_losses["loss"]
+                + one_to_one_weight * one_to_one_losses["loss"]
             )
         return losses
 

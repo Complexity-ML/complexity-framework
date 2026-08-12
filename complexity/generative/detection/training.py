@@ -163,6 +163,12 @@ def parse_args() -> argparse.Namespace:
         help="multiply the LR of vision tower parameters during detector fine-tuning",
     )
     parser.add_argument("--expert-lr-multiplier", type=float, default=1.0)
+    parser.add_argument(
+        "--one-to-one-lr-multiplier",
+        type=float,
+        default=1.5,
+        help="multiply the LR of the lightweight NMS-free output branch",
+    )
     parser.add_argument("--momentum", type=float, default=0.937)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument(
@@ -205,7 +211,19 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="train a one-to-one branch for NMS-free inference",
     )
-    parser.add_argument("--one-to-one-loss-weight", type=float, default=0.5)
+    parser.add_argument("--one-to-one-loss-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--one-to-one-loss-start",
+        type=float,
+        default=0.25,
+        help="initial one-to-one loss weight, ramped to --one-to-one-loss-weight",
+    )
+    parser.add_argument(
+        "--one-to-one-shared-gradient-scale",
+        type=float,
+        default=0.25,
+        help="fraction of one-to-one gradient propagated into shared detector features",
+    )
     parser.add_argument(
         "--augmentation",
         choices=("light", "strong"),
@@ -299,6 +317,7 @@ def save_checkpoint(
     epoch: int,
     batch_in_epoch: int,
     best_map50: float,
+    best_end_to_end_map50: float,
     running_losses: Dict[str, float],
     running_loss_steps: int,
     total_epochs: int,
@@ -339,6 +358,7 @@ def save_checkpoint(
         batch_in_epoch=batch_in_epoch,
         step=step,
         best_map50=best_map50,
+        best_end_to_end_map50=best_end_to_end_map50,
         running_losses=running_losses,
         running_loss_steps=running_loss_steps,
         total_epochs=total_epochs,
@@ -622,6 +642,7 @@ def evaluate_detector(
     show_progress: bool = False,
     max_detections: int = 100,
     distributed: DistributedContext | None = None,
+    end_to_end: bool = False,
 ) -> Dict[str, float]:
     model.eval()
     metrics = DetectionMetricsAccumulator(
@@ -640,13 +661,24 @@ def evaluate_detector(
     for pixel_values, targets in progress:
         autocast = torch.autocast("cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
         with autocast:
-            detections = model.predict(
-                pixel_values.to(device, non_blocking=device.type == "cuda"),
-                confidence_threshold=0.001,
-                iou_threshold=0.5,
-                postprocess_on_cpu=device.type == "mps",
-                max_detections=max_detections,
+            model_inputs = pixel_values.to(
+                device,
+                non_blocking=device.type == "cuda",
             )
+            if end_to_end:
+                detections = model.predict_end_to_end(
+                    model_inputs,
+                    confidence_threshold=0.001,
+                    max_detections=max_detections,
+                )
+            else:
+                detections = model.predict(
+                    model_inputs,
+                    confidence_threshold=0.001,
+                    iou_threshold=0.5,
+                    postprocess_on_cpu=device.type == "mps",
+                    max_detections=max_detections,
+                )
         for detection, image_targets in zip(detections, targets):
             metrics.update(
                 detection["boxes"],
@@ -875,6 +907,8 @@ def main() -> None:
         quality_focal_beta=args.quality_focal_beta,
         end_to_end=args.end_to_end,
         one_to_one_loss_weight=args.one_to_one_loss_weight,
+        one_to_one_loss_start=args.one_to_one_loss_start,
+        one_to_one_shared_gradient_scale=args.one_to_one_shared_gradient_scale,
         box_loss_weight=args.box_loss_weight,
         quality_loss_weight=args.quality_loss_weight,
         box_l1_weight=args.box_l1_weight,
@@ -933,6 +967,8 @@ def main() -> None:
         raise ValueError("--backbone-lr-multiplier must be positive")
     if args.expert_lr_multiplier <= 0.0:
         raise ValueError("--expert-lr-multiplier must be positive")
+    if args.one_to_one_lr_multiplier <= 0.0:
+        raise ValueError("--one-to-one-lr-multiplier must be positive")
 
     def parameter_learning_rate(name: str) -> tuple[float, str]:
         is_backbone = name.startswith("tower.")
@@ -942,8 +978,13 @@ def main() -> None:
             lr *= args.backbone_lr_multiplier
         if is_expert:
             lr *= args.expert_lr_multiplier
+        if name.startswith("one_to_one_head."):
+            lr *= args.one_to_one_lr_multiplier
         scope = "backbone" if is_backbone else "task"
-        suffix = "_experts" if is_expert else ""
+        if name.startswith("one_to_one_head."):
+            suffix = "_one_to_one"
+        else:
+            suffix = "_experts" if is_expert else ""
         return lr, f"{scope}{suffix}"
 
     parameter_groups = build_musgd_parameter_groups(
@@ -958,8 +999,10 @@ def main() -> None:
         sgd_weight=args.musgd_sgd_weight,
     )
     LOGGER.info(
-        "Optimizer: MuSGD (task_lr=%.2e backbone_lr=%.2e backbone_expert_lr=%.2e momentum=%.3f muon=%.2f sgd=%.2f)",
+        "Optimizer: MuSGD (task_lr=%.2e one_to_one_lr=%.2e backbone_lr=%.2e "
+        "backbone_expert_lr=%.2e momentum=%.3f muon=%.2f sgd=%.2f)",
         args.lr,
+        args.lr * args.one_to_one_lr_multiplier,
         args.lr * args.backbone_lr_multiplier,
         args.lr * args.backbone_lr_multiplier * args.expert_lr_multiplier,
         args.momentum,
@@ -994,6 +1037,7 @@ def main() -> None:
         "lr": args.lr,
         "backbone_lr_multiplier": args.backbone_lr_multiplier,
         "expert_lr_multiplier": args.expert_lr_multiplier,
+        "one_to_one_lr_multiplier": args.one_to_one_lr_multiplier,
         "momentum": args.momentum,
         "musgd_muon_weight": args.musgd_muon_weight,
         "musgd_sgd_weight": args.musgd_sgd_weight,
@@ -1023,6 +1067,7 @@ def main() -> None:
     start_batch = 0
     step = 0
     best_map50 = -1.0
+    best_end_to_end_map50 = -1.0
     running_losses: Dict[str, float] = {}
     running_loss_steps = 0
     if args.resume is not None:
@@ -1041,6 +1086,9 @@ def main() -> None:
         start_batch = int(resume_state["batch_in_epoch"])
         step = int(resume_state["step"])
         best_map50 = float(resume_state["best_map50"])
+        best_end_to_end_map50 = float(
+            resume_state.get("best_end_to_end_map50", -1.0)
+        )
         running_losses = {
             str(name): float(value)
             for name, value in resume_state.get("running_losses", {}).items()
@@ -1084,6 +1132,7 @@ def main() -> None:
                 epoch=epoch,
                 batch_in_epoch=batch_in_epoch,
                 best_map50=best_map50,
+                best_end_to_end_map50=best_end_to_end_map50,
                 running_losses=running_losses,
                 running_loss_steps=running_loss_steps,
                 total_epochs=args.epochs,
@@ -1216,6 +1265,21 @@ def main() -> None:
                 max_detections=args.eval_max_detections,
                 distributed=distributed,
             )
+            end_to_end_metrics = (
+                evaluate_detector(
+                    ema.module if ema is not None else model,
+                    validation_loader,
+                    device,
+                    confidence_threshold=args.eval_confidence,
+                    use_amp=use_amp,
+                    show_progress=distributed.is_main,
+                    max_detections=args.eval_max_detections,
+                    distributed=distributed,
+                    end_to_end=True,
+                )
+                if config.end_to_end
+                else None
+            )
             LOGGER.info(
                 "validation epoch=%d mAP50=%.4f mAP50-95=%.4f "
                 "APs=%.4f APm=%.4f APl=%.4f precision=%.4f recall=%.4f "
@@ -1232,6 +1296,23 @@ def main() -> None:
                 validation_metrics["best_f1"],
                 validation_metrics["best_confidence"],
             )
+            if end_to_end_metrics is not None:
+                LOGGER.info(
+                    "validation NMS-free epoch=%d mAP50=%.4f mAP50-95=%.4f "
+                    "APs=%.4f APm=%.4f APl=%.4f precision=%.4f recall=%.4f "
+                    "f1=%.4f best_f1=%.4f best_conf=%.3f",
+                    epoch,
+                    end_to_end_metrics["map50"],
+                    end_to_end_metrics["map50_95"],
+                    end_to_end_metrics["ap_small"],
+                    end_to_end_metrics["ap_medium"],
+                    end_to_end_metrics["ap_large"],
+                    end_to_end_metrics["precision"],
+                    end_to_end_metrics["recall"],
+                    end_to_end_metrics["f1"],
+                    end_to_end_metrics["best_f1"],
+                    end_to_end_metrics["best_confidence"],
+                )
             if distributed.is_main:
                 with metrics_path.open("a") as handle:
                     handle.write(
@@ -1240,6 +1321,11 @@ def main() -> None:
                                 "step": step,
                                 "epoch": epoch,
                                 "validation": validation_metrics,
+                                **(
+                                    {"validation_nms_free": end_to_end_metrics}
+                                    if end_to_end_metrics is not None
+                                    else {}
+                                ),
                             }
                         )
                         + "\n"
@@ -1251,6 +1337,17 @@ def main() -> None:
                     batch_in_epoch=0,
                     name="best",
                     validation_metrics=validation_metrics,
+                )
+            if (
+                end_to_end_metrics is not None
+                and end_to_end_metrics["map50"] > best_end_to_end_map50
+            ):
+                best_end_to_end_map50 = end_to_end_metrics["map50"]
+                write_checkpoint(
+                    epoch=epoch + 1,
+                    batch_in_epoch=0,
+                    name="best_nms_free",
+                    validation_metrics=end_to_end_metrics,
                 )
         start_batch = 0
 

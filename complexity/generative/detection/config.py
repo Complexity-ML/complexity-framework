@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, fields
 from typing import Any, Dict, Tuple
 
+
 @dataclass(frozen=True)
 class TRHashDetectorConfig:
     """Architecture contract for a YOLO-style anchor-free detector.
@@ -49,7 +50,9 @@ class TRHashDetectorConfig:
     dfl_loss_weight: float = 0.5
     quality_focal_beta: float = 2.0
     end_to_end: bool = False
-    one_to_one_loss_weight: float = 0.5
+    one_to_one_loss_weight: float = 1.0
+    one_to_one_loss_start: float = 0.25
+    one_to_one_shared_gradient_scale: float = 0.25
     progressive_loss_enabled: bool = True
     progressive_box_start: float = 0.5
     progressive_quality_start: float = 1.5
@@ -115,6 +118,12 @@ class TRHashDetectorConfig:
             raise ValueError("DFL and QFL parameters must be non-negative")
         if self.one_to_one_loss_weight < 0.0:
             raise ValueError("one_to_one_loss_weight must be non-negative")
+        if not 0.0 <= self.one_to_one_loss_start <= self.one_to_one_loss_weight:
+            raise ValueError(
+                "one_to_one_loss_start must be between zero and one_to_one_loss_weight"
+            )
+        if not 0.0 <= self.one_to_one_shared_gradient_scale <= 1.0:
+            raise ValueError("one_to_one_shared_gradient_scale must be in [0, 1]")
         if not 0.0 < self.progressive_box_start <= 1.0:
             raise ValueError("progressive_box_start must be in (0, 1]")
         if self.progressive_quality_start < 1.0:

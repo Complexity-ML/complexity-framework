@@ -47,10 +47,16 @@ def test_v6_one_to_one_branch_trains_and_decodes_without_nms():
     pixels = torch.randn(2, 3, 24, 24)
     branches = model(pixels, return_branches=True)
     assert branches[0].shape == branches[1].shape
+    assert torch.equal(branches[0], branches[1])
     targets = [torch.tensor([[0.5, 0.5, 0.25, 0.25, 1.0]]) for _ in range(2)]
-    losses = model.compute_loss(branches, targets)
+    losses = model.compute_loss(branches, targets, training_progress=0.0)
     assert "one_to_one_loss" in losses
+    assert losses["one_to_one_weight"].item() == 0.25
     losses["loss"].backward()
+    assert any(
+        parameter.grad is not None and torch.count_nonzero(parameter.grad)
+        for parameter in model.tower.parameters()
+    )
 
     results = model.predict_end_to_end(
         pixels,
@@ -58,6 +64,37 @@ def test_v6_one_to_one_branch_trains_and_decodes_without_nms():
         max_detections=5,
     )
     assert all(len(result["boxes"]) == 5 for result in results)
+
+
+def test_v6_one_to_one_assignment_keeps_unique_targets_and_uses_p2_for_small_objects():
+    model = TRHashObjectDetector(_config(end_to_end=True))
+    pixels = torch.randn(1, 3, 32, 32)
+    one_to_many, _ = model.forward_branches(pixels)
+    decoded = model.decode(one_to_many)
+    targets = [
+        torch.tensor(
+            [
+                [0.50, 0.50, 0.60, 0.60, 0.0],
+                [0.50, 0.50, 0.60, 0.60, 1.0],
+                [0.15, 0.15, 0.05, 0.05, 0.0],
+            ]
+        )
+    ]
+
+    assigned = model._assign_targets(
+        targets,
+        pixels.device,
+        decoded=decoded,
+        assignment_top_k=1,
+        allow_stal=True,
+        unique_per_target=True,
+    )
+
+    positive_targets = assigned["target_indices"][0][assigned["positive_mask"][0]]
+    assert set(positive_targets.tolist()) == {0, 1, 2}
+    assert len(positive_targets) == len(torch.unique(positive_targets))
+    small_cell = torch.nonzero(assigned["target_indices"][0] == 2).item()
+    assert small_cell < decoded["grid_sizes"][0] ** 2
 
 
 def test_v6_position_grids_transfer_across_resolutions(tmp_path):
