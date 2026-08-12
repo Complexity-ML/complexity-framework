@@ -49,7 +49,7 @@ class TRHashDetectorConfig:
     head_hidden_size: int = 0
     dfl_loss_weight: float = 0.5
     quality_focal_beta: float = 2.0
-    end_to_end: bool = False
+    end_to_end: bool = True
     one_to_one_loss_weight: float = 1.0
     one_to_one_loss_start: float = 0.25
     one_to_one_shared_gradient_scale: float = 0.25

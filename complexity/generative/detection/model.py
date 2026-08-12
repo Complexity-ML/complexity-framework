@@ -661,12 +661,22 @@ class TRHashObjectDetector(nn.Module):
         iou_threshold: float = 0.45,
         postprocess_on_cpu: bool = False,
         max_detections: int = 300,
+        nms_free: bool | None = None,
     ) -> List[Dict[str, torch.Tensor]]:
-        """Decode detections with class-aware NMS.
+        """Decode detections, using the NMS-free branch by default when available.
 
         Returns a list (length = batch) of dicts with ``boxes`` (xyxy,
         normalized), ``scores``, and ``labels``.
         """
+
+        if nms_free is None:
+            nms_free = self.one_to_one_head is not None
+        if nms_free:
+            return self.predict_end_to_end(
+                pixel_values,
+                confidence_threshold=confidence_threshold,
+                max_detections=max_detections,
+            )
 
         raw = self.forward_predictions(pixel_values)
         if postprocess_on_cpu:

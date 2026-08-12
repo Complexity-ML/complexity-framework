@@ -208,7 +208,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--end-to-end",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help="train a one-to-one branch for NMS-free inference",
     )
     parser.add_argument("--one-to-one-loss-weight", type=float, default=1.0)
@@ -678,6 +678,7 @@ def evaluate_detector(
                     iou_threshold=0.5,
                     postprocess_on_cpu=device.type == "mps",
                     max_detections=max_detections,
+                    nms_free=False,
                 )
         for detection, image_targets in zip(detections, targets):
             metrics.update(

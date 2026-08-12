@@ -70,6 +70,8 @@ def test_default_head_uses_three_feature_scales():
     assert config.architecture_version == 6
     assert config.neck_mode == "pan"
     assert model.neck is not None
+    assert config.end_to_end
+    assert model.one_to_one_head is not None
 
 
 def test_non_v6_config_is_rejected():
@@ -297,6 +299,29 @@ def test_prediction_runs_nms(monkeypatch):
     model.predict(
         torch.randn(1, 3, 32, 32),
         confidence_threshold=0.0,
+        nms_free=False,
     )
 
     assert calls
+
+
+def test_prediction_uses_nms_free_branch_by_default(monkeypatch):
+    model = TRHashObjectDetector(_tiny_config()).eval()
+    calls = []
+
+    def record_nms(*_args, **_kwargs):
+        calls.append(True)
+        return torch.empty(0, dtype=torch.long)
+
+    monkeypatch.setattr(
+        "complexity.generative.detection.model.class_aware_nms",
+        record_nms,
+    )
+    detections = model.predict(
+        torch.randn(1, 3, 32, 32),
+        confidence_threshold=0.0,
+        max_detections=5,
+    )
+
+    assert not calls
+    assert len(detections[0]["boxes"]) == 5
