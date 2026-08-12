@@ -61,9 +61,9 @@ model, optimizer, scheduler, data cursor and RNG state from the latest
 rejected instead of being mixed into the report.
 
 Dataset-specific validation and optimization settings match their reference
-launchers. In particular, COCO uses a backbone LR multiplier of `1.0`, an
-evaluation confidence threshold of `0.20`, and at most `100` detections; VOC
-uses `0.1`, `0.05`, and `300`, respectively.
+launchers. Both datasets use a backbone LR multiplier of `0.1` to preserve the
+ImageNet-1K initialization. COCO uses an evaluation confidence threshold of
+`0.20` and at most `100` detections; VOC uses `0.05` and `300`, respectively.
 
 Collect a table including the existing reference:
 

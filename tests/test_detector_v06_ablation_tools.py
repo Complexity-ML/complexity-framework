@@ -121,7 +121,7 @@ def dry_run_ablation(dataset: str, **environment: str) -> str:
 def test_coco_ablation_matches_reference_training_and_validation_settings() -> None:
     command = dry_run_ablation("coco")
 
-    assert "--backbone-lr-multiplier 1.0" in command
+    assert "--backbone-lr-multiplier 0.1" in command
     assert "--eval-confidence 0.20" in command
     assert "--eval-max-detections 100" in command
 
