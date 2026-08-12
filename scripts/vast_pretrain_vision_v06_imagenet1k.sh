@@ -48,12 +48,16 @@ exec torchrun \
   --num-experts 4 \
   --top-k 2 \
   --expert-width 48 \
+  --optimizer musgd \
   --epochs 100 \
   --batch-size "$BATCH_SIZE_PER_GPU" \
   --workers 6 \
-  --lr 3e-4 \
+  --lr 5.4e-3 \
   --expert-lr-multiplier 1.5 \
-  --weight-decay 0.05 \
+  --momentum 0.947 \
+  --musgd-muon-weight 0.2 \
+  --musgd-sgd-weight 1.0 \
+  --weight-decay 6.4e-4 \
   --warmup-steps 5000 \
   --log-steps 50 \
   --save-steps 2500 \

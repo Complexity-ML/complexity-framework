@@ -16,6 +16,7 @@ from safetensors.torch import load_file, save_file
 from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler
 from tqdm import tqdm
 
+from ...training.musgd import MuSGD, build_musgd_parameter_groups, named_learning_rates
 from ..detection.checkpointing import load_training_state, save_training_state
 from ..detection.config import TRHashDetectorConfig
 from ..detection.distributed import DistributedContext
@@ -82,8 +83,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=0)
+    parser.add_argument("--optimizer", choices=("musgd",), required=True)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--expert-lr-multiplier", type=float, default=1.0)
+    parser.add_argument("--momentum", type=float, default=0.95)
+    parser.add_argument("--musgd-muon-weight", type=float, default=0.2)
+    parser.add_argument("--musgd-sgd-weight", type=float, default=1.0)
     parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument("--warmup-steps", type=int, default=100)
     parser.add_argument("--min-lr-ratio", type=float, default=0.05)
@@ -179,18 +184,14 @@ def build_datasets(args: argparse.Namespace):
     )
     validation_transform = transforms.Compose(
         (
-            transforms.Resize(
-                round(args.image_size / 0.875), interpolation=interpolation
-            ),
+            transforms.Resize(round(args.image_size / 0.875), interpolation=interpolation),
             transforms.CenterCrop(args.image_size),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         )
     )
     if args.cifar10:
-        train_source = datasets.CIFAR10(
-            args.data_root, train=True, transform=None, download=True
-        )
+        train_source = datasets.CIFAR10(args.data_root, train=True, transform=None, download=True)
         validation_source = datasets.CIFAR10(
             args.data_root, train=False, transform=None, download=True
         )
@@ -252,8 +253,7 @@ def save_tower(
 ) -> None:
     output.mkdir(parents=True, exist_ok=True)
     state = {
-        name: value.detach().cpu().contiguous()
-        for name, value in model.tower.state_dict().items()
+        name: value.detach().cpu().contiguous() for name, value in model.tower.state_dict().items()
     }
     save_file(state, str(output / "tower.safetensors"))
     (output / "config.json").write_text(
@@ -293,8 +293,7 @@ def save_vision_checkpoint(
     metadata_epoch = epoch - 1 if batch_in_epoch == 0 and epoch > 0 else epoch
     save_tower(output, model, config, epoch=metadata_epoch, accuracy=accuracy)
     model_state = {
-        name: value.detach().cpu().contiguous()
-        for name, value in model.state_dict().items()
+        name: value.detach().cpu().contiguous() for name, value in model.state_dict().items()
     }
     save_file(model_state, str(output / "model.safetensors"))
     save_training_state(
@@ -337,11 +336,7 @@ def validate(
     for pixels, labels in progress:
         pixels = pixels.to(device, non_blocking=device.type == "cuda")
         labels = labels.to(device, non_blocking=device.type == "cuda")
-        autocast = (
-            torch.autocast("cuda", dtype=torch.bfloat16)
-            if use_amp
-            else nullcontext()
-        )
+        autocast = torch.autocast("cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
         with autocast:
             predictions = model(pixels)["logits"].argmax(-1)
         correct += int((predictions == labels).sum().cpu())
@@ -354,16 +349,12 @@ def validate(
     return correct / max(total, 1)
 
 
-def cosine_schedule(
-    step: int, *, warmup_steps: int, total_steps: int, min_ratio: float
-) -> float:
+def cosine_schedule(step: int, *, warmup_steps: int, total_steps: int, min_ratio: float) -> float:
     if warmup_steps and step < warmup_steps:
         return (step + 1) / warmup_steps
     decay_steps = max(total_steps - warmup_steps, 1)
     progress = min(max((step - warmup_steps) / decay_steps, 0.0), 1.0)
-    return min_ratio + (1.0 - min_ratio) * 0.5 * (
-        1.0 + math.cos(math.pi * progress)
-    )
+    return min_ratio + (1.0 - min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
 def main() -> None:
@@ -453,27 +444,30 @@ def main() -> None:
         LOGGER.info("TR-Hash vision backend: %s", backend["selected_backend"])
     if args.expert_lr_multiplier <= 0.0:
         raise ValueError("--expert-lr-multiplier must be positive")
-    expert_parameters = []
-    base_parameters = []
-    for name, parameter in model.named_parameters():
-        target = expert_parameters if ".mlp.expert_" in name else base_parameters
-        target.append(parameter)
-    optimizer_options = {
-        "weight_decay": args.weight_decay,
-        "foreach": False if device.type == "mps" else None,
-    }
-    if device.type == "cuda":
-        optimizer_options["fused"] = True
-    optimizer = torch.optim.AdamW(
-        (
-            {"params": base_parameters, "lr": args.lr},
-            {
-                "params": expert_parameters,
-                "lr": args.lr * args.expert_lr_multiplier,
-            },
+    parameter_groups = build_musgd_parameter_groups(
+        model,
+        learning_rate=lambda name: (
+            (args.lr * args.expert_lr_multiplier, "experts")
+            if ".mlp.expert_" in name
+            else (args.lr, "base")
         ),
-        **optimizer_options,
+        momentum=args.momentum,
+        weight_decay=args.weight_decay,
     )
+    optimizer = MuSGD(
+        parameter_groups,
+        muon_weight=args.musgd_muon_weight,
+        sgd_weight=args.musgd_sgd_weight,
+    )
+    if distributed.is_main:
+        LOGGER.info(
+            "Optimizer: MuSGD (base_lr=%.2e expert_lr=%.2e momentum=%.3f muon=%.2f sgd=%.2f)",
+            args.lr,
+            args.lr * args.expert_lr_multiplier,
+            args.momentum,
+            args.musgd_muon_weight,
+            args.musgd_sgd_weight,
+        )
     total_steps = max(args.epochs * len(train_loader), 1)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
@@ -487,11 +481,15 @@ def main() -> None:
     if args.log_steps <= 0 or args.eval_every <= 0 or args.save_steps < 0:
         raise ValueError("log/eval steps must be positive and save steps non-negative")
     training_options = {
+        "optimizer": args.optimizer,
         "batch_size": args.batch_size,
         "dataset_size": len(train_dataset),
         "seed": args.seed,
         "lr": args.lr,
         "expert_lr_multiplier": args.expert_lr_multiplier,
+        "momentum": args.momentum,
+        "musgd_muon_weight": args.musgd_muon_weight,
+        "musgd_sgd_weight": args.musgd_sgd_weight,
         "weight_decay": args.weight_decay,
         "warmup_steps": args.warmup_steps,
         "min_lr_ratio": args.min_lr_ratio,
@@ -522,9 +520,7 @@ def main() -> None:
         step = int(resume_state["step"])
         best_accuracy = float(resume_state["best_map50"])
         last_accuracy = best_accuracy
-        running_loss = float(
-            resume_state.get("running_losses", {}).get("classification", 0.0)
-        )
+        running_loss = float(resume_state.get("running_losses", {}).get("classification", 0.0))
         running_loss_steps = int(resume_state.get("running_loss_steps", 0))
         if not 0 <= start_epoch <= args.epochs:
             raise ValueError(f"invalid resumed epoch cursor: {start_epoch}")
@@ -603,11 +599,7 @@ def main() -> None:
         ):
             pixels = pixels.to(device, non_blocking=device.type == "cuda")
             labels = labels.to(device, non_blocking=device.type == "cuda")
-            autocast = (
-                torch.autocast("cuda", dtype=torch.bfloat16)
-                if use_amp
-                else nullcontext()
-            )
+            autocast = torch.autocast("cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
             with autocast:
                 loss = training_model(pixels, labels=labels)["loss"]
             optimizer.zero_grad(set_to_none=True)
@@ -626,12 +618,13 @@ def main() -> None:
                 average_loss = distributed.mean_scalars(
                     {"loss": running_loss / max(running_loss_steps, 1)}
                 )["loss"]
+                current_lrs = named_learning_rates(optimizer)
                 record = {
                     "step": step,
                     "epoch": epoch,
                     "loss": average_loss,
-                    "lr": scheduler.get_last_lr()[0],
-                    "expert_lr": scheduler.get_last_lr()[1],
+                    "lr": current_lrs["base"],
+                    "expert_lr": current_lrs["experts"],
                     "elapsed": time.monotonic() - started,
                 }
                 if distributed.is_main:

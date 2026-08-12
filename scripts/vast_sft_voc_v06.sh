@@ -51,6 +51,7 @@ exec torchrun \
   --multi-scale-max 640 \
   --multi-scale-step 32 \
   --ema-decay 0.9999 \
+  --optimizer musgd \
   --epochs 50 \
   --batch-size "$BATCH_SIZE_PER_GPU" \
   --eval-batch-size 8 \

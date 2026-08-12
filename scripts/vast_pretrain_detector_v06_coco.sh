@@ -48,11 +48,14 @@ exec torchrun \
   --multi-scale-max 640 \
   --multi-scale-step 32 \
   --ema-decay 0.9999 \
+  --optimizer musgd \
   --epochs 100 \
   --batch-size "$BATCH_SIZE_PER_GPU" \
   --eval-batch-size 8 \
   --workers 6 \
-  --lr 1e-2 \
+  --lr 5.4e-3 \
+  --momentum 0.947 \
+  --weight-decay 6.4e-4 \
   --expert-lr-multiplier 1.5 \
   --warmup-steps 1000 \
   --eval-every 5 \

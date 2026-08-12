@@ -17,6 +17,7 @@ from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
+from ...training.musgd import MuSGD, build_musgd_parameter_groups, named_learning_rates
 from .checkpointing import load_training_state, save_training_state
 from .config import TRHashDetectorConfig
 from .data import (
@@ -151,7 +152,10 @@ def parse_args() -> argparse.Namespace:
         help="validation batch size per device; 0 reuses --batch-size",
     )
     parser.add_argument("--workers", type=int, default=0)
+    parser.add_argument("--optimizer", choices=("musgd",), required=True)
     parser.add_argument("--lr", type=float, default=1e-2)
+    parser.add_argument("--musgd-muon-weight", type=float, default=0.2)
+    parser.add_argument("--musgd-sgd-weight", type=float, default=1.0)
     parser.add_argument(
         "--backbone-lr-multiplier",
         type=float,
@@ -258,15 +262,11 @@ def vision_backend_summary(
 ) -> dict:
     """Resolve and optionally enforce the execution backend for every vision block."""
 
-    summaries = [
-        block.mlp.capability_summary(device_type)
-        for block in model.tower.blocks
-    ]
+    summaries = [block.mlp.capability_summary(device_type) for block in model.tower.blocks]
     selected = {summary["selected_backend"] for summary in summaries}
     if len(selected) != 1:
         raise RuntimeError(
-            "vision blocks selected inconsistent TR-Hash backends: "
-            + ", ".join(sorted(selected))
+            "vision blocks selected inconsistent TR-Hash backends: " + ", ".join(sorted(selected))
         )
     summary = summaries[0]
     if require_triton and summary["selected_backend"] not in TRITON_BACKENDS:
@@ -782,9 +782,7 @@ def main() -> None:
             if validation_dataset.num_classes != num_classes:
                 raise ValueError("COCO train/validation class counts differ")
         elif any(path is not None for path in validation_coco_paths):
-            raise ValueError(
-                "both validation COCO annotations and image dirs are required"
-            )
+            raise ValueError("both validation COCO annotations and image dirs are required")
         LOGGER.info("COCO dataset: %d images, %d classes", len(dataset), num_classes)
     else:
         dataset = SyntheticShapesDataset(
@@ -935,12 +933,10 @@ def main() -> None:
         raise ValueError("--backbone-lr-multiplier must be positive")
     if args.expert_lr_multiplier <= 0.0:
         raise ValueError("--expert-lr-multiplier must be positive")
-    grouped_parameters: Dict[tuple[bool, bool], list[torch.nn.Parameter]] = {}
-    for name, parameter in model.named_parameters():
-        key = (name.startswith("tower."), ".mlp.expert_" in name)
-        grouped_parameters.setdefault(key, []).append(parameter)
-    parameter_groups = []
-    for (is_backbone, is_expert), parameters in grouped_parameters.items():
+
+    def parameter_learning_rate(name: str) -> tuple[float, str]:
+        is_backbone = name.startswith("tower.")
+        is_expert = ".mlp.expert_" in name
         lr = args.lr
         if is_backbone:
             lr *= args.backbone_lr_multiplier
@@ -948,26 +944,27 @@ def main() -> None:
             lr *= args.expert_lr_multiplier
         scope = "backbone" if is_backbone else "task"
         suffix = "_experts" if is_expert else ""
-        parameter_groups.append(
-            {
-                "params": parameters,
-                "lr": lr,
-                "group_name": f"{scope}{suffix}",
-            }
-        )
-    optimizer = torch.optim.SGD(
-        parameter_groups,
+        return lr, f"{scope}{suffix}"
+
+    parameter_groups = build_musgd_parameter_groups(
+        model,
+        learning_rate=parameter_learning_rate,
         momentum=args.momentum,
-        nesterov=True,
         weight_decay=args.weight_decay,
-        foreach=False if device.type == "mps" else None,
+    )
+    optimizer = MuSGD(
+        parameter_groups,
+        muon_weight=args.musgd_muon_weight,
+        sgd_weight=args.musgd_sgd_weight,
     )
     LOGGER.info(
-        "Optimizer: %s (task_lr=%.2e backbone_lr=%.2e backbone_expert_lr=%.2e)",
-        "sgd",
+        "Optimizer: MuSGD (task_lr=%.2e backbone_lr=%.2e backbone_expert_lr=%.2e momentum=%.3f muon=%.2f sgd=%.2f)",
         args.lr,
         args.lr * args.backbone_lr_multiplier,
         args.lr * args.backbone_lr_multiplier * args.expert_lr_multiplier,
+        args.momentum,
+        args.musgd_muon_weight,
+        args.musgd_sgd_weight,
     )
     ema = ModelEMA(model, args.ema_decay) if args.ema_decay else None
     if ema is not None:
@@ -990,7 +987,7 @@ def main() -> None:
     metrics_path = args.output / "metrics.jsonl"
 
     training_options: Dict[str, object] = {
-        "optimizer": "sgd",
+        "optimizer": args.optimizer,
         "batch_size": args.batch_size,
         "dataset_size": len(dataset),
         "seed": args.seed,
@@ -998,6 +995,8 @@ def main() -> None:
         "backbone_lr_multiplier": args.backbone_lr_multiplier,
         "expert_lr_multiplier": args.expert_lr_multiplier,
         "momentum": args.momentum,
+        "musgd_muon_weight": args.musgd_muon_weight,
+        "musgd_sgd_weight": args.musgd_sgd_weight,
         "weight_decay": args.weight_decay,
         "warmup_steps": args.warmup_steps,
         "min_lr_ratio": args.min_lr_ratio,
@@ -1118,9 +1117,7 @@ def main() -> None:
             leave=False,
             disable=not distributed.is_main,
         )
-        for batch_index, (pixel_values, targets) in enumerate(
-            progress, start=batches_to_skip
-        ):
+        for batch_index, (pixel_values, targets) in enumerate(progress, start=batches_to_skip):
             pixel_values = pixel_values.to(device, non_blocking=device.type == "cuda")
             if args.multi_scale_min:
                 choices = range(
@@ -1128,9 +1125,7 @@ def main() -> None:
                     multi_scale_max + 1,
                     multi_scale_step,
                 )
-                resize_rng = random.Random(
-                    args.seed + epoch * len(loader) + batch_index
-                )
+                resize_rng = random.Random(args.seed + epoch * len(loader) + batch_index)
                 runtime_size = resize_rng.choice(tuple(choices))
                 if tuple(pixel_values.shape[-2:]) != (runtime_size, runtime_size):
                     pixel_values = F.interpolate(
@@ -1174,13 +1169,8 @@ def main() -> None:
                 }
                 averages = distributed.mean_scalars(averages)
                 if distributed.is_main:
-                    current_lrs = {
-                        str(group["group_name"]): float(group["lr"])
-                        for group in optimizer.param_groups
-                    }
-                    task_lr = current_lrs.get(
-                        "task", current_lrs.get("task_experts", 0.0)
-                    )
+                    current_lrs = named_learning_rates(optimizer)
+                    task_lr = current_lrs.get("task", current_lrs.get("task_experts", 0.0))
                     backbone_lr = current_lrs.get(
                         "backbone", current_lrs.get("backbone_experts", 0.0)
                     )
