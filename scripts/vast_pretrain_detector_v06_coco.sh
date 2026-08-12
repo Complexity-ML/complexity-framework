@@ -8,6 +8,7 @@ OUTPUT="${OUTPUT:-artifacts/detector_coco_v06}"
 BACKBONE="${BACKBONE:-artifacts/tr_hash_vision_v06_imagenet1k/best}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
 BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-4}"
+LR="${LR:-5.4e-3}"
 WARMUP_STEPS="${WARMUP_STEPS:-1000}"
 BACKBONE_LR_MULTIPLIER="${BACKBONE_LR_MULTIPLIER:-0.1}"
 INITIALIZATION=(--backbone-checkpoint "$BACKBONE")
@@ -55,7 +56,7 @@ exec torchrun \
   --batch-size "$BATCH_SIZE_PER_GPU" \
   --eval-batch-size 8 \
   --workers 6 \
-  --lr 5.4e-3 \
+  --lr "$LR" \
   --backbone-lr-multiplier "$BACKBONE_LR_MULTIPLIER" \
   --momentum 0.947 \
   --weight-decay 6.4e-4 \
