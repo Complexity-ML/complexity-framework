@@ -152,6 +152,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--lr", type=float, default=1e-2)
+    parser.add_argument(
+        "--backbone-lr-multiplier",
+        type=float,
+        default=1.0,
+        help="multiply the LR of vision tower parameters during detector fine-tuning",
+    )
     parser.add_argument("--expert-lr-multiplier", type=float, default=1.0)
     parser.add_argument("--momentum", type=float, default=0.937)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
@@ -925,21 +931,30 @@ def main() -> None:
         backend_summary["top_k"],
         backend_summary["precision"],
     )
+    if args.backbone_lr_multiplier <= 0.0:
+        raise ValueError("--backbone-lr-multiplier must be positive")
     if args.expert_lr_multiplier <= 0.0:
         raise ValueError("--expert-lr-multiplier must be positive")
-    expert_parameters = []
-    base_parameters = []
+    grouped_parameters: Dict[tuple[bool, bool], list[torch.nn.Parameter]] = {}
     for name, parameter in model.named_parameters():
-        target = expert_parameters if ".mlp.expert_" in name else base_parameters
-        target.append(parameter)
-    parameter_groups = (
-        {"params": base_parameters, "lr": args.lr, "group_name": "base"},
-        {
-            "params": expert_parameters,
-            "lr": args.lr * args.expert_lr_multiplier,
-            "group_name": "experts",
-        },
-    )
+        key = (name.startswith("tower."), ".mlp.expert_" in name)
+        grouped_parameters.setdefault(key, []).append(parameter)
+    parameter_groups = []
+    for (is_backbone, is_expert), parameters in grouped_parameters.items():
+        lr = args.lr
+        if is_backbone:
+            lr *= args.backbone_lr_multiplier
+        if is_expert:
+            lr *= args.expert_lr_multiplier
+        scope = "backbone" if is_backbone else "task"
+        suffix = "_experts" if is_expert else ""
+        parameter_groups.append(
+            {
+                "params": parameters,
+                "lr": lr,
+                "group_name": f"{scope}{suffix}",
+            }
+        )
     optimizer = torch.optim.SGD(
         parameter_groups,
         momentum=args.momentum,
@@ -948,10 +963,11 @@ def main() -> None:
         foreach=False if device.type == "mps" else None,
     )
     LOGGER.info(
-        "Optimizer: %s (base_lr=%.2e expert_lr=%.2e)",
+        "Optimizer: %s (task_lr=%.2e backbone_lr=%.2e backbone_expert_lr=%.2e)",
         "sgd",
         args.lr,
-        args.lr * args.expert_lr_multiplier,
+        args.lr * args.backbone_lr_multiplier,
+        args.lr * args.backbone_lr_multiplier * args.expert_lr_multiplier,
     )
     ema = ModelEMA(model, args.ema_decay) if args.ema_decay else None
     if ema is not None:
@@ -979,6 +995,7 @@ def main() -> None:
         "dataset_size": len(dataset),
         "seed": args.seed,
         "lr": args.lr,
+        "backbone_lr_multiplier": args.backbone_lr_multiplier,
         "expert_lr_multiplier": args.expert_lr_multiplier,
         "momentum": args.momentum,
         "weight_decay": args.weight_decay,
@@ -1157,14 +1174,26 @@ def main() -> None:
                 }
                 averages = distributed.mean_scalars(averages)
                 if distributed.is_main:
+                    current_lrs = {
+                        str(group["group_name"]): float(group["lr"])
+                        for group in optimizer.param_groups
+                    }
+                    task_lr = current_lrs.get(
+                        "task", current_lrs.get("task_experts", 0.0)
+                    )
+                    backbone_lr = current_lrs.get(
+                        "backbone", current_lrs.get("backbone_experts", 0.0)
+                    )
+                    expert_lr = current_lrs.get("backbone_experts", backbone_lr)
                     with metrics_path.open("a") as handle:
                         handle.write(
                             json.dumps(
                                 {
                                     "step": step,
                                     "epoch": epoch,
-                                    "lr": scheduler.get_last_lr()[0],
-                                    "expert_lr": scheduler.get_last_lr()[1],
+                                    "lr": task_lr,
+                                    "backbone_lr": backbone_lr,
+                                    "expert_lr": expert_lr,
                                     **averages,
                                 }
                             )
@@ -1172,8 +1201,9 @@ def main() -> None:
                         )
                     progress.set_postfix(
                         loss=f"{averages['loss']:.4f}",
-                        lr=f"{scheduler.get_last_lr()[0]:.2e}",
-                        expert_lr=f"{scheduler.get_last_lr()[1]:.2e}",
+                        lr=f"{task_lr:.2e}",
+                        backbone_lr=f"{backbone_lr:.2e}",
+                        expert_lr=f"{expert_lr:.2e}",
                     )
                 running_losses.clear()
                 running_loss_steps = 0

@@ -4,11 +4,14 @@ set -euo pipefail
 source /venv/main/bin/activate
 cd /workspace/complexity-framework
 
-OUTPUT="${OUTPUT:-artifacts/detector_voc_v06}"
-SOURCE="${SOURCE:-artifacts/detector_coco_v06/best}"
+OUTPUT="${OUTPUT:-artifacts/detector_voc_v06_imagenet1k}"
+BACKBONE="${BACKBONE:-artifacts/tr_hash_vision_v06_imagenet1k/best}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
 BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-4}"
-INITIALIZATION=(--detector-checkpoint "$SOURCE")
+INITIALIZATION=(--backbone-checkpoint "$BACKBONE")
+if [[ -n "${SOURCE:-}" ]]; then
+  INITIALIZATION=(--detector-checkpoint "$SOURCE")
+fi
 if [[ -n "${RESUME_CHECKPOINT:-}" ]]; then
   INITIALIZATION=(--resume "$RESUME_CHECKPOINT")
 fi
@@ -55,6 +58,7 @@ exec torchrun \
   --eval-max-detections 300 \
   --workers 6 \
   --lr 5e-3 \
+  --backbone-lr-multiplier 0.1 \
   --momentum 0.937 \
   --weight-decay 5e-4 \
   --expert-lr-multiplier 1.5 \
