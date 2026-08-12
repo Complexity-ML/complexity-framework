@@ -40,7 +40,10 @@ exec torchrun \
   --neck-mode pan \
   --p2-head \
   --end-to-end \
-  --one-to-one-loss-weight 0.5 \
+  --one-to-one-loss-weight 1.0 \
+  --one-to-one-loss-start 0.25 \
+  --one-to-one-shared-gradient-scale 0.25 \
+  --one-to-one-lr-multiplier 1.5 \
   --augmentation strong \
   --mosaic 0.7 \
   --mixup 0.10 \
