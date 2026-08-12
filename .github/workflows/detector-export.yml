@@ -1,0 +1,51 @@
+name: Detector export
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/detector-export.yml"
+      - "complexity/generative/detection/**"
+      - "scripts/check_onnx_parity.py"
+      - "scripts/export_onnx.py"
+      - "scripts/export_tensorrt.py"
+      - "tests/test_detector_export.py"
+      - "pyproject.toml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/detector-export.yml"
+      - "complexity/generative/detection/**"
+      - "scripts/check_onnx_parity.py"
+      - "scripts/export_onnx.py"
+      - "scripts/export_tensorrt.py"
+      - "tests/test_detector_export.py"
+      - "pyproject.toml"
+
+permissions:
+  contents: read
+
+jobs:
+  onnx-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install CPU test environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e ".[dev,export]"
+      - name: Lint detector export code
+        run: >-
+          ruff check
+          complexity/generative/detection/exporting.py
+          scripts/check_onnx_parity.py
+          scripts/export_onnx.py
+          scripts/export_tensorrt.py
+          tests/test_detector_export.py
+      - name: Test ONNX branches and dynamic batch parity
+        run: pytest -q tests/test_detector_export.py
