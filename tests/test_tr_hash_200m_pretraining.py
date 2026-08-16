@@ -194,7 +194,7 @@ def test_stack_edu_materialization_is_mandatory() -> None:
         module.corpus_sources("")
 
 
-def test_production_launcher_streams_the_70b_replay_with_a_10gib_cache() -> None:
+def test_production_launcher_streams_the_70b_replay_without_worker_cache_thrash() -> None:
     source = REPLAY_LAUNCHER.read_text(encoding="utf-8")
 
     assert 'export TARGET_TOKENS="$planned_tokens"' in source
@@ -209,7 +209,8 @@ def test_production_launcher_streams_the_70b_replay_with_a_10gib_cache() -> None
     assert "--tokenized-cache-dir" in source
     assert "--tokenized-cache-gb" in source
     assert "--tokenized-prefetch-shards" in source
-    assert 'TOKENIZED_CACHE_GB:-10' in source
+    assert 'TOKENIZED_CACHE_GB:-24' in source
+    assert 'NUM_WORKERS:-0' in source
     assert "--save-steps 0" in source
 
 
@@ -237,8 +238,18 @@ def test_70b_replay_supervisor_is_safe_and_does_not_autostart() -> None:
     assert "autostart=false" in supervisor
     assert "autorestart=false" in supervisor
     assert "NPROC_PER_NODE=\"8\"" in supervisor
-    assert "TOKENIZED_CACHE_GB=\"10\"" in supervisor
+    assert "TOKENIZED_CACHE_GB=\"24\"" in supervisor
+    assert "NUM_WORKERS=\"0\"" in supervisor
     assert "hf://datasets/Pacific-i64/data-32k-200b-tokens" in supervisor
+
+
+def test_remote_pretokenized_training_rejects_dataloader_workers() -> None:
+    module = _load_training_script()
+    runner = module.build_runner()
+    args = SimpleNamespace(tokenized_data="hf://datasets/owner/repo", num_workers=4)
+
+    with pytest.raises(ValueError, match="require --num-workers 0"):
+        runner.build_dataset(None, args, rank=0, world_size=1)
 
 
 def test_text_pretraining_profile_has_no_mosaic_or_epoch_schedule() -> None:

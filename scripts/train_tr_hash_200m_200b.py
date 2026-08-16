@@ -165,6 +165,15 @@ class TRHash200MPretrainRunner(TrainRunner):
 
     def build_dataset(self, tokenizer, args, rank: int, world_size: int):
         if args.tokenized_data:
+            if (
+                str(args.tokenized_data).startswith("hf://")
+                and getattr(args, "num_workers", 0) != 0
+            ):
+                raise ValueError(
+                    "remote pretokenized mixtures require --num-workers 0; "
+                    "multiple DataLoader workers fetch independent multi-GiB shards "
+                    "before the first optimizer step and can thrash the bounded cache"
+                )
             dataset = PretokenizedCorpusMixtureDataset(
                 args.tokenized_data,
                 rank=rank,

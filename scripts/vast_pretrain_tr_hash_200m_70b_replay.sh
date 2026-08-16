@@ -44,14 +44,14 @@ export OUTPUT_DIR="${OUTPUT_DIR:-artifacts/tr_hash_200m_70b_replay}"
 
 echo "[200m-70b] dataset=$TOKENIZED_DATA revision=$TOKENIZED_REVISION"
 echo "[200m-70b] plan=$TOKENIZED_PLAN trained_tokens=$TARGET_TOKENS"
-echo "[200m-70b] cache=$TOKENIZED_CACHE_DIR limit=${TOKENIZED_CACHE_GB:-10}GiB"
+echo "[200m-70b] cache=$TOKENIZED_CACHE_DIR limit=${TOKENIZED_CACHE_GB:-24}GiB"
 
 exec torchrun --standalone --nproc_per_node "${NPROC_PER_NODE:-8}" \
   -m scripts.train_tr_hash_200m_200b \
   --tokenizer "${TOKENIZER:-tokenizer}" \
   --tokenized-data "$TOKENIZED_DATA" \
   --tokenized-cache-dir "$TOKENIZED_CACHE_DIR" \
-  --tokenized-cache-gb "${TOKENIZED_CACHE_GB:-10}" \
+  --tokenized-cache-gb "${TOKENIZED_CACHE_GB:-24}" \
   --tokenized-revision "$TOKENIZED_REVISION" \
   --tokenized-prefetch-shards "${TOKENIZED_PREFETCH_SHARDS:-1}" \
   --tokenized-plan "$TOKENIZED_PLAN" \
@@ -70,6 +70,6 @@ exec torchrun --standalone --nproc_per_node "${NPROC_PER_NODE:-8}" \
   --use-custom-kernels auto \
   --save-steps 0 \
   --log-steps "${LOG_STEPS:-10}" \
-  --num-workers "${NUM_WORKERS:-4}" \
+  --num-workers "${NUM_WORKERS:-0}" \
   --checkpoint-dir "${OUTPUT_DIR:-artifacts/tr_hash_200m_70b_replay}" \
   "$@"
