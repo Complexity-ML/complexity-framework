@@ -187,6 +187,26 @@ class TestCheckpointHelpers:
             assert state is not None
             assert state.step == 333
 
+    def test_find_latest_checkpoint_skips_a_partially_written_directory(self):
+        """Regression guard: a crash mid-save (e.g. the SIGTERM->KeyboardInterrupt
+        handler firing before checkpoint.pt is written) once left an empty
+        'interrupted_0' directory that auto-resume picked as the latest
+        checkpoint and then crash-looped trying to load it."""
+        from complexity.utils.checkpointing import CheckpointManager, TrainingState
+        from complexity.models import ComplexityModel
+
+        model = ComplexityModel(small_config())
+        with tempfile.TemporaryDirectory() as tmp:
+            mgr = CheckpointManager(tmp, model)
+            mgr.save(step=100, training_state=TrainingState(step=100), tag="final")
+            # Simulate a partial save left by an interrupted process: the
+            # directory exists (with a higher step) but nothing was written.
+            (Path(tmp) / "interrupted_500").mkdir()
+
+            latest = mgr._find_latest_checkpoint()
+            assert latest is not None
+            assert latest.name == "final_100"
+
     def test_load_latest_returns_none_on_a_fresh_checkpoint_dir(self):
         """auto-resume must fall through to a fresh start, not crash, when
         nothing has been saved yet."""

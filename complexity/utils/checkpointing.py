@@ -444,9 +444,18 @@ class CheckpointManager:
         """Load the most recent checkpoint."""
         return self.load(checkpoint_path=None, load_optimizer=load_optimizer)
 
+    @staticmethod
+    def _is_complete_checkpoint(path: Path) -> bool:
+        """A checkpoint directory is only usable once its payload landed —
+        a crash during save (e.g. the interrupt handler firing mid-write)
+        can leave an empty or partial directory with the final name."""
+        return (path / "checkpoint.pt").exists() or (path / ".metadata").exists()
+
     def _find_latest_checkpoint(self) -> Optional[Path]:
-        """Find the most recent checkpoint across every tag this manager writes
-        (``step``, ``final``, ``interrupted``, ``token_pack_NNN``, ``best``)."""
+        """Find the most recent *complete* checkpoint across every tag this
+        manager writes (``step``, ``final``, ``interrupted``,
+        ``token_pack_NNN``, ``best``), skipping any left partially written
+        by an interrupted save."""
 
         def get_step(p: Path) -> Optional[int]:
             try:
@@ -457,7 +466,7 @@ class CheckpointManager:
         checkpoints = [
             path
             for path in self.checkpoint_dir.iterdir()
-            if path.is_dir() and get_step(path) is not None
+            if path.is_dir() and get_step(path) is not None and self._is_complete_checkpoint(path)
         ]
         if not checkpoints:
             return None
