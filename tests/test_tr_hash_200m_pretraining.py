@@ -238,6 +238,8 @@ def test_70b_replay_supervisor_survives_a_crash_or_reboot_unattended() -> None:
     assert not Path("scripts/vast_pretrain_tr_hash_200m_200b.sh").exists()
     assert "[program:tr_hash_200m_70b_replay]" in supervisor
     assert "NPROC_PER_NODE=\"8\"" in supervisor
+    assert "BATCH_SIZE_PER_GPU=\"16\"" in supervisor
+    assert "GRADIENT_ACCUMULATION=\"4\"" in supervisor
     assert "TOKENIZED_CACHE_GB=\"24\"" in supervisor
     assert "NUM_WORKERS=\"0\"" in supervisor
     assert "hf://datasets/Pacific-i64/data-32k-200b-tokens" in supervisor
