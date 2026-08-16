@@ -80,6 +80,17 @@ class TqdmCallback:
             disable=not is_main_process(),
         )
 
+    def on_resume(self, step: int) -> None:
+        """Sync the bar's own counter to the resumed step.
+
+        Without this, a fresh process's tqdm counts calls from 0 regardless
+        of where global_step actually resumed from, so the displayed
+        N/total silently diverges from the real step (same loss/lr as the
+        step it resumed at, but a bar that looks like it restarted).
+        """
+        self.pbar.n = step
+        self.pbar.refresh()
+
     def __call__(self, trainer, step: int, loss: float):
         # Collective reductions — ALL ranks must participate at the same step.
         from .moe_telemetry import global_expert_shares

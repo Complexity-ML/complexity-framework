@@ -258,6 +258,25 @@ class TestCallbacks:
         assert captured["dynamic_ncols"] is True
         assert captured["mininterval"] == 1.0
 
+    def test_on_resume_syncs_the_bar_to_the_resumed_step(self, monkeypatch):
+        """Regression guard: after a process restart with --resume auto,
+        tqdm's own counter starts at 0 regardless of where global_step
+        actually resumed from, so the displayed N/total silently diverged
+        from the real step (same loss/lr logged, but a bar that looked
+        like it had restarted from scratch)."""
+        from complexity.training import TqdmCallback
+
+        monkeypatch.setattr(
+            "complexity.training.callbacks.is_main_process", lambda: True
+        )
+        callback = TqdmCallback(total_steps=247_946, desc="resume-test")
+        assert callback.pbar.n == 0
+
+        callback.on_resume(760)
+
+        assert callback.pbar.n == 760
+        callback.close()
+
     @pytest.mark.skip(reason="Requires wandb")
     def test_wandb_callback(self):
         """Test WandB callback."""
