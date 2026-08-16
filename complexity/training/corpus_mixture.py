@@ -119,6 +119,51 @@ class _HubShardCache:
         path.parent.mkdir(parents=True, exist_ok=True)
         return FileLock(str(path))
 
+    @staticmethod
+    @contextmanager
+    def _pin_lock(
+        path: Path,
+        *,
+        shared: bool,
+        blocking: bool = True,
+    ) -> Iterator[None]:
+        """Hold a reader/writer pin for a cached shard.
+
+        Training ranks must be able to mmap the same shard concurrently, while
+        eviction must still have exclusive ownership before unlinking it.
+        ``filelock.FileLock`` is exclusive-only and deadlocks DDP when one rank
+        enters the forward pass while its peers wait to pin that same shard.
+        POSIX ``flock`` gives us the required shared-reader semantics.  The
+        exclusive FileLock fallback keeps non-POSIX platforms safe, albeit
+        without concurrent readers.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if os.name == "posix":
+            import fcntl
+
+            with path.open("a+b") as handle:
+                operation = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+                if not blocking:
+                    operation |= fcntl.LOCK_NB
+                fcntl.flock(handle.fileno(), operation)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            return
+
+        from filelock import Timeout
+
+        lock = _HubShardCache._lock(path)
+        try:
+            lock.acquire(timeout=-1 if blocking else 0)
+        except Timeout as exc:
+            raise BlockingIOError from exc
+        try:
+            yield
+        finally:
+            lock.release()
+
     def _download(self, filename: str) -> Path:
         filename = _safe_relative_path(filename).as_posix()
         downloader = self._downloader
@@ -202,23 +247,20 @@ class _HubShardCache:
             for candidate in sorted(shards, key=lambda path: path.stat().st_atime_ns):
                 if candidate in exclude:
                     continue
-                pin = self._lock(
+                pin_path = (
                     self.root
                     / ".locks"
                     / "pins"
                     / f"{hashlib.sha256(str(candidate).encode()).hexdigest()}.lock"
                 )
                 try:
-                    pin.acquire(timeout=0)
-                except Timeout:
+                    with self._pin_lock(pin_path, shared=False, blocking=False):
+                        size = candidate.stat().st_size if candidate.exists() else 0
+                        candidate.unlink(missing_ok=True)
+                        self._verification_marker(candidate).unlink(missing_ok=True)
+                        total -= size
+                except (BlockingIOError, Timeout):
                     continue
-                try:
-                    size = candidate.stat().st_size if candidate.exists() else 0
-                    candidate.unlink(missing_ok=True)
-                    self._verification_marker(candidate).unlink(missing_ok=True)
-                    total -= size
-                finally:
-                    pin.release()
                 if total <= self.max_cache_bytes:
                     break
 
@@ -308,8 +350,8 @@ class _HubShardCache:
         filename = _safe_relative_path(filename).as_posix()
         destination = self.root / filename
         pin_name = hashlib.sha256(str(destination).encode()).hexdigest()
-        pin = self._lock(self.root / ".locks" / "pins" / f"{pin_name}.lock")
-        with pin:
+        pin_path = self.root / ".locks" / "pins" / f"{pin_name}.lock"
+        with self._pin_lock(pin_path, shared=True):
             yield self.get(
                 filename,
                 expected_bytes=expected_bytes,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -228,6 +229,23 @@ def test_list_files_gives_up_after_max_attempts(tmp_path, monkeypatch) -> None:
 
     with pytest.raises(OSError, match="name resolution"):
         cache.list_files(max_attempts=3)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="shared shard pins use POSIX flock")
+def test_hub_cache_allows_concurrent_readers_but_blocks_eviction(tmp_path) -> None:
+    from complexity.training.corpus_mixture import _HubShardCache
+
+    pin_path = tmp_path / "pins" / "shard.lock"
+    with _HubShardCache._pin_lock(pin_path, shared=True):
+        with _HubShardCache._pin_lock(pin_path, shared=True, blocking=False):
+            pass
+        with pytest.raises(BlockingIOError):
+            with _HubShardCache._pin_lock(
+                pin_path,
+                shared=False,
+                blocking=False,
+            ):
+                pass
 
 
 def test_remote_shards_stream_to_completion_with_bounded_cache(tmp_path) -> None:
