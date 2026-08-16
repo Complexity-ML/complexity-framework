@@ -217,6 +217,11 @@ class TRHash200MPretrainRunner(TrainRunner):
             world_size=world_size,
         )
 
+    def extra_callbacks(self, trainer, args, is_main: bool):
+        from complexity.training.callbacks import TensorBoardCallback
+
+        return [TensorBoardCallback(log_dir=os.path.join(args.checkpoint_dir, "tensorboard"))]
+
 
 def build_runner() -> TRHash200MPretrainRunner:
     return TRHash200MPretrainRunner(
