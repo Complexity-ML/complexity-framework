@@ -445,17 +445,22 @@ class CheckpointManager:
         return self.load(checkpoint_path=None, load_optimizer=load_optimizer)
 
     def _find_latest_checkpoint(self) -> Optional[Path]:
-        """Find the most recent checkpoint."""
-        checkpoints = list(self.checkpoint_dir.glob("step_*"))
+        """Find the most recent checkpoint across every tag this manager writes
+        (``step``, ``final``, ``interrupted``, ``token_pack_NNN``, ``best``)."""
+
+        def get_step(p: Path) -> Optional[int]:
+            try:
+                return int(p.name.rsplit("_", 1)[-1])
+            except ValueError:
+                return None
+
+        checkpoints = [
+            path
+            for path in self.checkpoint_dir.iterdir()
+            if path.is_dir() and get_step(path) is not None
+        ]
         if not checkpoints:
             return None
-
-        # Sort by step number
-        def get_step(p):
-            try:
-                return int(p.name.split("_")[1])
-            except:
-                return 0
 
         checkpoints.sort(key=get_step, reverse=True)
         return checkpoints[0]

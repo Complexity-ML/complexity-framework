@@ -266,7 +266,14 @@ class TrainRunner:
         )
         p.add_argument("--log-steps", type=int, default=10)
         p.add_argument("--checkpoint-dir", type=str, default=self.checkpoint_dir)
-        p.add_argument("--resume", type=str, default=None)
+        p.add_argument(
+            "--resume",
+            type=str,
+            default=None,
+            help="checkpoint directory to resume from, or 'auto' to resume "
+            "from the highest-step checkpoint under --checkpoint-dir if one "
+            "exists (silently starts fresh otherwise)",
+        )
         p.add_argument("--num-workers", type=int, default=4)
         p.add_argument(
             "--distributed-mode",

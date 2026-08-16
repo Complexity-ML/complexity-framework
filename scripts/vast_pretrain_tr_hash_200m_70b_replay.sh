@@ -73,4 +73,5 @@ exec torchrun --standalone --nproc_per_node "${NPROC_PER_NODE:-8}" \
   --log-steps "${LOG_STEPS:-10}" \
   --num-workers "${NUM_WORKERS:-0}" \
   --checkpoint-dir "${OUTPUT_DIR:-artifacts/tr_hash_200m_70b_replay}" \
+  --resume "${RESUME:-auto}" \
   "$@"

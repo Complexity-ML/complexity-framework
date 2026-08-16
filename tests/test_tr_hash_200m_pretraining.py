@@ -238,7 +238,7 @@ def test_70b_replay_supervisor_is_safe_and_does_not_autostart() -> None:
     assert not Path("scripts/vast_pretrain_tr_hash_200m_200b.sh").exists()
     assert "[program:tr_hash_200m_70b_replay]" in supervisor
     assert "autostart=false" in supervisor
-    assert "autorestart=false" in supervisor
+    assert "autorestart=unexpected" in supervisor
     assert "NPROC_PER_NODE=\"8\"" in supervisor
     assert "TOKENIZED_CACHE_GB=\"24\"" in supervisor
     assert "NUM_WORKERS=\"0\"" in supervisor
@@ -256,6 +256,14 @@ def test_70b_replay_supervisor_is_safe_and_does_not_autostart() -> None:
     assert "/dev/stdout" not in supervisor
     assert "stdout_logfile=/workspace/complexity-framework/artifacts/" in supervisor
     assert "export PYTHONUNBUFFERED=1" in launcher
+
+    # Crash recovery: a crash should relaunch and pick up the last
+    # checkpoint automatically, but a *clean* exit (job finished) must not
+    # loop-restart, and an offline instance must not silently start
+    # consuming GPU-hours on its own — that still requires autostart=true.
+    assert "autorestart=unexpected" in supervisor
+    assert "autostart=false" in supervisor
+    assert '--resume "${RESUME:-auto}"' in launcher
 
 
 def test_tqdm_callback_does_not_pin_stdout() -> None:

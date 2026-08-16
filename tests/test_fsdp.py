@@ -149,6 +149,55 @@ class TestCheckpointHelpers:
             remaining = list(Path(tmp).glob("step_*"))
             assert len(remaining) <= 2
 
+    def test_find_latest_checkpoint_across_tags(self):
+        """Regression guard: the trainer never saves tag='step' — it saves
+        'final_N'/'interrupted_N'/'token_pack_NNN'. _find_latest_checkpoint
+        (and therefore load_latest/auto-resume) must find the highest step
+        across every tag, not just a literal 'step_*' glob."""
+        from complexity.utils.checkpointing import CheckpointManager, TrainingState
+        from complexity.models import ComplexityModel
+
+        model = ComplexityModel(small_config())
+        with tempfile.TemporaryDirectory() as tmp:
+            mgr = CheckpointManager(tmp, model)
+            mgr.save(step=70, training_state=TrainingState(step=70), tag="interrupted")
+            mgr.save(step=70, training_state=TrainingState(step=70), tag="final")
+            mgr.save(step=333, training_state=TrainingState(step=333), tag="interrupted")
+            mgr.save(step=333, training_state=TrainingState(step=333), tag="final")
+            mgr.save(step=3, training_state=TrainingState(step=3), tag="token_pack_003")
+
+            latest = mgr._find_latest_checkpoint()
+            assert latest is not None
+            assert latest.name in {"final_333", "interrupted_333"}
+
+    def test_load_latest_resumes_training_state(self):
+        from complexity.utils.checkpointing import CheckpointManager, TrainingState
+        from complexity.models import ComplexityModel
+
+        config = small_config()
+        model = ComplexityModel(config)
+        with tempfile.TemporaryDirectory() as tmp:
+            mgr = CheckpointManager(tmp, model)
+            mgr.save(step=333, training_state=TrainingState(step=333), tag="interrupted")
+
+            model2 = ComplexityModel(config)
+            mgr2 = CheckpointManager(tmp, model2)
+            state = mgr2.load_latest()
+
+            assert state is not None
+            assert state.step == 333
+
+    def test_load_latest_returns_none_on_a_fresh_checkpoint_dir(self):
+        """auto-resume must fall through to a fresh start, not crash, when
+        nothing has been saved yet."""
+        from complexity.utils.checkpointing import CheckpointManager
+        from complexity.models import ComplexityModel
+
+        model = ComplexityModel(small_config())
+        with tempfile.TemporaryDirectory() as tmp:
+            mgr = CheckpointManager(tmp, model)
+            assert mgr.load_latest() is None
+
 
 def _is_dtensor_name(v):
     return type(v).__name__ == "DTensor"

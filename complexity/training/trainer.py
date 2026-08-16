@@ -337,9 +337,14 @@ class Trainer:
         self.model.train()
 
         if self.config.resume_from:
-            self.state = self.checkpoint_manager.load(self.config.resume_from)
-            self.global_step = self.state.step
-            self.epoch = self.state.epoch
+            resume_path = None if self.config.resume_from == "auto" else self.config.resume_from
+            state = self.checkpoint_manager.load(resume_path)
+            if state is not None:
+                self.state = state
+                self.global_step = self.state.step
+                self.epoch = self.state.epoch
+            elif resume_path is not None:
+                raise FileNotFoundError(f"--resume checkpoint not found: {resume_path}")
             logger.info(f"Resumed from step {self.global_step}")
 
             # PyTorch footgun: scheduler.load_state_dict() restores base_lrs from
