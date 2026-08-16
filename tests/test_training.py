@@ -1,7 +1,6 @@
 """Tests for complexity.training module."""
 
 from contextlib import contextmanager
-import sys
 
 import pytest
 import torch
@@ -233,7 +232,7 @@ class TestCallbacks:
 
         assert callback.patience == 5
 
-    def test_supervisor_progress_uses_stdout_tqdm(self, monkeypatch):
+    def test_supervisor_progress_uses_default_stderr_tqdm(self, monkeypatch):
         from complexity.training import TqdmCallback
         import tqdm
 
@@ -254,7 +253,7 @@ class TestCallbacks:
         callback = TqdmCallback(total_steps=100, desc="supervisor-test")
         callback.close()
 
-        assert captured["file"] is sys.stdout
+        assert "file" not in captured  # defaults to stderr, unbuffered when piped
         assert captured["disable"] is False
         assert captured["dynamic_ncols"] is True
         assert captured["mininterval"] == 1.0

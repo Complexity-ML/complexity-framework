@@ -2,7 +2,6 @@
 
 import logging
 import math
-import sys
 from typing import Optional
 
 import torch
@@ -77,7 +76,6 @@ class TqdmCallback:
             dynamic_ncols=True,
             mininterval=1.0,
             smoothing=0.1,
-            file=sys.stdout,
             disable=not is_main_process(),
         )
 
