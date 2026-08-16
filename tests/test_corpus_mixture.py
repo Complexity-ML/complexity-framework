@@ -178,6 +178,58 @@ def _remote_token_fixture(tmp_path: Path):
     return remote, files, downloads, download, list_files
 
 
+def test_list_files_retries_a_transient_dns_failure(tmp_path, monkeypatch) -> None:
+    """Regression guard: a 10-rank run bursts simultaneous DNS lookups for
+    the same host on startup, and one dropping crashed the whole
+    distributed job (then looped under autorestart) over a failure that
+    clears on its own within a couple seconds."""
+    from complexity.training.corpus_mixture import _HubShardCache
+
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+    attempts = {"count": 0}
+
+    def flaky_list_files(**_kwargs):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise OSError("[Errno -3] Temporary failure in name resolution")
+        return ["a.bin", "b.bin"]
+
+    cache = _HubShardCache(
+        repo_id="owner/repo",
+        cache_dir=tmp_path,
+        revision="main",
+        token=None,
+        max_cache_bytes=10**9,
+        prefetch_shards=0,
+        file_lister=flaky_list_files,
+    )
+
+    assert cache.list_files() == {"a.bin", "b.bin"}
+    assert attempts["count"] == 3
+
+
+def test_list_files_gives_up_after_max_attempts(tmp_path, monkeypatch) -> None:
+    from complexity.training.corpus_mixture import _HubShardCache
+
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    def always_fails(**_kwargs):
+        raise OSError("[Errno -3] Temporary failure in name resolution")
+
+    cache = _HubShardCache(
+        repo_id="owner/repo",
+        cache_dir=tmp_path,
+        revision="main",
+        token=None,
+        max_cache_bytes=10**9,
+        prefetch_shards=0,
+        file_lister=always_fails,
+    )
+
+    with pytest.raises(OSError, match="name resolution"):
+        cache.list_files(max_attempts=3)
+
+
 def test_remote_shards_stream_to_completion_with_bounded_cache(tmp_path) -> None:
     _remote, files, downloads, download, list_files = _remote_token_fixture(tmp_path)
     dataset = PretokenizedCorpusMixtureDataset(

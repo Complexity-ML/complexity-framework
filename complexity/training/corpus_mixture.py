@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import re
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
@@ -23,6 +24,28 @@ from ..parallel.data_parallel import is_main_process
 logger = logging.getLogger(__name__)
 HF_DATASET_PREFIX = "hf://datasets/"
 TOKEN_DTYPE = np.dtype("<u2")
+
+
+def _collect_transient_http_errors() -> tuple[type[Exception], ...]:
+    """huggingface_hub has shipped on both httpx and requests across
+    versions; catch whichever transport-error base class is installed."""
+    errors: list[type[Exception]] = []
+    try:
+        import httpx
+
+        errors.append(httpx.TransportError)
+    except ImportError:
+        pass
+    try:
+        import requests
+
+        errors.append(requests.exceptions.RequestException)
+    except ImportError:
+        pass
+    return tuple(errors)
+
+
+_TRANSIENT_HTTP_ERRORS = _collect_transient_http_errors()
 REPLAY_PLAN_FORMAT = "tr-hash-token-replay-plan-v1"
 
 
@@ -233,23 +256,46 @@ class _HubShardCache:
             self._evict(exclude={destination})
         return destination
 
-    def list_files(self) -> set[str]:
-        if self._file_lister is not None:
-            files = self._file_lister(
-                repo_id=self.repo_id,
-                repo_type="dataset",
-                revision=self.revision,
-                token=self.token,
-            )
-        else:
-            from huggingface_hub import HfApi
+    def list_files(self, *, max_attempts: int = 5) -> set[str]:
+        last_error: Exception | None = None
+        for attempt in range(max_attempts):
+            if attempt:
+                time.sleep(min(2**attempt, 30))
+            try:
+                if self._file_lister is not None:
+                    files = self._file_lister(
+                        repo_id=self.repo_id,
+                        repo_type="dataset",
+                        revision=self.revision,
+                        token=self.token,
+                    )
+                else:
+                    from huggingface_hub import HfApi
 
-            files = HfApi(token=self.token).list_repo_files(
-                repo_id=self.repo_id,
-                repo_type="dataset",
-                revision=self.revision,
-            )
-        return {str(filename) for filename in files}
+                    files = HfApi(token=self.token).list_repo_files(
+                        repo_id=self.repo_id,
+                        repo_type="dataset",
+                        revision=self.revision,
+                    )
+                return {str(filename) for filename in files}
+            except (OSError, *_TRANSIENT_HTTP_ERRORS) as error:
+                # OSError covers raw socket/DNS errors; the rest cover
+                # httpx's and requests' own wrapper exceptions for the same
+                # (huggingface_hub has used both across versions).
+                # Reproduced live: a fresh N-rank run bursts N simultaneous
+                # DNS lookups for the same host and some get dropped, which
+                # crashed the whole distributed job — and, with
+                # autorestart, looped — over a fully transient failure that
+                # a short retry clears.
+                last_error = error
+                logger.warning(
+                    "list_repo_files failed (attempt %d/%d): %s",
+                    attempt + 1,
+                    max_attempts,
+                    error,
+                )
+        assert last_error is not None
+        raise last_error
 
     @contextmanager
     def pinned(
