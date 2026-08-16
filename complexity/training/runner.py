@@ -478,19 +478,6 @@ class TrainRunner:
                 csv_file.flush()
         trainer.callbacks.append(csv_callback)
 
-        def line_logger_callback(trainer_obj, step, loss_val):
-            if not is_main or step % args.log_steps != 0:
-                return
-            ppl = math.exp(min(loss_val, 20))
-            lr = trainer_obj.optimizer.param_groups[0]["lr"]
-            elapsed = time.time() - t_start
-            tokens_per_sec = (step * tokens_per_step) / elapsed if elapsed > 0 else 0.0
-            logger.info(
-                f"step={step}/{max_steps} loss={loss_val:.4f} ppl={ppl:.1f} "
-                f"lr={lr:.2e} tokens/s={tokens_per_sec:,.0f} elapsed={elapsed:.0f}s"
-            )
-        trainer.callbacks.append(line_logger_callback)
-
         for cb in self.extra_callbacks(trainer, args, is_main):
             trainer.callbacks.append(cb)
 
