@@ -1,0 +1,104 @@
+version: 1
+seed: 42
+
+# Every train row is visited once. The loader measures the supervised labels
+# that remain visible at seq_len=512 and derives one multiplier per task so the
+# weighted token loss reaches these targets. The casual family contains both
+# social dialogue and task-like arithmetic, so explicit task×domain cells keep
+# the semantic group labels honest. This is loss balancing, not row sampling:
+# max_examples=all and an empty filters block are release invariants.
+stages:
+  - name: full-shard-weighted
+    max_examples: all
+    epochs: 1
+    lr: 3.0e-6
+    include_previous: false
+    balance_by: none
+    max_task_loss_weight: 30.0
+    loss_cells:
+      casual_social:
+        task: casual_conversation
+        domains:
+          - social
+          - social_closing
+          - social_gratitude
+          - social_greeting
+          - social_help
+          - social_repair
+          - identity
+      casual_reasoning:
+        task: casual_conversation
+        domains:
+          - contextual_arithmetic
+          - addition
+          - numerical_comparison
+          - subtraction
+          - sequence_ordering
+          - multiplication
+          - division
+      casual_instruction:
+        task: casual_conversation
+        domains:
+          - instruction_formatting
+          - general_knowledge
+          - concept_definition
+          - bullet_constraints
+          - length_constraints
+          - sentence_constraints
+          - structured_constraints
+          - account_safety
+          - chemical_safety
+          - emergency_health
+          - crisis_support
+    loss_groups:
+      distilled_reasoning:
+        target_share: 0.20
+        tasks:
+          - reasoning_verification
+          - explanation_learning
+          - casual_reasoning
+          - planning_comparison
+          - troubleshooting
+          - critique_revision
+        task_target_shares:
+          reasoning_verification: 0.4625
+          explanation_learning: 0.4000
+          casual_reasoning: 0.0750
+          planning_comparison: 0.0250
+          troubleshooting: 0.0250
+          critique_revision: 0.0125
+      natural_conversation:
+        target_share: 0.20
+        tasks:
+          - casual_social
+          - conversation_empathy
+        task_target_shares:
+          casual_social: 0.70
+          conversation_empathy: 0.30
+      instruction_and_structured:
+        target_share: 0.60
+        tasks:
+          - context_clarification
+          - extraction_classification
+          - grounded_qa
+          - practical_action
+          - brainstorming_creativity
+          - safety_uncertainty
+          - summarization_synthesis
+          - writing_transformation
+          - casual_instruction
+        task_target_shares:
+          context_clarification: 0.16666666666666666
+          extraction_classification: 0.13333333333333333
+          grounded_qa: 0.13333333333333333
+          practical_action: 0.06666666666666667
+          brainstorming_creativity: 0.058333333333333334
+          safety_uncertainty: 0.11666666666666667
+          summarization_synthesis: 0.11666666666666667
+          writing_transformation: 0.10
+          casual_instruction: 0.10833333333333334
+    batch_size: 24
+    seq_len: 512
+    # One complete full-shard epoch is the checkpoint/evaluation boundary.
+    # The runner computes its exact step count from the current shard.
+    filters: {}

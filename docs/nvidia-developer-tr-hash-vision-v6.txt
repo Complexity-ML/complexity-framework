@@ -1,0 +1,54 @@
+TITLE
+
+Technical feedback wanted: hash-routed MoE for a small CUDA detector
+
+
+FIRST POST — NO LINKS
+
+I have been experimenting with a compact anchor-free detector that hashes spatial-token IDs to select expert parameter subspaces instead of using a learned Mixture-of-Experts router. I would value technical feedback from CUDA and Triton developers on the implementation approach.
+
+The current research prototype is approximately 1M parameters. Its hierarchical vision tower produces native P3/P4/P5 features, uses shifted-window attention, and feeds a lightweight top-down and bottom-up PAN. The detection side includes quality-class scoring, LTRB/DFL regression, small-object assignment and an optional one-to-one inference branch.
+
+```text
+spatial token ID ---> layer-specific hash ---> expert IDs
+        |                                      |
+        |                                      v
+        +---- shared contextual features + selected expert parameters
+                                               |
+                                               v
+                                             output
+```
+
+The CUDA path currently includes BF16 training, fused routed-expert operations, a Triton implementation, a PyTorch reference fallback, NCCL DDP and exact distributed checkpoint resume. I have exercised the training path on four RTX 5060 Ti GPUs with the fused backend active.
+
+Training and evaluation are still in progress. I am not making an accuracy claim or presenting this as a replacement for an established detector. The planned comparison will use the same data, resolution, augmentation budget and evaluation protocol, with mAP50-95, AP by object size, latency, throughput and peak VRAM reported together.
+
+I would particularly appreciate thoughts on:
+
+1. Nsight Compute counters that best expose launch overhead versus poor tensor-core occupancy for many narrow routed operations.
+2. Whether this routing operation should become a TensorRT plugin or first be lowered into gather/GEMM/scatter primitives.
+3. Efficient CUDA layouts for shifted-window attention at 640 px.
+
+If this topic fits the channel, I can share the implementation and profiler traces in a follow-up reply.
+
+
+TAG
+
+CUDA
+
+
+FIRST REPLY — ADD ONLY AFTER THE THREAD REMAINS VISIBLE
+
+Source code, for anyone who wants to inspect the implementation:
+
+https://github.com/Complexity-ML/complexity-framework
+
+The model card and reproducibility notes can be added later in the same thread if useful.
+
+
+POSTING NOTES
+
+- Paste only the TITLE and FIRST POST sections initially.
+- Do not include badges, images, the website, Hugging Face or multiple links.
+- Add the FIRST REPLY only after the thread remains visible.
+- If the no-link version is still removed, the account likely lacks permission or the channel requires moderator approval; do not keep reposting it.

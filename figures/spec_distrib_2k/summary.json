@@ -1,0 +1,73 @@
+{
+  "checkpoint": "checkpoints/long_distrib_2k/step_002000/checkpoint.pt",
+  "layers": {
+    "layer_0": {
+      "tokens": 600,
+      "mean_offdiag_cka": 0.3577897250652313,
+      "max_offdiag_cka": 0.4626816511154175,
+      "mean_offdiag_weight_cos": 7.905848178779706e-05,
+      "routing_entropy": 0.9962214832251796,
+      "output_silhouette": 0.007191846612840891
+    },
+    "layer_1": {
+      "tokens": 600,
+      "mean_offdiag_cka": 0.3014807167152564,
+      "max_offdiag_cka": 0.584713876247406,
+      "mean_offdiag_weight_cos": 8.478599920636043e-05,
+      "routing_entropy": 0.9945237411181784,
+      "output_silhouette": -0.0657295361161232
+    },
+    "layer_2": {
+      "tokens": 600,
+      "mean_offdiag_cka": 0.3959471384684245,
+      "max_offdiag_cka": 0.5416011214256287,
+      "mean_offdiag_weight_cos": 6.132449925644323e-05,
+      "routing_entropy": 0.9966614155901438,
+      "output_silhouette": -0.03125692531466484
+    },
+    "layer_3": {
+      "tokens": 600,
+      "mean_offdiag_cka": 0.3836047252019246,
+      "max_offdiag_cka": 0.46356984972953796,
+      "mean_offdiag_weight_cos": 2.2473761418950744e-05,
+      "routing_entropy": 0.9959944658246126,
+      "output_silhouette": 0.010936135426163673
+    },
+    "layer_4": {
+      "tokens": 600,
+      "mean_offdiag_cka": 0.46540071566899616,
+      "max_offdiag_cka": 0.6425316333770752,
+      "mean_offdiag_weight_cos": 2.3978796889423393e-05,
+      "routing_entropy": 0.9974776130449878,
+      "output_silhouette": -0.0011436471249908209
+    },
+    "layer_5": {
+      "tokens": 600,
+      "mean_offdiag_cka": 0.4070076296726863,
+      "max_offdiag_cka": 0.4519595205783844,
+      "mean_offdiag_weight_cos": 3.654540341813117e-05,
+      "routing_entropy": 0.9938927613200899,
+      "output_silhouette": -0.01942545548081398
+    },
+    "layer_6": {
+      "tokens": 600,
+      "mean_offdiag_cka": 0.3995247930288315,
+      "max_offdiag_cka": 0.5282193422317505,
+      "mean_offdiag_weight_cos": 4.92318686156068e-05,
+      "routing_entropy": 0.9963555358495427,
+      "output_silhouette": 0.0021863216534256935
+    },
+    "layer_7": {
+      "tokens": 600,
+      "mean_offdiag_cka": 0.38541575769583386,
+      "max_offdiag_cka": 0.4257005751132965,
+      "mean_offdiag_weight_cos": 6.525667413370684e-05,
+      "routing_entropy": 0.9904381519856613,
+      "output_silhouette": -0.0011255656136199832
+    }
+  },
+  "global": {
+    "mean_offdiag_cka": 0.3870214001896481,
+    "mean_offdiag_weight_cos": 5.283193559080246e-05
+  }
+}

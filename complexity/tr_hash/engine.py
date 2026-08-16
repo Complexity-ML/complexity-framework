@@ -1,0 +1,716 @@
+"""General TR-Hash SwiGLU engine.
+
+The universal PyTorch path is the correctness contract. Hash-native fused
+CUDA, general CGGR, and CUDA Graph paths are execution strategies selected
+from the same config.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import replace
+from typing import Callable, Dict, Optional
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from .buckets import GraphBucketPlanner
+from .capabilities import BackendDecision, select_backend, supports_fused_cuda
+from .config import (
+    SUPPORTED_EXPERT_COUNTS,
+    GraphBucket,
+    TRHashBackend,
+    TRHashEngineConfig,
+    TRHashPhase,
+)
+from .routing import build_route_table, compile_top2_pair_metadata
+
+logger = logging.getLogger(__name__)
+
+try:
+    from complexity_cuda.triton_token_routed import (
+        HAS_TRITON,
+        cggr_grouped_gemm_autograd,
+        fused_swiglu_triton,
+        hash_cggr_grouped_gemm_autograd,
+        pair_hash_reduce_autograd,
+        pair_hash_weighted_reduce_autograd,
+        sort_pair_hash_by_expert,
+        sort_tokens_by_expert,
+    )
+except Exception:
+    HAS_TRITON = False
+    cggr_grouped_gemm_autograd = None
+    fused_swiglu_triton = None
+    hash_cggr_grouped_gemm_autograd = None
+    pair_hash_reduce_autograd = None
+    pair_hash_weighted_reduce_autograd = None
+    sort_pair_hash_by_expert = None
+    sort_tokens_by_expert = None
+
+HAS_FUSED_CUDA = bool(
+    HAS_TRITON
+    and fused_swiglu_triton is not None
+    and hash_cggr_grouped_gemm_autograd is not None
+    and pair_hash_reduce_autograd is not None
+    and pair_hash_weighted_reduce_autograd is not None
+    and sort_pair_hash_by_expert is not None
+)
+
+
+def _silu_mul(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
+    return F.silu(gate) * up
+
+
+def reference_topk_swiglu(
+    flat_x: torch.Tensor,
+    routes: torch.Tensor,
+    gate_weights: torch.Tensor,
+    up_weights: torch.Tensor,
+    down_weights: torch.Tensor,
+    route_weights: torch.Tensor,
+    *,
+    activation: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = _silu_mul,
+    intermediate_transform: Optional[Callable[[torch.Tensor, int], torch.Tensor]] = None,
+) -> torch.Tensor:
+    """Authoritative PyTorch definition shared with ``TokenRoutedMLP``."""
+
+    if flat_x.ndim != 2:
+        raise ValueError("flat_x must be [tokens, hidden]")
+    if routes.ndim != 2 or routes.size(1) != flat_x.size(0):
+        raise ValueError("routes must be [top_k, tokens]")
+    if route_weights.shape != routes.shape:
+        raise ValueError("route_weights must match routes")
+    if gate_weights.shape != up_weights.shape:
+        raise ValueError("gate and up expert weights must have the same shape")
+    if gate_weights.ndim != 3 or down_weights.ndim != 3:
+        raise ValueError("expert weights must be rank-3 tensors")
+    if gate_weights.size(0) != down_weights.size(0):
+        raise ValueError("expert weight tensors must have the same expert count")
+
+    output = torch.zeros_like(flat_x)
+    for expert_index in range(gate_weights.size(0)):
+        token_weight = (routes.eq(expert_index).to(flat_x.dtype) * route_weights).sum(dim=0)
+        active_x = flat_x * token_weight.ne(0).to(flat_x.dtype).unsqueeze(-1)
+        intermediate = activation(
+            active_x @ gate_weights[expert_index],
+            active_x @ up_weights[expert_index],
+        )
+        if intermediate_transform is not None:
+            intermediate = intermediate_transform(intermediate, expert_index)
+        expert_output = intermediate @ down_weights[expert_index]
+        output = output + expert_output.to(output.dtype) * token_weight.unsqueeze(-1)
+    return output
+
+
+class TRHashEngine(nn.Module):
+    """Shared SwiGLU plus deterministic top-k residual experts.
+
+    GQA and MHA produce the same ``[batch, sequence, hidden]`` contract, so the
+    engine deliberately does not duplicate attention code.
+    """
+
+    def __init__(self, config: TRHashEngineConfig):
+        super().__init__()
+        self.config = config
+        self.register_buffer("route_table", build_route_table(config))
+        self.register_buffer(
+            "_route_weights",
+            torch.tensor(config.route_weights, dtype=torch.float32),
+            persistent=False,
+        )
+        route_codes, expert_pairs = self._compile_fused_metadata(self.route_table)
+        self.register_buffer("fused_route_codes", route_codes)
+        self.register_buffer("fused_expert_pairs", expert_pairs)
+
+        self.expert_gate = nn.Parameter(
+            torch.empty(
+                config.num_experts,
+                config.hidden_size,
+                config.expert_width,
+            )
+        )
+        self.expert_up = nn.Parameter(
+            torch.empty(
+                config.num_experts,
+                config.hidden_size,
+                config.expert_width,
+            )
+        )
+        self.expert_down = nn.Parameter(
+            torch.empty(
+                config.num_experts,
+                config.expert_width,
+                config.hidden_size,
+            )
+        )
+        if config.shared_width:
+            self.shared_gate = nn.Linear(
+                config.hidden_size,
+                config.shared_width,
+                bias=False,
+            )
+            self.shared_up = nn.Linear(
+                config.hidden_size,
+                config.shared_width,
+                bias=False,
+            )
+            self.shared_down = nn.Linear(
+                config.shared_width,
+                config.hidden_size,
+                bias=False,
+            )
+        else:
+            self.shared_gate = None
+            self.shared_up = None
+            self.shared_down = None
+
+        self.reset_parameters()
+        self.last_backend: Optional[BackendDecision] = None
+        self._graph_pool: Dict[GraphBucket, "_CapturedTRHashGraph"] = {}
+        self._bucket_planner = (
+            GraphBucketPlanner(config.graph_buckets) if config.graph_buckets else None
+        )
+
+        # Dynamic capacity: the module is allocated at (config.num_experts,
+        # config.expert_width) but can be shrunk at runtime to a smaller,
+        # still fully deterministic ID/hash-routed sub-network via
+        # ``set_active_capacity``. Nothing changes unless that is called.
+        self._active_num_experts = config.num_experts
+        self._active_expert_width = config.expert_width
+        self._active_route_table = self.route_table
+        # LoRA freezes the shared base projections. When both SwiGLU inputs
+        # are adapted, cache their concatenated base matrix once so training
+        # executes one large GEMM instead of two independent base GEMMs.
+        # This is intentionally a plain, non-persistent tensor: it is derived
+        # from canonical weights and must not enter checkpoints or DDP buffer
+        # broadcasts.
+        self._fused_shared_gate_up_weight: Optional[torch.Tensor] = None
+
+    def _apply(self, fn, recurse: bool = True):
+        # ``_active_route_table`` is a plain attribute (sometimes just an
+        # alias of the ``route_table`` buffer, sometimes an independently
+        # built reduced-capacity table from ``set_active_capacity``), so the
+        # base ``_apply`` -- which only walks parameters/buffers -- does not
+        # move it. Without this it silently stays on the old device after
+        # ``.to(device)``/``.cuda()``/etc., and every ``_routes`` lookup
+        # against the (now-moved) route_ids raises a cross-device index error.
+        was_aliased = self._active_route_table is self.route_table
+        super()._apply(fn, recurse=recurse)
+        self._active_route_table = self.route_table if was_aliased else fn(self._active_route_table)
+        if self._fused_shared_gate_up_weight is not None:
+            self._fused_shared_gate_up_weight = fn(self._fused_shared_gate_up_weight)
+        return self
+
+    @property
+    def active_num_experts(self) -> int:
+        return self._active_num_experts
+
+    @property
+    def active_expert_width(self) -> int:
+        return self._active_expert_width
+
+    def set_active_capacity(
+        self,
+        *,
+        num_experts: Optional[int] = None,
+        expert_width: Optional[int] = None,
+    ) -> None:
+        """Shrink the engine to a smaller deterministic sub-network at runtime.
+
+        Both knobs only ever select a fixed-size prefix of the allocated
+        experts/width — routing stays token-ID / hash-table based (re-derived
+        for the reduced expert count with :func:`build_route_table`, the same
+        deterministic construction used at ``__init__``), so this never turns
+        into a learned or contextual router. Pass ``None`` for a knob to leave
+        it unchanged. Call with no arguments (or both back at the allocated
+        max) to restore full capacity.
+        """
+
+        if num_experts is not None:
+            if num_experts not in SUPPORTED_EXPERT_COUNTS:
+                raise ValueError(
+                    f"num_experts must be one of {SUPPORTED_EXPERT_COUNTS}, got {num_experts}"
+                )
+            if num_experts > self.config.num_experts:
+                raise ValueError(
+                    f"active num_experts ({num_experts}) cannot exceed the "
+                    f"allocated capacity ({self.config.num_experts})"
+                )
+            if num_experts == self.config.num_experts:
+                self._active_route_table = self.route_table
+            else:
+                active_config = replace(self.config, num_experts=num_experts)
+                self._active_route_table = build_route_table(active_config).to(
+                    device=self.route_table.device
+                )
+            self._active_num_experts = num_experts
+
+        if expert_width is not None:
+            if not 0 < expert_width <= self.config.expert_width:
+                raise ValueError(
+                    f"active expert_width must be in (0, {self.config.expert_width}], "
+                    f"got {expert_width}"
+                )
+            self._active_expert_width = expert_width
+
+        if num_experts is not None or expert_width is not None:
+            # Any previously captured CUDA graph baked in the prior capacity's
+            # weights/routes; it would silently replay stale results.
+            self._graph_pool.clear()
+
+    def _compile_fused_metadata(
+        self, route_table: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if supports_fused_cuda(self.config):
+            return compile_top2_pair_metadata(
+                route_table,
+                num_experts=self.config.num_experts,
+            )
+        return (
+            torch.empty(0, dtype=torch.uint8),
+            torch.empty((0, 2), dtype=torch.int32),
+        )
+
+    def load_route_table(self, route_table: torch.Tensor) -> None:
+        """Install an externally-provided ``[top_k, vocab_size]`` route table.
+
+        For loading checkpoints whose token->expert assignment was decided by
+        a different (but still deterministic, token-ID/hash-table based)
+        construction — e.g. converted from :class:`TokenRoutedMLP` — so the
+        expert weights stay paired with the exact routing they were trained
+        against, instead of the routing this engine's own config would
+        otherwise regenerate at ``__init__``. Keeps fused-CUDA pair metadata
+        and any captured CUDA graphs in sync with the new table.
+        """
+
+        if tuple(route_table.shape) != tuple(self.route_table.shape):
+            raise ValueError(
+                f"route_table shape {tuple(route_table.shape)} does not match "
+                f"the engine's {tuple(self.route_table.shape)} ([top_k, vocab_size])"
+            )
+        if route_table.min().item() < 0 or route_table.max().item() >= self.config.num_experts:
+            raise ValueError("route_table contains an out-of-range expert index")
+        self.route_table.copy_(route_table.to(device=self.route_table.device))
+        route_codes, expert_pairs = self._compile_fused_metadata(self.route_table)
+        self.fused_route_codes = route_codes.to(device=self.fused_route_codes.device)
+        self.fused_expert_pairs = expert_pairs.to(device=self.fused_expert_pairs.device)
+        if self._active_num_experts == self.config.num_experts:
+            self._active_route_table = self.route_table
+        else:
+            active_config = replace(self.config, num_experts=self._active_num_experts)
+            self._active_route_table = build_route_table(active_config).to(
+                device=self.route_table.device
+            )
+        self._graph_pool.clear()
+
+    def reset_parameters(self) -> None:
+        std = self.config.initializer_range
+        for parameter in (self.expert_gate, self.expert_up, self.expert_down):
+            nn.init.normal_(parameter, mean=0.0, std=std)
+        for module in (self.shared_gate, self.shared_up, self.shared_down):
+            if module is not None:
+                nn.init.normal_(module.weight, mean=0.0, std=std)
+
+    def _routes(self, token_ids: torch.Tensor) -> torch.Tensor:
+        clamped = token_ids.clamp(0, self.config.vocab_size - 1)
+        return self._active_route_table[:, clamped]
+
+    def _active_expert_weights(self):
+        """Return (gate, up, down) views truncated to the active capacity."""
+
+        num_experts = self._active_num_experts
+        width = self._active_expert_width
+        if num_experts == self.config.num_experts and width == self.config.expert_width:
+            return self.expert_gate, self.expert_up, self.expert_down
+        return (
+            self.expert_gate[:num_experts, :, :width].contiguous(),
+            self.expert_up[:num_experts, :, :width].contiguous(),
+            self.expert_down[:num_experts, :width, :].contiguous(),
+        )
+
+    def _shared(self, flat_x: torch.Tensor) -> torch.Tensor:
+        if self.shared_gate is None:
+            return torch.zeros_like(flat_x)
+        fused_weight = self._fused_shared_gate_up_weight
+        gate_is_lora = getattr(self.shared_gate, "is_lora_adapter", False)
+        up_is_lora = getattr(self.shared_up, "is_lora_adapter", False)
+        if fused_weight is not None and gate_is_lora and up_is_lora:
+            shared_width = int(self.shared_gate.base.out_features)
+            base_gate, base_up = F.linear(flat_x, fused_weight).split(
+                [shared_width, shared_width], dim=-1
+            )
+            gate = base_gate + self.shared_gate.lora_residual(flat_x)
+            up = base_up + self.shared_up.lora_residual(flat_x)
+        else:
+            gate = self.shared_gate(flat_x)
+            up = self.shared_up(flat_x)
+        return self.shared_down(_silu_mul(gate, up))
+
+    def refresh_fused_shared_lora_weight(self) -> bool:
+        """Refresh the derived frozen gate/up matrix used by shared LoRA."""
+
+        gate_is_lora = getattr(self.shared_gate, "is_lora_adapter", False)
+        up_is_lora = getattr(self.shared_up, "is_lora_adapter", False)
+        if not (gate_is_lora and up_is_lora):
+            self._fused_shared_gate_up_weight = None
+            return False
+        self._fused_shared_gate_up_weight = torch.cat(
+            [self.shared_gate.base.weight, self.shared_up.base.weight], dim=0
+        ).detach()
+        return True
+
+    def _reference_routed(
+        self,
+        flat_x: torch.Tensor,
+        routes: torch.Tensor,
+    ) -> torch.Tensor:
+        """Graph-friendly, autograd-correct fixed expert loop."""
+
+        route_weights = self._route_weights.to(dtype=flat_x.dtype)[:, None].expand_as(routes)
+        gate, up, down = self._active_expert_weights()
+        return reference_topk_swiglu(
+            flat_x,
+            routes,
+            gate,
+            up,
+            down,
+            route_weights,
+        )
+
+    def _cggr_routed(
+        self,
+        flat_x: torch.Tensor,
+        routes: torch.Tensor,
+    ) -> torch.Tensor:
+        """One combined grouped dispatch for arbitrary supported top-k."""
+
+        if not HAS_TRITON or cggr_grouped_gemm_autograd is None:
+            raise RuntimeError("CGGR selected but Triton CGGR is unavailable")
+        token_count, hidden_size = flat_x.shape
+        expanded_x = (
+            flat_x.unsqueeze(0)
+            .expand(
+                self.config.top_k,
+                -1,
+                -1,
+            )
+            .reshape(-1, hidden_size)
+        )
+        flat_routes = routes.reshape(-1)
+        gate_w, up_w, down_w = self._active_expert_weights()
+        sorted_x, sorted_indices, expert_offsets, _ = sort_tokens_by_expert(
+            expanded_x,
+            flat_routes,
+            self._active_num_experts,
+        )
+        gate = cggr_grouped_gemm_autograd(
+            sorted_x,
+            gate_w,
+            expert_offsets,
+        )
+        up = cggr_grouped_gemm_autograd(
+            sorted_x,
+            up_w,
+            expert_offsets,
+        )
+        intermediate = _silu_mul(gate, up)
+        sorted_output = cggr_grouped_gemm_autograd(
+            intermediate,
+            down_w,
+            expert_offsets,
+        )
+        expanded_output = torch.empty_like(sorted_output)
+        expanded_output[sorted_indices] = sorted_output
+        expanded_output = expanded_output.view(
+            self.config.top_k,
+            token_count,
+            hidden_size,
+        )
+        weights = self._route_weights.to(dtype=flat_x.dtype).view(self.config.top_k, 1, 1)
+        return (expanded_output * weights).sum(dim=0)
+
+    def _fused_cuda_routed(
+        self,
+        flat_x: torch.Tensor,
+        flat_token_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        """Hash-native CUDA dispatch for the common top-2 expert pair.
+
+        The planner decodes compact token-ID pair metadata while it performs a
+        linear counting partition. Gate and up projections read the original
+        token matrix indirectly, so no duplicated ``[2*N, hidden]`` input is
+        materialized. The down projection stays expert-contiguous and the
+        final Triton reduction combines both routes directly in token order.
+        """
+
+        if not HAS_FUSED_CUDA:
+            raise RuntimeError(
+                "fused CUDA selected but hash-native Triton kernels are unavailable"
+            )
+        if flat_x.device.type != "cuda":
+            raise RuntimeError("fused CUDA routing requires CUDA tensors")
+        if not supports_fused_cuda(self.config):
+            raise RuntimeError(
+                "fused CUDA routing requires top_k=2 and two to eight experts"
+            )
+
+        token_count = int(flat_x.size(0))
+        output_dtype = flat_x.dtype
+        # Parametrized expert weights (for example LoRA) materialize their
+        # effective base+delta tensor on access. Fetch each tensor once and
+        # reuse it across dtype selection plus every grouped kernel below.
+        gate_w, up_w, down_w = self._active_expert_weights()
+        # Triton's tl.dot requires both operands to have the same dtype.  Most
+        # training calls satisfy that through autocast, but inference can
+        # legitimately retain FP32 residual activations while the checkpoint
+        # itself is materialized as BF16.  Normalize only the expert branch to
+        # its stored weight dtype, then restore the residual-stream dtype.
+        expert_dtype = gate_w.dtype
+        fused_x = flat_x if flat_x.dtype == expert_dtype else flat_x.to(expert_dtype)
+        (
+            sorted_indices,
+            inverse_indices,
+            expert_offsets,
+            _,
+        ) = sort_pair_hash_by_expert(
+            flat_token_ids,
+            self.fused_route_codes,
+            self.fused_expert_pairs,
+            vocab_size=self.config.vocab_size,
+            num_experts=self.config.num_experts,
+            return_inverse=True,
+        )
+        gate = hash_cggr_grouped_gemm_autograd(
+            fused_x,
+            gate_w,
+            expert_offsets,
+            sorted_indices,
+            inverse_indices,
+        )
+        up = hash_cggr_grouped_gemm_autograd(
+            fused_x,
+            up_w,
+            expert_offsets,
+            sorted_indices,
+            inverse_indices,
+        )
+        if self.training or torch.is_grad_enabled():
+            intermediate = _silu_mul(gate, up)
+        else:
+            intermediate = fused_swiglu_triton(gate, up)
+        sorted_output = cggr_grouped_gemm_autograd(
+            intermediate,
+            down_w,
+            expert_offsets,
+        )
+
+        primary_weight, secondary_weight = self.config.route_weights
+        if abs(primary_weight - secondary_weight) <= 1e-12:
+            routed = pair_hash_reduce_autograd(
+                sorted_output,
+                sorted_indices,
+                inverse_indices,
+                token_count,
+                scale=float(primary_weight),
+            )
+        else:
+            primary_weights = torch.full(
+                (token_count,),
+                float(primary_weight),
+                dtype=fused_x.dtype,
+                device=fused_x.device,
+            )
+            routed = pair_hash_weighted_reduce_autograd(
+                sorted_output,
+                sorted_indices,
+                inverse_indices,
+                primary_weights,
+                token_count,
+            )
+        return routed if routed.dtype == output_dtype else routed.to(output_dtype)
+
+    def _forward_eager(
+        self,
+        hidden_states: torch.Tensor,
+        token_ids: torch.Tensor,
+        backend: TRHashBackend,
+    ) -> torch.Tensor:
+        if hidden_states.ndim != 3:
+            raise ValueError("hidden_states must be [batch, sequence, hidden]")
+        if token_ids.shape != hidden_states.shape[:2]:
+            raise ValueError("token_ids must match hidden batch/sequence dimensions")
+        if hidden_states.size(-1) != self.config.hidden_size:
+            raise ValueError(
+                f"expected hidden size {self.config.hidden_size}, got {hidden_states.size(-1)}"
+            )
+
+        batch, sequence, hidden = hidden_states.shape
+        is_reduced_capacity = (
+            self._active_num_experts != self.config.num_experts
+            or self._active_expert_width != self.config.expert_width
+        )
+        if is_reduced_capacity and backend is TRHashBackend.FUSED_CUDA:
+            raise RuntimeError(
+                "FUSED_CUDA requires the full allocated capacity: its "
+                "precompiled pair metadata is tied to config.num_experts. "
+                "Use TRHashBackend.PYTORCH or CGGR while active capacity is "
+                f"reduced (active={self._active_num_experts}/{self.config.num_experts} "
+                f"experts, {self._active_expert_width}/{self.config.expert_width} width)."
+            )
+        flat_x = hidden_states.reshape(-1, hidden)
+        shared = self._shared(flat_x)
+        if backend is TRHashBackend.FUSED_CUDA:
+            routed = self._fused_cuda_routed(
+                flat_x,
+                token_ids.reshape(-1),
+            )
+        else:
+            routes = self._routes(token_ids).reshape(
+                self.config.top_k,
+                -1,
+            )
+            if backend is TRHashBackend.CGGR:
+                routed = self._cggr_routed(flat_x, routes)
+            else:
+                routed = self._reference_routed(flat_x, routes)
+        output = self.config.shared_output_scale * shared + self.config.routed_output_scale * routed
+        return output.view(batch, sequence, hidden)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        token_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        decision = select_backend(
+            self.config,
+            device_type=hidden_states.device.type,
+            cggr_available=bool(HAS_TRITON and cggr_grouped_gemm_autograd),
+            fused_cuda_available=HAS_FUSED_CUDA,
+        )
+        self.last_backend = decision
+        if decision.selected is TRHashBackend.CUDA_GRAPH:
+            return self._forward_cuda_graph(hidden_states, token_ids)
+        return self._forward_eager(hidden_states, token_ids, decision.selected)
+
+    def _forward_cuda_graph(
+        self,
+        hidden_states: torch.Tensor,
+        token_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.training or torch.is_grad_enabled():
+            raise RuntimeError("CUDA Graph TR-Hash requires eval mode and torch.no_grad()")
+        if hidden_states.device.type != "cuda":
+            raise RuntimeError("CUDA Graph TR-Hash requires CUDA tensors")
+        if self._bucket_planner is None:
+            raise RuntimeError("CUDA Graph backend has no configured buckets")
+        batch, sequence, _ = hidden_states.shape
+        bucket = self._bucket_planner.select(batch, sequence)
+        runner = self._graph_pool.get(bucket)
+        if runner is None:
+            runner = _CapturedTRHashGraph(self, bucket, hidden_states)
+            self._graph_pool[bucket] = runner
+        return runner.replay(hidden_states, token_ids)
+
+    def capability_summary(self, device_type: str = "cpu") -> dict:
+        """Return stable, serializable metadata for logs and run manifests."""
+
+        decision = select_backend(
+            self.config,
+            device_type=device_type,
+            cggr_available=bool(HAS_TRITON and cggr_grouped_gemm_autograd),
+            fused_cuda_available=HAS_FUSED_CUDA,
+        )
+        return {
+            "experts": self.config.num_experts,
+            "top_k": self.config.top_k,
+            "shared_width": self.config.shared_width,
+            "expert_width": self.config.expert_width,
+            "stored_width": self.config.stored_mlp_width,
+            "active_width": self.config.active_mlp_width,
+            "active_width_fraction": self.config.active_width_fraction,
+            # Runtime dynamic capacity (see set_active_capacity): a prefix of
+            # the allocated experts/width actually used right now, distinct
+            # from the top_k-driven sparsity fields above.
+            "active_num_experts": self._active_num_experts,
+            "active_expert_width": self._active_expert_width,
+            "is_reduced_capacity": (
+                self._active_num_experts != self.config.num_experts
+                or self._active_expert_width != self.config.expert_width
+            ),
+            "attention": self.config.attention_backbone.value,
+            "routing": self.config.routing_strategy.value,
+            "phase": self.config.phase.value,
+            "precision": self.config.precision.value,
+            "world_size": self.config.world_size,
+            "parallelism": ("replicated_ddp" if self.config.world_size > 1 else "single_device"),
+            "requested_backend": decision.requested.value,
+            "selected_backend": decision.selected.value,
+            "backend_reasons": list(decision.reasons),
+            "fused_cuda_eligible": supports_fused_cuda(self.config),
+            "cuda_graph_buckets": [
+                [bucket.batch_size, bucket.sequence_length] for bucket in self.config.graph_buckets
+            ],
+        }
+
+
+class _CapturedTRHashGraph:
+    """One lazily captured, persistent-buffer inference graph."""
+
+    def __init__(
+        self,
+        engine: TRHashEngine,
+        bucket: GraphBucket,
+        sample: torch.Tensor,
+    ):
+        if engine.config.phase is not TRHashPhase.INFERENCE:
+            raise RuntimeError("only inference graphs can be captured")
+        self.engine = engine
+        self.bucket = bucket
+        shape = (
+            bucket.batch_size,
+            bucket.sequence_length,
+            engine.config.hidden_size,
+        )
+        self.hidden = torch.zeros(
+            shape,
+            dtype=sample.dtype,
+            device=sample.device,
+        )
+        self.token_ids = torch.zeros(
+            bucket.batch_size,
+            bucket.sequence_length,
+            dtype=torch.long,
+            device=sample.device,
+        )
+        self.graph = torch.cuda.CUDAGraph()
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):
+                self.output = engine._forward_eager(
+                    self.hidden,
+                    self.token_ids,
+                    TRHashBackend.PYTORCH,
+                )
+        stream.synchronize()
+        with torch.cuda.graph(self.graph):
+            self.output = engine._forward_eager(
+                self.hidden,
+                self.token_ids,
+                TRHashBackend.PYTORCH,
+            )
+
+    def replay(
+        self,
+        hidden_states: torch.Tensor,
+        token_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        batch, sequence, _ = hidden_states.shape
+        self.hidden.zero_()
+        self.token_ids.zero_()
+        self.hidden[:batch, :sequence].copy_(hidden_states)
+        self.token_ids[:batch, :sequence].copy_(token_ids)
+        self.graph.replay()
+        return self.output[:batch, :sequence].clone()

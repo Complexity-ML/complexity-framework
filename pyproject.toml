@@ -1,0 +1,186 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "complexity-framework"
+version = "0.3.0"
+description = "Modular Python framework for Transformer and Token-Routed language-model research"
+readme = "README.md"
+license = {text = "CC-BY-NC-4.0"}
+authors = [
+    {name = "Complexity-ML", email = "contact@complexity-ml.org"}
+]
+keywords = [
+    "llm",
+    "transformer",
+    "deep-learning",
+    "pytorch",
+    "attention",
+    "moe",
+    "mixture-of-experts",
+    "flash-attention",
+    "token-routed",
+    "tr-hash",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: Other/Proprietary License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.10"
+dependencies = [
+    # NOTE: torch is intentionally NOT in required deps. PyPI's default `torch`
+    # wheel is the NVIDIA CUDA build — installing it via `pip install -e .` on a
+    # ROCm host silently replaces the AMD-built torch and yanks in 1.5 GB of
+    # nvidia-* packages. Pick a backend extra ([cuda] / [rocm] / [cpu]) so
+    # torch resolves against the right wheel index.
+    "numpy>=1.23.0",
+    "einops>=0.6.0",
+    "transformers>=4.30.0",
+    "tokenizers>=0.13.0",
+    "tiktoken>=0.7.0",
+    "datasets>=2.0.0",
+    "tqdm>=4.0.0",
+    "wandb>=0.15.0",
+    "safetensors>=0.4.0",   # save_pretrained + checkpointing
+    "filelock>=3.16.1",     # process-safe lazy token-shard cache
+    "jinja2>=3.0.0",        # standalone HF/vLLM/MLX chat-template rendering
+    "pyyaml>=6.0",          # imported at module load in config/model_config.py
+    "typer>=0.9.0",         # CLI (complexity.cli)
+]
+
+[project.optional-dependencies]
+# IMPORTANT: torch is intentionally NOT listed in any backend extra.
+#
+# Reason: pip cannot attach a `--index-url` to an extra. If we list torch here
+# pip will resolve it against whatever indexes are in scope at install time,
+# which on a stock setup means PyPI's CUDA wheel — even when the user wanted
+# ROCm. Pinning local-version tags (e.g. `torch>=2.9+rocm6.4`) is fragile
+# because tags change per ROCm release.
+#
+# Instead, install torch in a SEPARATE step before the framework, against the
+# backend-appropriate index. The `scripts/install_backend.sh` helper or the
+# Makefile targets (`make install-rocm` / `install-cuda` / `install-cpu`) do
+# this in one go. The extras below only carry backend-specific kernel libs
+# that DO live on PyPI.
+cuda = [
+    "triton>=2.0.0",
+    "liger-kernel>=0.5.0",  # fused linear+CE, RMSNorm, RoPE (Triton)
+    # flash-attn removed: builds from source (~30min), SDPA covers the same path
+]
+rocm = [
+    "pytorch-triton-rocm; platform_system == 'Linux'",
+    "liger-kernel>=0.5.0",  # exact fused linear+CE and Triton kernels; supports ROCm through Triton
+]
+cpu = []
+fp8 = [
+    "torchao>=0.7.0",
+]
+image = [
+    "Pillow>=10.0.0",
+    "diffusers>=0.30.0",
+    "accelerate>=0.30.0",
+    "hf-xet>=1.1.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "tomli>=2.0.0; python_version < '3.11'",
+    "Pillow>=10.0.0",
+]
+tools = [
+    "mcp>=1.0.0; python_version >= '3.10'",
+]
+pretrain-data = [
+    "boto3>=1.34.0",
+    "hf-xet>=1.1.0",
+]
+serve = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "python-multipart>=0.0.9",
+]
+export = [
+    "onnx>=1.12.0; platform_system != 'Darwin'",
+    "onnx>=1.12.0,<1.18.0; platform_system == 'Darwin' and python_version < '3.13'",
+    "onnx>=1.20.0; platform_system == 'Darwin' and python_version >= '3.13'",
+    "onnxslim>=0.1.82",
+    "onnxruntime<1.20.0; python_version < '3.11'",
+    "onnxruntime>=1.20.0; python_version >= '3.11'",
+]
+detection = [
+    # Public computer-vision runtime stack aligned with Ultralytics. Torch is
+    # still installed separately so CUDA, ROCm and CPU wheels cannot mix.
+    "packaging>=23.0",
+    "matplotlib>=3.3.0",
+    "opencv-python>=4.7.0,!=4.13.0.90",
+    "Pillow>=10.0.0",
+    "requests>=2.23.0",
+    "torchvision>=0.9.0",
+    "psutil>=5.8.0",
+    "polars>=0.20.0",
+    "nvidia-ml-py>=12.0.0; platform_system == 'Linux'",
+    "albumentations>=1.4.6",
+    "faster-coco-eval>=1.6.7",
+    "pycocotools>=2.0.7",
+    "tensorboard>=2.14.0",
+]
+viz = [
+    "matplotlib>=3.8.0",
+    "plotly>=5.20.0",
+    "scikit-learn>=1.4.0",
+]
+
+[project.scripts]
+complexity = "complexity.cli.app:main"
+cf-plan-run = "complexity.training.plan_run:main"
+cf-plan-cluster = "complexity.training.cluster_plan:main"
+cf-image-train = "complexity.generative.image.training:main"
+cf-image-edit-train = "complexity.generative.image.edit_training:main"
+cf-detector-train = "complexity.generative.detection.training:main"
+cf-vision-pretrain = "complexity.generative.vision_language.pretraining:main"
+cf-detector-serve = "complexity.generative.detection.service:main"
+cf-sensor-fusion-train = "complexity.generative.sensor_fusion.training:main"
+cf-sensor-fusion-submit = "complexity.generative.sensor_fusion.submission:main"
+
+[project.urls]
+Homepage = "https://github.com/Complexity-ML/complexity-framework"
+Documentation = "https://github.com/Complexity-ML/complexity-framework/tree/main/docs"
+Repository = "https://github.com/Complexity-ML/complexity-framework"
+Issues = "https://github.com/Complexity-ML/complexity-framework/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["complexity*"]
+exclude = ["docs*", "tests*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.py"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["*.png", "*.jpg", "*.jpeg", "*.gif", "*.svg", "*.md"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+markers = [
+    "multigpu: requires more than one accelerator device",
+]

@@ -1,0 +1,35 @@
+# Mistral 7B Configuration
+# Reference: https://arxiv.org/abs/2310.06825
+
+# Architecture
+hidden_size: 4096
+num_hidden_layers: 32
+num_attention_heads: 32
+num_key_value_heads: 8  # GQA with 8 KV heads
+intermediate_size: 14336
+vocab_size: 32000
+
+# Attention
+attention_type: gqa
+attention_dropout: 0.0
+use_qk_norm: false
+sliding_window: 4096  # Sliding window attention!
+
+# Position
+max_position_embeddings: 32768
+rope_theta: 10000.0
+rope_type: standard
+
+# MLP
+mlp_type: swiglu
+hidden_act: silu
+num_experts: 1
+
+# Normalization
+norm_type: rmsnorm
+norm_eps: 1e-5
+
+# Other
+tie_word_embeddings: false
+use_sdpa: true
+initializer_range: 0.02

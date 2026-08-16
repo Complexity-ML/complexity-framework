@@ -1,0 +1,140 @@
+name: sft-50m-plus5b-agentic-stack
+base_checkpoint: checkpoints/sft-50m-plus5b-general/step_001000
+tokenizer: ./tokenizer-o200k
+output_dir: checkpoints
+data_dir: data/sft/stack_sft
+batch_size: 128
+seq_len: 1024
+save_steps: 250
+save_total_limit: 2
+grad_ckpt: true
+bf16: true
+use_custom_kernels: auto
+loss_chunk_tokens: 512
+
+stages:
+  - name: general
+    steps: 1000
+    lr: 3e-5
+    mix:
+      records: 80000
+      sources:
+        - name: general_instruct
+          path: data/sft/general_instruct.jsonl
+          format: jsonl
+          weight: 1.0
+
+  - name: agentic_format
+    steps: 700
+    lr: 3e-5
+    mix:
+      records: 80000
+      sources:
+        - name: general_instruct
+          path: data/sft/general_instruct.jsonl
+          format: jsonl
+          weight: 0.45
+        - name: agentic_tool_traces
+          path: data/sft/agentic_tool_traces.jsonl
+          format: jsonl
+          weight: 0.35
+        - name: no_tool_instruct
+          path: data/sft/no_tool_instruct.jsonl
+          format: jsonl
+          weight: 0.20
+
+  - name: finalization
+    steps: 500
+    lr: 1e-5
+    mix:
+      records: 40000
+      sources:
+        - name: general_instruct
+          path: data/sft/general_instruct.jsonl
+          format: jsonl
+          weight: 0.15
+        - name: agentic_tool_traces
+          path: data/sft/agentic_tool_traces.jsonl
+          format: jsonl
+          weight: 0.15
+        - name: agentic_finalization
+          path: data/sft/agentic_finalization.jsonl
+          format: jsonl
+          weight: 0.70
+
+  - name: reflection
+    steps: 500
+    lr: 1e-5
+    mix:
+      records: 60000
+      sources:
+        - name: general_instruct
+          path: data/sft/general_instruct.jsonl
+          format: jsonl
+          weight: 0.25
+        - name: agentic_tool_traces
+          path: data/sft/agentic_tool_traces.jsonl
+          format: jsonl
+          weight: 0.20
+        - name: agentic_finalization
+          path: data/sft/agentic_finalization.jsonl
+          format: jsonl
+          weight: 0.30
+        - name: agentic_reflection
+          path: data/sft/agentic_reflection.jsonl
+          format: jsonl
+          weight: 0.25
+
+  - name: coding_tools
+    steps: 700
+    lr: 1e-5
+    mix:
+      records: 60000
+      sources:
+        - name: general_instruct
+          path: data/sft/general_instruct.jsonl
+          format: jsonl
+          weight: 0.20
+        - name: code_instruct
+          path: data/sft/code_instruct.jsonl
+          format: jsonl
+          weight: 0.35
+        - name: coding_tool_traces
+          path: data/sft/coding_tool_traces.jsonl
+          format: jsonl
+          weight: 0.30
+        - name: agentic_finalization
+          path: data/sft/agentic_finalization.jsonl
+          format: jsonl
+          weight: 0.15
+
+  - name: repair_mix
+    steps: 300
+    lr: 5e-6
+    mix:
+      records: 60000
+      sources:
+        - name: general_instruct
+          path: data/sft/general_instruct.jsonl
+          format: jsonl
+          weight: 0.35
+        - name: code_instruct
+          path: data/sft/code_instruct.jsonl
+          format: jsonl
+          weight: 0.20
+        - name: agentic_tool_traces
+          path: data/sft/agentic_tool_traces.jsonl
+          format: jsonl
+          weight: 0.15
+        - name: agentic_finalization
+          path: data/sft/agentic_finalization.jsonl
+          format: jsonl
+          weight: 0.15
+        - name: agentic_reflection
+          path: data/sft/agentic_reflection.jsonl
+          format: jsonl
+          weight: 0.10
+        - name: coding_tool_traces
+          path: data/sft/coding_tool_traces.jsonl
+          format: jsonl
+          weight: 0.05

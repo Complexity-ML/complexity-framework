@@ -1,0 +1,237 @@
+"""
+Base MLP class for framework-complexity.
+
+All MLP implementations must inherit from this class.
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+@dataclass
+class MLPConfig:
+    """Configuration for MLP modules."""
+    hidden_size: int
+    intermediate_size: int
+    hidden_act: str = "silu"  # silu, gelu, relu
+    bias: bool = False
+
+    # MoE specific
+    num_experts: int = 1  # 1 = standard MLP, >1 = MoE
+    expert_initialization: str = "gpt_normal"
+    initializer_range: float = 0.02
+    vocab_size: int = 100000  # For token-routed MoE
+    hash_routing: str = ""  # "" = modulo (token_id % E), "learned" = learned projection router
+    routing_strategy: str = "modulo_cyclic"
+    route_hash_count: int = 2
+    # Present only so the standalone historical ablations can be replayed.
+    token_frequencies: Optional[torch.Tensor] = None
+    # Semantic LSH routing: route on a fixed random-hyperplane hash of the
+    # hidden state (post-attention) instead of the token id. Deterministic, no
+    # learned gate; the expert choice now depends on the contextual/semantic
+    # representation. lsh_bits=0 falls back to ceil(log2(num_experts)).
+    lsh_routing: bool = False
+    lsh_bits: int = 0
+    lsh_from_layer: int = 0  # Use LSH routing only for layers >= this index; earlier layers stay lexical (h not yet semantic).
+    lsh_threshold_mode: str = "zero"  # "zero" or "batch_median"
+    shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
+    shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
+    shared_expert_chunk_tokens: int = 0  # 0 = dense shared expert in one pass; >0 chunks token dimension to reduce activation peak.
+    use_shared_routed_gates: bool = False  # Learn scalar gates for shared vs routed expert outputs.
+    shared_gate_init: float = 1.0  # Initial shared expert output multiplier.
+    routed_gate_init: float = 1.0  # Initial routed expert output multiplier.
+    shared_output_scale: float = 1.0  # Fixed shared branch multiplier; adds no parameters.
+    routed_output_scale: float = 1.0  # Fixed routed branch multiplier; adds no parameters.
+    top_k: int = 1  # Token-Routed top-K deterministic: each token activates K fixed expert routes.
+    top_k_primary_weight: Optional[float] = None  # K>1 primary expert blend weight; None keeps the default 0.95.
+    learn_hash_pair_gates: bool = False  # Learn one mixture scalar per fixed unordered hash pair.
+    hash_pair_gate_init: float = 0.5  # Initial expert-a weight; 0.5 exactly reproduces equal top-2 routing.
+    learn_hash_channel_modulation: bool = False  # Learn tiny expert/channel gains addressed by a fixed token-ID hash.
+    hash_channel_scale_init: float = 0.0  # Zero exactly preserves the unmodulated routed branch at initialization.
+    layer_idx: int = 0  # Layer index propagated from the block; used for the built-in per-layer routing permutation.
+    static_expert_capacity: bool = False  # Fixed capacity for torch.export / pipeline tracing.
+    collect_moe_telemetry: bool = False  # Per-layer expert/RMS diagnostics. Off by default for throughput.
+    # Dynamic TR-Hash capacity (tr_hash_engine/tr_hash_moe only): start the
+    # engine already shrunk to a smaller deterministic ID/hash-routed
+    # sub-network. None keeps the full allocated (num_experts, routed width)
+    # capacity. Can also be changed later at runtime via the MLP's
+    # set_active_experts()/set_active_expert_width().
+    active_num_experts: Optional[int] = None
+    active_expert_width: Optional[int] = None
+    use_custom_kernels: object = "auto"  # "auto", True, or False. Controls optional Triton paths.
+    use_cggr: object = "auto"  # "auto", True, or False. Use CGGR grouped-GEMM when the backend policy allows custom Triton.
+
+    # Lexical feature-modulated residual: dense shared SwiGLU plus a low-rank
+    # token-conditioned residual with no expert dispatch.
+    lexical_object_rank: int = 16
+    lexical_object_gate_init: float = 0.1
+    micro_num_experts: int = 4
+    micro_expert_width: int = 16
+    micro_expert_gate_init: float = 0.1
+
+    def __post_init__(self):
+        if self.hidden_size <= 0:
+            raise ValueError("hidden_size must be positive")
+        if self.intermediate_size <= 0:
+            raise ValueError("intermediate_size must be positive")
+        if self.num_experts <= 0:
+            raise ValueError("num_experts must be positive")
+        if self.expert_initialization not in {"gpt_normal", "legacy_kaiming"}:
+            raise ValueError(
+                "expert_initialization must be 'gpt_normal' or 'legacy_kaiming'"
+            )
+        if self.initializer_range <= 0.0:
+            raise ValueError("initializer_range must be positive")
+        if self.vocab_size <= 0:
+            raise ValueError("vocab_size must be positive")
+        if self.top_k <= 0:
+            raise ValueError("top_k must be positive")
+        if self.top_k > self.num_experts:
+            raise ValueError("top_k cannot exceed num_experts")
+        if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
+            raise ValueError("top_k_primary_weight must be in [0, 1]")
+        if not 0.0 < self.hash_pair_gate_init < 1.0:
+            raise ValueError("hash_pair_gate_init must be strictly between 0 and 1")
+        if abs(self.hash_channel_scale_init) > 1.0:
+            raise ValueError("hash_channel_scale_init must be in [-1, 1]")
+        _removed_routing_strategies = {
+            "zipf",
+            "round_robin",
+            "random",
+            "lsh_hidden",
+        }
+        if self.routing_strategy in _removed_routing_strategies:
+            raise ValueError(
+                f"routing_strategy={self.routing_strategy!r} was removed: this "
+                "framework is scoped to deterministic token-ID / hash-table "
+                "routing only. Use one of modulo_cyclic, token_id_balanced_hash, "
+                "token_id_pair_coverage_hash, token_id_multi_hash "
+                "(legacy aliases: modulo, "
+                "modulo_balanced_secondary, modulo_frequency_balanced_secondary)."
+            )
+        if self.routing_strategy not in {
+            "modulo",
+            "modulo_cyclic",
+            "modulo_balanced_secondary",
+            "modulo_frequency_balanced_secondary",
+            "token_id_balanced_hash",
+            "token_id_pair_coverage_hash",
+            "token_id_multi_hash",
+            "token_id_hierarchical_hash",
+        }:
+            raise ValueError(
+                "routing_strategy must be one of modulo_cyclic, "
+                "modulo_frequency_balanced_secondary, token_id_balanced_hash, "
+                "token_id_pair_coverage_hash, token_id_multi_hash, "
+                "token_id_hierarchical_hash "
+                "(legacy aliases: modulo, modulo_balanced_secondary)"
+            )
+        if not 2 <= self.route_hash_count <= 8:
+            raise ValueError("route_hash_count must be between 2 and 8")
+        if self.lsh_threshold_mode not in {"batch_median", "zero"}:
+            raise ValueError("lsh_threshold_mode must be 'batch_median' or 'zero'")
+        if isinstance(self.use_cggr, str) and self.use_cggr.strip().lower() not in {"auto", "true", "false"}:
+            raise ValueError("use_cggr must be one of 'auto', 'true', 'false', True, or False")
+        if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
+            raise ValueError("shared_intermediate_size must be positive when set")
+        if self.shared_output_scale < 0.0:
+            raise ValueError("shared_output_scale must be non-negative")
+        if self.routed_output_scale < 0.0:
+            raise ValueError("routed_output_scale must be non-negative")
+        if self.shared_expert_chunk_tokens < 0:
+            raise ValueError("shared_expert_chunk_tokens must be non-negative")
+        if self.lexical_object_rank <= 0:
+            raise ValueError("lexical_object_rank must be positive")
+        if self.micro_num_experts <= 0:
+            raise ValueError("micro_num_experts must be positive")
+        if self.micro_expert_width <= 0:
+            raise ValueError("micro_expert_width must be positive")
+        if self.active_num_experts is not None:
+            if self.active_num_experts <= 0:
+                raise ValueError("active_num_experts must be positive")
+            if self.active_num_experts > self.num_experts:
+                raise ValueError(
+                    "active_num_experts cannot exceed num_experts "
+                    f"({self.active_num_experts} > {self.num_experts})"
+                )
+        if self.active_expert_width is not None:
+            if self.active_expert_width <= 0:
+                raise ValueError("active_expert_width must be positive")
+            max_expert_width = self.intermediate_size // self.num_experts
+            if self.active_expert_width > max_expert_width:
+                raise ValueError(
+                    "active_expert_width cannot exceed intermediate_size // "
+                    f"num_experts ({self.active_expert_width} > {max_expert_width})"
+                )
+        if self.token_frequencies is not None:
+            if not isinstance(self.token_frequencies, torch.Tensor):
+                raise ValueError("token_frequencies must be a torch.Tensor")
+            if self.token_frequencies.ndim != 1:
+                raise ValueError("token_frequencies must be a 1D tensor")
+            if self.token_frequencies.numel() != self.vocab_size:
+                raise ValueError(
+                    f"token_frequencies length ({self.token_frequencies.numel()}) "
+                    f"must match vocab_size ({self.vocab_size})"
+                )
+
+
+class MLPBase(nn.Module, ABC):
+    """
+    Abstract base class for MLP/FFN layers.
+
+    All MLP implementations must inherit from this class and implement forward().
+    """
+
+    def __init__(self, config: MLPConfig):
+        super().__init__()
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.intermediate_size = config.intermediate_size
+
+    def training_control_capabilities(self) -> frozenset[str]:
+        """Declare trainer-side curricula supported by this module."""
+
+        return frozenset()
+
+    def training_telemetry(self) -> dict[str, float]:
+        """Return scalar values suitable for progress logs and metrics."""
+
+        return {}
+
+    @abstractmethod
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        token_ids: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        """
+        Forward pass for MLP.
+
+        Args:
+            hidden_states: Input tensor [batch, seq_len, hidden_size]
+            token_ids: Optional token IDs for routing (MoE only)
+            **kwargs: Extra kwargs (e.g. sort_idx, mu) absorbed by subclasses
+
+        Returns:
+            output: [batch, seq_len, hidden_size]
+        """
+        pass
+
+    @staticmethod
+    def get_activation(name: str):
+        """Get activation function by name."""
+        activations = {
+            "silu": F.silu,
+            "swish": F.silu,
+            "gelu": F.gelu,
+            "relu": F.relu,
+            "gelu_new": lambda x: F.gelu(x, approximate="tanh"),
+        }
+        if name not in activations:
+            raise ValueError(f"Unknown activation: {name}. Choose from {list(activations.keys())}")
+        return activations[name]

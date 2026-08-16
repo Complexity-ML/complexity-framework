@@ -1,0 +1,13 @@
+phase,seed,attention,architecture,query_heads,kv_heads,shared_width,routed_width,parameters,training_tokens,eval_nll,eval_ppl,median_logged_tok_s
+selection,42,gqa,dense,8,2,1648,0,99487680,1024000,7.596686,1991.58,5418.5
+selection,42,gqa,tr_moe,8,2,1392,256,99487680,1024000,7.536167,1874.63,4708.0
+router_control,42,gqa,learned_contextual_moe,8,2,1392,256,99503040,1024000,7.602109,2002.41,
+selection,42,mha,dense,8,8,1456,0,99487680,1024000,7.586145,1970.70,5590.5
+selection,42,mha,tr_moe,8,8,1296,160,99487680,1024000,7.536471,1875.20,4398.5
+router_control,42,mha,learned_contextual_moe,8,8,1296,160,99503040,1024000,7.592847,1983.95,
+confirmation,43,gqa,dense,8,2,1648,0,99487680,1024000,7.530082,1863.26,
+confirmation,43,gqa,tr_moe,8,2,1392,256,99487680,1024000,7.492290,1794.16,
+router_control,43,gqa,learned_contextual_moe,8,2,1392,256,99503040,1024000,7.548665,1898.21,
+confirmation,43,mha,dense,8,8,1456,0,99487680,1024000,7.726971,2268.72,
+confirmation,43,mha,tr_moe,8,8,1296,160,99487680,1024000,7.541488,1884.63,
+router_control,43,mha,learned_contextual_moe,8,8,1296,160,99503040,1024000,7.666093,2134.72,

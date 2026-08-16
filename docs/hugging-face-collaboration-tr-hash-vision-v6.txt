@@ -1,0 +1,54 @@
+TITLE
+
+Open-source collaborators wanted: TR-HASH Vision v6 (CUDA/Triton + detection)
+
+
+POST
+
+We are looking for open-source collaborators for **TR-HASH Vision v6**, an experimental compact object detector built around ID-based hash routing.
+
+TR-HASH uses a layer-specific hash of spatial-token IDs to select expert parameter subspaces. There is no learned MoE router: shared contextual features and the selected expert parameters are combined inside each vision block.
+
+The current v6 prototype targets approximately **1M parameters** and includes:
+
+- a hierarchical P3/P4/P5 vision tower;
+- shifted-window attention and a lightweight PAN;
+- optional P2 features and small-object-aware assignment;
+- quality-class scoring with LTRB/DFL box regression;
+- one-to-many training and an optional one-to-one NMS-free branch;
+- CUDA/BF16, fused CUDA and Triton routed-expert paths;
+- NCCL DDP with exact distributed checkpoint resume;
+- PyTorch, ONNX and TorchScript runtime/export work.
+
+We have validated the training path on four RTX 5060 Ti GPUs. Detection pretraining and evaluation are still in progress, so we are not publishing final accuracy claims yet.
+
+We would especially welcome contributors interested in:
+
+1. CUDA/Triton profiling and routed-kernel optimization;
+2. COCO evaluation and controlled comparisons with similarly sized detectors;
+3. TensorRT or ONNX Runtime deployment and parity testing;
+4. small-object detection, shifted-window attention and PAN ablations;
+5. documentation, reproducible benchmarks and Hugging Face packaging.
+
+This is currently an **unpaid, fully remote, open-source research collaboration**, not an employment or internship offer. Contributions should be reviewable and reproducible, and contributors will be credited in the project history and release notes.
+
+Repository:
+https://github.com/Complexity-ML/complexity-framework
+
+Hugging Face organization:
+https://huggingface.co/AETHORIA-AI
+
+Vision v6 model page:
+https://huggingface.co/AETHORIA-AI/TR-HASH-Vision-v6-1M-COCO
+
+If this sounds interesting, reply in the thread or send a DM with the area you would like to work on and any relevant experience or repository.
+
+
+RECOMMENDED TAGS
+
+- machine learning
+- Hugging Face Related
+- hands-on project
+- fully remote
+
+Do not select `paid` or `internship` unless the collaboration terms change.

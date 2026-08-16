@@ -1,0 +1,82 @@
+name: sft-50m-plus5b-public-agentic-stack
+base_checkpoint: checkpoints/50m-o200k-tr-plus5b-cont/step_034074
+tokenizer: ./tokenizer-o200k
+output_dir: checkpoints
+data_dir: data/sft/stack_sft
+batch_size: 128
+seq_len: 1024
+save_steps: 250
+save_total_limit: 2
+grad_ckpt: true
+bf16: true
+use_custom_kernels: auto
+loss_chunk_tokens: 512
+
+stages:
+  - name: general
+    steps: 1000
+    lr: 3e-5
+    mix:
+      records: 80000
+      sources:
+        - name: general_instruct
+          path: data/sft/general_instruct.jsonl
+          format: jsonl
+          weight: 1.0
+
+  - name: code
+    steps: 600
+    lr: 2e-5
+    mix:
+      records: 50000
+      sources:
+        - name: general_instruct
+          path: data/sft/general_instruct.jsonl
+          format: jsonl
+          weight: 0.35
+        - name: code_instruct
+          path: data/sft/code_instruct.jsonl
+          format: jsonl
+          weight: 0.65
+
+  - name: tool_calling
+    steps: 800
+    lr: 1e-5
+    mix:
+      records: 60000
+      sources:
+        - name: general_instruct
+          path: data/sft/general_instruct.jsonl
+          format: jsonl
+          weight: 0.25
+        - name: no_tool_instruct
+          path: data/sft/no_tool_instruct.jsonl
+          format: jsonl
+          weight: 0.20
+        - name: agentic_tool_traces
+          path: data/sft/agentic_tool_traces.jsonl
+          format: jsonl
+          weight: 0.55
+
+  - name: repair_mix
+    steps: 400
+    lr: 5e-6
+    mix:
+      records: 60000
+      sources:
+        - name: general_instruct
+          path: data/sft/general_instruct.jsonl
+          format: jsonl
+          weight: 0.35
+        - name: code_instruct
+          path: data/sft/code_instruct.jsonl
+          format: jsonl
+          weight: 0.25
+        - name: no_tool_instruct
+          path: data/sft/no_tool_instruct.jsonl
+          format: jsonl
+          weight: 0.15
+        - name: agentic_tool_traces
+          path: data/sft/agentic_tool_traces.jsonl
+          format: jsonl
+          weight: 0.25

@@ -1,0 +1,9 @@
+{
+  "type": "tiktoken",
+  "encoding_name": "o200k_base",
+  "cache_dir": ".",
+  "vocab_size": 200019,
+  "format": "tiktoken",
+  "method": "o200k_base",
+  "eos_token": "<|endoftext|>"
+}

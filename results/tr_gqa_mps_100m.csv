@@ -1,0 +1,11 @@
+phase,seed,architecture,routed_width,shared_width,parameters,training_tokens,eval_nll,eval_ppl
+width_sweep,42,dense_gqa,0,1648,99487680,1024000,7.596686,1991.58
+width_sweep,42,tr_gqa,64,1584,99487680,1024000,7.598139,1994.48
+width_sweep,42,tr_gqa,128,1520,99487680,1024000,7.570862,1940.81
+width_sweep,42,tr_gqa,160,1488,99487680,1024000,7.547887,1896.73
+width_sweep,42,tr_gqa,256,1392,99487680,1024000,7.536167,1874.63
+branch_scale_control,42,tr_gqa_routed_scale_2,256,1392,99487680,1024000,7.565784,1930.98
+confirmation,43,dense_gqa,0,1648,99487680,1024000,7.530082,1863.26
+confirmation,43,tr_gqa,256,1392,99487680,1024000,7.492290,1794.16
+router_control,42,learned_contextual_gqa,256,1392,99503040,1024000,7.602109,2002.41
+router_control,43,learned_contextual_gqa,256,1392,99503040,1024000,7.548665,1898.21

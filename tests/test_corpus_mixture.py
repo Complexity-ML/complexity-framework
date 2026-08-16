@@ -1,0 +1,359 @@
+from __future__ import annotations
+
+import itertools
+import json
+import shutil
+from pathlib import Path
+
+import pytest
+import torch
+
+from complexity.training import (
+    PretokenizedCorpusMixtureDataset,
+    TextCorpusSource,
+    WeightedStreamingTextDataset,
+    allocate_weighted_counts,
+)
+from scripts.build_tr_hash_70b_replay_plan import (
+    DEFAULT_REPLAY_PASSES,
+    DEFAULT_UNIQUE_BUDGETS,
+    build_replay_plan,
+)
+from scripts.tokenize_tr_hash_200m_200b import (
+    DEFAULT_HF_REPO,
+    TokenShardWriter,
+    resolve_layout,
+    upload_dataset_subset,
+    write_mixture_manifest,
+)
+
+
+class _Tokenizer:
+    eos_token_id = 0
+
+    @staticmethod
+    def encode(text: str, add_special_tokens: bool = False) -> list[int]:
+        del add_special_tokens
+        return [int(token) for token in text.split()]
+
+
+def test_each_corpus_is_losslessly_packed_in_its_own_buffer() -> None:
+    sources = (
+        TextCorpusSource("a", 0.5, dataset_id="unused"),
+        TextCorpusSource("b", 0.5, dataset_id="unused"),
+    )
+    streams = {
+        "a": itertools.repeat({"text": "1 2 3 4"}),
+        "b": itertools.repeat({"text": "7 8 9 10"}),
+    }
+    dataset = WeightedStreamingTextDataset(
+        tokenizer=_Tokenizer(), seq_len=4, sources=sources, streams=streams
+    )
+
+    samples = list(itertools.islice(dataset, 4))
+
+    assert torch.equal(samples[0]["input_ids"], torch.tensor([1, 2, 3, 4]))
+    assert torch.equal(samples[1]["input_ids"], torch.tensor([7, 8, 9, 10]))
+    assert all(sample["input_ids"].shape == (4,) for sample in samples)
+
+
+@pytest.mark.parametrize(
+    "sources,match",
+    (
+        ((TextCorpusSource("a", 0.9, dataset_id="a"),), "sum to 1.0"),
+        (
+            (
+                TextCorpusSource("a", 0.5, dataset_id="a"),
+                TextCorpusSource("a", 0.5, dataset_id="b"),
+            ),
+            "unique",
+        ),
+        ((TextCorpusSource("a", 1.0),), "exactly one"),
+    ),
+)
+def test_invalid_mixtures_fail_before_loading_remote_data(sources, match) -> None:
+    with pytest.raises(ValueError, match=match):
+        WeightedStreamingTextDataset(
+            tokenizer=_Tokenizer(), seq_len=4, sources=sources
+        )
+
+
+def test_weighted_count_allocation_conserves_every_sequence() -> None:
+    sources = (
+        TextCorpusSource("general", 0.45, dataset_id="general"),
+        TextCorpusSource("edu", 0.30, dataset_id="edu"),
+        TextCorpusSource("code", 0.10, dataset_id="code"),
+        TextCorpusSource("math_a", 0.05, dataset_id="math_a"),
+        TextCorpusSource("math_b", 0.05, dataset_id="math_b"),
+        TextCorpusSource("synthetic", 0.05, dataset_id="synthetic"),
+    )
+    total_rows, actual_tokens, counts = resolve_layout(
+        target_tokens=200_000_000_000,
+        seq_len=1024,
+        global_batch_sequences=512,
+        sources=sources,
+    )
+
+    assert total_rows == 195_312_640
+    assert actual_tokens == 200_000_143_360
+    assert sum(counts.values()) == total_rows
+    assert counts == allocate_weighted_counts(total_rows, sources)
+    assert all(count % 32 == 0 for count in counts.values())
+
+
+def test_uint16_shards_round_trip_through_pretokenized_reader(tmp_path) -> None:
+    source = TextCorpusSource("tiny", 1.0, data_files="unused.jsonl")
+    source_root = tmp_path / "corpora" / source.name
+    writer = TokenShardWriter(
+        source_root,
+        seq_len=4,
+        total_rows=5,
+        rows_per_shard=2,
+    )
+    assert writer.feed(torch.arange(21, dtype=torch.int64).numpy()) == 21
+    source_manifest = writer.write_manifest(source=source)
+    source_metadata = json.loads(source_manifest.read_text())
+    assert source_metadata["trained_tokens"] == 20
+    assert all(shard["bytes"] == shard["tokens"] * 2 for shard in source_metadata["shards"])
+    assert all(len(shard["sha256"]) == 64 for shard in source_metadata["shards"])
+
+    write_mixture_manifest(
+        output_root=tmp_path,
+        sources=(source,),
+        seq_len=4,
+        requested_tokens=20,
+        actual_tokens=20,
+        global_batch_sequences=1,
+        rows_by_source={"tiny": 5},
+    )
+    samples = list(PretokenizedCorpusMixtureDataset(tmp_path))
+
+    assert len(samples) == 5
+    for index, sample in enumerate(samples):
+        assert torch.equal(
+            sample["input_ids"], torch.arange(index * 4, index * 4 + 4)
+        )
+        assert torch.equal(
+            sample["labels"], torch.arange(index * 4 + 1, index * 4 + 5)
+        )
+
+
+def _remote_token_fixture(tmp_path: Path):
+    remote = tmp_path / "remote"
+    source = TextCorpusSource("tiny", 1.0, data_files="unused.jsonl")
+    writer = TokenShardWriter(
+        remote / "corpora" / source.name,
+        seq_len=4,
+        total_rows=5,
+        rows_per_shard=2,
+    )
+    writer.feed(torch.arange(21, dtype=torch.int64).numpy())
+    writer.write_manifest(source=source)
+    write_mixture_manifest(
+        output_root=remote,
+        sources=(source,),
+        seq_len=4,
+        requested_tokens=20,
+        actual_tokens=20,
+        global_batch_sequences=1,
+        rows_by_source={"tiny": 5},
+    )
+    files = {
+        str(path.relative_to(remote))
+        for path in remote.rglob("*")
+        if path.is_file()
+    }
+    downloads: list[str] = []
+
+    def download(*, filename, local_dir, **_kwargs):
+        downloads.append(filename)
+        destination = Path(local_dir) / filename
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(remote / filename, destination)
+        return str(destination)
+
+    def list_files(**_kwargs):
+        return sorted(files)
+
+    return remote, files, downloads, download, list_files
+
+
+def test_remote_shards_stream_to_completion_with_bounded_cache(tmp_path) -> None:
+    _remote, files, downloads, download, list_files = _remote_token_fixture(tmp_path)
+    dataset = PretokenizedCorpusMixtureDataset(
+        "hf://datasets/test-owner/test-tokens",
+        cache_dir=tmp_path / "cache",
+        cache_max_bytes=20,
+        prefetch_shards=1,
+        hub_downloader=download,
+        hub_file_lister=list_files,
+    )
+
+    # Construction fetches only tiny manifests. Binary shards remain lazy.
+    assert not any(filename.endswith(".bin") for filename in downloads)
+    samples = list(dataset)
+
+    assert len(samples) == 5
+    assert {name for name in downloads if name.endswith(".bin")} == {
+        name for name in files if name.endswith(".bin")
+    }
+    for index, sample in enumerate(samples):
+        assert torch.equal(
+            sample["input_ids"], torch.arange(index * 4, index * 4 + 4)
+        )
+    cached_shards = list((tmp_path / "cache").rglob("*.bin"))
+    assert sum(path.stat().st_size for path in cached_shards) <= 20
+
+
+def test_remote_preflight_rejects_a_missing_shard_before_training(tmp_path) -> None:
+    _remote, files, _downloads, download, _list_files = _remote_token_fixture(tmp_path)
+    missing = next(filename for filename in files if filename.endswith("tokens-00001.bin"))
+
+    with pytest.raises(FileNotFoundError, match="remote token mixture is incomplete"):
+        PretokenizedCorpusMixtureDataset(
+            "hf://datasets/test-owner/test-tokens",
+            cache_dir=tmp_path / "cache",
+            hub_downloader=download,
+            hub_file_lister=lambda **_kwargs: sorted(files - {missing}),
+        )
+
+
+def test_remote_cache_redownloads_a_corrupt_shard_before_exposing_tokens(tmp_path) -> None:
+    remote, files, _downloads, _download, list_files = _remote_token_fixture(tmp_path)
+    attempts = {}
+
+    def corrupt_once(*, filename, local_dir, **_kwargs):
+        attempts[filename] = attempts.get(filename, 0) + 1
+        destination = Path(local_dir) / filename
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if filename.endswith("tokens-00000.bin") and attempts[filename] == 1:
+            destination.write_bytes(b"broken")
+        else:
+            shutil.copy2(remote / filename, destination)
+        return str(destination)
+
+    dataset = PretokenizedCorpusMixtureDataset(
+        "hf://datasets/test-owner/test-tokens",
+        cache_dir=tmp_path / "cache",
+        prefetch_shards=0,
+        hub_downloader=corrupt_once,
+        hub_file_lister=list_files,
+    )
+
+    first = next(iter(dataset))
+
+    assert first["input_ids"].tolist() == [0, 1, 2, 3]
+    assert attempts["corpora/tiny/tokens-00000.bin"] == 2
+    assert "corpora/tiny/tokens-00000.bin" in files
+
+
+def test_manifest_preflight_rejects_incomplete_shard_coverage(tmp_path) -> None:
+    remote, _files, _downloads, _download, _list_files = _remote_token_fixture(tmp_path)
+    source_manifest = remote / "corpora" / "tiny" / "manifest.json"
+    metadata = json.loads(source_manifest.read_text(encoding="utf-8"))
+    metadata["shards"] = metadata["shards"][:-1]
+    source_manifest.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="shard coverage mismatch"):
+        PretokenizedCorpusMixtureDataset(remote)
+
+
+def test_replay_plan_reuses_selected_rows_without_copying_shards(tmp_path) -> None:
+    remote, _files, _downloads, _download, _list_files = _remote_token_fixture(tmp_path)
+    plan = {
+        "format": "tr-hash-token-replay-plan-v1",
+        "seq_len": 4,
+        "unique_tokens": 8,
+        "trained_tokens": 16,
+        "phases": [
+            {
+                "name": "selected",
+                "passes": 2,
+                "sources": {
+                    "tiny": [{"file": "tokens-00001.bin", "rows": 2}]
+                },
+            }
+        ],
+    }
+    dataset = PretokenizedCorpusMixtureDataset(remote, replay_plan=plan)
+
+    samples = list(dataset)
+
+    assert dataset.unique_tokens == 8
+    assert dataset.trained_tokens == 16
+    assert len(samples) == 4
+    assert [sample["input_ids"].tolist() for sample in samples] == [
+        [8, 9, 10, 11],
+        [12, 13, 14, 15],
+        [8, 9, 10, 11],
+        [12, 13, 14, 15],
+    ]
+
+
+def test_quality_plan_selects_highest_scored_shards_and_records_exposure(tmp_path) -> None:
+    remote, _files, _downloads, _download, _list_files = _remote_token_fixture(tmp_path)
+    dataset = PretokenizedCorpusMixtureDataset(remote)
+    scores = {
+        "corpora/tiny/tokens-00000.bin": 0.1,
+        "corpora/tiny/tokens-00001.bin": 0.9,
+        "corpora/tiny/tokens-00002.bin": 0.5,
+    }
+
+    plan = build_replay_plan(
+        dataset,
+        unique_token_budgets={"tiny": 8},
+        replay_passes={"tiny": 3},
+        row_alignment=1,
+        quality_scores=scores,
+    )
+
+    assert plan["selection_mode"] == "quality_score"
+    assert plan["unique_tokens"] == 8
+    assert plan["trained_tokens"] == 24
+    assert plan["phases"][0]["sources"]["tiny"] == [
+        {"file": "tokens-00001.bin", "rows": 2}
+    ]
+    assert [phase["name"] for phase in plan["phases"]] == [
+        "unique_core",
+        "quality_replay_2",
+        "quality_replay_3",
+    ]
+
+
+def test_default_70b_plan_separates_unique_tokens_from_replayed_exposure() -> None:
+    assert sum(DEFAULT_UNIQUE_BUDGETS.values()) == 70_000_000_000
+    assert sum(
+        DEFAULT_UNIQUE_BUDGETS[name] * DEFAULT_REPLAY_PASSES[name]
+        for name in DEFAULT_UNIQUE_BUDGETS
+    ) == 130_000_000_000
+
+
+def test_hub_upload_preserves_corpus_paths_and_uses_resumable_api(tmp_path) -> None:
+    class _Api:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def upload_large_folder(self, **kwargs) -> None:
+            self.calls.append(kwargs)
+
+    api = _Api()
+    upload_dataset_subset(
+        output_root=tmp_path,
+        repo_id=DEFAULT_HF_REPO,
+        allow_patterns=("corpora/dclm/**",),
+        token=None,
+        workers=64,
+        api=api,
+    )
+
+    assert api.calls == [
+        {
+            "repo_id": "Pacific-i64/data-32k-200b-tokens",
+            "repo_type": "dataset",
+            "folder_path": tmp_path,
+            "allow_patterns": ["corpora/dclm/**"],
+            "num_workers": 64,
+            "print_report": True,
+            "print_report_every": 60,
+        }
+    ]

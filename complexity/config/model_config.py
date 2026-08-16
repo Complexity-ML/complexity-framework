@@ -1,0 +1,609 @@
+"""
+Unified Model Configuration for framework-complexity.
+
+This is the single source of truth for model architecture configuration.
+Users can define any architecture by setting these parameters.
+"""
+
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any
+import json
+import yaml
+import torch
+
+
+@dataclass
+class ModelConfig:
+    """
+    Unified configuration for TR-Hash MoE architectures: GQA/MHA attention
+    paired with deterministic token-ID / hash-table routed MoE FFN blocks.
+    Dense and learned-router baselines were removed and will return later as
+    explicit comparisons against TR-Hash.
+
+    Example:
+        config = ModelConfig(
+            hidden_size=4096,
+            num_hidden_layers=32,
+            num_attention_heads=32,
+            num_key_value_heads=8,  # GQA
+            attention_type="gqa",
+            mlp_type="tr_hash_engine",
+            num_experts=4,
+            norm_type="rmsnorm",
+        )
+    """
+
+    # === Model Architecture ===
+    hidden_size: int = 768
+    num_hidden_layers: int = 12
+    intermediate_size: Optional[int] = None  # Auto: hidden_size * 4 (or 8/3 for SwiGLU)
+    vocab_size: int = 32000
+
+    # === Attention ===
+    num_attention_heads: int = 12
+    num_key_value_heads: Optional[int] = None  # None = MHA, < num_heads = GQA, 1 = MQA
+    attention_type: str = "gqa"  # gqa, mha, mqa
+    attention_dropout: float = 0.0
+    use_qk_norm: bool = True
+    sliding_window: Optional[int] = None  # None = full attention
+    causal_conv_kernel_size: int = 4
+    causal_conv_dilation_cycle: int = 8
+    causal_state_rank: int = 16
+    causal_context_gate_init: float = 1.0
+    causal_contextual_mix_init: float = 0.0
+    causal_context_fusion_size: int = 0
+    causal_stable_delta: bool = False
+    causal_delta_chunk_size: int = 512
+    causal_delta_timescales: int = 1
+    causal_delta_collision_normalized: bool = False
+    causal_delta_lexical_values: bool = False
+    causal_delta_lexical_forge: bool = False
+    causal_delta_occurrence_address: bool = False
+    tr_mha_num_experts: int = 4
+    tr_mha_adapter_rank: int = 8
+    tr_mha_top_k: int = 2
+    tr_mha_adapter_gate_init: float = 0.1
+    tr_mha_id_primary_logit: float = 2.0
+    tr_mha_id_secondary_logit: float = 1.0
+    tr_mha_id_other_logit: float = -2.0
+    tr_mha_verifier_gate_init: float = 0.1
+    tr_mha_verifier_temperature: float = 1.0
+    tr_mha_targets: str = "qv"
+
+    # === Position Embeddings ===
+    max_position_embeddings: int = 2048
+    rope_theta: float = 10000.0
+    rope_type: str = "standard"  # standard, partial_rope, yarn, dynamic_ntk
+    rope_fraction: float = 1.0  # Fraction of head_dim to apply RoPE to (1.0 = full, 0.5 = partial)
+
+    # === MLP / FFN ===
+    mlp_type: str = "tr_hash_engine"  # tr_hash_engine (default) or tr_hash_moe; num_experts in {1,2,4,8,16}
+    hidden_act: str = "silu"  # silu, gelu, relu
+
+    # === MoE (Token-Routed) ===
+    num_experts: int = 1  # 1 = standard MLP, >1 = MoE
+    expert_initialization: str = "gpt_normal"  # gpt_normal or legacy_kaiming
+    # Frequency tables are accepted only for reproducing historical ablations.
+    # Canonical TR-GQA/TR-MHA uses a fixed token-ID modulo route.
+    token_frequencies: Optional[torch.Tensor] = None
+    routing_strategy: str = "modulo_cyclic"
+    route_hash_count: int = 2  # Independent hashes used by token_id_multi_hash.
+    lsh_routing: bool = False  # Route on a fixed random-hyperplane hash of h (semantic), not the token id
+    lsh_bits: int = 0  # Number of hyperplanes (0 = ceil(log2(num_experts)))
+    lsh_from_layer: int = 0  # LSH routing only for layers >= this index; earlier layers stay lexical
+    lsh_threshold_mode: str = "zero"  # zero is stable for inference; batch_median maximises training-batch balance.
+    shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
+    shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
+    shared_expert_chunk_tokens: int = 0  # 0 = one dense pass; >0 chunks token dimension to reduce shared SwiGLU activation peak.
+    use_shared_routed_gates: bool = False  # Learn scalar gates for shared vs routed expert outputs
+    shared_gate_init: float = 1.0  # Initial multiplier for shared expert output
+    routed_gate_init: float = 1.0  # Initial multiplier for routed expert output
+    shared_output_scale: float = 1.0  # Fixed, non-parameter shared branch multiplier
+    routed_output_scale: float = 1.0  # Fixed, non-parameter routed branch multiplier
+    shared_output_scale_first_layer: Optional[float] = None
+    shared_output_scale_last_layer: Optional[float] = None
+    routed_output_scale_first_layer: Optional[float] = None
+    routed_output_scale_last_layer: Optional[float] = None
+    top_k: int = 1  # Token-Routed top-K deterministic fixed lookup
+    top_k_primary_weight: Optional[float] = None  # K>1 blend weight for primary expert (default: 0.95)
+    learn_hash_pair_gates: bool = False  # Learn one mixture scalar per fixed unordered hash pair
+    hash_pair_gate_init: float = 0.5  # Expert-a weight; 0.5 preserves the equal-route initialization
+    learn_hash_channel_modulation: bool = False  # Fixed token-ID hash selects signs for learned expert/channel gains
+    hash_channel_scale_init: float = 0.0  # Zero preserves the baseline exactly at initialization
+    static_expert_capacity: bool = False  # Use fixed per-expert dispatch capacity for torch.export / pipeline tracing
+    use_custom_kernels: Any = "auto"  # "auto", True, or False. ROCm defaults to PyTorch fallback in auto mode.
+    collect_moe_telemetry: bool = False  # Per-layer expert/RMS diagnostics. Disabled by default for throughput.
+    use_cggr: Any = "auto"  # "auto", True, or False. CGGR grouped-GEMM Triton path for TR-Hash MoE when custom Triton is available.
+    # Dynamic TR-Hash capacity (tr_hash_engine/tr_hash_moe only): start already
+    # shrunk to a smaller deterministic ID/hash-routed sub-network of the
+    # allocated (num_experts, routed width). None = full capacity. Adjustable
+    # afterwards at runtime via the MLP's set_active_experts()/set_active_expert_width().
+    active_num_experts: Optional[int] = None
+    active_expert_width: Optional[int] = None
+
+    # === Lexical feature-modulated residual ===
+    lexical_object_rank: int = 16
+    lexical_object_gate_init: float = 0.1
+    tie_lexical_object_embeddings: bool = False
+    micro_num_experts: int = 4
+    micro_expert_width: int = 16
+    micro_expert_gate_init: float = 0.1
+    lexical_gqa_rank: int = 16
+    lexical_gqa_gate_init: float = 0.0
+    lexical_gqa_use_token_code: bool = True
+    lexical_key_gate_init: float = 0.05
+    lexical_zipf_path: Optional[str] = None
+    lexical_zipf_mode: str = "uniform"
+    lexical_zipf_alpha: float = 0.25
+    lexical_zipf_floor: float = 0.1
+    lexical_zipf_permutation_seed: int = 1729
+
+    # === Normalization ===
+    norm_type: str = "rmsnorm"  # rmsnorm, layernorm
+    norm_eps: float = 1e-6
+
+    # === Embeddings ===
+    tie_word_embeddings: bool = True
+
+    # === Training ===
+    use_sdpa: bool = True  # Use Flash Attention via SDPA
+    use_cache: bool = True  # KV cache for generation
+
+    # === Initialization ===
+    initializer_range: float = 0.02
+
+    # === μP (Maximal Update Parametrization, Yang et al. 2022) ===
+    # When use_mup_init=True, hidden→hidden Linears (FFN gate/up/down,
+    # attention Q/K/V/O) are initialised with std = initializer_range /
+    # √(hidden_size / mup_base_width). Embeddings keep their base std.
+    # Combined with use_mup_attn_scale and use_mup_output_mult and the
+    # adamw_mup optimiser (LR side), this enables hyper-parameter
+    # transfer from a small proxy width (mup_base_width) to wider
+    # variants without re-tuning.
+    use_mup_init: bool = False
+    use_mup_attn_scale: bool = False     # Attention logits / d_head (vs / √d_head)
+    use_mup_output_mult: bool = False    # Divide lm_head output by width_mult
+    mup_base_width: int = 256            # Reference width (proxy size)
+
+    # === Extra (for custom extensions) ===
+    extra_config: Dict[str, Any] = field(default_factory=dict)
+
+    _removed_mlp_types = {
+        "standard",
+        "gelu",
+        "swiglu",
+        "silu",
+        "llama",
+        "geglu",
+        "mixtral",
+        "learned_router",
+        "standard_moe",
+        "i64_swiglu",
+        "integer_swiglu",
+        "i64_token_routed",
+        "integer_moe",
+        "token_routed",
+        "sort_split",
+        "sort_split_moe",
+        "deterministic_moe",
+        "complexity",
+    }
+    _token_routed_mlp_types = {
+        "token_routed",
+        "sort_split",
+        "sort_split_moe",
+        "deterministic_moe",
+        "complexity",
+    }
+
+    def __post_init__(self):
+        """Validate and set defaults."""
+        if self.mlp_type in self._removed_mlp_types:
+            if self.mlp_type in self._token_routed_mlp_types:
+                raise ValueError(
+                    f"mlp_type={self.mlp_type!r} was removed: the historical "
+                    "TokenRoutedMLP dispatch implementation is gone. Loading an "
+                    "existing token_routed checkpoint? Use "
+                    "complexity.utils.token_routed_conversion."
+                    "convert_token_routed_checkpoint_dir(path) to load it as "
+                    "'tr_hash_engine' instead — same trained weights and "
+                    "routing, different execution engine. New models should "
+                    "use 'tr_hash_engine' (default) or 'tr_hash_moe'."
+                )
+            raise ValueError(
+                f"mlp_type={self.mlp_type!r} was removed: this framework is "
+                "scoped to TR-Hash MoE (deterministic token-ID / hash-table "
+                "routing) only. Dense and learned-router MLPs will return "
+                "later as explicit comparison baselines. Use 'tr_hash_engine' "
+                "(default) or 'tr_hash_moe'."
+            )
+
+        # Auto-compute intermediate_size
+        if self.intermediate_size is None:
+            if self.mlp_type in {"tr_hash_engine", "tr_hash_moe"}:
+                # SwiGLU uses 8/3 ratio (rounded to multiple of 256)
+                self.intermediate_size = int(self.hidden_size * 8 / 3)
+                self.intermediate_size = ((self.intermediate_size + 255) // 256) * 256
+            else:
+                # Standard FFN uses 4x
+                self.intermediate_size = self.hidden_size * 4
+
+        # Default num_key_value_heads for GQA
+        if self.num_key_value_heads is None:
+            if self.attention_type == "mqa":
+                self.num_key_value_heads = 1
+            elif self.attention_type in {
+                "mha",
+                "tr_mha",
+                "token_routed_mha",
+                "tr_mha_v2",
+                "token_routed_mha_v2",
+            }:
+                self.num_key_value_heads = self.num_attention_heads
+            else:
+                # GQA default: 1/4 of heads (like Llama 2)
+                self.num_key_value_heads = max(1, self.num_attention_heads // 4)
+
+        # Validation
+        self._validate()
+
+    def _validate(self):
+        """Validate configuration."""
+        if self.hidden_size <= 0:
+            raise ValueError("hidden_size must be positive")
+        if self.num_hidden_layers <= 0:
+            raise ValueError("num_hidden_layers must be positive")
+        if self.intermediate_size is None or self.intermediate_size <= 0:
+            raise ValueError("intermediate_size must be positive")
+        if self.vocab_size <= 0:
+            raise ValueError("vocab_size must be positive")
+        if self.num_attention_heads <= 0:
+            raise ValueError("num_attention_heads must be positive")
+        if self.shared_output_scale < 0.0:
+            raise ValueError("shared_output_scale must be non-negative")
+        if self.routed_output_scale < 0.0:
+            raise ValueError("routed_output_scale must be non-negative")
+        for name in (
+            "shared_output_scale_first_layer",
+            "shared_output_scale_last_layer",
+            "routed_output_scale_first_layer",
+            "routed_output_scale_last_layer",
+        ):
+            value = getattr(self, name)
+            if value is not None and value < 0.0:
+                raise ValueError(f"{name} must be non-negative")
+        if self.num_key_value_heads is None or self.num_key_value_heads <= 0:
+            raise ValueError("num_key_value_heads must be positive")
+        if self.hidden_size % self.num_attention_heads != 0:
+            raise ValueError(
+                f"hidden_size ({self.hidden_size}) must be divisible by "
+                f"num_attention_heads ({self.num_attention_heads})"
+            )
+        if self.num_attention_heads % self.num_key_value_heads != 0:
+            raise ValueError(
+                f"num_attention_heads ({self.num_attention_heads}) must be "
+                f"divisible by num_key_value_heads ({self.num_key_value_heads})"
+            )
+        if (
+            self.attention_type in {
+                "tr_mha",
+                "token_routed_mha",
+                "tr_mha_v2",
+                "token_routed_mha_v2",
+            }
+            and self.num_key_value_heads != self.num_attention_heads
+        ):
+            raise ValueError(
+                "TR-MHA requires one K/V head per query head "
+                "(num_key_value_heads == num_attention_heads)"
+            )
+        if not 0.0 <= self.attention_dropout < 1.0:
+            raise ValueError("attention_dropout must be in [0, 1)")
+        if not 0.0 < self.rope_fraction <= 1.0:
+            raise ValueError("rope_fraction must be in (0, 1]")
+        if self.sliding_window is not None and self.sliding_window <= 0:
+            raise ValueError("sliding_window must be positive when set")
+        if self.causal_conv_kernel_size <= 0:
+            raise ValueError("causal_conv_kernel_size must be positive")
+        if self.causal_conv_dilation_cycle <= 0:
+            raise ValueError("causal_conv_dilation_cycle must be positive")
+        if self.causal_state_rank <= 0:
+            raise ValueError("causal_state_rank must be positive")
+        if self.num_experts <= 0:
+            raise ValueError("num_experts must be positive")
+        if self.expert_initialization not in {"gpt_normal", "legacy_kaiming"}:
+            raise ValueError(
+                "expert_initialization must be 'gpt_normal' or 'legacy_kaiming'"
+            )
+        if self.top_k <= 0:
+            raise ValueError("top_k must be positive")
+        if self.top_k > self.num_experts:
+            raise ValueError("top_k cannot exceed num_experts")
+        if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
+            raise ValueError("top_k_primary_weight must be in [0, 1]")
+        if not 0.0 < self.hash_pair_gate_init < 1.0:
+            raise ValueError("hash_pair_gate_init must be strictly between 0 and 1")
+        if abs(self.hash_channel_scale_init) > 1.0:
+            raise ValueError("hash_channel_scale_init must be in [-1, 1]")
+        if self.routing_strategy not in {
+            "zipf",
+            "modulo",
+            "modulo_cyclic",
+            "modulo_balanced_secondary",
+            "modulo_frequency_balanced_secondary",
+            "token_id_balanced_hash",
+            "token_id_pair_coverage_hash",
+            "token_id_multi_hash",
+            "token_id_hierarchical_hash",
+            "round_robin",
+            "random",
+            "lsh_hidden",
+        }:
+            raise ValueError(
+                "routing_strategy must be one of modulo_cyclic, zipf, "
+                "modulo_frequency_balanced_secondary, token_id_balanced_hash, "
+                "token_id_pair_coverage_hash, token_id_multi_hash, "
+                "token_id_hierarchical_hash, "
+                "round_robin, random, lsh_hidden "
+                "(legacy aliases: modulo, modulo_balanced_secondary)"
+            )
+        if self.lsh_threshold_mode not in {"batch_median", "zero"}:
+            raise ValueError("lsh_threshold_mode must be 'batch_median' or 'zero'")
+        if not 2 <= self.route_hash_count <= 8:
+            raise ValueError("route_hash_count must be between 2 and 8")
+        if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
+            raise ValueError("shared_intermediate_size must be positive when set")
+        if self.shared_expert_chunk_tokens < 0:
+            raise ValueError("shared_expert_chunk_tokens must be non-negative")
+        if self.lexical_object_rank <= 0:
+            raise ValueError("lexical_object_rank must be positive")
+        if self.micro_num_experts <= 0:
+            raise ValueError("micro_num_experts must be positive")
+        if self.micro_expert_width <= 0:
+            raise ValueError("micro_expert_width must be positive")
+        if self.tr_mha_num_experts <= 0:
+            raise ValueError("tr_mha_num_experts must be positive")
+        if self.tr_mha_adapter_rank <= 0:
+            raise ValueError("tr_mha_adapter_rank must be positive")
+        if not 0 < self.tr_mha_top_k <= self.tr_mha_num_experts:
+            raise ValueError(
+                "tr_mha_top_k must be between 1 and tr_mha_num_experts"
+            )
+        if not 0.0 < self.tr_mha_verifier_gate_init < 1.0:
+            raise ValueError("tr_mha_verifier_gate_init must be in (0, 1)")
+        if self.tr_mha_verifier_temperature <= 0.0:
+            raise ValueError("tr_mha_verifier_temperature must be positive")
+        if self.tr_mha_targets not in {"q", "v", "qv"}:
+            raise ValueError("tr_mha_targets must be one of: q, v, qv")
+        if self.mup_base_width <= 0:
+            raise ValueError("mup_base_width must be positive")
+        if self.token_frequencies is not None:
+            if not isinstance(self.token_frequencies, torch.Tensor):
+                raise ValueError("token_frequencies must be a torch.Tensor")
+            if self.token_frequencies.ndim != 1:
+                raise ValueError("token_frequencies must be a 1D tensor")
+            if self.token_frequencies.numel() != self.vocab_size:
+                raise ValueError(
+                    f"token_frequencies length ({self.token_frequencies.numel()}) "
+                    f"must match vocab_size ({self.vocab_size})"
+                )
+    @property
+    def head_dim(self) -> int:
+        """Dimension per attention head."""
+        return self.hidden_size // self.num_attention_heads
+
+    @property
+    def num_kv_groups(self) -> int:
+        """Number of query heads per KV head (for GQA)."""
+        return self.num_attention_heads // self.num_key_value_heads
+
+    @property
+    def mup_width_mult(self) -> float:
+        """μP width multiplier: hidden_size / mup_base_width.
+
+        Returns 1.0 when at base width or μP disabled — in that case the
+        scaling factor 1/√width_mult equals 1 and is a no-op.
+        """
+        if not getattr(self, "use_mup_init", False):
+            return 1.0
+        return float(self.hidden_size) / float(self.mup_base_width)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary (skips non-serializable fields like Tensors)."""
+        result = {}
+        for k, v in self.__dict__.items():
+            if k.startswith("_"):
+                continue
+            if isinstance(v, torch.Tensor):
+                continue  # token_frequencies etc. — not JSON serializable
+            result[k] = v
+        return result
+
+    def save(self, path: str):
+        """Save config to file (JSON or YAML)."""
+        data = self.to_dict()
+        with open(path, "w") as f:
+            if path.endswith(".yaml") or path.endswith(".yml"):
+                yaml.dump(data, f, default_flow_style=False)
+            else:
+                json.dump(data, f, indent=2)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ModelConfig":
+        """Create config from dictionary, ignoring unknown keys."""
+        import dataclasses
+        valid_keys = {f.name for f in dataclasses.fields(cls)}
+        filtered = {k: v for k, v in data.items() if k in valid_keys}
+        if filtered.get("routing_strategy") not in {
+            None,
+            "zipf",
+            "modulo",
+            "modulo_cyclic",
+            "modulo_balanced_secondary",
+            "modulo_frequency_balanced_secondary",
+            "token_id_balanced_hash",
+            "token_id_pair_coverage_hash",
+            "token_id_multi_hash",
+            "token_id_hierarchical_hash",
+            "round_robin",
+            "random",
+            "lsh_hidden",
+        }:
+            filtered["routing_strategy"] = "modulo_cyclic"
+        return cls(**filtered)
+
+    @classmethod
+    def load(cls, path: str) -> "ModelConfig":
+        """Load config from file (JSON or YAML)."""
+        with open(path, "r") as f:
+            if path.endswith(".yaml") or path.endswith(".yml"):
+                data = yaml.safe_load(f)
+            else:
+                data = json.load(f)
+        return cls.from_dict(data)
+
+    def __repr__(self) -> str:
+        params = ", ".join(f"{k}={v}" for k, v in self.to_dict().items() if v is not None)
+        return f"ModelConfig({params})"
+
+
+# Preset configurations
+#
+# This framework is scoped to TR-Hash MoE (deterministic token-ID / hash-table
+# routing): dense reference architectures (Llama/Mistral/GPT-2-shaped presets)
+# and the I64 integer-precision presets were removed and will return later as
+# explicit comparison baselines.
+def complexity_7b_config() -> ModelConfig:
+    """Complexity 7B with Token-Routed MoE."""
+    return ModelConfig(
+        hidden_size=4096,
+        num_hidden_layers=32,
+        num_attention_heads=32,
+        num_key_value_heads=8,
+        intermediate_size=11008,
+        vocab_size=100000,
+        max_position_embeddings=8192,
+        attention_type="gqa",
+        mlp_type="tr_hash_engine",
+        num_experts=4,
+        norm_type="rmsnorm",
+        use_qk_norm=True,
+    )
+
+
+# === Complexity Size Presets (TR-Hash: GQA + Token-Routed MoE) ===
+def complexity_tiny_config() -> ModelConfig:
+    """Complexity Tiny (~15M params) - for testing and debugging."""
+    return ModelConfig(
+        hidden_size=256,
+        num_hidden_layers=6,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=704,
+        vocab_size=32000,
+        max_position_embeddings=2048,
+        attention_type="gqa",
+        mlp_type="tr_hash_engine",
+        num_experts=4,
+        norm_type="rmsnorm",
+        use_qk_norm=True,
+    )
+
+
+def complexity_small_config() -> ModelConfig:
+    """Complexity Small (~50M params) - for rapid prototyping."""
+    return ModelConfig(
+        hidden_size=512,
+        num_hidden_layers=8,
+        num_attention_heads=8,
+        num_key_value_heads=4,
+        intermediate_size=1408,
+        vocab_size=32000,
+        max_position_embeddings=2048,
+        attention_type="gqa",
+        mlp_type="tr_hash_engine",
+        num_experts=4,
+        norm_type="rmsnorm",
+        use_qk_norm=True,
+    )
+
+
+def complexity_base_config() -> ModelConfig:
+    """Complexity Base (~125M params) - balanced size for training."""
+    return ModelConfig(
+        hidden_size=768,
+        num_hidden_layers=12,
+        num_attention_heads=12,
+        num_key_value_heads=4,
+        intermediate_size=2048,
+        vocab_size=32000,
+        max_position_embeddings=2048,
+        attention_type="gqa",
+        mlp_type="tr_hash_engine",
+        num_experts=4,
+        norm_type="rmsnorm",
+        use_qk_norm=True,
+    )
+
+
+def complexity_large_config() -> ModelConfig:
+    """Complexity Large (~350M params) - for serious experiments."""
+    return ModelConfig(
+        hidden_size=1024,
+        num_hidden_layers=24,
+        num_attention_heads=16,
+        num_key_value_heads=4,
+        intermediate_size=2816,
+        vocab_size=32000,
+        max_position_embeddings=4096,
+        attention_type="gqa",
+        mlp_type="tr_hash_engine",
+        num_experts=4,
+        norm_type="rmsnorm",
+        use_qk_norm=True,
+    )
+
+
+def complexity_xl_config() -> ModelConfig:
+    """Complexity XL (~1B params) - large scale training."""
+    return ModelConfig(
+        hidden_size=2048,
+        num_hidden_layers=24,
+        num_attention_heads=16,
+        num_key_value_heads=4,
+        intermediate_size=5632,
+        vocab_size=32000,
+        max_position_embeddings=4096,
+        attention_type="gqa",
+        mlp_type="tr_hash_engine",
+        num_experts=4,
+        norm_type="rmsnorm",
+        use_qk_norm=True,
+    )
+
+
+# Registry of preset configs
+PRESET_CONFIGS = {
+    # Complexity size ladder
+    "complexity-tiny": complexity_tiny_config,
+    "complexity-small": complexity_small_config,
+    "complexity-base": complexity_base_config,
+    "complexity-large": complexity_large_config,
+    "complexity-xl": complexity_xl_config,
+    # Complexity with MoE
+    "complexity-7b": complexity_7b_config,
+    # Aliases
+    "tiny": complexity_tiny_config,
+    "small": complexity_small_config,
+    "base": complexity_base_config,
+    "large": complexity_large_config,
+    "xl": complexity_xl_config,
+}
+
+
+def get_preset(name: str) -> ModelConfig:
+    """Get a preset configuration by name."""
+    if name not in PRESET_CONFIGS:
+        available = list(PRESET_CONFIGS.keys())
+        raise ValueError(f"Unknown preset: {name}. Available: {available}")
+    return PRESET_CONFIGS[name]()
