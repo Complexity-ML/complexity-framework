@@ -1,6 +1,7 @@
 """Tests for complexity.training module."""
 
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -231,6 +232,31 @@ class TestCallbacks:
         )
 
         assert callback.patience == 5
+
+    def test_supervisor_line_progress_is_newline_logged(
+        self, monkeypatch, caplog
+    ):
+        from complexity.training import TqdmCallback
+
+        monkeypatch.setenv("TR_HASH_LINE_PROGRESS", "1")
+        monkeypatch.setattr(
+            "complexity.training.moe_telemetry.global_expert_shares",
+            lambda _model: ([0.5, 0.5], 0),
+        )
+        optimizer = torch.optim.AdamW([torch.nn.Parameter(torch.ones(1))], lr=1e-3)
+        trainer = SimpleNamespace(
+            model=torch.nn.Linear(1, 1),
+            optimizer=optimizer,
+            scheduler=SimpleNamespace(get_last_lr=lambda: [1e-3]),
+            config=SimpleNamespace(log_steps=10),
+        )
+        callback = TqdmCallback(total_steps=100, desc="supervisor-test")
+        with caplog.at_level("INFO"):
+            callback(trainer, step=1, loss=2.0)
+        callback.close()
+
+        assert "supervisor-test step=1/100" in caplog.text
+        assert "loss=2.0000" in caplog.text
 
     @pytest.mark.skip(reason="Requires wandb")
     def test_wandb_callback(self):

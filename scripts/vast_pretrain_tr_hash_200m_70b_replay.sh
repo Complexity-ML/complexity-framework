@@ -41,6 +41,7 @@ fi
 export TOKENIZED_DATA TOKENIZED_REVISION TOKENIZED_CACHE_DIR TOKENIZED_PLAN
 export TARGET_TOKENS="$planned_tokens"
 export OUTPUT_DIR="${OUTPUT_DIR:-artifacts/tr_hash_200m_70b_replay}"
+export TR_HASH_LINE_PROGRESS="${TR_HASH_LINE_PROGRESS:-1}"
 
 echo "[200m-70b] dataset=$TOKENIZED_DATA revision=$TOKENIZED_REVISION"
 echo "[200m-70b] plan=$TOKENIZED_PLAN trained_tokens=$TARGET_TOKENS"

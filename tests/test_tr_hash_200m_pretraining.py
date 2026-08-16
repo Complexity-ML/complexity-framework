@@ -211,6 +211,7 @@ def test_production_launcher_streams_the_70b_replay_without_worker_cache_thrash(
     assert "--tokenized-prefetch-shards" in source
     assert 'TOKENIZED_CACHE_GB:-24' in source
     assert 'NUM_WORKERS:-0' in source
+    assert 'TR_HASH_LINE_PROGRESS:-1' in source
     assert "--save-steps 0" in source
 
 
