@@ -156,7 +156,8 @@ class TensorBoardCallback:
                 self.writer = None
         except ImportError:
             self.writer = None
-            logger.warning("tensorboard not installed")
+            if is_main_process():
+                logger.warning("tensorboard not installed")
 
     def __call__(self, trainer, step: int, loss: float):
         if self.writer:
