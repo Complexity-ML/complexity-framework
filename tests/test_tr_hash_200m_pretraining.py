@@ -244,6 +244,27 @@ def test_70b_replay_supervisor_is_safe_and_does_not_autostart() -> None:
     assert "NUM_WORKERS=\"0\"" in supervisor
     assert "hf://datasets/Pacific-i64/data-32k-200b-tokens" in supervisor
 
+    # Regression guard: an earlier ad-hoc deployment piped the launcher
+    # through `pty ... | tee` into the portal's /dev/stdout capture, which
+    # fully buffers stdout when it isn't a tty — tqdm's carriage-return
+    # redraws never reached the log even though training was progressing
+    # normally. Direct `torchrun` + a real stdout_logfile path is what
+    # actually surfaces live progress.
+    assert "pty " not in launcher
+    assert "| tee" not in launcher
+    assert "exec torchrun" in launcher
+    assert "/dev/stdout" not in supervisor
+    assert "stdout_logfile=/workspace/complexity-framework/artifacts/" in supervisor
+    assert "export PYTHONUNBUFFERED=1" in launcher
+
+
+def test_tqdm_callback_does_not_pin_stdout() -> None:
+    source = Path("complexity/training/callbacks.py").read_text(encoding="utf-8")
+
+    # stdout is fully buffered when piped (non-tty); stderr is not. Pinning
+    # the bar to stdout silently starved every log tail under Supervisor.
+    assert "file=sys.stdout" not in source
+
 
 def test_remote_pretokenized_training_rejects_dataloader_workers() -> None:
     module = _load_training_script()

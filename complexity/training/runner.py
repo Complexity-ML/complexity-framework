@@ -435,7 +435,9 @@ class TrainRunner:
             trainer.callbacks.append(token_pack_checkpoint_callback)
 
         # Callbacks — TqdmCallback issues a collective; must be on ALL ranks.
-        tqdm_cb = TqdmCallback(total_steps=max_steps, desc=self.run_name)
+        tqdm_cb = TqdmCallback(
+            total_steps=max_steps, desc=self.run_name, tokens_per_step=tokens_per_step
+        )
         trainer.callbacks.append(tqdm_cb)
 
         csv_file: Optional[Any] = None

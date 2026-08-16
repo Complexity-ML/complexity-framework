@@ -67,8 +67,9 @@ class TqdmCallback:
     all_reduce collective. The display itself is rank-0 only.
     """
 
-    def __init__(self, total_steps: int, desc: str = "train"):
+    def __init__(self, total_steps: int, desc: str = "train", tokens_per_step: Optional[int] = None):
         from tqdm import tqdm
+        self.tokens_per_step = tokens_per_step
         self.pbar = tqdm(
             total=total_steps,
             desc=desc,
@@ -95,6 +96,11 @@ class TqdmCallback:
         ppl = math.exp(min(loss, 20))
         lr = trainer.scheduler.get_last_lr()[0]
         postfix = {"loss": f"{loss:.4f}", "ppl": f"{ppl:.1f}", "lr": f"{lr:.2e}"}
+
+        if self.tokens_per_step:
+            rate = self.pbar.format_dict.get("rate")
+            if rate:
+                postfix["tok/s"] = f"{rate * self.tokens_per_step:,.0f}"
 
         # MoE-specific telemetry (only if the model has TokenRoutedMLP layers)
         if shares and any(math.isfinite(share) for share in shares):
