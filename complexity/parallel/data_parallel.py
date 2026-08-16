@@ -328,9 +328,10 @@ def init_distributed(
     is_multi_node = nnodes > 1 or world_size > torch.cuda.device_count()
 
     # Async error handling so a crashed rank crashes the rest instead of
-    # leaving everyone hanging on a collective.
+    # leaving everyone hanging on a collective. Only the modern name is
+    # needed; also setting the legacy NCCL_ASYNC_ERROR_HANDLING just makes
+    # PyTorch print a deprecation warning for it on every rank.
     os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
-    os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")  # legacy name
 
     # AMD ROCm: apply RCCL tuning (no-op on NVIDIA).
     if torch.cuda.is_available() and torch.version.hip is not None:
