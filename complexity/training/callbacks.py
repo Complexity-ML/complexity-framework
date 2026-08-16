@@ -2,8 +2,7 @@
 
 import logging
 import math
-import os
-import time
+import sys
 from typing import Optional
 
 import torch
@@ -71,14 +70,15 @@ class TqdmCallback:
 
     def __init__(self, total_steps: int, desc: str = "train"):
         from tqdm import tqdm
-        self.total_steps = int(total_steps)
-        self.desc = desc
-        self.line_mode = os.environ.get("TR_HASH_LINE_PROGRESS", "0") == "1"
-        self._last_report_step = 0
-        self._last_report_time = time.monotonic()
         self.pbar = tqdm(
-            total=total_steps, desc=desc, unit="step", dynamic_ncols=True,
-            disable=not is_main_process() or self.line_mode,
+            total=total_steps,
+            desc=desc,
+            unit="step",
+            dynamic_ncols=True,
+            mininterval=1.0,
+            smoothing=0.1,
+            file=sys.stdout,
+            disable=not is_main_process(),
         )
 
     def __call__(self, trainer, step: int, loss: float):
@@ -121,35 +121,9 @@ class TqdmCallback:
                     print(f"[TqdmCallback] diagnostics disabled: {type(e).__name__}: {e}", flush=True)
                     self._diag_warned = True
 
-        log_steps = max(1, int(getattr(trainer.config, "log_steps", 10)))
-        if self.line_mode and (step <= 10 or step % log_steps == 0):
-            now = time.monotonic()
-            elapsed = max(now - self._last_report_time, 1e-9)
-            completed = max(step - self._last_report_step, 1)
-            step_rate = completed / elapsed
-            remaining = max(self.total_steps - step, 0)
-            eta_hours = remaining / step_rate / 3600.0
-            progress = 100.0 * step / max(self.total_steps, 1)
-            expert_text = f" experts={postfix['E']}" if "E" in postfix else ""
-            logger.info(
-                "%s step=%d/%d progress=%.2f%% loss=%.4f ppl=%.1f "
-                "lr=%.2e step_s=%.3f eta_h=%.2f%s",
-                self.desc,
-                step,
-                self.total_steps,
-                progress,
-                loss,
-                ppl,
-                lr,
-                step_rate,
-                eta_hours,
-                expert_text,
-            )
-            self._last_report_step = step
-            self._last_report_time = now
-
         self.pbar.set_postfix(**postfix, ordered=True)
         self.pbar.update(1)
+        self.pbar.refresh()
 
     def close(self):
         self.pbar.close()
