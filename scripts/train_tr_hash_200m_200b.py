@@ -15,7 +15,6 @@ checkpoint boundaries only; they do not compress or repeat the token budget.
 
 from __future__ import annotations
 
-import math
 import os
 
 from complexity.config import ModelConfig
@@ -198,15 +197,16 @@ class TRHash200MPretrainRunner(TrainRunner):
             planned_steps = (
                 args.max_steps
                 if args.max_steps is not None
-                else math.ceil(args.target_tokens / tokens_per_step)
+                else args.target_tokens // tokens_per_step
             )
             scheduled_tokens = planned_steps * tokens_per_step
-            if dataset.trained_tokens != scheduled_tokens:
+            if scheduled_tokens > dataset.trained_tokens:
                 raise ValueError(
-                    "pretokenized data coverage does not match the training schedule: "
+                    "training schedule exceeds the pretokenized data coverage: "
                     f"dataset={dataset.trained_tokens:,} tokens, "
-                    f"schedule={scheduled_tokens:,} tokens. Set --target-tokens to the "
-                    "replay plan's trained_tokens; automatic dataset repetition is forbidden."
+                    f"schedule={scheduled_tokens:,} tokens. Set --target-tokens to at "
+                    "most the replay plan's trained_tokens; automatic dataset repetition "
+                    "is forbidden."
                 )
             return dataset
         return WeightedStreamingTextDataset(

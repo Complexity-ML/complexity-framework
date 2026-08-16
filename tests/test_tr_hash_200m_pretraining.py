@@ -149,6 +149,44 @@ def test_pretokenized_schedule_cannot_silently_repeat_after_shard_exhaustion(
         module.build_runner().build_dataset(None, args, rank=0, world_size=1)
 
 
+def test_pretokenized_schedule_may_underuse_coverage_that_does_not_divide_evenly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard: a replay plan's trained_tokens is fixed by its
+    corpus budgets, not by any particular GPU count. world_size=10 hit this
+    live — 129,995,112,448 tokens has no factor of 5, so no batch/accum
+    choice divides it evenly at world_size=10, and the old strict '!='
+    check made every world_size but the one the plan happened to be built
+    for unusable. Falling a little short of full coverage is fine; only
+    exceeding it (repetition) is forbidden."""
+    module = _load_training_script()
+    dataset = SimpleNamespace(seq_len=1024, trained_tokens=129_995_112_448)
+    monkeypatch.setattr(
+        module,
+        "PretokenizedCorpusMixtureDataset",
+        lambda *_args, **_kwargs: dataset,
+    )
+    args = SimpleNamespace(
+        tokenized_data="hf://datasets/owner/repo",
+        tokenized_cache_dir="cache",
+        tokenized_cache_gb=32.0,
+        tokenized_revision="main",
+        tokenized_hf_token_env="HF_TOKEN",
+        tokenized_prefetch_shards=1,
+        tokenized_plan="plan.json",
+        seq_len=1024,
+        batch_size=8,
+        gradient_accumulation=8,
+        max_steps=None,
+        target_tokens=129_995_112_448,
+    )
+
+    # world_size=10 -> tokens_per_step=655,360, which does not divide
+    # 129,995,112,448 evenly. This must no longer raise.
+    result = module.build_runner().build_dataset(None, args, rank=0, world_size=10)
+    assert result is dataset
+
+
 def test_200b_corpus_budget_and_distribution_are_exact() -> None:
     module = _load_training_script()
     sources = module.corpus_sources("stack/*.jsonl.gz")
