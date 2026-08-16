@@ -227,7 +227,7 @@ def test_cpu_tokenizer_publishes_to_the_approved_dataset_repo() -> None:
     assert "HF_TOKEN" in source
 
 
-def test_70b_replay_supervisor_is_safe_and_does_not_autostart() -> None:
+def test_70b_replay_supervisor_survives_a_crash_or_reboot_unattended() -> None:
     launcher = REPLAY_LAUNCHER.read_text(encoding="utf-8")
     supervisor = REPLAY_SUPERVISOR.read_text(encoding="utf-8")
 
@@ -237,8 +237,6 @@ def test_70b_replay_supervisor_is_safe_and_does_not_autostart() -> None:
     assert "-m scripts.train_tr_hash_200m_200b" in launcher
     assert not Path("scripts/vast_pretrain_tr_hash_200m_200b.sh").exists()
     assert "[program:tr_hash_200m_70b_replay]" in supervisor
-    assert "autostart=false" in supervisor
-    assert "autorestart=unexpected" in supervisor
     assert "NPROC_PER_NODE=\"8\"" in supervisor
     assert "TOKENIZED_CACHE_GB=\"24\"" in supervisor
     assert "NUM_WORKERS=\"0\"" in supervisor
@@ -257,12 +255,13 @@ def test_70b_replay_supervisor_is_safe_and_does_not_autostart() -> None:
     assert "stdout_logfile=/workspace/complexity-framework/artifacts/" in supervisor
     assert "export PYTHONUNBUFFERED=1" in launcher
 
-    # Crash recovery: a crash should relaunch and pick up the last
-    # checkpoint automatically, but a *clean* exit (job finished) must not
-    # loop-restart, and an offline instance must not silently start
-    # consuming GPU-hours on its own — that still requires autostart=true.
+    # Unattended resilience: a crash relaunches and resumes from the last
+    # checkpoint automatically (autorestart=unexpected — a *clean* exit,
+    # i.e. job finished, still won't loop-restart), and a full instance
+    # reboot brings the service back up on its own too (autostart=true),
+    # rather than silently sitting dead until someone notices.
     assert "autorestart=unexpected" in supervisor
-    assert "autostart=false" in supervisor
+    assert "autostart=true" in supervisor
     assert '--resume "${RESUME:-auto}"' in launcher
 
 
