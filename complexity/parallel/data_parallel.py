@@ -275,6 +275,22 @@ class GradientAccumulator:
 # Utility Functions
 # =============================================================================
 
+def resolve_dist_timeout_s(is_multi_node: bool, env: dict | None = None) -> int:
+    """Resolve the process-group collective timeout, in seconds.
+
+    First-collective stalls aren't a multi-node-only problem: single-node
+    multi-GPU ranks pulling independent shards from a remote/streamed
+    dataset warm up at different speeds too (reproduced live at 8 ranks —
+    rank 0 reached the DDP buffer-broadcast well before the slowest rank
+    finished materializing its first shard, and the default 120s NCCL
+    watchdog fired on an otherwise healthy run). IB queue pair setup still
+    makes multi-node slower to init, so it keeps the higher floor.
+    """
+    env = os.environ if env is None else env
+    default_timeout_s = 1800 if is_multi_node else 600
+    return int(env.get("COMPLEXITY_DIST_TIMEOUT_S", default_timeout_s))
+
+
 def init_distributed(
     backend: str = "nccl",
     init_method: str = "env://",
@@ -327,10 +343,7 @@ def init_distributed(
             debug=os.environ.get("COMPLEXITY_RCCL_DEBUG") == "1",
         )
 
-    # Multi-node init can stall for minutes on first all_reduce (cold dataset
-    # shards, IB queue pair setup). 120s is fine for single-node but kills
-    # legitimate multi-node startup.
-    timeout_s = 1800 if is_multi_node else 120
+    timeout_s = resolve_dist_timeout_s(is_multi_node)
 
     try:
         from datetime import timedelta
