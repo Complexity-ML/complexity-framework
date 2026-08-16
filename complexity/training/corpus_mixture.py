@@ -18,6 +18,8 @@ import numpy as np
 import torch
 from torch.utils.data import IterableDataset, get_worker_info
 
+from ..parallel.data_parallel import is_main_process
+
 logger = logging.getLogger(__name__)
 HF_DATASET_PREFIX = "hf://datasets/"
 TOKEN_DTYPE = np.dtype("<u2")
@@ -507,13 +509,14 @@ class PretokenizedCorpusMixtureDataset(IterableDataset):
             )
             self.root = self._hub_cache.root
             manifest_path = self._hub_cache.get("mixture_manifest.json")
-            logger.info(
-                "Remote token mixture: hf://datasets/%s revision=%s cache=%s limit=%.1f GiB",
-                repo_id,
-                revision,
-                self.root,
-                cache_max_bytes / 1024**3,
-            )
+            if is_main_process():
+                logger.info(
+                    "Remote token mixture: hf://datasets/%s revision=%s cache=%s limit=%.1f GiB",
+                    repo_id,
+                    revision,
+                    self.root,
+                    cache_max_bytes / 1024**3,
+                )
         else:
             self.root = Path(root)
             manifest_path = self.root / "mixture_manifest.json"
@@ -618,12 +621,13 @@ class PretokenizedCorpusMixtureDataset(IterableDataset):
                 raise FileNotFoundError(
                     f"remote token mixture is incomplete; missing {preview}{suffix}"
                 )
-            logger.info(
-                "Remote token preflight passed: %d files, %d rows, %d training tokens",
-                len(required_remote_files),
-                sum(self._rows_by_source.values()),
-                sum(self._rows_by_source.values()) * self.seq_len,
-            )
+            if is_main_process():
+                logger.info(
+                    "Remote token preflight passed: %d files, %d rows, %d training tokens",
+                    len(required_remote_files),
+                    sum(self._rows_by_source.values()),
+                    sum(self._rows_by_source.values()) * self.seq_len,
+                )
         self._replay_phases = self._load_replay_plan(replay_plan)
         if self._replay_phases is None:
             self.unique_tokens = sum(self._rows_by_source.values()) * self.seq_len
@@ -643,12 +647,13 @@ class PretokenizedCorpusMixtureDataset(IterableDataset):
                 trained_rows += phase_rows * int(phase["passes"])
             self.unique_tokens = sum(unique_rows.values()) * self.seq_len
             self.trained_tokens = trained_rows * self.seq_len
-            logger.info(
-                "Token replay plan: %d phases, %.3fB unique tokens, %.3fB trained tokens",
-                len(self._replay_phases),
-                self.unique_tokens / 1e9,
-                self.trained_tokens / 1e9,
-            )
+            if is_main_process():
+                logger.info(
+                    "Token replay plan: %d phases, %.3fB unique tokens, %.3fB trained tokens",
+                    len(self._replay_phases),
+                    self.unique_tokens / 1e9,
+                    self.trained_tokens / 1e9,
+                )
 
     def _load_replay_plan(
         self, replay_plan: str | Path | Mapping[str, Any] | None

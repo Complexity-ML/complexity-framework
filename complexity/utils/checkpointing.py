@@ -343,7 +343,8 @@ class CheckpointManager:
         if checkpoint_path is None:
             checkpoint_path = self._find_latest_checkpoint()
             if checkpoint_path is None:
-                logger.warning("No checkpoint found")
+                if self.is_main:
+                    logger.warning("No checkpoint found")
                 return None
 
         checkpoint_path = Path(checkpoint_path)

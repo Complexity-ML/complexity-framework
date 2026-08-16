@@ -345,7 +345,8 @@ class Trainer:
                 self.epoch = self.state.epoch
             elif resume_path is not None:
                 raise FileNotFoundError(f"--resume checkpoint not found: {resume_path}")
-            logger.info(f"Resumed from step {self.global_step}")
+            if self.is_main:
+                logger.info(f"Resumed from step {self.global_step}")
 
             # PyTorch footgun: scheduler.load_state_dict() restores base_lrs from
             # the checkpoint, silently overriding the --lr passed on the CLI.
