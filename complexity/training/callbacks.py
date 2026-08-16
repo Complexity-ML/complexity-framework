@@ -69,6 +69,8 @@ class TqdmCallback:
 
     def __init__(self, total_steps: int, desc: str = "train"):
         from tqdm import tqdm
+        self.total_steps = int(total_steps)
+        self.desc = desc
         self.pbar = tqdm(
             total=total_steps,
             desc=desc,
@@ -121,6 +123,17 @@ class TqdmCallback:
 
         self.pbar.set_postfix(**postfix, ordered=True)
         self.pbar.update(1)
+
+        # tqdm's carriage-return redraws don't reliably surface through
+        # every supervisor/log-capture chain. Mirror the same postfix as a
+        # real logger.info line — same logging path as the rest of the
+        # trainer's output, which is known to reach the log.
+        log_steps = max(1, int(getattr(trainer.config, "log_steps", 10)))
+        if step <= 1 or step % log_steps == 0:
+            details = " ".join(f"{key}={value}" for key, value in postfix.items())
+            logger.info(
+                "%s step=%d/%d %s", self.desc, step, self.total_steps, details
+            )
         self.pbar.refresh()
 
     def close(self):
