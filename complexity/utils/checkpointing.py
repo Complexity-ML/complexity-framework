@@ -36,6 +36,19 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _atomic_torch_save(obj, path: Path) -> None:
+    """Write via a temp file + rename so a save killed mid-write (e.g. the
+    interrupt handler's SIGTERM racing a slow ``torch.save``) never leaves a
+    truncated file at the final path. ``os.replace`` is atomic on POSIX as
+    long as the temp file lives on the same filesystem, which it does here.
+    A truncated temp file is simply orphaned, not mistaken for a real
+    checkpoint by ``_is_complete_checkpoint``.
+    """
+    tmp_path = path.with_name(path.name + ".tmp")
+    torch.save(obj, tmp_path)
+    os.replace(tmp_path, path)
+
+
 def _is_dtensor(obj) -> bool:
     """Check if an object is a DTensor (without importing DTensor directly)."""
     return type(obj).__name__ == "DTensor"
@@ -258,7 +271,7 @@ class CheckpointManager:
                 save_dict = {"model": model_sd}
                 if self.scheduler is not None:
                     save_dict["scheduler"] = self.scheduler.state_dict()
-                torch.save(save_dict, checkpoint_path / "checkpoint.pt")
+                _atomic_torch_save(save_dict, checkpoint_path / "checkpoint.pt")
 
                 # Also save as safetensors (HF-compatible, full weights)
                 try:
@@ -286,7 +299,7 @@ class CheckpointManager:
                     self.model, self.optimizer,
                     options=StateDictOptions(full_state_dict=False, cpu_offload=True),
                 )
-                torch.save(opt_sd, checkpoint_path / f"optimizer_rank{rank}.pt")
+                _atomic_torch_save(opt_sd, checkpoint_path / f"optimizer_rank{rank}.pt")
 
         except Exception as e:
             # The new torch.distributed.checkpoint.state_dict API requires
@@ -299,7 +312,7 @@ class CheckpointManager:
                 model_sd = {"model": self.model.state_dict()}
                 if self.scheduler is not None:
                     model_sd["scheduler"] = self.scheduler.state_dict()
-                torch.save(model_sd, checkpoint_path / "checkpoint.pt")
+                _atomic_torch_save(model_sd, checkpoint_path / "checkpoint.pt")
 
                 # Also save as safetensors for HF-compatible loading
                 try:
@@ -323,7 +336,7 @@ class CheckpointManager:
             if self.optimizer is not None:
                 opt_sd = self.optimizer.state_dict()
                 opt_sd_local = _detensor_state_dict(opt_sd)
-                torch.save(opt_sd_local, checkpoint_path / f"optimizer_rank{rank}.pt")
+                _atomic_torch_save(opt_sd_local, checkpoint_path / f"optimizer_rank{rank}.pt")
 
     def load(
         self,

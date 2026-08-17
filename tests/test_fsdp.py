@@ -207,6 +207,41 @@ class TestCheckpointHelpers:
             assert latest is not None
             assert latest.name == "final_100"
 
+    def test_a_crash_mid_save_never_leaves_a_corrupt_checkpoint_pt(self, monkeypatch):
+        """Regression guard: torch.save used to write straight to
+        checkpoint.pt. A SIGTERM racing a slow save (the interrupt handler
+        this trainer installs) could leave a truncated file at that exact
+        path — still "complete" by _is_complete_checkpoint's existence
+        check, so auto-resume picked it and crash-looped on
+        `OSError: [Errno 22] Invalid argument` from torch.load. Saving via
+        a temp file + atomic rename means a killed write only ever leaves
+        an orphaned .tmp file, never a broken checkpoint.pt."""
+        from complexity.utils import checkpointing
+        from complexity.utils.checkpointing import CheckpointManager
+        from complexity.models import ComplexityModel
+
+        model = ComplexityModel(small_config())
+        with tempfile.TemporaryDirectory() as tmp:
+            mgr = CheckpointManager(tmp, model)
+
+            real_torch_save = checkpointing.torch.save
+
+            def crash_after_partial_write(obj, path, *a, **kw):
+                # Simulate a SIGTERM arriving mid-write: the temp file gets
+                # partially written, then the process dies before rename.
+                real_torch_save(obj, path, *a, **kw)
+                raise KeyboardInterrupt("simulated SIGTERM mid-save")
+
+            monkeypatch.setattr(checkpointing.torch, "save", crash_after_partial_write)
+
+            with pytest.raises(KeyboardInterrupt):
+                mgr.save(step=42, tag="interrupted")
+
+            ckpt_dir = Path(tmp) / "interrupted_42"
+            assert not (ckpt_dir / "checkpoint.pt").exists()
+            assert (ckpt_dir / "checkpoint.pt.tmp").exists()
+            assert not mgr._is_complete_checkpoint(ckpt_dir)
+
     def test_load_latest_returns_none_on_a_fresh_checkpoint_dir(self):
         """auto-resume must fall through to a fresh start, not crash, when
         nothing has been saved yet."""
