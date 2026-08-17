@@ -256,7 +256,10 @@ class TestCallbacks:
         assert "file" not in captured  # defaults to stderr, unbuffered when piped
         assert captured["disable"] is False
         assert captured["dynamic_ncols"] is True
-        assert captured["mininterval"] == 1.0
+        # mininterval=0: one log line per real training step, no throttled
+        # gaps in the step count (each __call__ already fires once per
+        # optimizer step, not per micro-batch, so this can't flood the log).
+        assert captured["mininterval"] == 0
 
     def test_on_resume_syncs_the_bar_to_the_resumed_step(self, monkeypatch):
         """Regression guard: after a process restart with --resume auto,

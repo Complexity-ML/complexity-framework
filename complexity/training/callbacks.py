@@ -75,7 +75,7 @@ class TqdmCallback:
             desc=desc,
             unit="step",
             dynamic_ncols=True,
-            mininterval=1.0,
+            mininterval=0,
             smoothing=0.1,
             disable=not is_main_process(),
         )
