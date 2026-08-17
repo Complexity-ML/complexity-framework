@@ -232,7 +232,7 @@ class TestCallbacks:
 
         assert callback.patience == 5
 
-    def test_supervisor_progress_uses_line_mode_outside_tty(self, monkeypatch):
+    def test_supervisor_progress_uses_default_stderr_tqdm(self, monkeypatch):
         from complexity.training import TqdmCallback
         import tqdm
 
@@ -250,13 +250,11 @@ class TestCallbacks:
         monkeypatch.setattr(
             "complexity.training.callbacks.is_main_process", lambda: True
         )
-        monkeypatch.setattr("complexity.training.callbacks.sys.stderr.isatty", lambda: False)
         callback = TqdmCallback(total_steps=100, desc="supervisor-test")
         callback.close()
 
         assert "file" not in captured  # defaults to stderr, unbuffered when piped
-        assert callback.line_mode is True
-        assert captured["disable"] is True
+        assert captured["disable"] is False
         assert captured["dynamic_ncols"] is True
         # mininterval=0: one log line per real training step, no throttled
         # gaps in the step count (each __call__ already fires once per
@@ -280,7 +278,6 @@ class TestCallbacks:
         monkeypatch.setattr(
             "complexity.training.callbacks.is_main_process", lambda: True
         )
-        monkeypatch.setattr("complexity.training.callbacks.sys.stderr.isatty", lambda: True)
         callback = TqdmCallback(total_steps=247_946, desc="resume-test")
         assert callback.pbar.n == 0
 
@@ -308,7 +305,6 @@ class TestCallbacks:
 
         callback = TqdmCallback.__new__(TqdmCallback)
         callback.tokens_per_step = None
-        callback.line_mode = False
         callback.pbar = MagicMock()
         callback.pbar.format_dict = {}
 
