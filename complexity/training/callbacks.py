@@ -136,9 +136,13 @@ class TqdmCallback:
                     print(f"[TqdmCallback] diagnostics disabled: {type(e).__name__}: {e}", flush=True)
                     self._diag_warned = True
 
-        self.pbar.set_postfix(**postfix, ordered=True)
+        # set_postfix() refreshes by default, and update() refreshes again —
+        # outside a real tty (piped to a log file) each refresh becomes its
+        # own line instead of an in-place \r redraw, so a naive call here
+        # prints 2-3 lines per step. Deferring the postfix refresh to the
+        # single update() call collapses it back to one line per step.
+        self.pbar.set_postfix(**postfix, ordered=True, refresh=False)
         self.pbar.update(1)
-        self.pbar.refresh()
 
     def close(self):
         self.pbar.close()

@@ -277,6 +277,39 @@ class TestCallbacks:
         assert callback.pbar.n == 760
         callback.close()
 
+    def test_call_refreshes_the_bar_exactly_once_per_step(self, monkeypatch):
+        """Regression guard: set_postfix() refreshes by default and update()
+        refreshes again. Outside a real tty (piped to a log file) each
+        refresh becomes its own line instead of an in-place \\r redraw, so
+        this used to print 2-3 lines per training step."""
+        from unittest.mock import MagicMock
+
+        from complexity.training import TqdmCallback
+
+        monkeypatch.setattr(
+            "complexity.training.callbacks.is_main_process", lambda: True
+        )
+        monkeypatch.setattr(
+            "complexity.training.moe_telemetry.global_expert_shares",
+            lambda model, num_experts=None: ([], None),
+        )
+
+        callback = TqdmCallback.__new__(TqdmCallback)
+        callback.tokens_per_step = None
+        callback.pbar = MagicMock()
+        callback.pbar.format_dict = {}
+
+        trainer = MagicMock()
+        trainer.scheduler.get_last_lr.return_value = [1e-4]
+        trainer.optimizer = MagicMock(spec=[])
+
+        callback(trainer, step=1, loss=2.0)
+
+        callback.pbar.set_postfix.assert_called_once()
+        assert callback.pbar.set_postfix.call_args.kwargs["refresh"] is False
+        callback.pbar.update.assert_called_once_with(1)
+        callback.pbar.refresh.assert_not_called()
+
     @pytest.mark.skip(reason="Requires wandb")
     def test_wandb_callback(self):
         """Test WandB callback."""
