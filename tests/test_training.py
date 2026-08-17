@@ -259,7 +259,13 @@ class TestCallbacks:
         # mininterval=0: one log line per real training step, no throttled
         # gaps in the step count (each __call__ already fires once per
         # optimizer step, not per micro-batch, so this can't flood the log).
+        # miniters=1 is required alongside it: tqdm's dynamic_miniters
+        # defaults to on whenever miniters is left at 0/None, and it
+        # auto-inflates miniters based on observed call rate — silently
+        # re-throttling to "every other step" (or worse as steps/s rises)
+        # even with mininterval=0 explicitly set.
         assert captured["mininterval"] == 0
+        assert captured["miniters"] == 1
 
     def test_on_resume_syncs_the_bar_to_the_resumed_step(self, monkeypatch):
         """Regression guard: after a process restart with --resume auto,
