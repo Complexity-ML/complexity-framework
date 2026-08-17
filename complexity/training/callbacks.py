@@ -2,6 +2,8 @@
 
 import logging
 import math
+import sys
+import time
 from typing import Optional
 
 import torch
@@ -69,7 +71,12 @@ class TqdmCallback:
 
     def __init__(self, total_steps: int, desc: str = "train", tokens_per_step: Optional[int] = None):
         from tqdm import tqdm
+        self.total_steps = total_steps
+        self.desc = desc
         self.tokens_per_step = tokens_per_step
+        self.line_mode = is_main_process() and not sys.stderr.isatty()
+        self._line_last_step = 0
+        self._line_last_time = time.monotonic()
         self.pbar = tqdm(
             total=total_steps,
             desc=desc,
@@ -78,7 +85,7 @@ class TqdmCallback:
             mininterval=0,
             miniters=1,
             smoothing=0.1,
-            disable=not is_main_process(),
+            disable=not is_main_process() or self.line_mode,
         )
 
     def on_resume(self, step: int) -> None:
@@ -89,8 +96,12 @@ class TqdmCallback:
         N/total silently diverges from the real step (same loss/lr as the
         step it resumed at, but a bar that looks like it restarted).
         """
-        self.pbar.n = step
-        self.pbar.refresh()
+        if self.line_mode:
+            self._line_last_step = step
+            self._line_last_time = time.monotonic()
+        else:
+            self.pbar.n = step
+            self.pbar.refresh()
 
     def __call__(self, trainer, step: int, loss: float):
         # Collective reductions — ALL ranks must participate at the same step.
@@ -109,7 +120,7 @@ class TqdmCallback:
         lr = trainer.scheduler.get_last_lr()[0]
         postfix = {"loss": f"{loss:.4f}", "ppl": f"{ppl:.1f}", "lr": f"{lr:.2e}"}
 
-        if self.tokens_per_step:
+        if self.tokens_per_step and not self.line_mode:
             rate = self.pbar.format_dict.get("rate")
             if rate:
                 postfix["tok/s"] = f"{rate * self.tokens_per_step:,.0f}"
@@ -136,6 +147,30 @@ class TqdmCallback:
                 if not getattr(self, "_diag_warned", False):
                     print(f"[TqdmCallback] diagnostics disabled: {type(e).__name__}: {e}", flush=True)
                     self._diag_warned = True
+
+        if self.line_mode:
+            log_steps = max(1, int(getattr(trainer.config, "log_steps", 1)))
+            if step != 1 and step % log_steps != 0 and step < self.total_steps:
+                return
+            now = time.monotonic()
+            elapsed = max(now - self._line_last_time, 1e-9)
+            completed = max(step - self._line_last_step, 0)
+            rate = completed / elapsed
+            if self.tokens_per_step and rate > 0:
+                postfix["tok/s"] = f"{rate * self.tokens_per_step:,.0f}"
+            percent = 100.0 * step / max(self.total_steps, 1)
+            fields = " ".join(f"{key}={value}" for key, value in postfix.items())
+            logger.info(
+                "%s: step=%d/%d (%.2f%%) %s",
+                self.desc,
+                step,
+                self.total_steps,
+                percent,
+                fields,
+            )
+            self._line_last_step = step
+            self._line_last_time = now
+            return
 
         # set_postfix() refreshes by default, and update() refreshes again —
         # outside a real tty (piped to a log file) each refresh becomes its
