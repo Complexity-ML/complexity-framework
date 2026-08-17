@@ -106,18 +106,12 @@ class TestTrainer:
         assert isinstance(eval_loss, float)
         assert all(p.grad is None for p in model.parameters())
 
-    def test_plain_adamw_gives_expert_params_their_own_lr_pack(self, tmp_path):
-        """Regression guard: expert_lr_scale used to only be wired up for
-        optimizer_type in {muon_tr, adam_tr} — plain "adamw" (the default,
-        and what the live 200M pretraining run actually uses) silently
-        dropped experts into the same param group as dense hidden params,
-        ignoring expert_lr_scale/expert_weight_decay entirely."""
+    @staticmethod
+    def _make_fake_moe_model(num_experts=4):
         from types import SimpleNamespace
 
-        from complexity.training import Trainer, TrainingConfig
-
         class FakeMoEModel(torch.nn.Module):
-            def __init__(self, num_experts=4):
+            def __init__(self):
                 super().__init__()
                 self.config = SimpleNamespace(num_experts=num_experts, hidden_size=4)
                 self.embed = torch.nn.Embedding(10, 4)
@@ -128,13 +122,60 @@ class TestTrainer:
             def forward(self, x):
                 return self.dense(self.norm(self.embed(x)))
 
-        model = FakeMoEModel()
+        return FakeMoEModel()
+
+    def test_plain_adamw_leaves_experts_in_the_base_group_by_default(self, tmp_path):
+        """expert_lr_pack defaults to False: an existing run (like the live
+        200M pretrain, which checkpointed under the old 2-group layout) must
+        resume with the exact same param-group structure, or optimizer
+        state_dict resume breaks. Experts stay in the base group at the
+        plain learning_rate/weight_decay — no ×expert_lr_scale — unless the
+        flag is explicitly opted into."""
+        from complexity.training import Trainer, TrainingConfig
+
+        model = self._make_fake_moe_model()
         training_config = TrainingConfig(
             max_steps=1,
             learning_rate=1e-3,
             weight_decay=0.1,
             expert_lr_scale=2.0,
             expert_weight_decay=0.005,
+            optimizer_type="adamw",
+            precision="fp32",
+            use_fsdp=False,
+            checkpoint_dir=str(tmp_path / "checkpoints"),
+            log_dir=str(tmp_path / "logs"),
+        )
+
+        trainer = Trainer(
+            model=model,
+            config=training_config,
+            train_dataloader=[{"x": torch.zeros(1, dtype=torch.long)}],
+        )
+
+        assert len(trainer.optimizer.param_groups) == 2
+        base_group = next(
+            g for g in trainer.optimizer.param_groups
+            if any(p is model.gate_proj_w for p in g["params"])
+        )
+        assert base_group["weight_decay"] == pytest.approx(0.1)
+        assert base_group["lr"] == pytest.approx(1e-3)  # base learning_rate, not ×expert_lr_scale
+
+    def test_plain_adamw_gives_expert_params_their_own_lr_pack_when_opted_in(self, tmp_path):
+        """With expert_lr_pack=True, plain "adamw" gets an expert LR pack
+        (like muon_tr/adam_tr): expert params land in their own group at
+        learning_rate × expert_lr_scale with expert_weight_decay, instead of
+        sharing the dense hidden group's settings."""
+        from complexity.training import Trainer, TrainingConfig
+
+        model = self._make_fake_moe_model()
+        training_config = TrainingConfig(
+            max_steps=1,
+            learning_rate=1e-3,
+            weight_decay=0.1,
+            expert_lr_scale=2.0,
+            expert_weight_decay=0.005,
+            expert_lr_pack=True,
             optimizer_type="adamw",
             precision="fp32",
             use_fsdp=False,

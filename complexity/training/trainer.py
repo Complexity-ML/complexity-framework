@@ -110,7 +110,9 @@ class Trainer:
             logger.info(f"  learning_rate   : {config.learning_rate:.2e}  (NO auto-scaling — value is used as-is)")
             if config.optimizer_type in ("muon", "muon_tr"):
                 logger.info(f"  muon_lr         : {config.muon_lr:.2e}")
-            if config.optimizer_type in ("muon_tr", "adam_tr", "adamw"):
+            if config.optimizer_type in ("muon_tr", "adam_tr") or (
+                config.optimizer_type == "adamw" and config.expert_lr_pack
+            ):
                 logger.info(f"  expert_lr_scale : ×{config.expert_lr_scale}  "
                             f"(effective expert LR: {config.learning_rate * config.expert_lr_scale:.2e})")
             logger.info(f"  weight_decay    : {config.weight_decay}")
@@ -270,12 +272,14 @@ class Trainer:
         model_width = getattr(model_width, 'hidden_size', base_width) if model_width else base_width
         width_ratio = model_width / base_width
 
-        # Plain "adamw" also gets an expert LR pack (like muon_tr/adam_tr): MoE
-        # expert params are singled out via the same name/shape heuristic and
-        # get their own {lr, weight_decay} group instead of sharing the dense
-        # hidden group's settings.
+        # Plain "adamw" can also get an expert LR pack (like muon_tr/adam_tr):
+        # MoE expert params are singled out via the same name/shape heuristic
+        # and get their own {lr, weight_decay} group instead of sharing the
+        # dense hidden group's settings. Opt-in only (expert_lr_pack) — it
+        # changes the optimizer's param-group count, which breaks resume for
+        # a run that already checkpointed under the old (unpacked) grouping.
         num_experts = getattr(getattr(self.model, 'config', None), 'num_experts', 4)
-        classify_experts = config.optimizer_type == "adamw"
+        classify_experts = config.optimizer_type == "adamw" and config.expert_lr_pack
         if classify_experts:
             from .adam_tr import _classify_param
 

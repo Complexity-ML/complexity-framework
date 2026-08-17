@@ -20,8 +20,13 @@ class TrainingConfig:
     weight_decay: float = 0.1
     muon_lr: float = 0.02         # Muon LR for 2D weights (only used when optimizer_type="muon" or "muon_tr")
     mup_base_width: int = 256     # muP reference width (only used when optimizer_type="adamw_mup")
-    expert_lr_scale: float = 1.5  # LR multiplier for routed experts (muon_tr only)
-    expert_weight_decay: float = 0.005  # Weight decay for experts (muon_tr only)
+    expert_lr_scale: float = 1.5  # LR multiplier for routed experts (muon_tr/adam_tr, or adamw when expert_lr_pack=True)
+    expert_weight_decay: float = 0.005  # Weight decay for experts (muon_tr/adam_tr, or adamw when expert_lr_pack=True)
+    expert_lr_pack: bool = False  # opt-in: give MoE experts their own param group under plain "adamw".
+    # Off by default so it never changes behavior for a run resuming from an existing checkpoint —
+    # flipping it on changes the optimizer's param-group count/order, which breaks
+    # optimizer state_dict resume for a run that checkpointed under the old grouping.
+    # Safe to enable for a brand-new run that has never checkpointed yet.
     adaptive_ns: bool = True      # Adaptive Newton-Schulz iterations per expert (muon_tr only)
     warmup_steps: int = 1000
     lr_scheduler: str = "auto"    # auto, cosine, wsd, linear, constant
