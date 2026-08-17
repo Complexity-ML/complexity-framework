@@ -296,12 +296,14 @@ def _training_options(args: argparse.Namespace, world_size: int) -> dict[str, An
 
 def augmentation_scale(epoch: int, *, total_epochs: int, clean_finetune_epochs: int) -> float:
     """1.0 through the noisy-pretrain phase, linearly decaying to 0.0 across
-    the final ``clean_finetune_epochs`` -- the batch-level-augmentation
-    analogue of TR-HASH Vision v8's noisy-pretrain -> clean full-parameter
-    SFT recipe. Dataset-side augmentation (flip/crop-jitter/temporal-jitter)
-    is intentionally left out: those probabilities are baked into the
-    Dataset at construction time and read from persistent DataLoader worker
-    processes, which never see a post-construction attribute mutation."""
+    the final ``clean_finetune_epochs`` -- the analogue of TR-HASH Vision
+    v8's noisy-pretrain -> clean full-parameter SFT recipe. Used both for
+    batch-level augmentation (mixup/jitter/noise/modality-dropout, applied
+    directly in the training loop) and, when workers > 0, for dataset-side
+    augmentation (flip/crop-jitter/training_augmentation) via a separate
+    non-persistent-worker loader (clean_finetune_train_loader) swapped in
+    for exactly the epochs inside this window -- persistent workers pickle
+    the Dataset once and never see attribute mutations made afterwards."""
 
     if clean_finetune_epochs <= 0 or total_epochs <= 0:
         return 1.0
@@ -310,6 +312,38 @@ def augmentation_scale(epoch: int, *, total_epochs: int, clean_finetune_epochs: 
         return 1.0
     progress = (epoch - anneal_start) / max(clean_finetune_epochs, 1)
     return max(0.0, 1.0 - min(progress, 1.0))
+
+
+def should_build_clean_finetune_train_loader(*, workers: int, clean_finetune_epochs: int) -> bool:
+    """A separate non-persistent-worker loader is only needed when there both
+    are workers to be stale in the first place and an anneal window that
+    needs their per-epoch mutations to land."""
+
+    return workers > 0 and clean_finetune_epochs > 0
+
+
+def clean_finetune_anneal_start(*, total_epochs: int, clean_finetune_epochs: int) -> int:
+    """First epoch (0-indexed) of the clean-finetune anneal window; mirrors
+    augmentation_scale's own boundary so the loader swap and the augmentation
+    scale agree on exactly when the window begins."""
+
+    if clean_finetune_epochs <= 0 or total_epochs <= 0:
+        return total_epochs
+    return max(total_epochs - clean_finetune_epochs, 0)
+
+
+def resolve_epoch_training_augmentation(
+    *, base_enabled: bool, aug_scale: float, seed: int, epoch: int
+) -> bool:
+    """Stochastically gate the boolean training_augmentation switch (which
+    drives temporal-jitter frame sampling) by aug_scale: always on during the
+    noisy-pretrain phase (aug_scale=1), increasingly likely to fall back to
+    deterministic frame sampling as the clean-finetune window anneals
+    aug_scale toward 0."""
+
+    if not base_enabled:
+        return False
+    return random.Random(seed + epoch).random() < aug_scale
 
 
 def apply_modality_dropout(
@@ -991,6 +1025,30 @@ def main() -> None:
             batch_sampler=batch_sampler,
             **loader_options,
         )
+        clean_finetune_train_loader = None
+        if should_build_clean_finetune_train_loader(
+            workers=args.workers, clean_finetune_epochs=args.clean_finetune_epochs
+        ):
+            # Persistent workers pickle the Dataset once at pool creation and
+            # never see later attribute mutations, so the clean-finetune
+            # anneal (which mutates visual_horizontal_flip/visual_crop_jitter/
+            # training_augmentation on train_dataset every epoch) needs fresh
+            # workers each epoch -- but only for the epochs actually inside
+            # the anneal window. Using non-persistent workers for the whole
+            # run would also lose data.py's imu/radar/skeleton parse-once
+            # cache (_static_sensor_cache), which relies on the worker
+            # process staying alive across epochs, and re-parse those
+            # deterministic modalities from disk every epoch instead of once.
+            clean_loader_options = dict(loader_options)
+            clean_loader_options["persistent_workers"] = False
+            clean_finetune_train_loader = DataLoader(
+                train_dataset,
+                batch_sampler=batch_sampler,
+                **clean_loader_options,
+            )
+        clean_finetune_anneal_start_epoch = clean_finetune_anneal_start(
+            total_epochs=args.epochs, clean_finetune_epochs=args.clean_finetune_epochs
+        )
         validation_loader = DataLoader(
             validation_dataset,
             batch_size=args.eval_batch_size,
@@ -1152,8 +1210,37 @@ def main() -> None:
                 total_epochs=args.epochs,
                 clean_finetune_epochs=args.clean_finetune_epochs,
             )
+            epoch_train_loader = train_loader
+            in_clean_finetune_window = epoch >= clean_finetune_anneal_start_epoch
+            if in_clean_finetune_window:
+                # Dataset-side augmentation (flip/crop-jitter/temporal-jitter)
+                # can only be annealed by mutating the Dataset before this
+                # epoch's non-persistent workers spawn (clean_finetune_train_loader
+                # above) -- there is no batch-level equivalent for temporal
+                # jitter, since it decides which frames get read off disk in
+                # the first place, and crop jitter is applied against the
+                # source image before resize. Outside this window, train_loader
+                # keeps its persistent workers (and data.py's parse-once
+                # sensor cache) untouched.
+                train_dataset.visual_horizontal_flip = args.visual_horizontal_flip * aug_scale
+                train_dataset.visual_crop_jitter = args.visual_crop_jitter * aug_scale
+                train_dataset.training_augmentation = resolve_epoch_training_augmentation(
+                    base_enabled=sample_augmentation,
+                    aug_scale=aug_scale,
+                    seed=args.seed,
+                    epoch=epoch,
+                )
+                if clean_finetune_train_loader is not None:
+                    epoch_train_loader = clean_finetune_train_loader
             if context.is_main and args.clean_finetune_epochs > 0:
-                LOGGER.info("Epoch %d augmentation scale: %.3f", epoch + 1, aug_scale)
+                LOGGER.info(
+                    "Epoch %d augmentation scale: %.3f%s",
+                    epoch + 1,
+                    aug_scale,
+                    f" (dataset-side augmentation={train_dataset.training_augmentation})"
+                    if in_clean_finetune_window
+                    else "",
+                )
             if hasattr(train_sampler, "set_epoch"):
                 train_sampler.set_epoch(epoch)
             batch_sampler.set_start_batch(start_batch if epoch == start_epoch else 0)
@@ -1172,7 +1259,7 @@ def main() -> None:
             epoch_gate_calibration = 0.0
             epoch_subject = 0.0
             progress = tqdm(
-                train_loader,
+                epoch_train_loader,
                 total=steps_per_epoch,
                 initial=batch_sampler.start_batch,
                 desc=f"sensor fusion {epoch + 1}/{args.epochs}",

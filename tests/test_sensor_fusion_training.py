@@ -109,6 +109,59 @@ def test_augmentation_scale_never_goes_negative_past_the_final_epoch():
     assert augmentation_scale(59, total_epochs=50, clean_finetune_epochs=10) == 0.0
 
 
+def test_clean_finetune_anneal_start_mirrors_augmentation_scale_boundary():
+    from complexity.generative.sensor_fusion.training import clean_finetune_anneal_start
+
+    assert clean_finetune_anneal_start(total_epochs=50, clean_finetune_epochs=0) == 50
+    assert clean_finetune_anneal_start(total_epochs=50, clean_finetune_epochs=10) == 40
+
+
+def test_resolve_epoch_training_augmentation_is_always_off_when_disabled():
+    from complexity.generative.sensor_fusion.training import resolve_epoch_training_augmentation
+
+    for epoch in range(10):
+        assert resolve_epoch_training_augmentation(
+            base_enabled=False, aug_scale=1.0, seed=42, epoch=epoch
+        ) is False
+
+
+def test_resolve_epoch_training_augmentation_is_deterministic_and_bounded():
+    """Regression guard: at aug_scale=1.0 (full noisy-pretrain strength) the
+    epoch must always keep dataset-side augmentation on; at aug_scale=0.0
+    (fully annealed) it must always be off; same (seed, epoch) must always
+    give the same answer so a resumed run replays identically."""
+    from complexity.generative.sensor_fusion.training import resolve_epoch_training_augmentation
+
+    for epoch in range(10):
+        assert resolve_epoch_training_augmentation(
+            base_enabled=True, aug_scale=1.0, seed=42, epoch=epoch
+        ) is True
+        assert resolve_epoch_training_augmentation(
+            base_enabled=True, aug_scale=0.0, seed=42, epoch=epoch
+        ) is False
+
+    first = resolve_epoch_training_augmentation(base_enabled=True, aug_scale=0.5, seed=7, epoch=3)
+    second = resolve_epoch_training_augmentation(base_enabled=True, aug_scale=0.5, seed=7, epoch=3)
+    assert first == second
+
+
+def test_clean_finetune_train_loader_only_built_when_actually_needed():
+    """Regression guard: persistent DataLoader workers pickle the Dataset
+    once and never see the clean-finetune anneal's per-epoch mutations of
+    visual_horizontal_flip/visual_crop_jitter/training_augmentation. A
+    dedicated non-persistent loader must exist to serve exactly the epochs
+    inside the anneal window -- but building it (and paying its per-epoch
+    worker respawn cost) is wasted when there are no workers to go stale, or
+    no anneal window that needs it."""
+    from complexity.generative.sensor_fusion.training import (
+        should_build_clean_finetune_train_loader,
+    )
+
+    assert should_build_clean_finetune_train_loader(workers=4, clean_finetune_epochs=10) is True
+    assert should_build_clean_finetune_train_loader(workers=0, clean_finetune_epochs=10) is False
+    assert should_build_clean_finetune_train_loader(workers=4, clean_finetune_epochs=0) is False
+
+
 def test_clean_finetune_epochs_cannot_exceed_total_epochs(monkeypatch, tmp_path):
     from complexity.generative.sensor_fusion import training
 
