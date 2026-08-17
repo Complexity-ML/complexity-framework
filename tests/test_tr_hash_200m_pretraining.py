@@ -275,12 +275,8 @@ def test_70b_replay_supervisor_survives_a_crash_or_reboot_unattended() -> None:
     assert "-m scripts.train_tr_hash_200m_200b" in launcher
     assert not Path("scripts/vast_pretrain_tr_hash_200m_200b.sh").exists()
     assert "[program:tr_hash_200m_70b_replay]" in supervisor
-    assert "NPROC_PER_NODE=\"8\"" in supervisor
-    assert "BATCH_SIZE_PER_GPU=\"16\"" in supervisor
-    assert "GRADIENT_ACCUMULATION=\"4\"" in supervisor
-    assert "TOKENIZED_CACHE_GB=\"24\"" in supervisor
-    assert "NUM_WORKERS=\"0\"" in supervisor
-    assert "hf://datasets/Pacific-i64/data-32k-200b-tokens" in supervisor
+    assert "autostart=true" in supervisor
+    assert "autorestart=unexpected" in supervisor
 
     # Regression guard: an earlier ad-hoc deployment piped the launcher
     # through `pty ... | tee` into the portal's /dev/stdout capture, which
@@ -292,6 +288,15 @@ def test_70b_replay_supervisor_survives_a_crash_or_reboot_unattended() -> None:
     assert "| tee" not in launcher
     assert "exec torchrun" in launcher
     assert "/dev/stdout" not in supervisor
+
+    # Regression guard: the env (including HF_TOKEN) used to be inlined
+    # directly into this tracked conf file. That conf is committed to a
+    # public repo, so any real token value would leak. The run's env now
+    # lives only in an instance-local, untracked wrapper script that this
+    # conf's command= merely invokes.
+    assert "environment=" not in supervisor
+    assert "HF_TOKEN=" not in supervisor
+    assert "command=/bin/bash /workspace/run_200m.sh" in supervisor
     assert "stdout_logfile=/workspace/complexity-framework/artifacts/" in supervisor
     assert "export PYTHONUNBUFFERED=1" in launcher
 
