@@ -23,6 +23,11 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+from complexity.training.finetuning import (
+    IMAGE_GENERATION_SUPERVISED_FINETUNING,
+    validate_full_parameter_finetuning,
+)
+
 from .codec import FrozenAutoencoderKL
 from .config import TRHashImageConfig
 from .data import AtlasImageTarDataset, collate_atlas_images
@@ -176,6 +181,8 @@ def main() -> None:
         raise ValueError("--sft-shards requires --sft-steps > 0")
     if args.sft_lr_scale <= 0.0:
         raise ValueError("--sft-lr-scale must be positive")
+    if args.sft_shards:
+        validate_full_parameter_finetuning(IMAGE_GENERATION_SUPERVISED_FINETUNING)
     rank, local_rank, world_size, device = setup_distributed()
     logging.basicConfig(
         level=logging.INFO if rank == 0 else logging.WARNING,

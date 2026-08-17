@@ -11,6 +11,8 @@ from complexity.generative.detection import TRHashObjectDetector, coco_v8_nano_c
 from complexity.generative.detection.training import resolve_initialization_provenance
 from complexity.training.finetuning import (
     FULL_PARAMETER_FINETUNING_PIPELINES,
+    IMAGE_GENERATION_SUPERVISED_FINETUNING,
+    IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING,
     TEXT_SUPERVISED_FINETUNING,
     VISION_SUPERVISED_FINETUNING,
     validate_full_parameter_finetuning,
@@ -19,9 +21,22 @@ from complexity.training.finetuning import (
 PROJECT_ROOT = Path(__file__).parents[1]
 
 
-def test_only_vision_sft_is_exempt_from_full_parameter_ban() -> None:
-    assert FULL_PARAMETER_FINETUNING_PIPELINES == {VISION_SUPERVISED_FINETUNING}
+def test_only_vision_shaped_pipelines_are_exempt_from_full_parameter_ban() -> None:
+    """Regression guard: full-parameter adaptation of *language* weights is
+    banned everywhere except a genuinely vision-only update. Image-generation
+    SFT qualifies outright (no language decoder at all). Image-text-to-text
+    SFT qualifies only because its script freezes the language decoder for
+    the whole stage (see freeze_decoder_for_vision_only_sft) -- the exemption
+    is never a green light for full-parameter *text* SFT."""
+
+    assert FULL_PARAMETER_FINETUNING_PIPELINES == {
+        VISION_SUPERVISED_FINETUNING,
+        IMAGE_GENERATION_SUPERVISED_FINETUNING,
+        IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING,
+    }
     validate_full_parameter_finetuning(VISION_SUPERVISED_FINETUNING)
+    validate_full_parameter_finetuning(IMAGE_GENERATION_SUPERVISED_FINETUNING)
+    validate_full_parameter_finetuning(IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING)
 
     with pytest.raises(ValueError, match="restricted to"):
         validate_full_parameter_finetuning(TEXT_SUPERVISED_FINETUNING)

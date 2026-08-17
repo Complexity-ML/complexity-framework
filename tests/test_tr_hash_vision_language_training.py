@@ -18,6 +18,7 @@ from complexity.generative.vision_language import (
 )
 from complexity.generative.vision_language.data import DEFAULT_PROMPT
 from complexity.generative.vision_language.training import (
+    freeze_decoder_for_vision_only_sft,
     stage_is_sft,
     tokenize_prompt_response,
 )
@@ -198,6 +199,36 @@ def test_sft_steps_requires_sft_shards_and_vice_versa(monkeypatch, tmp_path):
     )
     with pytest.raises(ValueError, match="--sft-shards requires --sft-steps"):
         training.main()
+
+
+def test_freeze_decoder_for_vision_only_sft_leaves_only_vision_trainable():
+    """Regression guard: the framework bans full-parameter SFT of language
+    weights everywhere except vision-shaped pipelines (complexity/training/
+    finetuning.py). The VLM's stage-2 SFT corpus is image-grounded QA/dialogue
+    -- a language-instruction shape -- so it must never leave the decoder
+    trainable, LoRA or otherwise. Only the vision tower/resampler/projection
+    may update."""
+    config = _tiny_config()
+    model = TRHashImageTextToText(config)
+    assert all(p.requires_grad for p in model.decoder.parameters())
+
+    stats = freeze_decoder_for_vision_only_sft(model)
+
+    assert not any(p.requires_grad for p in model.decoder.parameters())
+    assert all(p.requires_grad for p in model.vision_tower.parameters())
+    assert all(p.requires_grad for p in model.resampler.parameters())
+    assert all(p.requires_grad for p in model.visual_projection.parameters())
+    assert stats["trainable"] < stats["total"]
+    assert stats["trainable"] + stats["frozen"] == stats["total"]
+
+
+def test_image_text_to_text_sft_is_exempt_from_the_full_parameter_ban():
+    from complexity.training.finetuning import (
+        IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING,
+        validate_full_parameter_finetuning,
+    )
+
+    validate_full_parameter_finetuning(IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING)
 
 
 def test_end_to_end_batch_from_shard_to_loss_backward(tmp_path):

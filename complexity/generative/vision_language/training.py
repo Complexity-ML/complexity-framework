@@ -21,6 +21,11 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+from complexity.training.finetuning import (
+    IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING,
+    validate_full_parameter_finetuning,
+)
+
 from .config import TRHashVisionLanguageConfig
 from .data import DEFAULT_PROMPT, VisionLanguageTarDataset, collate_vision_language
 from .model import TRHashImageTextToText
@@ -144,6 +149,24 @@ def stage_is_sft(step: int, *, total_steps: int, sft_steps: int) -> bool:
     return step >= total_steps - sft_steps
 
 
+def freeze_decoder_for_vision_only_sft(model: TRHashImageTextToText) -> dict[str, int]:
+    """Freeze the language decoder; leave the vision tower, resampler, and
+    visual projection trainable.
+
+    The curated stage-2 SFT corpus is image-grounded QA/dialogue -- a
+    language-instruction shape the framework restricts to LoRA-only for text
+    models (complexity/training/finetuning.py). Freezing the decoder outright
+    keeps this pipeline compliant without a LoRA path: the exemption covers
+    full-parameter *vision* adaptation only, and the language decoder is
+    never trained during this stage, LoRA or otherwise.
+    """
+
+    model.decoder.requires_grad_(False)
+    trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    total = sum(parameter.numel() for parameter in model.parameters())
+    return {"trainable": trainable, "total": total, "frozen": total - trainable}
+
+
 def save_checkpoint(
     output: Path,
     model: TRHashImageTextToText,
@@ -228,6 +251,8 @@ def main() -> None:
         raise ValueError("--sft-lr-scale must be positive")
     if args.sft_steps > args.max_steps:
         raise ValueError("--sft-steps cannot exceed --max-steps")
+    if args.sft_shards:
+        validate_full_parameter_finetuning(IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING)
 
     rank, local_rank, world_size, device = setup_distributed()
     logging.basicConfig(
@@ -280,7 +305,13 @@ def main() -> None:
             raise ValueError("resume checkpoint config does not match --config")
         raw_model.load_state_dict(load_file(str(args.resume / "model.safetensors")))
     if world_size > 1:
-        model = DistributedDataParallel(model, device_ids=[local_rank])
+        # find_unused_parameters is required once --sft-shards is set: the
+        # decoder's requires_grad flips to False mid-run when the SFT stage
+        # starts, and DDP's default gradient-bucket reduction assumes a fixed
+        # set of grad-producing parameters for the whole run.
+        model = DistributedDataParallel(
+            model, device_ids=[local_rank], find_unused_parameters=bool(args.sft_shards)
+        )
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=args.weight_decay
@@ -351,8 +382,16 @@ def main() -> None:
         in_sft_stage = stage_is_sft(step, total_steps=total_steps, sft_steps=args.sft_steps)
         if in_sft_stage and not entered_sft_stage:
             entered_sft_stage = True
+            freeze_stats = freeze_decoder_for_vision_only_sft(raw_model)
             if rank == 0:
-                LOGGER.info("Entering clean SFT stage at step=%d (%d steps remaining)", step, args.sft_steps)
+                LOGGER.info(
+                    "Entering vision-only SFT stage at step=%d (%d steps remaining): "
+                    "decoder frozen, %.1fM/%.1fM params trainable (vision tower/resampler/projection)",
+                    step,
+                    args.sft_steps,
+                    freeze_stats["trainable"] / 1e6,
+                    freeze_stats["total"] / 1e6,
+                )
         if in_sft_stage:
             try:
                 batch = next(sft_iterator)
