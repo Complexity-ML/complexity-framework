@@ -106,6 +106,47 @@ class TestTrainer:
         assert isinstance(eval_loss, float)
         assert all(p.grad is None for p in model.parameters())
 
+    def test_interrupted_training_saves_only_interrupted_not_also_final(self, tmp_path):
+        """Regression guard: `self._save_checkpoint(tag="final")` used to sit
+        unindented after the try/except KeyboardInterrupt block, so it ran
+        on every exit path — a SIGTERM-triggered interrupt saved BOTH
+        "interrupted_N" and "final_N" at the same step, doubling checkpoint
+        disk usage and mislabeling a killed run as having finished. Live
+        instance hit this: a single supervisor restart wrote 2x 26GB
+        checkpoints for 56 steps of progress."""
+        from complexity.training import Trainer, TrainingConfig
+
+        model = torch.nn.Linear(1, 1)
+        training_config = TrainingConfig(
+            max_steps=100,
+            learning_rate=1e-4,
+            precision="fp32",
+            use_fsdp=False,
+            checkpoint_dir=str(tmp_path / "checkpoints"),
+            log_dir=str(tmp_path / "logs"),
+        )
+
+        def raising_dataloader():
+            raise KeyboardInterrupt("simulated SIGTERM")
+            yield  # pragma: no cover - makes this a generator
+
+        def compute_loss(m, b):
+            return m(b["x"]).sum()
+
+        trainer = Trainer(
+            model=model,
+            config=training_config,
+            train_dataloader=raising_dataloader(),
+            compute_loss=compute_loss,
+        )
+
+        saved_tags = []
+        trainer._save_checkpoint = lambda tag="step": saved_tags.append(tag)
+
+        trainer.train()
+
+        assert saved_tags == ["interrupted"]
+
     def test_gradient_accumulation_uses_no_sync_until_optimizer_boundary(self):
         from complexity.training import Trainer
 

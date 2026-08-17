@@ -427,8 +427,13 @@ class Trainer:
         except KeyboardInterrupt:
             logger.info("Training interrupted by user")
             self._save_checkpoint(tag="interrupted")
-
-        self._save_checkpoint(tag="final")
+        else:
+            # Only reached when the loop above exits normally (max_steps
+            # reached), not via the except branch — an interrupted run used
+            # to fall through to here too, doubling the checkpoint write
+            # (both "interrupted_N" and "final_N" at the same step, ~2x the
+            # disk) and mislabeling a killed run as having finished.
+            self._save_checkpoint(tag="final")
 
         summary = self.metrics.get_summary()
         if self.is_main:
