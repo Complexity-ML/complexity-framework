@@ -106,6 +106,61 @@ class TestTrainer:
         assert isinstance(eval_loss, float)
         assert all(p.grad is None for p in model.parameters())
 
+    def test_plain_adamw_gives_expert_params_their_own_lr_pack(self, tmp_path):
+        """Regression guard: expert_lr_scale used to only be wired up for
+        optimizer_type in {muon_tr, adam_tr} — plain "adamw" (the default,
+        and what the live 200M pretraining run actually uses) silently
+        dropped experts into the same param group as dense hidden params,
+        ignoring expert_lr_scale/expert_weight_decay entirely."""
+        from types import SimpleNamespace
+
+        from complexity.training import Trainer, TrainingConfig
+
+        class FakeMoEModel(torch.nn.Module):
+            def __init__(self, num_experts=4):
+                super().__init__()
+                self.config = SimpleNamespace(num_experts=num_experts, hidden_size=4)
+                self.embed = torch.nn.Embedding(10, 4)
+                self.gate_proj_w = torch.nn.Parameter(torch.randn(num_experts, 4, 4))
+                self.dense = torch.nn.Linear(4, 4)
+                self.norm = torch.nn.LayerNorm(4)
+
+            def forward(self, x):
+                return self.dense(self.norm(self.embed(x)))
+
+        model = FakeMoEModel()
+        training_config = TrainingConfig(
+            max_steps=1,
+            learning_rate=1e-3,
+            weight_decay=0.1,
+            expert_lr_scale=2.0,
+            expert_weight_decay=0.005,
+            optimizer_type="adamw",
+            precision="fp32",
+            use_fsdp=False,
+            checkpoint_dir=str(tmp_path / "checkpoints"),
+            log_dir=str(tmp_path / "logs"),
+        )
+
+        trainer = Trainer(
+            model=model,
+            config=training_config,
+            train_dataloader=[{"x": torch.zeros(1, dtype=torch.long)}],
+        )
+
+        expert_groups = [g for g in trainer.optimizer.param_groups if g.get("lr") == pytest.approx(2e-3)]
+        assert len(expert_groups) == 1
+        assert expert_groups[0]["weight_decay"] == pytest.approx(0.005)
+        assert expert_groups[0]["params"][0] is model.gate_proj_w
+
+        other_params = {
+            id(p)
+            for g in trainer.optimizer.param_groups
+            if g is not expert_groups[0]
+            for p in g["params"]
+        }
+        assert id(model.gate_proj_w) not in other_params
+
     def test_interrupted_training_saves_only_interrupted_not_also_final(self, tmp_path):
         """Regression guard: `self._save_checkpoint(tag="final")` used to sit
         unindented after the try/except KeyboardInterrupt block, so it ran

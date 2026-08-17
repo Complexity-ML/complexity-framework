@@ -110,7 +110,7 @@ class Trainer:
             logger.info(f"  learning_rate   : {config.learning_rate:.2e}  (NO auto-scaling — value is used as-is)")
             if config.optimizer_type in ("muon", "muon_tr"):
                 logger.info(f"  muon_lr         : {config.muon_lr:.2e}")
-            if config.optimizer_type in ("muon_tr", "adam_tr"):
+            if config.optimizer_type in ("muon_tr", "adam_tr", "adamw"):
                 logger.info(f"  expert_lr_scale : ×{config.expert_lr_scale}  "
                             f"(effective expert LR: {config.learning_rate * config.expert_lr_scale:.2e})")
             logger.info(f"  weight_decay    : {config.weight_decay}")
@@ -263,11 +263,21 @@ class Trainer:
         embed_params = []
         hidden_params = []
         no_decay_params = []
+        expert_params = []
 
         base_width = getattr(config, 'mup_base_width', 256)
         model_width = getattr(self.model, 'config', None)
         model_width = getattr(model_width, 'hidden_size', base_width) if model_width else base_width
         width_ratio = model_width / base_width
+
+        # Plain "adamw" also gets an expert LR pack (like muon_tr/adam_tr): MoE
+        # expert params are singled out via the same name/shape heuristic and
+        # get their own {lr, weight_decay} group instead of sharing the dense
+        # hidden group's settings.
+        num_experts = getattr(getattr(self.model, 'config', None), 'num_experts', 4)
+        classify_experts = config.optimizer_type == "adamw"
+        if classify_experts:
+            from .adam_tr import _classify_param
 
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
@@ -276,6 +286,8 @@ class Trainer:
                 no_decay_params.append(param)
             elif 'embed' in name or 'lm_head' in name:
                 embed_params.append(param)
+            elif classify_experts and _classify_param(name, param, num_experts) == "expert":
+                expert_params.append(param)
             else:
                 hidden_params.append(param)
 
@@ -296,6 +308,17 @@ class Trainer:
                 {"params": embed_params + hidden_params, "weight_decay": config.weight_decay},
                 {"params": no_decay_params, "weight_decay": 0.0},
             ]
+            if expert_params:
+                expert_lr = config.learning_rate * config.expert_lr_scale
+                param_groups.append({
+                    "params": expert_params,
+                    "lr": expert_lr,
+                    "weight_decay": config.expert_weight_decay,
+                })
+                if self.is_main:
+                    logger.info(f"AdamW expert LR pack: {sum(p.numel() for p in expert_params)/1e6:.1f}M expert "
+                                f"params @ lr={expert_lr:.2e} (×{config.expert_lr_scale}), "
+                                f"wd={config.expert_weight_decay}")
 
         return torch.optim.AdamW(
             param_groups,
