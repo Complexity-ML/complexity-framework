@@ -80,6 +80,59 @@ def test_backbone_lr_defaults_to_full_unless_explicitly_overridden():
         resolve_backbone_lr_multiplier(0.0)
 
 
+def test_augmentation_scale_is_full_strength_when_clean_finetune_disabled():
+    from complexity.generative.sensor_fusion.training import augmentation_scale
+
+    for epoch in (0, 5, 49):
+        assert augmentation_scale(epoch, total_epochs=50, clean_finetune_epochs=0) == 1.0
+
+
+def test_augmentation_scale_anneals_to_zero_over_the_final_clean_epochs():
+    """Regression guard: the sensor-fusion trainer's inspired-by-Vision-v8
+    "noisy pretrain -> clean full-parameter SFT" recipe anneals batch-level
+    augmentation (mixup/jitter/noise/modality-dropout) to zero over the final
+    N epochs instead of keeping constant augmentation strength for the whole
+    run."""
+    from complexity.generative.sensor_fusion.training import augmentation_scale
+
+    # 50 total epochs, last 10 are the clean fine-tune window (epochs 40..49).
+    assert augmentation_scale(0, total_epochs=50, clean_finetune_epochs=10) == 1.0
+    assert augmentation_scale(39, total_epochs=50, clean_finetune_epochs=10) == 1.0
+    assert augmentation_scale(40, total_epochs=50, clean_finetune_epochs=10) == pytest.approx(1.0)
+    assert augmentation_scale(45, total_epochs=50, clean_finetune_epochs=10) == pytest.approx(0.5)
+    assert augmentation_scale(49, total_epochs=50, clean_finetune_epochs=10) == pytest.approx(0.1)
+
+
+def test_augmentation_scale_never_goes_negative_past_the_final_epoch():
+    from complexity.generative.sensor_fusion.training import augmentation_scale
+
+    assert augmentation_scale(59, total_epochs=50, clean_finetune_epochs=10) == 0.0
+
+
+def test_clean_finetune_epochs_cannot_exceed_total_epochs(monkeypatch, tmp_path):
+    from complexity.generative.sensor_fusion import training
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cf-sensor-fusion-train",
+            "--data-root",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "out"),
+            "--optimizer",
+            "musgd",
+            "--epochs",
+            "5",
+            "--clean-finetune-epochs",
+            "10",
+        ],
+    )
+    with pytest.raises(ValueError, match="cannot exceed --epochs"):
+        training.main()
+
+
 def test_checkpoint_restores_weights_optimizer_scheduler_cursor_and_rng(tmp_path):
     torch.manual_seed(17)
     config = _config()

@@ -133,6 +133,17 @@ def parse_args() -> argparse.Namespace:
         help="Probability of hiding each available modality during training",
     )
     parser.add_argument(
+        "--clean-finetune-epochs",
+        type=int,
+        default=0,
+        help=(
+            "Final N epochs run with batch-level augmentation strength "
+            "(mixup, visual jitter, sensor noise, modality dropout) linearly "
+            "annealed to zero, mirroring TR-HASH Vision's noisy-pretrain -> "
+            "clean full-parameter SFT recipe. 0 disables the anneal."
+        ),
+    )
+    parser.add_argument(
         "--class-balance",
         choices=("none", "inverse-sqrt", "inverse"),
         default="inverse-sqrt",
@@ -255,6 +266,7 @@ def _training_options(args: argparse.Namespace, world_size: int) -> dict[str, An
         "visual_crop_jitter",
         "sensor_noise",
         "modality_dropout",
+        "clean_finetune_epochs",
         "class_balance",
         "class_sampling",
         "sample_loss_weighting",
@@ -280,6 +292,24 @@ def _training_options(args: argparse.Namespace, world_size: int) -> dict[str, An
     result["validation_users"] = list(args.validation_users)
     result["world_size"] = world_size
     return result
+
+
+def augmentation_scale(epoch: int, *, total_epochs: int, clean_finetune_epochs: int) -> float:
+    """1.0 through the noisy-pretrain phase, linearly decaying to 0.0 across
+    the final ``clean_finetune_epochs`` -- the batch-level-augmentation
+    analogue of TR-HASH Vision v8's noisy-pretrain -> clean full-parameter
+    SFT recipe. Dataset-side augmentation (flip/crop-jitter/temporal-jitter)
+    is intentionally left out: those probabilities are baked into the
+    Dataset at construction time and read from persistent DataLoader worker
+    processes, which never see a post-construction attribute mutation."""
+
+    if clean_finetune_epochs <= 0 or total_epochs <= 0:
+        return 1.0
+    anneal_start = max(total_epochs - clean_finetune_epochs, 0)
+    if epoch < anneal_start:
+        return 1.0
+    progress = (epoch - anneal_start) / max(clean_finetune_epochs, 1)
+    return max(0.0, 1.0 - min(progress, 1.0))
 
 
 def apply_modality_dropout(
@@ -854,6 +884,10 @@ def main() -> None:
         raise ValueError("--subject-adversarial-warmup-epochs must be non-negative")
     if args.subject_adversarial_weight > 0.0 and args.mixup_alpha > 0.0:
         raise ValueError("subject-adversarial training requires --mixup-alpha 0")
+    if args.clean_finetune_epochs < 0:
+        raise ValueError("--clean-finetune-epochs must be non-negative")
+    if args.clean_finetune_epochs > args.epochs:
+        raise ValueError("--clean-finetune-epochs cannot exceed --epochs")
     if args.sample_loss_weighting != "none" and args.class_sampling != "none":
         raise ValueError("full-shard sample loss weighting cannot use replacement class sampling")
     if args.sample_loss_weighting != "none" and args.class_balance != "none":
@@ -1113,6 +1147,13 @@ def main() -> None:
         backend_logged = False
         cursor_epoch, cursor_batch = start_epoch, start_batch
         for epoch in range(start_epoch, args.epochs):
+            aug_scale = augmentation_scale(
+                epoch,
+                total_epochs=args.epochs,
+                clean_finetune_epochs=args.clean_finetune_epochs,
+            )
+            if context.is_main and args.clean_finetune_epochs > 0:
+                LOGGER.info("Epoch %d augmentation scale: %.3f", epoch + 1, aug_scale)
             if hasattr(train_sampler, "set_epoch"):
                 train_sampler.set_epoch(epoch)
             batch_sampler.set_start_batch(start_batch if epoch == start_epoch else 0)
@@ -1143,19 +1184,19 @@ def main() -> None:
             for batch_index, batch in enumerate(progress, start=batch_sampler.start_batch):
                 inputs = _move(batch["inputs"], device)
                 masks = _move(batch["modality_mask"], device)
-                masks = apply_modality_dropout(masks, args.modality_dropout)
+                masks = apply_modality_dropout(masks, args.modality_dropout * aug_scale)
                 labels = batch["labels"].to(device, non_blocking=True)
                 sample_weights = batch["loss_weights"].to(device, non_blocking=True)
                 inputs = augment_sensor_inputs(
                     inputs,
-                    visual_jitter=args.visual_jitter,
-                    sensor_noise=args.sensor_noise,
+                    visual_jitter=args.visual_jitter * aug_scale,
+                    sensor_noise=args.sensor_noise * aug_scale,
                 )
                 inputs, masks, mixed_labels, mixup_weight, mixup_permutation = mixup_sensor_batch(
                     inputs,
                     masks,
                     labels,
-                    args.mixup_alpha,
+                    args.mixup_alpha * aug_scale,
                 )
                 optimizer.zero_grad(set_to_none=True)
                 contrastive = labels.new_zeros((), dtype=torch.float32)
