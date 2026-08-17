@@ -581,17 +581,21 @@ class Trainer:
         if not self.is_main:
             return
 
-        # Print full diagnostic table
-        print("\n[param-update check] post-step-1 diagnostic:", flush=True)
-        for name, delta, grad_norm in results:
-            short = name.replace("_orig_mod.", "").replace("module.", "")
-            tag = "OK " if delta > 1e-7 else "DEAD"
-            print(f"  [{tag}] {short:60s}  delta={delta:.3e}  grad_norm={grad_norm:.3e}", flush=True)
+        # Single line: multi-line prints don't survive a non-tty log the
+        # same way tqdm's per-step lines were tuned to (mininterval/miniters
+        # only apply to the tqdm bar, not to plain print()).
         dead_count = sum(1 for _, d, _ in results if d <= 1e-7)
-        if dead_count:
-            print(f"  ⚠ {dead_count}/{len(results)} canary params did not update — likely silent zero-grad bug", flush=True)
-        else:
-            print(f"  ✓ all {len(results)} canary params updated", flush=True)
+        fields = " ".join(
+            f"{name.replace('_orig_mod.', '').replace('module.', '')}="
+            f"{'OK' if delta > 1e-7 else 'DEAD'}(delta={delta:.2e},gn={grad_norm:.2e})"
+            for name, delta, grad_norm in results
+        )
+        status = (
+            f"⚠ {dead_count}/{len(results)} did not update — likely silent zero-grad bug"
+            if dead_count
+            else f"✓ all {len(results)} updated"
+        )
+        print(f"[param-update check] post-step-1: {status} | {fields}", flush=True)
 
     def _optimizer_step(self):
         """Optimizer step with gradient clipping."""

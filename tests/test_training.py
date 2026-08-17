@@ -147,6 +147,36 @@ class TestTrainer:
 
         assert saved_tags == ["interrupted"]
 
+    def test_canary_param_diagnostic_prints_a_single_line(self, capsys):
+        """Regression guard: the post-step-1 canary diagnostic used to print
+        one line per param plus a header and a summary line (6+ lines for a
+        handful of params). Consolidated to one line so it doesn't stand out
+        as a multi-line block against the rest of the log, which is one
+        line per event everywhere else."""
+        from complexity.training import Trainer
+
+        model = torch.nn.Linear(4, 4)
+        trainer = Trainer.__new__(Trainer)
+        trainer.model = model
+        trainer.is_main = True
+        trainer._init_snapshot = {}
+        trainer._update_check_done = False
+
+        trainer._snapshot_canary_params()
+        with torch.no_grad():
+            for p in model.parameters():
+                p.add_(1.0)
+                p.grad = torch.ones_like(p)
+
+        trainer._check_params_updated()
+
+        out = capsys.readouterr().out.strip("\n")
+        lines = out.splitlines()
+
+        assert len(lines) == 1
+        assert lines[0].startswith("[param-update check] post-step-1:")
+        assert "OK(delta=" in lines[0]
+
     def test_gradient_accumulation_uses_no_sync_until_optimizer_boundary(self):
         from complexity.training import Trainer
 
