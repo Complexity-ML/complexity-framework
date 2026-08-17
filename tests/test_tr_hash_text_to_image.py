@@ -1,7 +1,9 @@
 import io
 import json
+import sys
 import tarfile
 
+import pytest
 import torch
 from PIL import Image
 
@@ -11,7 +13,7 @@ from complexity.generative.image import (
     TRHashTextToImage,
     collate_atlas_images,
 )
-from complexity.generative.image.training import prune_checkpoints
+from complexity.generative.image.training import prune_checkpoints, stage_is_sft
 
 
 def _tiny_config() -> TRHashImageConfig:
@@ -140,3 +142,54 @@ def test_checkpoint_retention_keeps_only_the_newest_steps(tmp_path):
         "step_0010000",
         "step_incomplete",
     ]
+
+
+def test_stage_is_sft_stays_in_pretrain_when_disabled():
+    for step in (0, 500, 999):
+        assert stage_is_sft(step, total_steps=1000, sft_steps=0) is False
+
+
+def test_stage_is_sft_switches_over_for_the_final_window():
+    """Regression guard: the text-to-image trainer's inspired-by-Vision-v8
+    "noisy pretrain -> clean full-parameter SFT" recipe switches from the
+    broad --shards set to the curated --sft-shards set for exactly the final
+    --sft-steps steps of the run, not before."""
+    assert stage_is_sft(699, total_steps=1000, sft_steps=300) is False
+    assert stage_is_sft(700, total_steps=1000, sft_steps=300) is True
+    assert stage_is_sft(999, total_steps=1000, sft_steps=300) is True
+
+
+def test_sft_steps_requires_sft_shards_and_vice_versa(monkeypatch, tmp_path):
+    from complexity.generative.image import training
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cf-image-train",
+            "--shards",
+            str(tmp_path / "*.tar"),
+            "--output",
+            str(tmp_path / "out"),
+            "--sft-steps",
+            "100",
+        ],
+    )
+    with pytest.raises(ValueError, match="--sft-steps requires --sft-shards"):
+        training.main()
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cf-image-train",
+            "--shards",
+            str(tmp_path / "*.tar"),
+            "--output",
+            str(tmp_path / "out"),
+            "--sft-shards",
+            str(tmp_path / "sft" / "*.tar"),
+        ],
+    )
+    with pytest.raises(ValueError, match="--sft-shards requires --sft-steps"):
+        training.main()

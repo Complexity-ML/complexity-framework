@@ -35,6 +35,28 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("configs/tr_hash_text_to_image_200m.yaml"))
     parser.add_argument("--shards", required=True, help="Local glob for train TAR shards")
+    parser.add_argument(
+        "--sft-shards",
+        default=None,
+        help=(
+            "Optional glob for a smaller curated/aesthetic-filtered shard set. "
+            "Inspired by TR-HASH Vision's noisy-pretrain -> clean full-parameter "
+            "SFT recipe: the final --sft-steps steps train on this set instead "
+            "of --shards. Requires --sft-steps > 0."
+        ),
+    )
+    parser.add_argument(
+        "--sft-steps",
+        type=int,
+        default=0,
+        help="Final N steps trained on --sft-shards instead of --shards. 0 disables the SFT stage.",
+    )
+    parser.add_argument(
+        "--sft-lr-scale",
+        type=float,
+        default=1.0,
+        help="LR multiplier applied during the --sft-steps stage (typically < 1 for a clean SFT).",
+    )
     parser.add_argument("--tokenizer", type=Path, default=Path("tokenizer/tokenizer.json"))
     parser.add_argument("--vae", default="stabilityai/sd-vae-ft-mse")
     parser.add_argument("--output", type=Path, required=True)
@@ -136,8 +158,24 @@ def prune_checkpoints(output: Path, keep_checkpoints: int) -> None:
         LOGGER.info("Pruned checkpoint: %s", stale)
 
 
+def stage_is_sft(step: int, *, total_steps: int, sft_steps: int) -> bool:
+    """True once training has entered the final ``sft_steps`` steps of the run."""
+
+    if sft_steps <= 0:
+        return False
+    return step >= total_steps - sft_steps
+
+
 def main() -> None:
     args = parse_args()
+    if args.sft_steps < 0:
+        raise ValueError("--sft-steps must be non-negative")
+    if args.sft_steps > 0 and not args.sft_shards:
+        raise ValueError("--sft-steps requires --sft-shards")
+    if args.sft_shards and args.sft_steps <= 0:
+        raise ValueError("--sft-shards requires --sft-steps > 0")
+    if args.sft_lr_scale <= 0.0:
+        raise ValueError("--sft-lr-scale must be positive")
     rank, local_rank, world_size, device = setup_distributed()
     logging.basicConfig(
         level=logging.INFO if rank == 0 else logging.WARNING,
@@ -167,6 +205,25 @@ def main() -> None:
         pin_memory=device.type == "cuda",
         persistent_workers=args.workers > 0,
     )
+    sft_loader = None
+    if args.sft_shards:
+        sft_shard_paths = sorted(Path(path) for path in glob.glob(args.sft_shards))
+        if not sft_shard_paths:
+            raise FileNotFoundError(f"no shards match {args.sft_shards!r}")
+        sft_dataset = AtlasImageTarDataset(
+            sft_shard_paths,
+            image_size=config.image_size,
+            rank=rank,
+            world_size=world_size,
+        )
+        sft_loader = DataLoader(
+            sft_dataset,
+            batch_size=args.batch_size,
+            num_workers=args.workers,
+            collate_fn=collate_atlas_images,
+            pin_memory=device.type == "cuda",
+            persistent_workers=args.workers > 0,
+        )
     tokenizer = Tokenizer.from_file(str(args.tokenizer))
     codec = FrozenAutoencoderKL(args.vae).to(device)
     model = TRHashTextToImage(config).to(device)
@@ -191,9 +248,13 @@ def main() -> None:
 
     def lr_factor(step: int) -> float:
         if step < args.warmup_steps:
-            return max(step, 1) / max(args.warmup_steps, 1)
-        progress = min((step - args.warmup_steps) / max(total_steps - args.warmup_steps, 1), 1.0)
-        return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
+            base = max(step, 1) / max(args.warmup_steps, 1)
+        else:
+            progress = min((step - args.warmup_steps) / max(total_steps - args.warmup_steps, 1), 1.0)
+            base = 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
+        if stage_is_sft(step, total_steps=total_steps, sft_steps=args.sft_steps):
+            base *= args.sft_lr_scale
+        return base
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_factor)
     step = 0
@@ -210,6 +271,13 @@ def main() -> None:
         args.output.mkdir(parents=True, exist_ok=True)
         LOGGER.info("Model: %.1fM parameters", raw_model.num_parameters() / 1e6)
         LOGGER.info("Dataset: %d shards; world=%d batch/GPU=%d", len(shards), world_size, args.batch_size)
+        if sft_loader is not None:
+            LOGGER.info(
+                "SFT stage: %d shards, final %d steps @ lr_scale=%g",
+                len(sft_shard_paths),
+                args.sft_steps,
+                args.sft_lr_scale,
+            )
         LOGGER.info("Training: AdamW lr=%g steps=%d epochs=%d", args.lr, total_steps, args.epochs)
         metrics_path = args.output / "metrics.jsonl"
     else:
@@ -234,85 +302,104 @@ def main() -> None:
     # DDP rank. Cycle each local loader until the shared optimizer-step target
     # is reached; bounding by local iterator passes can strand shorter ranks at
     # a barrier while longer ranks are still reducing gradients.
+    pretrain_iterator = iter(loader)
+    sft_iterator = iter(sft_loader) if sft_loader is not None else None
+    entered_sft_stage = False
     while step < total_steps:
-        for batch in loader:
-            pixels = batch["pixel_values"].to(device, non_blocking=True)
-            caption_ids, caption_mask = tokenize_captions(
-                tokenizer, batch["captions"], config.max_text_length, device
+        in_sft_stage = stage_is_sft(step, total_steps=total_steps, sft_steps=args.sft_steps)
+        if in_sft_stage and not entered_sft_stage:
+            entered_sft_stage = True
+            if rank == 0:
+                LOGGER.info("Entering clean SFT stage at step=%d (%d steps remaining)", step, args.sft_steps)
+        if in_sft_stage:
+            try:
+                batch = next(sft_iterator)
+            except StopIteration:
+                sft_iterator = iter(sft_loader)
+                batch = next(sft_iterator)
+        else:
+            try:
+                batch = next(pretrain_iterator)
+            except StopIteration:
+                pretrain_iterator = iter(loader)
+                batch = next(pretrain_iterator)
+        pixels = batch["pixel_values"].to(device, non_blocking=True)
+        caption_ids, caption_mask = tokenize_captions(
+            tokenizer, batch["captions"], config.max_text_length, device
+        )
+        with torch.no_grad(), torch.autocast(
+            device_type=device.type,
+            dtype=torch.bfloat16,
+            enabled=args.bf16 and device.type in {"cuda", "cpu"},
+        ):
+            latents = codec.encode(pixels)
+        with torch.autocast(
+            device_type=device.type,
+            dtype=torch.bfloat16,
+            enabled=args.bf16 and device.type in {"cuda", "cpu"},
+        ):
+            batch_size = latents.size(0)
+            noise = torch.randn_like(latents)
+            timesteps = torch.rand(batch_size, device=device, dtype=latents.dtype)
+            dropped = torch.rand(batch_size, device=device) < config.caption_dropout
+            training_mask = caption_mask.clone()
+            training_mask[dropped] = False
+            view_shape = (batch_size,) + (1,) * (latents.ndim - 1)
+            interpolation = timesteps.view(view_shape)
+            noisy = (1.0 - interpolation) * latents + interpolation * noise
+            prediction = model(noisy, timesteps, caption_ids, training_mask)
+            loss = F.mse_loss(prediction.float(), (noise - latents).float())
+            scaled_loss = loss / args.gradient_accumulation
+        scaled_loss.backward()
+        micro_step += 1
+        running_loss += float(loss.detach())
+        last_loss = float(loss.detach())
+        running_samples += pixels.size(0) * world_size
+        if micro_step % args.gradient_accumulation:
+            continue
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        scheduler.step()
+        optimizer.zero_grad(set_to_none=True)
+        step += 1
+        progress.update(1)
+        if rank == 0 and step % args.log_steps == 0:
+            elapsed = time.monotonic() - started
+            average_loss = running_loss / args.log_steps
+            throughput = running_samples / max(elapsed, 1e-6)
+            progress.set_postfix(
+                loss=f"{average_loss:.4f}",
+                lr=f"{scheduler.get_last_lr()[0]:.2e}",
+                img_s=f"{throughput:.1f}",
+                stage="sft" if in_sft_stage else "pretrain",
+                refresh=True,
             )
-            with torch.no_grad(), torch.autocast(
-                device_type=device.type,
-                dtype=torch.bfloat16,
-                enabled=args.bf16 and device.type in {"cuda", "cpu"},
-            ):
-                latents = codec.encode(pixels)
-            with torch.autocast(
-                device_type=device.type,
-                dtype=torch.bfloat16,
-                enabled=args.bf16 and device.type in {"cuda", "cpu"},
-            ):
-                batch_size = latents.size(0)
-                noise = torch.randn_like(latents)
-                timesteps = torch.rand(batch_size, device=device, dtype=latents.dtype)
-                dropped = torch.rand(batch_size, device=device) < config.caption_dropout
-                training_mask = caption_mask.clone()
-                training_mask[dropped] = False
-                view_shape = (batch_size,) + (1,) * (latents.ndim - 1)
-                interpolation = timesteps.view(view_shape)
-                noisy = (1.0 - interpolation) * latents + interpolation * noise
-                prediction = model(noisy, timesteps, caption_ids, training_mask)
-                loss = F.mse_loss(prediction.float(), (noise - latents).float())
-                scaled_loss = loss / args.gradient_accumulation
-            scaled_loss.backward()
-            micro_step += 1
-            running_loss += float(loss.detach())
-            last_loss = float(loss.detach())
-            running_samples += pixels.size(0) * world_size
-            if micro_step % args.gradient_accumulation:
-                continue
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            scheduler.step()
-            optimizer.zero_grad(set_to_none=True)
-            step += 1
-            progress.update(1)
-            if rank == 0 and step % args.log_steps == 0:
-                elapsed = time.monotonic() - started
-                average_loss = running_loss / args.log_steps
-                throughput = running_samples / max(elapsed, 1e-6)
-                progress.set_postfix(
-                    loss=f"{average_loss:.4f}",
-                    lr=f"{scheduler.get_last_lr()[0]:.2e}",
-                    img_s=f"{throughput:.1f}",
-                    refresh=True,
-                )
-                with metrics_path.open("a") as handle:
-                    handle.write(
-                        json.dumps(
-                            {
-                                "step": step,
-                                "total_steps": total_steps,
-                                "loss": average_loss,
-                                "lr": scheduler.get_last_lr()[0],
-                                "images_per_second": throughput,
-                                "elapsed_seconds": elapsed,
-                            }
-                        )
-                        + "\n"
+            with metrics_path.open("a") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "step": step,
+                            "total_steps": total_steps,
+                            "loss": average_loss,
+                            "lr": scheduler.get_last_lr()[0],
+                            "images_per_second": throughput,
+                            "elapsed_seconds": elapsed,
+                            "stage": "sft" if in_sft_stage else "pretrain",
+                        }
                     )
-                running_loss = 0.0
-            if rank == 0 and args.save_steps and step % args.save_steps == 0:
-                save_checkpoint(
-                    args.output,
-                    raw_model,
-                    optimizer,
-                    scheduler,
-                    config,
-                    step,
-                    args.keep_checkpoints,
+                    + "\n"
                 )
-            if step >= total_steps:
-                break
+            running_loss = 0.0
+        if rank == 0 and args.save_steps and step % args.save_steps == 0:
+            save_checkpoint(
+                args.output,
+                raw_model,
+                optimizer,
+                scheduler,
+                config,
+                step,
+                args.keep_checkpoints,
+            )
 
     if rank == 0:
         elapsed = time.monotonic() - started
