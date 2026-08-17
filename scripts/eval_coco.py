@@ -221,7 +221,7 @@ def main() -> None:
     )
     print(f"Inference branch: {branch}")
 
-    if args.nms_free and not hasattr(model, "one_to_one_head"):
+    if args.nms_free and model.one_to_one_head is None:
         print("Warning: model does not have a one-to-one head, falling back to O2M + NMS")
         args.nms_free = False
 
