@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Poll a local checkpoint directory, mirror completed checkpoints to a
-private HF Hub dataset repo, then prune local copies once they are backed up.
+private HF Hub model repo, then prune local copies once they are backed up.
 
 Watches every checkpoint tag the trainer can produce (token_pack_*, final_*,
 interrupted_*, best_*, step_*, ...), so a run that finishes cleanly or
@@ -74,7 +74,7 @@ def sync_once(checkpoint_dir: Path, repo_id: str, token: str, private: bool, kee
     )
 
     api = HfApi(token=token)
-    create_repo(repo_id, repo_type="dataset", private=private, token=token, exist_ok=True)
+    create_repo(repo_id, repo_type="model", private=private, token=token, exist_ok=True)
 
     for pack_dir in candidates:
         if pack_dir.name in uploaded:
@@ -83,7 +83,7 @@ def sync_once(checkpoint_dir: Path, repo_id: str, token: str, private: bool, kee
         api.upload_folder(
             folder_path=str(pack_dir),
             repo_id=repo_id,
-            repo_type="dataset",
+            repo_type="model",
             path_in_repo=pack_dir.name,
             token=token,
         )
