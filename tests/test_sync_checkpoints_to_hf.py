@@ -100,6 +100,44 @@ def test_sync_once_prunes_local_copies_beyond_keep_local(mod, tmp_path, monkeypa
     assert remaining == ["token_pack_003_300"]
 
 
+def test_sync_once_backs_up_final_and_interrupted_checkpoints_too(mod, tmp_path, monkeypatch) -> None:
+    """Regression guard: the sync used to glob only token_pack_*, so a run
+    that finished cleanly (final_N) or crashed (interrupted_N) never got its
+    last checkpoint backed up to HF."""
+    _make_checkpoint(tmp_path, "token_pack_001_100")
+    _make_checkpoint(tmp_path, "final_247946")
+    _make_checkpoint(tmp_path, "interrupted_212")
+
+    fake_api = MagicMock()
+    fake_module = type(
+        "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules, "huggingface_hub", fake_module
+    )
+
+    mod.sync_once(tmp_path, "org/repo", token="fake", private=True, keep_local=5)
+
+    uploaded_names = {call.kwargs["path_in_repo"] for call in fake_api.upload_folder.call_args_list}
+    assert uploaded_names == {"token_pack_001_100", "final_247946", "interrupted_212"}
+
+
+def test_sync_once_ignores_the_tensorboard_directory(mod, tmp_path, monkeypatch) -> None:
+    (tmp_path / "tensorboard").mkdir()
+
+    fake_api = MagicMock()
+    fake_module = type(
+        "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules, "huggingface_hub", fake_module
+    )
+
+    mod.sync_once(tmp_path, "org/repo", token="fake", private=True, keep_local=5)
+
+    assert fake_api.upload_folder.call_count == 0
+
+
 def test_sync_once_never_prunes_a_checkpoint_that_was_not_uploaded(mod, tmp_path, monkeypatch) -> None:
     _make_checkpoint(tmp_path, "token_pack_001_100")
 

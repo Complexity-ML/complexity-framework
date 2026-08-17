@@ -2,6 +2,11 @@
 """Poll a local checkpoint directory, mirror completed checkpoints to a
 private HF Hub dataset repo, then prune local copies once they are backed up.
 
+Watches every checkpoint tag the trainer can produce (token_pack_*, final_*,
+interrupted_*, best_*, step_*, ...), so a run that finishes cleanly or
+crashes still gets its last checkpoint backed up, not just token-pack
+boundaries.
+
 Only ever deletes a local checkpoint AFTER its upload is confirmed, and
 always keeps the N most recently uploaded checkpoints locally so a crash can
 resume without waiting on a Hub download.
@@ -51,8 +56,16 @@ def sync_once(checkpoint_dir: Path, repo_id: str, token: str, private: bool, kee
     state = load_state(state_path)
     uploaded = set(state["uploaded"])
 
+    # Watch every checkpoint tag the trainer can produce (token_pack_*,
+    # final_*, interrupted_*, best_*, step_*, ...), not just token-pack
+    # boundaries — a run that finishes cleanly or crashes must still get its
+    # last checkpoint backed up.
     candidates = sorted(
-        (p for p in checkpoint_dir.glob("token_pack_*") if p.is_dir() and is_complete_checkpoint(p)),
+        (
+            p
+            for p in checkpoint_dir.iterdir()
+            if p.is_dir() and p.name != "tensorboard" and is_complete_checkpoint(p)
+        ),
         key=checkpoint_step,
     )
 
