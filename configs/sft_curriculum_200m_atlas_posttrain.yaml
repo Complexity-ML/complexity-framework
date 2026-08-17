@@ -1,0 +1,82 @@
+version: 1
+seed: 42
+
+# Curriculum for LoRA post-training TR-Hash 200M on
+# AETHORIA-AI/complexity-atlas-posttrain (Card Corpus V2, 224,654 train
+# examples across 15 task families).
+#
+# Raw family sizes are extremely skewed (reasoning_verification=108,000/47%,
+# casual_conversation=52,794/23%, explanation_learning=36,040/16% -- together
+# 87.6% of the corpus -- against tiny families like critique_revision=64,
+# brainstorming_creativity/planning_comparison/practical_action/
+# troubleshooting=384 each). loss_task_targets below re-target every stage's
+# per-task loss share to sqrt(raw_count), normalized to sum to 1 -- enough to
+# meaningfully boost the tiny families' gradient contribution without forcing
+# a uniform target that would multiply critique_revision's 64 examples by
+# ~230x (uniform) instead of ~22x (sqrt). max_task_loss_weight is a hard
+# safety cap regardless.
+#
+# Reweighting cannot manufacture missing diversity: the tiny families still
+# only have 64-384 authored examples each, so treat their post-LoRA behavior
+# as provisional until the source corpus grows those families.
+#
+# Filters progressively unlock longer/harder examples per stage. The dataset
+# skews heavily toward short responses (76% are 1-25 words, only 5.16% are
+# 201-512 words) -- the final stage removes the supervised-token cap
+# specifically so the "extended" long-response examples get seen at all.
+
+loss_task_targets: &balanced_targets
+  brainstorming_creativity: 0.01523813
+  casual_conversation: 0.178672763
+  context_clarification: 0.074651287
+  conversation_empathy: 0.035190954
+  critique_revision: 0.006220941
+  explanation_learning: 0.147624507
+  extraction_classification: 0.045714391
+  grounded_qa: 0.052786432
+  planning_comparison: 0.01523813
+  practical_action: 0.01523813
+  reasoning_verification: 0.255551213
+  safety_uncertainty: 0.043099941
+  summarization_synthesis: 0.049767525
+  troubleshooting: 0.01523813
+  writing_transformation: 0.049767526
+
+stages:
+  - name: balanced-warmup
+    max_examples: 40000
+    epochs: 2
+    lr: 1.0e-6
+    batch_size: 32
+    seq_len: 192
+    balance_by: task
+    loss_task_targets: *balanced_targets
+    max_task_loss_weight: 25.0
+    filters:
+      difficulties: [easy]
+      max_supervised_tokens: 64
+
+  - name: balanced-mixed
+    max_examples: 120000
+    epochs: 2
+    lr: 5.0e-7
+    batch_size: 32
+    seq_len: 320
+    balance_by: task
+    loss_task_targets: *balanced_targets
+    max_task_loss_weight: 25.0
+    filters:
+      difficulties: [easy, medium]
+      max_supervised_tokens: 200
+
+  - name: full-extended
+    max_examples: all
+    epochs: 1
+    lr: 2.0e-7
+    batch_size: 24
+    seq_len: 512
+    balance_by: task
+    loss_task_targets: *balanced_targets
+    max_task_loss_weight: 25.0
+    filters:
+      difficulties: [easy, medium, hard]

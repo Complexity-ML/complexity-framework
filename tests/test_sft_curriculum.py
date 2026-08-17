@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from complexity.training.sft_curriculum import (
     CurriculumFilters,
     CurriculumStage,
@@ -353,6 +355,84 @@ def test_curriculum_rejects_configured_boilerplate() -> None:
 
     assert len(selected) == 6
     assert all("stays useful" not in row["response"] for row in selected)
+
+
+def test_tr_hash_200m_atlas_posttrain_curriculum_is_valid_and_balances_every_family() -> None:
+    """Regression guard: configs/sft_curriculum_200m_atlas_posttrain.yaml drives
+    the LoRA post-training of TR-Hash 200M on the extremely skewed
+    complexity-atlas-posttrain corpus (reasoning_verification is 47% of raw
+    examples, five families are 64-384 examples each). Every stage must keep
+    all 15 families' loss_task_targets summing to exactly 1.0 and every
+    per-task weight implied by those targets must stay within the configured
+    safety cap -- otherwise the tiniest families could silently blow up to an
+    overfitting-prone weight multiplier."""
+    path = Path("configs/sft_curriculum_200m_atlas_posttrain.yaml")
+    curriculum = load_curriculum(path)
+
+    expected_families = {
+        "brainstorming_creativity",
+        "casual_conversation",
+        "context_clarification",
+        "conversation_empathy",
+        "critique_revision",
+        "explanation_learning",
+        "extraction_classification",
+        "grounded_qa",
+        "planning_comparison",
+        "practical_action",
+        "reasoning_verification",
+        "safety_uncertainty",
+        "summarization_synthesis",
+        "troubleshooting",
+        "writing_transformation",
+    }
+    raw_counts = {
+        "brainstorming_creativity": 384,
+        "casual_conversation": 52794,
+        "context_clarification": 9216,
+        "conversation_empathy": 2048,
+        "critique_revision": 64,
+        "explanation_learning": 36040,
+        "extraction_classification": 3456,
+        "grounded_qa": 4608,
+        "planning_comparison": 384,
+        "practical_action": 384,
+        "reasoning_verification": 108000,
+        "safety_uncertainty": 3072,
+        "summarization_synthesis": 4096,
+        "troubleshooting": 384,
+        "writing_transformation": 4096,
+    }
+    total = sum(raw_counts.values())
+
+    stage_names = ("balanced-warmup", "balanced-mixed", "full-extended")
+    assert [stage.name for stage in curriculum.stages] == list(stage_names)
+
+    for name in stage_names:
+        stage = curriculum.stage(name)
+        targets = dict(stage.loss_task_targets)
+        assert set(targets) == expected_families
+        assert sum(targets.values()) == pytest.approx(1.0, abs=1e-9)
+        assert stage.balance_by == "task"
+        assert stage.max_task_loss_weight is not None
+        for task, target_share in targets.items():
+            raw_share = raw_counts[task] / total
+            weight = target_share / raw_share
+            assert weight <= stage.max_task_loss_weight, (name, task, weight)
+        # The tiniest families (critique_revision especially) must still be
+        # boosted well above their raw share, or the reweighting is a no-op.
+        assert targets["critique_revision"] > 5 * (raw_counts["critique_revision"] / total)
+        # ...but not pushed all the way to a uniform target -- that would
+        # imply an unbounded weight multiplier on only 64 raw examples.
+        assert targets["critique_revision"] < 1 / len(expected_families)
+
+    # The final stage must drop the supervised-token cap so the corpus's
+    # under-represented long ("extended", 201-512 token) responses are
+    # actually visible at least once, instead of being filtered out for the
+    # entire curriculum the way the two earlier, shorter-context stages do.
+    assert curriculum.stage("balanced-warmup").filters.max_supervised_tokens == 64
+    assert curriculum.stage("balanced-mixed").filters.max_supervised_tokens == 200
+    assert curriculum.stage("full-extended").filters.max_supervised_tokens is None
 
 
 def test_curriculum_yaml_loads_all_stages(tmp_path: Path) -> None:
