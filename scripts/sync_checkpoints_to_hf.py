@@ -29,6 +29,10 @@ STATE_FILENAME = ".synced_checkpoints.json"
 
 
 def is_complete_checkpoint(path: Path) -> bool:
+    # runner.py's plain "final" export (no step suffix) is a lightweight
+    # HF-compatible snapshot: model.safetensors only, no checkpoint.pt.
+    if path.name == "final":
+        return (path / "model.safetensors").exists()
     return (path / "checkpoint.pt").exists() or any(path.glob("*.metadata"))
 
 
@@ -88,8 +92,12 @@ def sync_once(checkpoint_dir: Path, repo_id: str, token: str, private: bool, kee
         save_state(state_path, state)
         logger.info(f"Uploaded {pack_dir.name}")
 
+    # "final" has no step suffix (checkpoint_step returns -1 for it), which
+    # would make pruning treat it as the OLDEST checkpoint and delete it
+    # first — it must never be pruned locally, cleanup_tr_hash_200m_checkpoints.py
+    # is the only thing allowed to manage its lifecycle.
     uploaded_local = sorted(
-        (p for p in candidates if p.name in uploaded),
+        (p for p in candidates if p.name in uploaded and p.name != "final"),
         key=checkpoint_step,
     )
     to_prune = uploaded_local[:-keep_local] if keep_local > 0 else uploaded_local

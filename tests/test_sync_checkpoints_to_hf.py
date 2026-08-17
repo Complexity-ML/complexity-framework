@@ -138,6 +138,57 @@ def test_sync_once_ignores_the_tensorboard_directory(mod, tmp_path, monkeypatch)
     assert fake_api.upload_folder.call_count == 0
 
 
+def test_sync_once_backs_up_the_plain_final_export_too(mod, tmp_path, monkeypatch) -> None:
+    """Regression guard: runner.py's plain "final" HF export (model.safetensors,
+    no checkpoint.pt) used to be invisible to is_complete_checkpoint, so it
+    never got backed up to HF even though it's the run's authoritative
+    completed-training artifact."""
+    final_dir = tmp_path / "final"
+    final_dir.mkdir()
+    (final_dir / "model.safetensors").write_bytes(b"weights")
+
+    fake_api = MagicMock()
+    fake_module = type(
+        "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules, "huggingface_hub", fake_module
+    )
+
+    mod.sync_once(tmp_path, "org/repo", token="fake", private=True, keep_local=5)
+
+    uploaded_names = {call.kwargs["path_in_repo"] for call in fake_api.upload_folder.call_args_list}
+    assert uploaded_names == {"final"}
+
+
+def test_sync_once_never_prunes_the_final_export_even_when_oldest_by_sort(mod, tmp_path, monkeypatch) -> None:
+    """Regression guard: checkpoint_step("final") returns -1 (no numeric
+    suffix), which would sort it as the OLDEST checkpoint and make
+    keep_local pruning delete it first — the one directory that must never
+    be deleted here (cleanup_tr_hash_200m_checkpoints.py owns its lifecycle,
+    and refuses to run at all if it's missing)."""
+    final_dir = tmp_path / "final"
+    final_dir.mkdir()
+    (final_dir / "model.safetensors").write_bytes(b"weights")
+    _make_checkpoint(tmp_path, "token_pack_001_100")
+    _make_checkpoint(tmp_path, "token_pack_002_200")
+
+    fake_api = MagicMock()
+    fake_module = type(
+        "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules, "huggingface_hub", fake_module
+    )
+
+    mod.sync_once(tmp_path, "org/repo", token="fake", private=True, keep_local=1)
+
+    assert final_dir.is_dir()
+    assert (final_dir / "model.safetensors").read_bytes() == b"weights"
+    remaining_packs = sorted(p.name for p in tmp_path.glob("token_pack_*"))
+    assert remaining_packs == ["token_pack_002_200"]
+
+
 def test_sync_once_never_prunes_a_checkpoint_that_was_not_uploaded(mod, tmp_path, monkeypatch) -> None:
     _make_checkpoint(tmp_path, "token_pack_001_100")
 
