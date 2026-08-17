@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
 import math
 import os
@@ -455,6 +456,7 @@ class TrainRunner:
 
             os.makedirs(args.checkpoint_dir, exist_ok=True)
             csv_path = os.path.join(args.checkpoint_dir, "training_log.csv")
+            metrics_path = os.path.join(args.checkpoint_dir, "metrics.jsonl")
             file_mode = "a" if args.resume and os.path.exists(csv_path) else "w"
             csv_file = open(csv_path, file_mode, newline="")
             csv_writer = csv.writer(csv_file)
@@ -466,6 +468,8 @@ class TrainRunner:
                     "expert_dead_count", "elapsed_s",
                 ])
             csv_file.flush()
+            if file_mode == "w":
+                open(metrics_path, "w", encoding="utf-8").close()
 
         t_start = time.time()
 
@@ -483,8 +487,22 @@ class TrainRunner:
                 "nan" if dead is None else dead,
                 f"{time.time() - t_start:.1f}",
             ])
-            if step % 100 == 0:
+            if step == 1 or step % args.log_steps == 0 or step == max_steps:
                 csv_file.flush()
+                record = {
+                    "step": step,
+                    "max_steps": max_steps,
+                    "loss": round(float(loss_val), 6),
+                    "ppl": round(float(ppl), 2),
+                    "lr": float(lr),
+                    "tokens_trained": step * tokens_per_step,
+                    "tokens_per_step": tokens_per_step,
+                    "expert_shares": [round(float(share), 4) for share in shares],
+                    "expert_dead_count": dead,
+                    "elapsed_s": round(time.time() - t_start, 1),
+                }
+                with open(metrics_path, "a", encoding="utf-8") as metrics_file:
+                    metrics_file.write(json.dumps(record, sort_keys=True) + "\n")
         trainer.callbacks.append(csv_callback)
 
         for cb in self.extra_callbacks(trainer, args, is_main):

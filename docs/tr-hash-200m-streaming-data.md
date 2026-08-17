@@ -102,3 +102,14 @@ verified:
 supervisorctl start tr_hash_200m_70b_replay
 tail -f artifacts/tr_hash_200m_70b_replay.log
 ```
+
+For a clean machine-readable live view, follow the same append-only artifact
+pattern as the Vision trainer:
+
+```bash
+tail -f artifacts/tr_hash_200m_70b_replay/metrics.jsonl
+```
+
+The launcher removes numbered resumable DDP checkpoints only after a successful
+run has produced a non-empty `final/model.safetensors` export. Set
+`CLEANUP_CHECKPOINTS_AFTER_SUCCESS=0` to retain them for debugging.

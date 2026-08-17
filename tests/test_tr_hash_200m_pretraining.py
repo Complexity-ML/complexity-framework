@@ -286,7 +286,8 @@ def test_70b_replay_supervisor_survives_a_crash_or_reboot_unattended() -> None:
     # actually surfaces live progress.
     assert "pty " not in launcher
     assert "| tee" not in launcher
-    assert "exec torchrun" in launcher
+    assert "torchrun --standalone" in launcher
+    assert "exec torchrun" not in launcher
     assert "/dev/stdout" not in supervisor
 
     # Regression guard: the env (including HF_TOKEN) used to be inlined
@@ -308,6 +309,50 @@ def test_70b_replay_supervisor_survives_a_crash_or_reboot_unattended() -> None:
     assert "autorestart=unexpected" in supervisor
     assert "autostart=true" in supervisor
     assert '--resume "${RESUME:-auto}"' in launcher
+
+
+def test_successful_run_cleans_numbered_checkpoints_but_keeps_final_export(
+    tmp_path: Path,
+) -> None:
+    from scripts.cleanup_tr_hash_200m_checkpoints import cleanup
+
+    output = tmp_path / "run"
+    final = output / "final"
+    final.mkdir(parents=True)
+    (final / "model.safetensors").write_bytes(b"weights")
+    (output / "tensorboard").mkdir()
+    for name in ("token_pack_001", "step_100", "interrupted_90", "final_90"):
+        checkpoint = output / name
+        checkpoint.mkdir()
+        (checkpoint / "checkpoint.pt").write_bytes(b"checkpoint")
+
+    removed, reclaimed = cleanup(output)
+
+    assert removed == ["final_90", "interrupted_90", "step_100", "token_pack_001"]
+    assert reclaimed == 4 * len(b"checkpoint")
+    assert (final / "model.safetensors").read_bytes() == b"weights"
+    assert (output / "tensorboard").is_dir()
+
+
+def test_checkpoint_cleanup_refuses_to_run_without_final_export(tmp_path: Path) -> None:
+    from scripts.cleanup_tr_hash_200m_checkpoints import cleanup
+
+    checkpoint = tmp_path / "run" / "token_pack_001"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "checkpoint.pt").write_bytes(b"checkpoint")
+
+    with pytest.raises(RuntimeError, match="final export is missing"):
+        cleanup(tmp_path / "run")
+
+    assert checkpoint.is_dir()
+
+
+def test_text_pretraining_writes_a_live_metrics_jsonl_artifact() -> None:
+    runner = Path("complexity/training/runner.py").read_text(encoding="utf-8")
+
+    assert 'metrics_path = os.path.join(args.checkpoint_dir, "metrics.jsonl")' in runner
+    assert 'with open(metrics_path, "a", encoding="utf-8")' in runner
+    assert "step % args.log_steps == 0" in runner
 
 
 def test_tqdm_callback_does_not_pin_stdout() -> None:
