@@ -19,6 +19,8 @@ import json
 import logging
 import os
 import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -106,6 +108,25 @@ def sync_once(checkpoint_dir: Path, repo_id: str, token: str, private: bool, kee
         shutil.rmtree(pack_dir, ignore_errors=True)
 
 
+def run_pass_with_timeout(pass_args: list[str], pass_timeout: float) -> bool:
+    """Run one sync pass as a subprocess, killing it if it exceeds pass_timeout.
+
+    A network drop mid-upload can stall the underlying socket read with no
+    exception ever raised in-process, so a bare try/except can't catch it --
+    only killing the process (which tears down its sockets) reliably unwedges
+    it. Returns True on a clean pass, False if it timed out or failed.
+    """
+    try:
+        subprocess.run(pass_args, timeout=pass_timeout, check=True)
+        return True
+    except subprocess.TimeoutExpired:
+        logger.error(f"sync pass exceeded {pass_timeout:.0f}s (stalled connection?), killed it, retrying")
+        return False
+    except subprocess.CalledProcessError:
+        logger.exception("sync pass failed, will retry")
+        return False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint-dir", required=True)
@@ -115,6 +136,15 @@ def main() -> None:
     parser.add_argument("--poll-interval", type=float, default=60.0)
     parser.add_argument("--private", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--once", action="store_true", help="run a single pass instead of polling forever")
+    parser.add_argument(
+        "--pass-timeout",
+        type=float,
+        default=1800.0,
+        help="hard wall-clock limit (seconds) for one sync pass. A network drop "
+        "mid-upload can stall the underlying socket read with no exception ever "
+        "raised, so a bare try/except never fires -- each pass runs in a "
+        "subprocess that gets killed and retried if it exceeds this budget.",
+    )
     args = parser.parse_args()
 
     token = os.environ.get(args.hf_token_env)
@@ -124,13 +154,22 @@ def main() -> None:
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.once:
+        sync_once(checkpoint_dir, args.repo_id, token, args.private, args.keep_local)
+        return
+
+    pass_args = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--checkpoint-dir", str(checkpoint_dir),
+        "--repo-id", args.repo_id,
+        "--hf-token-env", args.hf_token_env,
+        "--keep-local", str(args.keep_local),
+        "--private" if args.private else "--no-private",
+        "--once",
+    ]
     while True:
-        try:
-            sync_once(checkpoint_dir, args.repo_id, token, args.private, args.keep_local)
-        except Exception:
-            logger.exception("sync pass failed, will retry")
-        if args.once:
-            return
+        run_pass_with_timeout(pass_args, args.pass_timeout)
         time.sleep(args.poll_interval)
 
 

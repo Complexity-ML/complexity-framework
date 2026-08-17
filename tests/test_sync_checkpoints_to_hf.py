@@ -208,3 +208,40 @@ def test_sync_once_never_prunes_a_checkpoint_that_was_not_uploaded(mod, tmp_path
         mod.sync_once(tmp_path, "org/repo", token="fake", private=True, keep_local=0)
 
     assert (tmp_path / "token_pack_001_100").exists()
+
+
+def test_run_pass_with_timeout_kills_a_stalled_pass_and_returns_false(mod, tmp_path) -> None:
+    # Simulates a network drop mid-upload: the real huggingface_hub call blocks
+    # forever on a socket read with no exception ever raised, so this has to be
+    # a real subprocess that actually hangs, not a mock -- the fix under test
+    # is specifically that subprocess.run(timeout=...) kills it.
+    stuck_script = tmp_path / "stuck.py"
+    stuck_script.write_text("import time\ntime.sleep(60)\n")
+
+    import sys
+
+    ok = mod.run_pass_with_timeout([sys.executable, str(stuck_script)], pass_timeout=0.5)
+
+    assert ok is False
+
+
+def test_run_pass_with_timeout_returns_true_for_a_clean_pass(mod, tmp_path) -> None:
+    fast_script = tmp_path / "fast.py"
+    fast_script.write_text("print('done')\n")
+
+    import sys
+
+    ok = mod.run_pass_with_timeout([sys.executable, str(fast_script)], pass_timeout=10.0)
+
+    assert ok is True
+
+
+def test_run_pass_with_timeout_returns_false_for_a_nonzero_exit(mod, tmp_path) -> None:
+    failing_script = tmp_path / "failing.py"
+    failing_script.write_text("import sys\nsys.exit(1)\n")
+
+    import sys
+
+    ok = mod.run_pass_with_timeout([sys.executable, str(failing_script)], pass_timeout=10.0)
+
+    assert ok is False
