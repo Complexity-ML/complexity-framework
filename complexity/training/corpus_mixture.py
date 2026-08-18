@@ -576,6 +576,7 @@ class PretokenizedCorpusMixtureDataset(IterableDataset):
         hub_downloader: Callable[..., str] | None = None,
         hub_file_lister: Callable[..., Sequence[str]] | None = None,
         replay_plan: str | Path | Mapping[str, Any] | None = None,
+        resume_skip_rows: int = 0,
     ):
         root_string = str(root)
         self._hub_cache: _HubShardCache | None = None
@@ -620,6 +621,9 @@ class PretokenizedCorpusMixtureDataset(IterableDataset):
         self.world_size = int(world_size)
         if self.rank < 0 or self.world_size < 1 or self.rank >= self.world_size:
             raise ValueError("invalid distributed rank/world_size")
+        if resume_skip_rows < 0:
+            raise ValueError("resume_skip_rows must be non-negative")
+        self._resume_skip_rows = int(resume_skip_rows)
         sources = []
         for entry in self.manifest["sources"]:
             relative_manifest = str(entry["manifest"])
@@ -854,6 +858,10 @@ class PretokenizedCorpusMixtureDataset(IterableDataset):
         for shard_position, selection in enumerate(selections):
             shard = self._shards_by_source[source.name][str(selection["file"])]
             rows = int(selection["rows"])
+            logger.info(
+                f"[rank {shard_index}] opening shard source={source.name!r} "
+                f"shard_position={shard_position} file={selection['file']!r}"
+            )
             full_rows = int(shard["rows"])
             full_tokens = full_rows * self.seq_len + 1
             expected_bytes = int(
@@ -975,13 +983,18 @@ class PretokenizedCorpusMixtureDataset(IterableDataset):
         shard_count = self.world_size * worker_count
         shard_index = self.rank * worker_count + worker_id
         if self._replay_phases is not None:
+            remaining_skip = self._resume_skip_rows
             for phase in self._replay_phases:
                 for _ in range(int(phase["passes"])):
-                    yield from self._replay_phase_rows(
+                    for sample in self._replay_phase_rows(
                         phase,
                         shard_index=shard_index,
                         shard_count=shard_count,
-                    )
+                    ):
+                        if remaining_skip > 0:
+                            remaining_skip -= 1
+                            continue
+                        yield sample
             return
         incompatible = {
             name: rows

@@ -15,6 +15,7 @@ checkpoint boundaries only; they do not compress or repeat the token budget.
 
 from __future__ import annotations
 
+import json
 import os
 
 from complexity.config import ModelConfig
@@ -24,6 +25,7 @@ from complexity.training import (
     WeightedStreamingTextDataset,
 )
 from complexity.training.runner import TrainRunner
+from complexity.utils.checkpointing import peek_latest_checkpoint_step
 
 TARGET_TOKENS = 200_000_000_000
 TOKEN_PACKS = 40
@@ -35,6 +37,34 @@ CORPUS_TOKEN_BUDGETS = {
     "infiwebmath": 10_000_000_000,
     "cosmopedia_v2": 10_000_000_000,
 }
+
+
+def resume_skip_rows_for(args) -> int:
+    """Rows this rank's PretokenizedCorpusMixtureDataset stream must skip on
+    resume so the replay plan doesn't re-serve rows already trained on.
+
+    Without this, every process restart re-instantiates the dataset and its
+    deterministic __iter__() starts over at phase 1 / shard 0 -- observed
+    live tonight on the 200M run: a supervisorctl restart at step 35603 sent
+    DCLM's shard cursor back to shard 0, re-serving ~28B tokens' worth of
+    already-trained-on rows (DCLM is meant to get exactly one pass, no
+    replay) before it caught back up to new material.
+
+    global_step * batch_size * gradient_accumulation is the number of rows
+    THIS rank has pulled from its shard of the stream so far -- not
+    multiplied by world_size, since each rank's iterator is already
+    restricted to its own 1/world_size slice.
+    """
+    if not args.resume:
+        return 0
+    if args.resume == "auto":
+        step = peek_latest_checkpoint_step(args.checkpoint_dir)
+    else:
+        state_path = os.path.join(args.resume, "training_state.json")
+        step = json.load(open(state_path))["step"] if os.path.exists(state_path) else None
+    if step is None:
+        return 0
+    return step * args.batch_size * args.gradient_accumulation
 
 
 def make_config() -> ModelConfig:
@@ -183,6 +213,7 @@ class TRHash200MPretrainRunner(TrainRunner):
                 token=os.environ.get(args.tokenized_hf_token_env),
                 prefetch_shards=args.tokenized_prefetch_shards,
                 replay_plan=args.tokenized_plan,
+                resume_skip_rows=resume_skip_rows_for(args),
             )
             if dataset.seq_len != args.seq_len:
                 raise ValueError(

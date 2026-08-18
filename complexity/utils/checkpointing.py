@@ -141,6 +141,45 @@ class TrainingState:
         return cls(**data)
 
 
+def peek_latest_checkpoint_step(checkpoint_dir: Union[str, Path]) -> Optional[int]:
+    """Read the ``step`` of the most recent complete checkpoint without
+    loading any model/optimizer state -- just enough to compute a resume-time
+    data-loading skip (see PretokenizedCorpusMixtureDataset's
+    resume_skip_rows) before the dataset/dataloader even exist.
+
+    Mirrors CheckpointManager._find_latest_checkpoint's tag/completeness
+    rules but needs no model, since it never touches checkpoint.pt itself --
+    only training_state.json, which is written after the payload lands.
+    """
+    checkpoint_dir = Path(checkpoint_dir)
+    if not checkpoint_dir.is_dir():
+        return None
+
+    def get_step(p: Path) -> Optional[int]:
+        try:
+            return int(p.name.rsplit("_", 1)[-1])
+        except ValueError:
+            return None
+
+    def is_complete(p: Path) -> bool:
+        return (p / "checkpoint.pt").exists() or (p / ".metadata").exists()
+
+    checkpoints = [
+        path
+        for path in checkpoint_dir.iterdir()
+        if path.is_dir() and get_step(path) is not None and is_complete(path)
+    ]
+    if not checkpoints:
+        return None
+    checkpoints.sort(key=get_step, reverse=True)
+    latest = checkpoints[0]
+
+    state_path = latest / "training_state.json"
+    if not state_path.exists():
+        return get_step(latest)
+    return int(json.loads(state_path.read_text())["step"])
+
+
 class CheckpointManager:
     """
     Manages model checkpoints for distributed training.

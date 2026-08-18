@@ -360,6 +360,72 @@ def test_replay_plan_reuses_selected_rows_without_copying_shards(tmp_path) -> No
     ]
 
 
+def test_resume_skip_rows_skips_already_trained_rows_without_disturbing_the_plan(tmp_path) -> None:
+    """Regression guard: a process restart re-instantiates the dataset, and
+    __iter__() always starts at phase 1 / shard 0 with no persisted position
+    -- observed live on the 200M run, where a supervisorctl restart re-served
+    ~28B already-trained-on tokens. resume_skip_rows lets a resumed run
+    discard exactly the rows it already consumed before the restart, landing
+    on the same continuation point a never-interrupted run would have
+    reached -- same plan, same total passes, nothing re-served twice."""
+    remote, _files, _downloads, _download, _list_files = _remote_token_fixture(tmp_path)
+    plan = {
+        "format": "tr-hash-token-replay-plan-v1",
+        "seq_len": 4,
+        "unique_tokens": 8,
+        "trained_tokens": 16,
+        "phases": [
+            {
+                "name": "selected",
+                "passes": 2,
+                "sources": {
+                    "tiny": [{"file": "tokens-00001.bin", "rows": 2}]
+                },
+            }
+        ],
+    }
+    # Without resume_skip_rows, this plan yields 4 samples: pass 1 (rows 0,1)
+    # then pass 2 (rows 0,1 again). Skipping 2 rows should land exactly at
+    # the start of pass 2 -- i.e. skip all of pass 1, yield only pass 2.
+    dataset = PretokenizedCorpusMixtureDataset(remote, replay_plan=plan, resume_skip_rows=2)
+
+    samples = list(dataset)
+
+    assert dataset.unique_tokens == 8  # plan metadata is untouched by the skip
+    assert dataset.trained_tokens == 16
+    assert len(samples) == 2
+    assert [sample["input_ids"].tolist() for sample in samples] == [
+        [8, 9, 10, 11],
+        [12, 13, 14, 15],
+    ]
+
+
+def test_resume_skip_rows_defaults_to_zero_and_changes_nothing(tmp_path) -> None:
+    remote, _files, _downloads, _download, _list_files = _remote_token_fixture(tmp_path)
+    plan = {
+        "format": "tr-hash-token-replay-plan-v1",
+        "seq_len": 4,
+        "unique_tokens": 8,
+        "trained_tokens": 16,
+        "phases": [
+            {"name": "selected", "passes": 2, "sources": {"tiny": [{"file": "tokens-00001.bin", "rows": 2}]}}
+        ],
+    }
+    dataset = PretokenizedCorpusMixtureDataset(remote, replay_plan=plan)
+    dataset_explicit_zero = PretokenizedCorpusMixtureDataset(remote, replay_plan=plan, resume_skip_rows=0)
+
+    def as_lists(ds):
+        return [sample["input_ids"].tolist() for sample in ds]
+
+    assert as_lists(dataset) == as_lists(dataset_explicit_zero)
+
+
+def test_resume_skip_rows_rejects_negative_values(tmp_path) -> None:
+    remote, _files, _downloads, _download, _list_files = _remote_token_fixture(tmp_path)
+    with pytest.raises(ValueError, match="non-negative"):
+        PretokenizedCorpusMixtureDataset(remote, resume_skip_rows=-1)
+
+
 def test_quality_plan_selects_highest_scored_shards_and_records_exposure(tmp_path) -> None:
     remote, _files, _downloads, _download, _list_files = _remote_token_fixture(tmp_path)
     dataset = PretokenizedCorpusMixtureDataset(remote)
