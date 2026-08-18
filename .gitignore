@@ -164,7 +164,7 @@ Thumbs.db
 *.ckpt
 checkpoints/
 weights/
-models/
+/models/
 *.gguf
 *.ggml
 

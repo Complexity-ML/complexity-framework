@@ -77,6 +77,90 @@ class TestGroupedQueryAttention:
         assert attn.num_kv_heads == 2
 
 
+class TestBidirectionalAttention:
+    """is_causal=False regression coverage -- see complexity/models/embedding.py.
+
+    The default (is_causal=True, or the field omitted entirely) must remain
+    bit-for-bit identical to pre-existing behavior, since this is the same
+    GroupedQueryAttention class used by the live causal pretrain.
+    """
+
+    def test_omitting_is_causal_matches_explicit_true(self):
+        from complexity.core.attention import GroupedQueryAttention, AttentionConfig
+
+        torch.manual_seed(0)
+        config_default = AttentionConfig(hidden_size=256, num_attention_heads=8, num_key_value_heads=2)
+        attn_default = GroupedQueryAttention(config_default)
+
+        torch.manual_seed(0)
+        config_explicit = AttentionConfig(
+            hidden_size=256, num_attention_heads=8, num_key_value_heads=2, is_causal=True,
+        )
+        attn_explicit = GroupedQueryAttention(config_explicit)
+
+        x = torch.randn(2, 16, 256)
+        out_default, _ = attn_default(x)
+        out_explicit, _ = attn_explicit(x)
+        assert torch.equal(out_default, out_explicit)
+
+    def test_is_causal_false_lets_earlier_tokens_see_later_ones(self):
+        """The defining behavioral difference: in causal attention, changing
+        a later token cannot change an earlier token's output (no leakage
+        from the future). In bidirectional attention, it can."""
+        from complexity.core.attention import GroupedQueryAttention, AttentionConfig
+
+        torch.manual_seed(0)
+        causal_config = AttentionConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=4, is_causal=True)
+        causal_attn = GroupedQueryAttention(causal_config)
+
+        torch.manual_seed(0)
+        bidir_config = AttentionConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=4, is_causal=False)
+        bidir_attn = GroupedQueryAttention(bidir_config)
+
+        torch.manual_seed(1)
+        x = torch.randn(1, 8, 64)
+        x_perturbed = x.clone()
+        x_perturbed[:, -1, :] += 10.0  # perturb only the LAST token
+
+        causal_out, _ = causal_attn(x)
+        causal_out_perturbed, _ = causal_attn(x_perturbed)
+        # Earlier tokens (all but the last) must be unaffected by a
+        # perturbation to a strictly-later token under causal masking.
+        assert torch.allclose(causal_out[:, :-1, :], causal_out_perturbed[:, :-1, :], atol=1e-5)
+
+        bidir_out, _ = bidir_attn(x)
+        bidir_out_perturbed, _ = bidir_attn(x_perturbed)
+        # Bidirectional attention has no such guarantee -- earlier tokens
+        # should generally change too.
+        assert not torch.allclose(bidir_out[:, :-1, :], bidir_out_perturbed[:, :-1, :], atol=1e-5)
+
+    def test_is_causal_false_honors_a_padding_mask(self):
+        """A non-causal forward pass must still respect an explicit additive
+        padding mask instead of silently discarding it (the bug this
+        opt-in flag exists to avoid reintroducing)."""
+        from complexity.core.attention import GroupedQueryAttention, AttentionConfig
+
+        torch.manual_seed(0)
+        config = AttentionConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=4, is_causal=False)
+        attn = GroupedQueryAttention(config)
+
+        x = torch.randn(1, 6, 64)
+        # Mask out the last 2 positions as padding.
+        mask = torch.zeros(1, 1, 6, 6)
+        mask[:, :, :, -2:] = float("-inf")
+
+        out, _ = attn(x, attention_mask=mask)
+        assert torch.isfinite(out).all()
+
+        # Changing the padded tokens' content must not change the real
+        # tokens' output, since they're masked out of every real query's
+        # attention.
+        x_changed_padding = x.clone()
+        x_changed_padding[:, -2:, :] = torch.randn(1, 2, 64)
+        out_changed_padding, _ = attn(x_changed_padding, attention_mask=mask)
+        assert torch.allclose(out[:, :-2, :], out_changed_padding[:, :-2, :], atol=1e-5)
+
+
 class TestRMSNorm:
     """Test RMSNorm component."""
 

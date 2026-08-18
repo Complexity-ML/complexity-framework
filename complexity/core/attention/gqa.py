@@ -74,6 +74,7 @@ class GroupedQueryAttention(AttentionBase):
         self.attention_dropout = config.attention_dropout
         self.sliding_window = config.sliding_window
         self.use_sdpa = config.use_sdpa and HAS_SDPA
+        self.is_causal = getattr(config, "is_causal", True)
 
         # Attention logit scale. Default = 1/√d_head (standard).
         # μP variant = 1/d_head (Yang et al. 2022) for hyper-parameter
@@ -238,6 +239,11 @@ class GroupedQueryAttention(AttentionBase):
         # Build attention mask for SDPA
         if self.sliding_window is not None and seq_len > self.sliding_window:
             attn_mask = self._make_sliding_window_mask(seq_len, kv_seq_len, q.device, q.dtype)
+        elif not self.is_causal:
+            # Bidirectional (encoder-style): forward the caller's padding
+            # mask instead of discarding it -- there's no causal structure
+            # to fall back on here.
+            attn_mask = attention_mask
         else:
             attn_mask = None
 
@@ -246,7 +252,7 @@ class GroupedQueryAttention(AttentionBase):
         # is_causal=True only valid when q_len == kv_len (no KV cache)
         # With KV cache, q_len=1 and kv_len>1 → the single query token
         # must attend to all cached keys, not be masked by a causal mask.
-        use_causal = (attn_mask is None) and (q.shape[2] == k.shape[2])
+        use_causal = self.is_causal and (attn_mask is None) and (q.shape[2] == k.shape[2])
         with sdpa_kernel_context():
             attn_output = F.scaled_dot_product_attention(
                 q, k, v,
@@ -273,7 +279,7 @@ class GroupedQueryAttention(AttentionBase):
         if self.sliding_window is not None:
             mask = self._make_sliding_window_mask(seq_len, kv_seq_len, q.device, q.dtype)
             attn_weights = attn_weights + mask
-        else:
+        elif self.is_causal:
             causal_mask = torch.triu(
                 torch.ones(seq_len, kv_seq_len, device=q.device, dtype=torch.bool),
                 diagonal=kv_seq_len - seq_len + 1,

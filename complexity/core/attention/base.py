@@ -24,6 +24,7 @@ class AttentionConfig:
     use_qk_norm: bool = True
     sliding_window: Optional[int] = None
     use_sdpa: bool = True
+    is_causal: bool = True  # False = bidirectional (encoder-style) attention
     rope_type: str = "standard"  # standard, yarn, dynamic
     use_mup_attn_scale: bool = False  # μP: 1/d_head attention logit scale (vs 1/√d_head)
     scale: Optional[float] = None

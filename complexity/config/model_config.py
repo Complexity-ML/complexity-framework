@@ -148,6 +148,7 @@ class ModelConfig:
     # === Training ===
     use_sdpa: bool = True  # Use Flash Attention via SDPA
     use_cache: bool = True  # KV cache for generation
+    is_causal: bool = True  # False = bidirectional (encoder-style) attention, for embedding models
 
     # === Initialization ===
     initializer_range: float = 0.02

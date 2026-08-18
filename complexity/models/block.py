@@ -50,6 +50,7 @@ class TransformerBlock(nn.Module):
             use_qk_norm=config.use_qk_norm,
             sliding_window=config.sliding_window,
             use_sdpa=config.use_sdpa,
+            is_causal=getattr(config, "is_causal", True),
             rope_type=config.rope_type,
             use_mup_attn_scale=getattr(config, "use_mup_attn_scale", False),
             causal_conv_kernel_size=getattr(config, "causal_conv_kernel_size", 4),
