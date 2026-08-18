@@ -295,6 +295,101 @@ class TestTrainer:
 
         assert trainer.model.no_sync_calls == 1
 
+    @staticmethod
+    def _wsd_trainer_stub(max_steps, warmup_steps, wsd_decay_ratio, global_step):
+        """A bare Trainer with a real WSD scheduler built for max_steps, as if
+        just restored by scheduler.load_state_dict() during resume -- enough
+        to exercise _resync_wsd_schedule_bounds without a full training loop."""
+        from complexity.training import Trainer, TrainingConfig
+        from complexity.training.scheduler import get_lr_scheduler
+
+        config = TrainingConfig(
+            max_steps=max_steps,
+            warmup_steps=warmup_steps,
+            wsd_decay_ratio=wsd_decay_ratio,
+            lr_scheduler="wsd",
+            learning_rate=1e-3,
+        )
+        optimizer = torch.optim.AdamW([torch.nn.Parameter(torch.zeros(1))], lr=1e-3)
+        scheduler = get_lr_scheduler(optimizer, config=config, num_training_steps=max_steps)
+
+        trainer = Trainer.__new__(Trainer)
+        trainer.config = config
+        trainer.scheduler = scheduler
+        trainer.global_step = global_step
+        trainer.is_main = True
+        return trainer
+
+    def test_resync_wsd_schedule_bounds_extends_decay_start_for_a_bigger_max_steps(self):
+        """The checkpointed schedule (built for the old, shorter max_steps)
+        must move its decay-start milestone and cosine T_max out to match a
+        larger max_steps set on resume -- otherwise the stale, periodic
+        CosineAnnealingLR would climb back toward peak LR once stepped past
+        its original (now wrong) T_max."""
+        old_max_steps = 1000
+        trainer = self._wsd_trainer_stub(
+            max_steps=old_max_steps, warmup_steps=100, wsd_decay_ratio=0.2, global_step=200,
+        )
+        old_milestones = list(trainer.scheduler._milestones)
+        old_t_max = trainer.scheduler._schedulers[2].T_max
+
+        trainer.config.max_steps = 5000  # extend the run
+
+        trainer._resync_wsd_schedule_bounds()
+
+        new_milestones = trainer.scheduler._milestones
+        new_t_max = trainer.scheduler._schedulers[2].T_max
+        assert new_milestones != old_milestones
+        assert new_t_max != old_t_max
+        # warmup boundary untouched; only the stable/decay split moves out.
+        assert new_milestones[0] == old_milestones[0] == 100
+        remaining = 5000 - 100
+        expected_stable = int(remaining * 0.8)
+        assert new_milestones[1] == 100 + expected_stable
+        assert new_t_max == remaining - expected_stable
+
+    def test_resync_wsd_schedule_bounds_is_a_noop_when_max_steps_is_unchanged(self):
+        trainer = self._wsd_trainer_stub(
+            max_steps=1000, warmup_steps=100, wsd_decay_ratio=0.2, global_step=200,
+        )
+        before = (list(trainer.scheduler._milestones), trainer.scheduler._schedulers[2].T_max)
+
+        trainer._resync_wsd_schedule_bounds()
+
+        after = (list(trainer.scheduler._milestones), trainer.scheduler._schedulers[2].T_max)
+        assert before == after
+
+    def test_resync_wsd_schedule_bounds_refuses_once_decay_phase_already_started(self):
+        """Once global_step is at/past the (old, loaded) decay-start milestone,
+        the cosine sub-scheduler has already been stepped into -- overwriting
+        its T_max at that point would produce a discontinuous LR curve instead
+        of a clean extension, so this must refuse rather than silently do the
+        wrong thing."""
+        trainer = self._wsd_trainer_stub(
+            max_steps=1000, warmup_steps=100, wsd_decay_ratio=0.2, global_step=900,
+        )
+        trainer.config.max_steps = 5000
+
+        with pytest.raises(RuntimeError, match="decay-start milestone"):
+            trainer._resync_wsd_schedule_bounds()
+
+    def test_resync_wsd_schedule_bounds_skips_non_wsd_schedulers(self):
+        from complexity.training import Trainer, TrainingConfig
+        from complexity.training.scheduler import get_lr_scheduler
+
+        config = TrainingConfig(max_steps=1000, warmup_steps=100, lr_scheduler="cosine", learning_rate=1e-3)
+        optimizer = torch.optim.AdamW([torch.nn.Parameter(torch.zeros(1))], lr=1e-3)
+        scheduler = get_lr_scheduler(optimizer, config=config, num_training_steps=1000)
+
+        trainer = Trainer.__new__(Trainer)
+        trainer.config = config
+        trainer.scheduler = scheduler
+        trainer.global_step = 200
+        trainer.is_main = True
+
+        trainer.config.max_steps = 5000
+        trainer._resync_wsd_schedule_bounds()  # must not raise or touch a cosine scheduler
+
     @pytest.mark.skip(reason="Full training test - expensive")
     def test_train_step(self):
         """Test single training step."""

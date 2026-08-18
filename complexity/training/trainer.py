@@ -398,6 +398,8 @@ class Trainer:
                     group["lr"] = new_lr
                 self._scheduler_set_base_lr(new_lr)
 
+            self._resync_wsd_schedule_bounds()
+
         accumulation_steps = self.config.gradient_accumulation_steps
 
         try:
@@ -676,6 +678,60 @@ class Trainer:
             base = getattr(sch, "base_lrs", None)
             if base is not None:
                 sch.base_lrs = [new_lr for _ in base]
+
+    def _resync_wsd_schedule_bounds(self) -> None:
+        """Re-derive the WSD stable/decay milestone and cosine T_max from the
+        CURRENT --max-steps after a resume.
+
+        Same footgun as base_lr above: scheduler.load_state_dict() restores
+        SequentialLR._milestones and CosineAnnealingLR.T_max exactly as they
+        were computed for whatever max_steps was in effect when the checkpoint
+        was written. Extending training (bigger --max-steps / --target-tokens
+        on resume) without this would leave the decay phase's cosine curve
+        aimed at the OLD, shorter horizon -- and CosineAnnealingLR is periodic,
+        so stepping past the stale T_max makes the LR climb back toward peak
+        instead of staying at the floor. Only safe to patch while global_step
+        is still before the (old, just-loaded) decay start: once the cosine
+        sub-scheduler has actually been stepped into, resyncing its T_max needs
+        replaying its trajectory, not just overwriting attributes -- refuse
+        rather than silently produce a discontinuous LR curve.
+        """
+        if resolve_scheduler_name(self.config) != "wsd":
+            return
+        schedulers = getattr(self.scheduler, "_schedulers", None)
+        milestones = getattr(self.scheduler, "_milestones", None)
+        if not schedulers or len(schedulers) != 3 or not milestones or len(milestones) != 2:
+            return
+
+        old_decay_start = milestones[1]
+        if self.global_step >= old_decay_start:
+            raise RuntimeError(
+                f"Cannot resync WSD schedule bounds: global_step={self.global_step} "
+                f"is already at/past the loaded decay-start milestone "
+                f"({old_decay_start}). Extending --max-steps this late requires "
+                f"manually replaying the cosine sub-scheduler's trajectory, not "
+                f"just overwriting T_max -- do that by hand instead of relying "
+                f"on this auto-resync."
+            )
+
+        warmup_steps = min(self.config.warmup_steps, max(self.config.max_steps - 1, 0))
+        remaining = max(self.config.max_steps - warmup_steps, 1)
+        decay_ratio = getattr(self.config, "wsd_decay_ratio", 0.2)
+        stable_steps = int(remaining * (1 - decay_ratio))
+        decay_steps = remaining - stable_steps
+        new_decay_start = warmup_steps + stable_steps
+
+        if new_decay_start == old_decay_start:
+            return  # max_steps unchanged (or resolves to the same bounds) -- no-op
+
+        self.scheduler._milestones = [warmup_steps, new_decay_start]
+        schedulers[2].T_max = max(decay_steps, 1)
+        if self.is_main:
+            logger.info(
+                f"Resynced WSD schedule for extended max_steps={self.config.max_steps}: "
+                f"decay now starts at step {new_decay_start} (was {old_decay_start}), "
+                f"T_max={decay_steps}"
+            )
 
     def _save_checkpoint(self, tag: str = "step"):
         """Save checkpoint."""
