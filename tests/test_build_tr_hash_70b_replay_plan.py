@@ -138,3 +138,33 @@ def test_bumping_only_one_sources_replay_passes_does_change_its_mix_share(mod):
     )
     assert dclm_share != pytest.approx(EXPECTED_SOURCE_SHARE["dclm"], abs=1e-9)
     assert dclm_share > EXPECTED_SOURCE_SHARE["dclm"]
+
+
+def test_uniform_single_pass_is_the_phase2_full_param_refinement_exception(mod):
+    """Not a mix-share regression: a full-parameter phase-2 refinement pass
+    (fresh optimizer/scheduler, low re-warmed LR -- the text analogue of
+    scripts/vast_finetune_detector_coco_v08_nano.sh's vision SFT stage, which
+    reruns the same COCO images with augmentation stripped instead of a new
+    dataset) intentionally reuses DEFAULT_UNIQUE_BUDGETS' exact same 70B
+    unique shards with replay_passes=1 for every source -- no replay at all.
+    unique_tokens == trained_tokens == 70B here, and shares follow raw
+    unique-budget proportions, not EXPECTED_SOURCE_SHARE (which only holds at
+    the 130B pretrain replay_passes). This is the one deliberate exception to
+    the guard above, not a drifted default."""
+    single_pass = {name: 1 for name in mod.DEFAULT_UNIQUE_BUDGETS}
+    dataset = _fake_dataset(mod.DEFAULT_UNIQUE_BUDGETS)
+
+    plan = mod.build_replay_plan(
+        dataset,
+        unique_token_budgets=mod.DEFAULT_UNIQUE_BUDGETS,
+        replay_passes=single_pass,
+        row_alignment=1,
+    )
+
+    assert plan["trained_tokens"] == plan["unique_tokens"] == 70_000_000_000
+    assert len(plan["phases"]) == 1
+    assert plan["phases"][0]["name"] == "unique_core"
+
+    for source, budget in mod.DEFAULT_UNIQUE_BUDGETS.items():
+        actual_share = plan["source_unique_tokens"][source] / plan["trained_tokens"]
+        assert actual_share == pytest.approx(budget / 70_000_000_000, abs=1e-9)

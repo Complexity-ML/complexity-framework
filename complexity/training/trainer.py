@@ -160,6 +160,8 @@ class Trainer:
             scheduler=self.scheduler,
             max_checkpoints=config.save_total_limit,
         )
+        if config.init_checkpoint:
+            self.checkpoint_manager.load_weights_only(config.init_checkpoint)
 
         # Metrics
         self.metrics = MetricsTracker(config.log_dir)

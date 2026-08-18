@@ -20,9 +20,11 @@ import os
 
 from complexity.config import ModelConfig
 from complexity.training import (
+    TEXT_CONTINUED_PRETRAINING,
     PretokenizedCorpusMixtureDataset,
     TextCorpusSource,
     WeightedStreamingTextDataset,
+    validate_full_parameter_finetuning,
 )
 from complexity.training.runner import TrainRunner
 from complexity.utils.checkpointing import peek_latest_checkpoint_step
@@ -37,6 +39,18 @@ CORPUS_TOKEN_BUDGETS = {
     "infiwebmath": 10_000_000_000,
     "cosmopedia_v2": 10_000_000_000,
 }
+
+# The actual unique_tokens of the pretrain corpus this 200M run was trained
+# on (configs/replay_plans/tr_hash_70b_quality_replay.json's "unique_tokens"
+# -- row_alignment=512 rounds this slightly below the nominal 70B target from
+# scripts/build_tr_hash_70b_replay_plan.py's DEFAULT_UNIQUE_BUDGETS, so this
+# must be the exact recorded value, not 70_000_000_000). --init-checkpoint (a
+# full-parameter phase-2 refinement pass, see
+# finetuning.TEXT_CONTINUED_PRETRAINING) is only permitted when the plan
+# being trained on has this same unique_tokens total, proving it's a single
+# clean pass over the exact same corpus rather than a small
+# language-instruction dataset routed around the LoRA-only guard.
+PRETRAIN_UNIQUE_TOKENS = 69_997_690_880
 
 
 def resume_skip_rows_for(args) -> int:
@@ -218,6 +232,12 @@ class TRHash200MPretrainRunner(TrainRunner):
             if dataset.seq_len != args.seq_len:
                 raise ValueError(
                     f"tokenized seq_len={dataset.seq_len} does not match --seq-len={args.seq_len}"
+                )
+            if getattr(args, "init_checkpoint", None):
+                validate_full_parameter_finetuning(
+                    TEXT_CONTINUED_PRETRAINING,
+                    unique_tokens=dataset.unique_tokens,
+                    pretrain_unique_tokens=PRETRAIN_UNIQUE_TOKENS,
                 )
             tokens_per_step = (
                 args.batch_size

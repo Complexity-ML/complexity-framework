@@ -275,6 +275,17 @@ class TrainRunner:
             "from the highest-step checkpoint under --checkpoint-dir if one "
             "exists (silently starts fresh otherwise)",
         )
+        p.add_argument(
+            "--init-checkpoint",
+            type=str,
+            default=None,
+            help="HF-style export (config.json + model.safetensors, e.g. a "
+            "prior run's 'final' checkpoint) to load model weights from, "
+            "leaving optimizer/scheduler/step fresh -- for starting a new "
+            "training phase from completed weights instead of resuming. "
+            "Use with a fresh --checkpoint-dir and --resume auto so "
+            "crash-resume within the new phase still works.",
+        )
         p.add_argument("--num-workers", type=int, default=4)
         p.add_argument(
             "--distributed-mode",
@@ -419,6 +430,7 @@ class TrainRunner:
             log_steps=args.log_steps,
             checkpoint_dir=args.checkpoint_dir,
             resume_from=args.resume,
+            init_checkpoint=args.init_checkpoint,
             use_fsdp=args.distributed_mode == "fsdp",
             sharding_mode="full_shard",
             num_workers=args.num_workers,

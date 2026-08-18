@@ -39,6 +39,7 @@ from .corpus_mixture import (
 )
 from .finetuning import (
     FULL_PARAMETER_FINETUNING_PIPELINES,
+    TEXT_CONTINUED_PRETRAINING,
     TEXT_SUPERVISED_FINETUNING,
     VISION_SUPERVISED_FINETUNING,
     validate_full_parameter_finetuning,
@@ -72,6 +73,7 @@ __all__ = [
     "TrainingConfig",
     "MetricsTracker",
     "FULL_PARAMETER_FINETUNING_PIPELINES",
+    "TEXT_CONTINUED_PRETRAINING",
     "TEXT_SUPERVISED_FINETUNING",
     "VISION_SUPERVISED_FINETUNING",
     "validate_full_parameter_finetuning",

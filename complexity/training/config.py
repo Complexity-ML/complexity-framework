@@ -51,6 +51,14 @@ class TrainingConfig:
     save_steps: int = 1000
     save_total_limit: int = 3
     resume_from: Optional[str] = None
+    # Load only model weights from an HF-style export (e.g. a completed
+    # run's "final" checkpoint), leaving optimizer/scheduler/step untouched --
+    # for starting a fresh phase (fresh LR schedule, fresh optimizer moments)
+    # from prior weights instead of resuming that run. Mutually exclusive in
+    # practice with resume_from: point resume_from at THIS phase's own
+    # (initially empty) checkpoint_dir with "auto" so crash-resume within the
+    # new phase still works.
+    init_checkpoint: Optional[str] = None
 
     # Logging
     log_steps: int = 10

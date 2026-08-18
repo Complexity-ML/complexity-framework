@@ -497,6 +497,38 @@ class CheckpointManager:
         """Load the most recent checkpoint."""
         return self.load(checkpoint_path=None, load_optimizer=load_optimizer)
 
+    def load_weights_only(self, checkpoint_path: str) -> None:
+        """Load only model weights from an HF-style export (config.json +
+        model.safetensors, e.g. a "final" checkpoint), leaving the optimizer,
+        scheduler, and step count untouched -- for starting a fresh training
+        phase (fresh LR schedule, fresh optimizer moments) from a completed
+        run's weights instead of resuming it. Mirrors
+        scripts/vast_finetune_detector_coco_v08_nano.sh's DETECTOR_CHECKPOINT
+        for vision: same idea, text side.
+        """
+        from safetensors.torch import load_file
+
+        path = Path(checkpoint_path)
+        safetensors_path = path / "model.safetensors"
+        if not safetensors_path.exists():
+            raise FileNotFoundError(
+                f"--init-checkpoint expects an HF-style export: {safetensors_path} not found"
+            )
+        state_dict = load_file(str(safetensors_path))
+        try:
+            from torch.distributed.checkpoint.state_dict import (
+                set_model_state_dict, StateDictOptions,
+            )
+            set_model_state_dict(
+                self.model, state_dict,
+                options=StateDictOptions(full_state_dict=True, strict=True),
+            )
+        except Exception as e:
+            logger.warning(f"set_model_state_dict failed ({e}), using load_state_dict")
+            self.model.load_state_dict(state_dict)
+        if self.is_main:
+            logger.info(f"Initialized model weights from {safetensors_path} (fresh optimizer/scheduler/step)")
+
     @staticmethod
     def _is_complete_checkpoint(path: Path) -> bool:
         """A checkpoint directory is only usable once its payload landed —

@@ -13,6 +13,7 @@ from complexity.training.finetuning import (
     FULL_PARAMETER_FINETUNING_PIPELINES,
     IMAGE_GENERATION_SUPERVISED_FINETUNING,
     IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING,
+    TEXT_CONTINUED_PRETRAINING,
     TEXT_SUPERVISED_FINETUNING,
     VISION_SUPERVISED_FINETUNING,
     validate_full_parameter_finetuning,
@@ -23,25 +24,54 @@ PROJECT_ROOT = Path(__file__).parents[1]
 
 def test_only_vision_shaped_pipelines_are_exempt_from_full_parameter_ban() -> None:
     """Regression guard: full-parameter adaptation of *language* weights is
-    banned everywhere except a genuinely vision-only update. Image-generation
-    SFT qualifies outright (no language decoder at all). Image-text-to-text
-    SFT qualifies only because its script freezes the language decoder for
-    the whole stage (see freeze_decoder_for_vision_only_sft) -- the exemption
-    is never a green light for full-parameter *text* SFT."""
+    banned everywhere except a genuinely vision-only update, or the one
+    text-shaped exception that proves it isn't a language-instruction corpus
+    in disguise. Image-generation SFT qualifies outright (no language decoder
+    at all). Image-text-to-text SFT qualifies only because its script freezes
+    the language decoder for the whole stage (see
+    freeze_decoder_for_vision_only_sft). text-continued-pretraining qualifies
+    only when unique_tokens exactly matches the completed pretrain's
+    unique_tokens -- proof it's a clean single pass over the *same* corpus,
+    not a small instruction dataset routed around the LoRA-only ban -- so a
+    plain TEXT_SUPERVISED_FINETUNING pipeline name (any language-instruction
+    SFT) must still be rejected outright."""
 
     assert FULL_PARAMETER_FINETUNING_PIPELINES == {
         VISION_SUPERVISED_FINETUNING,
         IMAGE_GENERATION_SUPERVISED_FINETUNING,
         IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING,
+        TEXT_CONTINUED_PRETRAINING,
     }
     validate_full_parameter_finetuning(VISION_SUPERVISED_FINETUNING)
     validate_full_parameter_finetuning(IMAGE_GENERATION_SUPERVISED_FINETUNING)
     validate_full_parameter_finetuning(IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING)
+    validate_full_parameter_finetuning(
+        TEXT_CONTINUED_PRETRAINING,
+        unique_tokens=70_000_000_000,
+        pretrain_unique_tokens=70_000_000_000,
+    )
 
     with pytest.raises(ValueError, match="restricted to"):
         validate_full_parameter_finetuning(TEXT_SUPERVISED_FINETUNING)
     with pytest.raises(ValueError, match="restricted to"):
         validate_full_parameter_finetuning("unknown-finetuning")
+
+
+def test_text_continued_pretraining_requires_the_unique_token_totals_to_match() -> None:
+    """The text-continued-pretraining exemption isn't a bare pipeline-name
+    check: a mismatched unique_tokens (a different, smaller corpus smuggled
+    in under this pipeline's name) must still be rejected, and both totals
+    must be supplied at all -- the exemption cannot be claimed silently."""
+
+    with pytest.raises(ValueError, match="requires unique_tokens"):
+        validate_full_parameter_finetuning(TEXT_CONTINUED_PRETRAINING)
+
+    with pytest.raises(ValueError, match="exactly match"):
+        validate_full_parameter_finetuning(
+            TEXT_CONTINUED_PRETRAINING,
+            unique_tokens=19_000_000,
+            pretrain_unique_tokens=70_000_000_000,
+        )
 
 
 def test_v8_vision_sft_updates_every_model_parameter() -> None:
