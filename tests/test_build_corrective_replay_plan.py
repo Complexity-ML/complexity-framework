@@ -92,7 +92,15 @@ def test_corrective_plan_drops_burned_shards_and_backfills_with_unused_ones():
     assert sum(s["rows"] for s in b_selection) == 10
 
 
-def test_corrective_plan_preserves_total_trained_tokens():
+def test_corrective_plan_preserves_trained_tokens_but_not_unique_tokens():
+    """trained_tokens (rows actually trained on, counting repeats) must stay
+    identical -- every phase's row count per source is unchanged. unique_tokens
+    means every DISTINCT shard touched anywhere in the plan (corpus_mixture.py
+    validates against exactly that), and the backfill shards are genuinely new
+    material phase 1 never selected -- so it must come out LARGER, not equal;
+    a plan that just copied the uncorrected value here would fail to load
+    (the real bug this test guards against: it did, live, on the actual 200M
+    run's corrective plan before this was fixed)."""
     dataset = _fake_dataset(BASE_SHARDS)
     uncorrected = build_replay_plan(
         dataset,
@@ -110,7 +118,9 @@ def test_corrective_plan_preserves_total_trained_tokens():
     )
 
     assert corrected["trained_tokens"] == uncorrected["trained_tokens"]
-    assert corrected["unique_tokens"] == uncorrected["unique_tokens"]
+    # 4 backfill rows (2 burned shards x 2 rows) are distinct material phase 1
+    # never touched, so total distinct coverage grows by exactly that much.
+    assert corrected["unique_tokens"] == uncorrected["unique_tokens"] + 4
     assert corrected["source_passes"] == uncorrected["source_passes"]
 
 

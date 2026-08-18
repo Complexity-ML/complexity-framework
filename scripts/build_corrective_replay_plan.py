@@ -124,15 +124,39 @@ def build_corrective_replay_plan(
                 {"name": f"quality_replay_{pass_number}_corrected", "passes": 1, "sources": sources}
             )
 
+    # unique_tokens here means every DISTINCT (source, shard) touched ANYWHERE
+    # in the plan, not just phase 1's budget -- corpus_mixture.py's loader
+    # validates against exactly that broader definition. In an uncorrected
+    # plan the two happen to coincide, because every later replay phase reuses
+    # phase 1's own shards verbatim; this plan deliberately breaks that by
+    # pointing later phases at previously-unused shards, so it must be
+    # recomputed rather than copied from base_plan. trained_tokens is
+    # unaffected: it's a straight sum of rows-per-phase x passes, and every
+    # phase's row count is unchanged -- only which shards supply those rows.
+    unique_rows: dict[tuple[str, str], int] = {}
+    trained_rows = 0
+    for phase in phases:
+        phase_rows = 0
+        for source_name, selections in phase["sources"].items():
+            for selection in selections:
+                key = (source_name, selection["file"])
+                unique_rows[key] = max(unique_rows.get(key, 0), selection["rows"])
+                phase_rows += selection["rows"]
+        trained_rows += phase_rows * phase["passes"]
+
     plan = dict(base_plan)
     plan["phases"] = phases
+    plan["unique_tokens"] = sum(unique_rows.values()) * dataset.seq_len
+    plan["trained_tokens"] = trained_rows * dataset.seq_len
     plan["correction"] = {
         "already_double_exposed_shards": dict(already_double_exposed_shards),
         "note": (
             "phase 1 unchanged; later replay phases swap already-double-exposed "
             "shards for previously-unused ones from the same source, same row "
-            "counts, so trained_tokens/source_unique_tokens/source_passes are "
-            "unchanged from the uncorrected plan"
+            "counts per phase. trained_tokens (total rows trained on) is "
+            "unchanged from the uncorrected plan; unique_tokens is larger, "
+            "since the backfill shards are genuinely new distinct material "
+            "the uncorrected plan never touched at all"
         ),
     }
     return plan

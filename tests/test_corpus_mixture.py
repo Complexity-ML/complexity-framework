@@ -15,6 +15,7 @@ from complexity.training import (
     WeightedStreamingTextDataset,
     allocate_weighted_counts,
 )
+from scripts.build_corrective_replay_plan import build_corrective_replay_plan
 from scripts.build_tr_hash_70b_replay_plan import (
     DEFAULT_REPLAY_PASSES,
     DEFAULT_UNIQUE_BUDGETS,
@@ -424,6 +425,61 @@ def test_resume_skip_rows_rejects_negative_values(tmp_path) -> None:
     remote, _files, _downloads, _download, _list_files = _remote_token_fixture(tmp_path)
     with pytest.raises(ValueError, match="non-negative"):
         PretokenizedCorpusMixtureDataset(remote, resume_skip_rows=-1)
+
+
+def test_corrective_replay_plan_actually_loads_through_the_real_validator(tmp_path) -> None:
+    """Regression guard: build_corrective_replay_plan's unique_tokens field
+    was copied verbatim from the uncorrected plan instead of recomputed --
+    passed its own unit tests (which checked the dict directly) but failed
+    live the moment the real loader validated it, because
+    PretokenizedCorpusMixtureDataset._load_replay_plan defines unique_tokens
+    as every DISTINCT shard touched anywhere in the plan, and the whole
+    point of the correction is to point later phases at shards phase 1 never
+    touched -- so the two numbers necessarily diverge. This instantiates a
+    real dataset with the corrected plan (not a stub) so a wrong metadata
+    field fails the same way it did on the actual 200M run instead of only
+    a hand-checked assertion."""
+    remote = tmp_path / "remote"
+    source = TextCorpusSource("tiny", 1.0, data_files="unused.jsonl")
+    writer = TokenShardWriter(
+        remote / "corpora" / source.name, seq_len=4, total_rows=10, rows_per_shard=2,
+    )
+    writer.feed(torch.arange(41, dtype=torch.int64).numpy())
+    writer.write_manifest(source=source)
+    write_mixture_manifest(
+        output_root=remote,
+        sources=(source,),
+        seq_len=4,
+        requested_tokens=40,
+        actual_tokens=40,
+        global_batch_sequences=1,
+        rows_by_source={"tiny": 10},
+    )
+
+    dataset = PretokenizedCorpusMixtureDataset(remote)
+    corrected_plan = build_corrective_replay_plan(
+        dataset,
+        unique_token_budgets={"tiny": 16},  # 4 rows @ seq_len=4 -> phase 1 uses shards 0,1
+        replay_passes={"tiny": 2},
+        already_double_exposed_shards={"tiny": 1},  # shard 0 already got an extra pass
+        row_alignment=1,
+    )
+
+    # The bug under test: this used to raise ValueError("unique_tokens
+    # mismatch") the instant a real dataset tried to load the plan.
+    resumed = PretokenizedCorpusMixtureDataset(remote, replay_plan=corrected_plan)
+
+    samples = list(resumed)
+    seen_shards = {
+        s["file"]
+        for phase in corrected_plan["phases"]
+        for s in phase["sources"]["tiny"]
+    }
+    assert "tokens-00000.bin" not in {
+        s["file"] for s in corrected_plan["phases"][1]["sources"]["tiny"]
+    }  # the burned shard must not reappear in the corrected replay phase
+    assert len(samples) > 0
+    assert seen_shards  # sanity: the plan actually references shards at all
 
 
 def test_quality_plan_selects_highest_scored_shards_and_records_exposure(tmp_path) -> None:
