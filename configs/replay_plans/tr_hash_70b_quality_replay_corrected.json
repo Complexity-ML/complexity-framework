@@ -1,0 +1,604 @@
+{
+  "format": "tr-hash-token-replay-plan-v1",
+  "seq_len": 1024,
+  "selection_mode": "manifest_order",
+  "row_alignment": 512,
+  "requested_unique_tokens": 70000000000,
+  "unique_tokens": 85997682688,
+  "trained_tokens": 129995112448,
+  "source_unique_tokens": {
+    "dclm": 19999490048,
+    "fineweb_edu_dedup": 24999624704,
+    "stack_edu": 7999586304,
+    "finemath": 4999610368,
+    "infiwebmath": 4999610368,
+    "cosmopedia_v2": 6999769088
+  },
+  "source_passes": {
+    "dclm": 1,
+    "fineweb_edu_dedup": 2,
+    "stack_edu": 2,
+    "finemath": 3,
+    "infiwebmath": 3,
+    "cosmopedia_v2": 2
+  },
+  "phases": [
+    {
+      "name": "unique_core",
+      "passes": 1,
+      "sources": {
+        "dclm": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00005.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00006.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00007.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00008.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00009.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00010.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00011.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00012.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00013.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00014.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00015.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00016.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00017.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00018.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00019.bin",
+            "rows": 976074
+          }
+        ],
+        "fineweb_edu_dedup": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00005.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00006.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00007.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00008.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00009.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00010.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00011.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00012.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00013.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00014.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00015.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00016.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00017.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00018.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00019.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00020.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00021.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00022.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00023.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00024.bin",
+            "rows": 976208
+          }
+        ],
+        "stack_edu": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00005.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00006.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00007.bin",
+            "rows": 976162
+          }
+        ],
+        "finemath": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 976184
+          }
+        ],
+        "infiwebmath": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 976184
+          }
+        ],
+        "cosmopedia_v2": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00005.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00006.bin",
+            "rows": 976340
+          }
+        ]
+      }
+    },
+    {
+      "name": "quality_replay_2_corrected",
+      "passes": 1,
+      "sources": {
+        "fineweb_edu_dedup": [
+          {
+            "file": "tokens-00009.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00010.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00011.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00012.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00013.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00014.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00015.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00016.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00017.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00018.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00019.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00020.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00021.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00022.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00023.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00024.bin",
+            "rows": 976208
+          },
+          {
+            "file": "tokens-00025.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00026.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00027.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00028.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00029.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00030.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00031.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00032.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00033.bin",
+            "rows": 976562
+          }
+        ],
+        "stack_edu": [
+          {
+            "file": "tokens-00003.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00005.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00006.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00007.bin",
+            "rows": 976162
+          },
+          {
+            "file": "tokens-00008.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00009.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00010.bin",
+            "rows": 976562
+          }
+        ],
+        "finemath": [
+          {
+            "file": "tokens-00001.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 976184
+          },
+          {
+            "file": "tokens-00005.bin",
+            "rows": 976562
+          }
+        ],
+        "infiwebmath": [
+          {
+            "file": "tokens-00001.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 976184
+          },
+          {
+            "file": "tokens-00005.bin",
+            "rows": 976562
+          }
+        ],
+        "cosmopedia_v2": [
+          {
+            "file": "tokens-00002.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00005.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00006.bin",
+            "rows": 976340
+          },
+          {
+            "file": "tokens-00007.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00008.bin",
+            "rows": 976562
+          }
+        ]
+      }
+    },
+    {
+      "name": "quality_replay_3_corrected",
+      "passes": 1,
+      "sources": {
+        "finemath": [
+          {
+            "file": "tokens-00001.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 976184
+          },
+          {
+            "file": "tokens-00005.bin",
+            "rows": 976562
+          }
+        ],
+        "infiwebmath": [
+          {
+            "file": "tokens-00001.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 976562
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 976184
+          },
+          {
+            "file": "tokens-00005.bin",
+            "rows": 976562
+          }
+        ]
+      }
+    }
+  ],
+  "correction": {
+    "already_double_exposed_shards": {
+      "dclm": 0,
+      "fineweb_edu_dedup": 9,
+      "stack_edu": 3,
+      "finemath": 1,
+      "infiwebmath": 1,
+      "cosmopedia_v2": 2
+    },
+    "note": "phase 1 unchanged; later replay phases swap already-double-exposed shards for previously-unused ones from the same source, same row counts per phase. trained_tokens (total rows trained on) is unchanged from the uncorrected plan; unique_tokens is larger, since the backfill shards are genuinely new distinct material the uncorrected plan never touched at all"
+  },
+  "dataset": "hf://datasets/Pacific-i64/data-32k-200b-tokens",
+  "revision": "main"
+}
