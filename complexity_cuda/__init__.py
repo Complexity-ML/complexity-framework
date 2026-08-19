@@ -54,7 +54,6 @@ from .fused_mlp import (
 # Persistent CGGR
 from .persistent_cggr import (
     sort_tokens_by_expert_fast,
-    persistent_cggr_gemm,
     persistent_swiglu_cggr,
     PersistentTokenRoutedMLP,
 )
@@ -105,7 +104,6 @@ __all__ = [
 
     # === Persistent CGGR ===
     "sort_tokens_by_expert_fast",
-    "persistent_cggr_gemm",
     "persistent_swiglu_cggr",
     "PersistentTokenRoutedMLP",
 
