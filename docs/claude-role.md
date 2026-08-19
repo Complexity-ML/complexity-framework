@@ -4,6 +4,10 @@ This project uses Claude (Anthropic) as an implementation and documentation
 assistant. This page states plainly what that means, so credit is not
 misattributed.
 
+**Claude writes code. Claude did not conceive this project.** The
+architecture, training recipes, and research direction below are the
+maintainer's; Claude implements them.
+
 ## What Claude does
 
 - Implements code from decisions the maintainer has already made: model
