@@ -4,9 +4,10 @@ This project uses Claude (Anthropic) as an implementation and documentation
 assistant. This page states plainly what that means, so credit is not
 misattributed.
 
-**Claude writes code. Claude did not conceive this project.** The
-architecture, training recipes, and research direction below are the
-maintainer's; Claude implements them.
+**Claude acts as a maintainer, not a designer.** The architecture, training
+recipes, and research direction below are conceived by Boris Peyriguere;
+Claude implements, tests, documents, and keeps the codebase consistent with
+those decisions.
 
 ## What Claude does
 
@@ -35,7 +36,7 @@ maintainer's; Claude implements them.
 
 ## Commit attribution
 
-Commits in this repository do not carry a "Co-Authored-By: Claude" trailer
-by default. That trailer is reserved for cases where Claude genuinely
-contributed to a design decision, which is rare here -- most commits are
-Claude executing the maintainer's already-made design choices.
+Commits in this repository use a "Maintained-By: Claude" trailer instead of
+"Co-Authored-By: Claude" -- accurate to the role above. Co-authorship
+implies shared design credit; Claude maintains code to the designer's
+specification, it doesn't co-design it.
