@@ -14,6 +14,7 @@ TR-Hash Mixture-of-Experts (TR-MoE) language and multimodal models.
 7. [Run configurations](run_configs.md)
 8. [GPU and dispatch paths](cuda.md)
 9. [API reference](api.md)
+10. [Claude's role in this project](claude-role.md)
 
 ## Architecture vocabulary
 
