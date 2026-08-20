@@ -348,6 +348,15 @@ class TrainRunner:
         )
         configure_torch_acceleration(kernel_policy=custom_kernel_policy)
 
+        # Never let a CUDA text run silently lose the fused output projection
+        # and CE kernel.  The loss itself repeats this guard at dispatch time
+        # for callers that do not use TrainRunner.
+        from ..core.losses import log_liger_fused_linear_ce_status
+
+        if is_main:
+            device_type = "cuda" if torch.cuda.is_available() else "cpu"
+            log_liger_fused_linear_ce_status(device_type)
+
         tokenizer = self._load_tokenizer(args.tokenizer)
 
         # Model

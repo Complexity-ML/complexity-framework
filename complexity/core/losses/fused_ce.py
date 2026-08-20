@@ -14,12 +14,16 @@ installed or when the device is not CUDA (MPS / CPU).
 
 from __future__ import annotations
 
+import logging
 from typing import Optional, Tuple
 
 import torch
 import torch.nn.functional as F
 
 from .causal_lm import CausalLMLossMetrics, causal_lm_loss
+
+logger = logging.getLogger(__name__)
+_PYTORCH_FALLBACK_WARNED = False
 
 
 def _liger_available() -> bool:
@@ -39,6 +43,35 @@ def has_liger_fused_linear_ce() -> bool:
     """Return True when Liger fused linear CE can be imported."""
 
     return _liger_available()
+
+
+def log_liger_fused_linear_ce_status(device_type: str) -> bool:
+    """Log the CUDA fused-CE backend selected for this process.
+
+    Returns whether Liger is available.  CUDA training must never silently
+    regress to the much slower full-logits PyTorch path: the startup banner
+    and the one-shot runtime warning below make that fallback explicit.
+    """
+
+    available = _liger_available()
+    if device_type == "cuda":
+        if available:
+            logger.info("Liger fused linear CE: enabled")
+        else:
+            _warn_pytorch_fallback_once()
+    return available
+
+
+def _warn_pytorch_fallback_once() -> None:
+    global _PYTORCH_FALLBACK_WARNED
+    if _PYTORCH_FALLBACK_WARNED:
+        return
+    logger.warning(
+        "Liger fused linear CE is unavailable on CUDA; using the slower "
+        "PyTorch F.linear + cross-entropy fallback. Install the CUDA extra "
+        "or `liger-kernel>=0.5.0` to restore the fused Triton kernel."
+    )
+    _PYTORCH_FALLBACK_WARNED = True
 
 
 def fused_linear_causal_lm_loss(
@@ -82,55 +115,58 @@ def fused_linear_causal_lm_loss(
     hidden_flat = hidden_states.reshape(-1, H)
     labels_flat = labels.reshape(-1)
 
-    if use_liger and hidden_flat.is_cuda and _liger_available():
-        from liger_kernel.transformers.fused_linear_cross_entropy import (  # type: ignore[import-not-found]
-            LigerFusedLinearCrossEntropyFunction,
-        )
+    if use_liger and hidden_flat.is_cuda:
+        if _liger_available():
+            from liger_kernel.transformers.fused_linear_cross_entropy import (  # type: ignore[import-not-found]
+                LigerFusedLinearCrossEntropyFunction,
+            )
 
-        # Liger signature (positional, since keyword names have drifted across versions):
-        # (_input, weight, target, bias, ce_weight, ignore_index, lse_square_scale,
-        #  label_smoothing, reduction, softcap, return_z_loss)
-        out = LigerFusedLinearCrossEntropyFunction.apply(
-            hidden_flat,
-            weight,
-            labels_flat,
-            bias,
-            None,               # ce_weight
-            ignore_index,
-            float(z_loss_coef),
-            float(label_smoothing),
-            "mean",
-            None,               # softcap
-            z_loss_coef > 0.0,  # return_z_loss
-        )
-        # Normalize Liger output: recent versions always return a tuple
-        # (loss, z_loss) where z_loss is None when not requested; older
-        # versions return just `loss` when return_z_loss=False.
-        if isinstance(out, tuple):
-            loss = out[0]
-            z_loss_tensor = out[1] if len(out) > 1 else None
-        else:
-            loss = out
-            z_loss_tensor = None
-
-        if sync_metrics:
-            if z_loss_tensor is not None and z_loss_coef > 0.0:
-                z_val = float(z_loss_tensor.detach().item())
-                ce_val = float((loss - z_loss_coef * z_loss_tensor).detach().item())
+            # Liger signature (positional, since keyword names have drifted across versions):
+            # (_input, weight, target, bias, ce_weight, ignore_index, lse_square_scale,
+            #  label_smoothing, reduction, softcap, return_z_loss)
+            out = LigerFusedLinearCrossEntropyFunction.apply(
+                hidden_flat,
+                weight,
+                labels_flat,
+                bias,
+                None,               # ce_weight
+                ignore_index,
+                float(z_loss_coef),
+                float(label_smoothing),
+                "mean",
+                None,               # softcap
+                z_loss_coef > 0.0,  # return_z_loss
+            )
+            # Normalize Liger output: recent versions always return a tuple
+            # (loss, z_loss) where z_loss is None when not requested; older
+            # versions return just `loss` when return_z_loss=False.
+            if isinstance(out, tuple):
+                loss = out[0]
+                z_loss_tensor = out[1] if len(out) > 1 else None
             else:
-                ce_val = float(loss.detach().item())
-                z_val = 0.0
-            total_val = float(loss.detach().item())
-        else:
-            ce_val = float("nan")
-            z_val = 0.0 if z_loss_coef <= 0.0 else float("nan")
-            total_val = float("nan")
-        metrics = CausalLMLossMetrics(
-            ce=ce_val,
-            z_loss=z_val,
-            total=total_val,
-        )
-        return loss, metrics
+                loss = out
+                z_loss_tensor = None
+
+            if sync_metrics:
+                if z_loss_tensor is not None and z_loss_coef > 0.0:
+                    z_val = float(z_loss_tensor.detach().item())
+                    ce_val = float((loss - z_loss_coef * z_loss_tensor).detach().item())
+                else:
+                    ce_val = float(loss.detach().item())
+                    z_val = 0.0
+                total_val = float(loss.detach().item())
+            else:
+                ce_val = float("nan")
+                z_val = 0.0 if z_loss_coef <= 0.0 else float("nan")
+                total_val = float("nan")
+            metrics = CausalLMLossMetrics(
+                ce=ce_val,
+                z_loss=z_val,
+                total=total_val,
+            )
+            return loss, metrics
+
+        _warn_pytorch_fallback_once()
 
     # Fallback: materialize logits, delegate to the pure-PyTorch CE path
     logits = F.linear(hidden_flat, weight, bias)
