@@ -15,6 +15,7 @@ installed or when the device is not CUDA (MPS / CPU).
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional, Tuple
 
 import torch
@@ -24,6 +25,17 @@ from .causal_lm import CausalLMLossMetrics, causal_lm_loss
 
 logger = logging.getLogger(__name__)
 _PYTORCH_FALLBACK_WARNED = False
+
+
+def _liger_required() -> bool:
+    """Whether CUDA execution must fail instead of using the PyTorch fallback."""
+
+    return os.getenv("COMPLEXITY_REQUIRE_LIGER", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _liger_available() -> bool:
@@ -57,6 +69,12 @@ def log_liger_fused_linear_ce_status(device_type: str) -> bool:
     if device_type == "cuda":
         if available:
             logger.info("Liger fused linear CE: enabled")
+        elif _liger_required():
+            raise RuntimeError(
+                "COMPLEXITY_REQUIRE_LIGER=1 but Liger fused linear CE is unavailable "
+                "on CUDA. Install `liger-kernel>=0.5.0`; refusing the slower "
+                "PyTorch fallback."
+            )
         else:
             _warn_pytorch_fallback_once()
     return available
@@ -166,6 +184,12 @@ def fused_linear_causal_lm_loss(
             )
             return loss, metrics
 
+        if _liger_required():
+            raise RuntimeError(
+                "COMPLEXITY_REQUIRE_LIGER=1 but Liger fused linear CE is unavailable "
+                "on CUDA. Install `liger-kernel>=0.5.0`; refusing the slower "
+                "PyTorch fallback."
+            )
         _warn_pytorch_fallback_once()
 
     # Fallback: materialize logits, delegate to the pure-PyTorch CE path

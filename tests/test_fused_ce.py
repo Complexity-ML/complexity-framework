@@ -14,6 +14,7 @@ def test_cuda_fallback_emits_a_visible_regression_warning(
 ) -> None:
     """A missing Liger install must never silently select full-logits CE."""
 
+    monkeypatch.delenv("COMPLEXITY_REQUIRE_LIGER", raising=False)
     monkeypatch.setattr(fused_ce, "_liger_available", lambda: False)
     monkeypatch.setattr(fused_ce, "_PYTORCH_FALLBACK_WARNED", False)
 
@@ -25,6 +26,27 @@ def test_cuda_fallback_emits_a_visible_regression_warning(
     assert len(messages) == 1
     assert "using the slower PyTorch F.linear + cross-entropy fallback" in messages[0]
     assert "liger-kernel>=0.5.0" in messages[0]
+
+
+def test_cuda_production_mode_requires_liger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production CUDA runs must fail fast instead of accepting the fallback."""
+
+    monkeypatch.setenv("COMPLEXITY_REQUIRE_LIGER", "1")
+    monkeypatch.setattr(fused_ce, "_liger_available", lambda: False)
+
+    with pytest.raises(RuntimeError, match="COMPLEXITY_REQUIRE_LIGER=1"):
+        fused_ce.log_liger_fused_linear_ce_status("cuda")
+
+
+def test_cuda_production_mode_accepts_liger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COMPLEXITY_REQUIRE_LIGER", "1")
+    monkeypatch.setattr(fused_ce, "_liger_available", lambda: True)
+
+    assert fused_ce.log_liger_fused_linear_ce_status("cuda") is True
 
 
 def test_cuda_startup_reports_when_liger_is_enabled(

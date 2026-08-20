@@ -80,7 +80,7 @@ torchrun --standalone --nproc_per_node "${NPROC_PER_NODE:-8}" \
   --distributed-mode ddp \
   --optimizer "${OPTIMIZER:-adamw}" \
   --use-custom-kernels auto \
-  --save-steps 0 \
+  --save-steps "${SAVE_STEPS:-0}" \
   --log-steps "${LOG_STEPS:-10}" \
   --num-workers "${NUM_WORKERS:-0}" \
   --checkpoint-dir "$OUTPUT_DIR" \
