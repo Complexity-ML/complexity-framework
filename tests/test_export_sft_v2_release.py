@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import torch
 from safetensors import safe_open
 
@@ -9,7 +10,13 @@ from complexity.inference.chat_template import default_chat_template
 from scripts.export_sft_v2_release import export_release
 
 
-def test_export_release_writes_transformers_and_native_routing_metadata(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("requested_dtype", "expected_dtype", "expected_torch_dtype"),
+    ((None, torch.float32, "float32"), ("bfloat16", torch.bfloat16, "bfloat16")),
+)
+def test_export_release_writes_transformers_and_native_routing_metadata(
+    tmp_path, requested_dtype, expected_dtype, expected_torch_dtype
+) -> None:
     checkpoint = tmp_path / "checkpoints" / "step_000200"
     checkpoint.mkdir(parents=True)
     state = {
@@ -92,6 +99,7 @@ def test_export_release_writes_transformers_and_native_routing_metadata(tmp_path
         evaluation_root=evaluations,
         tokenizer_dir=tokenizer,
         output=output,
+        weights_dtype=requested_dtype,
     )
 
     config = json.loads((output / "config.json").read_text())
@@ -100,15 +108,16 @@ def test_export_release_writes_transformers_and_native_routing_metadata(tmp_path
     assert config["top_k"] == 2
     assert config["num_experts_per_tok"] == 2
     assert config["eos_token_id"] == 0
-    assert config["torch_dtype"] == "float32"
+    assert config["torch_dtype"] == expected_torch_dtype
     assert manifest["selected_epoch"] == 2
     assert manifest["behavior_gate_passed"] is True
     assert manifest["weights_sha256"]
-    assert manifest["weights_dtype"] == "float32"
+    assert manifest["weights_dtype"] == expected_torch_dtype
     assert manifest["floating_parameters"] == 16 * 8
     with safe_open(output / "model.safetensors", framework="pt") as checkpoint_file:
         assert checkpoint_file.metadata()["format"] == "pt"
         assert "layers.0.mlp.engine.route_table" in checkpoint_file.keys()
+        assert checkpoint_file.get_tensor("embed_tokens.weight").dtype == expected_dtype
     assert (output / "configuration_tr_hash_moe.py").is_file()
     assert (output / "chat_template.jinja").is_file()
     assert "Apache-2.0" in (output / "README.md").read_text()

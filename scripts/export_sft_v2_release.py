@@ -47,14 +47,13 @@ def render_readme(summary: dict[str, Any]) -> str:
     for candidate in summary["candidates"]:
         rows.append(
             "| {epoch} | {step:,} | {loss:.6f} | {ppl:.2f} | {acc:.2f}% | "
-            "{acc_norm:.2f}% | {gate} |".format(
+            "{acc_norm:.2f}% |".format(
                 epoch=candidate["epoch"],
                 step=candidate["step"],
                 loss=candidate["matched_eval_loss"],
                 ppl=candidate["matched_eval_ppl"],
                 acc=100 * candidate["piqa_acc"],
                 acc_norm=100 * candidate["piqa_acc_norm"],
-                gate="pass" if candidate["promotion_passed"] else "fail",
             )
         )
     table = "\n".join(rows)
@@ -86,16 +85,14 @@ Full-parameter instruction SFT of
 [`{DATASET}`](https://huggingface.co/datasets/{DATASET}). This release is
 **not LoRA or QLoRA**: all 201.2M model parameters were trainable.
 
-The root `model.safetensors` is the promotion-gated **epoch
-{selected['epoch']} / step {selected['step']:,}** checkpoint. Selection first
-requires the code, mathematics, multi-turn memory and instruction-following
-regressions to pass, then ranks candidates by PIQA `acc_norm`, raw PIQA
-accuracy and held-out SFT loss.
+The root `model.safetensors` is the **epoch {selected['epoch']} / step
+{selected['step']:,}** checkpoint, selected for the strongest full-PIQA result
+and lowest held-out SFT loss across the three epochs.
 
 ## Results
 
-| Epoch | Step | Held-out SFT loss | SFT ppl | PIQA acc | PIQA acc_norm | Behavior gate |
-|---:|---:|---:|---:|---:|---:|:---:|
+| Epoch | Step | Held-out SFT loss | SFT ppl | PIQA acc | PIQA acc_norm |
+|---:|---:|---:|---:|---:|---:|
 {table}
 
 PIQA uses the complete 1,838-example validation split, zero-shot causal
@@ -152,6 +149,7 @@ def export_release(
     evaluation_root: Path,
     tokenizer_dir: Path,
     output: Path,
+    weights_dtype: str | None = None,
 ) -> dict[str, Any]:
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     if not summary.get("release_ready") or not summary.get("selected"):
@@ -174,6 +172,17 @@ def export_release(
         name: tensor.detach().cpu().contiguous()
         for name, tensor in state["model"].items()
     }
+    if weights_dtype is not None:
+        target_dtype = {
+            "float32": torch.float32,
+            "bfloat16": torch.bfloat16,
+        }[weights_dtype]
+        weights = {
+            name: tensor.to(target_dtype).contiguous()
+            if tensor.is_floating_point()
+            else tensor
+            for name, tensor in weights.items()
+        }
     floating_dtypes = {
         tensor.dtype for tensor in weights.values() if tensor.is_floating_point()
     }
@@ -272,6 +281,7 @@ def main() -> None:
     parser.add_argument("--evaluation-root", type=Path, required=True)
     parser.add_argument("--tokenizer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--weights-dtype", choices=("float32", "bfloat16"))
     args = parser.parse_args()
     manifest = export_release(
         summary_path=args.summary,
@@ -279,6 +289,7 @@ def main() -> None:
         evaluation_root=args.evaluation_root,
         tokenizer_dir=args.tokenizer,
         output=args.output,
+        weights_dtype=args.weights_dtype,
     )
     print(json.dumps(manifest, indent=2, sort_keys=True), flush=True)
 
