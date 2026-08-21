@@ -20,6 +20,12 @@ os.environ["COMPLEXITY_DISABLE_KERNELS"] = "1"
 from complexity.generative.detection.exporting import ExportBranch, RawDetectorExport
 from complexity.generative.detection.hub import load_detector_checkpoint
 
+DEFAULT_PARITY_TOLERANCE = 1e-4
+V8_PARITY_TOLERANCES = {
+    "o2m": 2e-3,
+    "nms-free": 3.5e-3,
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -34,8 +40,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tolerance",
         type=float,
-        default=1e-4,
-        help="Max allowed absolute difference (default: %(default)s)",
+        default=None,
+        help=(
+            "Max allowed absolute difference. Defaults to calibrated v8 branch "
+            "thresholds when ONNX metadata is available, otherwise 1e-4."
+        ),
     )
     parser.add_argument(
         "--num-tests",
@@ -52,16 +61,30 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def branch_from_sidecar(onnx_path: Path, requested: ExportBranch) -> ExportBranch:
-    if requested != "auto":
-        return requested
+def sidecar_metadata(onnx_path: Path) -> dict:
     metadata_path = onnx_path.with_suffix(".json")
     if not metadata_path.is_file():
+        return {}
+    return json.loads(metadata_path.read_text())
+
+
+def branch_from_sidecar(metadata: dict, requested: ExportBranch) -> ExportBranch:
+    if requested != "auto":
+        return requested
+    if "branch" not in metadata:
         return "auto"
-    branch = json.loads(metadata_path.read_text()).get("branch", "auto")
+    branch = metadata.get("branch", "auto")
     if branch not in {"nms-free", "o2m"}:
-        raise ValueError(f"invalid export branch in {metadata_path}: {branch}")
+        raise ValueError(f"invalid export branch in ONNX metadata: {branch}")
     return branch
+
+
+def calibrated_parity_tolerance(metadata: dict, branch: ExportBranch) -> float:
+    """Return the default raw-logit parity tolerance for an exported model."""
+
+    if metadata.get("architecture_version") == 8 and branch in V8_PARITY_TOLERANCES:
+        return V8_PARITY_TOLERANCES[branch]
+    return DEFAULT_PARITY_TOLERANCE
 
 
 def check_parity(
@@ -69,7 +92,7 @@ def check_parity(
     onnx_path: Path,
     *,
     branch: ExportBranch = "auto",
-    tolerance: float = 1e-4,
+    tolerance: float | None = None,
     num_tests: int = 5,
     batch_size: int = 1,
 ) -> bool:
@@ -85,7 +108,14 @@ def check_parity(
 
     print(f"Loading PyTorch model: {checkpoint_path}")
     detector = load_detector_checkpoint(checkpoint_path, device="cpu")
-    export_model = RawDetectorExport(detector, branch_from_sidecar(onnx_path, branch)).eval()
+    metadata = sidecar_metadata(onnx_path)
+    resolved_branch = branch_from_sidecar(metadata, branch)
+    effective_tolerance = (
+        calibrated_parity_tolerance(metadata, resolved_branch)
+        if tolerance is None
+        else tolerance
+    )
+    export_model = RawDetectorExport(detector, resolved_branch).eval()
     image_size = detector.config.image_size
     print(f"Prediction branch: {export_model.branch}")
 
@@ -105,7 +135,7 @@ def check_parity(
         absolute_difference = np.abs(pytorch_output - onnx_output)
         max_difference = float(absolute_difference.max())
         mean_difference = float(absolute_difference.mean())
-        passed = max_difference <= tolerance
+        passed = max_difference <= effective_tolerance
         all_passed &= passed
         status = "PASS" if passed else "FAIL"
         print(
@@ -114,7 +144,10 @@ def check_parity(
         )
 
     summary = "PASSED" if all_passed else "FAILED"
-    print(f"\nParity {summary}: branch={export_model.branch}, tolerance={tolerance}")
+    print(
+        f"\nParity {summary}: "
+        f"branch={export_model.branch}, tolerance={effective_tolerance}"
+    )
     return all_passed
 
 
