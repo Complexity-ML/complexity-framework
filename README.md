@@ -314,6 +314,34 @@ support to an upstream runtime. Use TR-Hash-i64 for the released model, or
 explicitly implement the architecture and its persisted route tables in the
 chosen server.
 
+### Hugging Face Transformers adapter
+
+The released checkpoint can also be packaged as an autonomous Transformers
+custom model. The adapter preserves all native safetensors names and exposes
+`AutoConfig`, `AutoModelForCausalLM`, causal loss, KV-cache generation, and the
+persisted deterministic route tables:
+
+```bash
+python scripts/export_tr_hash_transformers.py \
+  --config /path/to/config.json \
+  --weights /path/to/model.safetensors \
+  --tokenizer-dir /path/to/tokenizer \
+  --output /path/to/hub-bundle
+```
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_id = "AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT"
+tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True)
+```
+
+The standalone source and its compatibility notes live in
+[`integrations/transformers/tr_hash_moe`](integrations/transformers/tr_hash_moe).
+This PyTorch reference adapter does not imply native vLLM, SGLang, or AutoRound
+support; each optimized runtime still needs an explicit TR-Hash implementation.
+
 ## Validation
 
 ```bash
@@ -326,7 +354,8 @@ python -m pytest -q \
   tests/test_tr_hash_dynamic_moe.py \
   tests/test_token_routed_to_tr_hash_conversion.py \
   tests/test_tr_mha.py \
-  tests/test_external_inference.py
+  tests/test_external_inference.py \
+  tests/test_tr_hash_transformers_adapter.py
 ```
 
 The repository tracks configurations, metrics, tables, and lightweight

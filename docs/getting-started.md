@@ -117,6 +117,33 @@ model.eval()
 Do not copy only `model.safetensors`: configuration, tokenizer, persisted
 routes, and `chat_template.jinja` are part of the release contract.
 
+### Load through Transformers
+
+A Transformers bundle additionally contains `configuration_tr_hash_moe.py`,
+`modeling_tr_hash_moe.py`, and the `auto_map` entries that bind them. Load it
+as custom model code:
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_id = "AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT"
+tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    trust_remote_code=True,
+)
+generated = model.generate(
+    **tokenizer("Hello", return_tensors="pt"),
+    max_new_tokens=32,
+)
+```
+
+For a local native checkpoint, create the autonomous bundle with
+`scripts/export_tr_hash_transformers.py`. See the adapter
+[README](../integrations/transformers/tr_hash_moe/README.md) for the exact
+command. The exporter retains the persisted expert-route tables and separates
+architectural `num_experts_per_tok` from the sampling parameter `top_k`.
+
 ## Save and reload
 
 ```python
