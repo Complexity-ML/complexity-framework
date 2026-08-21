@@ -1,9 +1,15 @@
+import json
+
 import numpy as np
 import torch
+from safetensors.torch import save_file
 
+from complexity.config import ModelConfig
 from complexity.core.mlp.base import MLPConfig
 from complexity.core.mlp.tr_hash_engine import TRHashEngineMLP
+from complexity.models import ComplexityModel
 from scripts.viz_pretrained_expert_tsne_3d import (
+    load_tr_hash_model,
     parse_layers,
     routed_contributions,
     stratified_token_sample,
@@ -67,3 +73,41 @@ def test_routed_contributions_follow_both_persisted_routes():
     assert np.array_equal(source_indices, np.tile(selected, 2))
     assert np.all(norms > 0)
     assert np.allclose(np.linalg.norm(vectors, axis=1), 1.0, atol=1e-5)
+
+
+def test_load_tr_hash_model_accepts_current_engine_bundle(tmp_path):
+    config = ModelConfig(
+        vocab_size=32,
+        hidden_size=16,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=8,
+        shared_intermediate_size=24,
+        mlp_type="tr_hash_engine",
+        routing_strategy="token_id_multi_hash",
+        route_hash_count=2,
+        num_experts=4,
+        top_k=2,
+        shared_expert=True,
+        tie_word_embeddings=False,
+        use_custom_kernels=False,
+    )
+    source = ComplexityModel(config)
+    (tmp_path / "config.json").write_text(
+        json.dumps(config.to_dict()),
+        encoding="utf-8",
+    )
+    save_file(
+        {key: value.detach().contiguous() for key, value in source.state_dict().items()},
+        tmp_path / "model.safetensors",
+    )
+
+    loaded = load_tr_hash_model(tmp_path, torch.device("cpu"))
+
+    assert len(loaded.layers) == 1
+    assert isinstance(loaded.layers[0].mlp, TRHashEngineMLP)
+    assert torch.equal(
+        loaded.layers[0].mlp.engine.route_table,
+        source.layers[0].mlp.engine.route_table,
+    )

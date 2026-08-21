@@ -177,11 +177,12 @@ arithmetic independent of any specific pipeline.
 
 ## Audit pretrained routed-expert geometry
 
-The 3-D visualization script measures the released base checkpoint directly.
-It uses natural PIQA validation text without a chat template, captures the
-contextual MLP input at selected layers, and plots each top-2 routed residual
-contribution separately. It never substitutes random token IDs or includes the
-shared MLP output in the projected vector.
+The 3-D visualization script measures a released routed checkpoint directly.
+It supports both historical converted bundles and current `tr_hash_engine`
+exports, uses natural PIQA validation text without a chat template, captures
+the contextual MLP input at selected layers, and plots each top-2 routed
+residual contribution separately. It never substitutes random token IDs or
+includes the shared MLP output in the projected vector.
 
 ```bash
 pip install -e ".[viz]"
@@ -191,6 +192,10 @@ python scripts/viz_pretrained_expert_tsne_3d.py \
   --layers 0,5,11,17,23 \
   --output artifacts/evaluations/tr_hash_500m_pretrain_tsne/expert_tsne_3d.html
 ```
+
+For the released 200M full-SFT checkpoint, use layers `0,3,7,11,15` and pass
+release-specific labels and token accounting through `--model-label`,
+`--artifact-label`, `--source-token-exposure`, and `--sft-tokens`.
 
 The command also writes a deterministic compressed point table and a metadata
 manifest containing the checkpoint, tokenizer/config, probe, HTML, and point

@@ -1,9 +1,9 @@
-"""Interactive 3-D t-SNE of the pretrained TR-Hash expert contributions.
+"""Interactive 3-D t-SNE of TR-Hash routed-expert contributions.
 
 This script is deliberately narrower than the historical visualization:
 
-* it loads the exported 492.1M/20B pretrained checkpoint and preserves its
-  persisted per-layer route tables through the canonical conversion path;
+* it loads either a historical exported checkpoint or a current
+  ``tr_hash_engine`` bundle and preserves its persisted per-layer routes;
 * it feeds natural validation text without a chat template;
 * it visualizes only the two routed residual contributions, never the shared
   MLP output or the full MLP output;
@@ -36,11 +36,11 @@ from safetensors.torch import load_file
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 
+from complexity.config import ModelConfig
 from complexity.core.mlp.tr_hash_engine import TRHashEngineMLP
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
 from complexity.utils.token_routed_conversion import convert_token_routed_checkpoint
-
 
 DEFAULT_CHECKPOINT = Path(
     "artifacts/remote_runs/tr_hash_moe_500m_20b/hf_base"
@@ -52,6 +52,9 @@ DEFAULT_PROBE = Path(
     "physicaliqa-train-dev/dev.jsonl",
 )
 DEFAULT_LAYERS = (0, 5, 11, 17, 23)
+DEFAULT_MODEL_LABEL = "TR-Hash 500M pretrained"
+DEFAULT_ARTIFACT_LABEL = "tr_hash_moe_500m_20b/hf_base"
+DEFAULT_SOURCE_TOKEN_EXPOSURE = 19_999_752_192
 EXPERT_COLORS = ("#f87171", "#60a5fa", "#34d399", "#fbbf24")
 ROUTE_SYMBOLS = ("circle", "diamond")
 
@@ -83,17 +86,46 @@ def resolve_device(name: str) -> torch.device:
     return torch.device("cpu")
 
 
-def load_pretrained_model(checkpoint: Path, device: torch.device) -> ComplexityModel:
+def _load_current_engine_model(
+    state: dict[str, torch.Tensor],
+    raw_config: dict,
+) -> ComplexityModel:
+    config = ModelConfig.from_dict(raw_config)
+    config.use_custom_kernels = False
+    model = ComplexityModel(config)
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    tolerated_suffixes = (
+        "topk_token_to_expert",
+        "rotary_emb.inv_freq",
+        "pair_hash_route_codes",
+        "pair_hash_expert_pairs",
+    )
+    unexpected_missing = [
+        key for key in missing if not key.endswith(tolerated_suffixes)
+    ]
+    if unexpected_missing or unexpected:
+        raise RuntimeError(
+            "Checkpoint mismatch: "
+            f"missing={unexpected_missing}, unexpected={list(unexpected)}"
+        )
+    return model
+
+
+def load_tr_hash_model(checkpoint: Path, device: torch.device) -> ComplexityModel:
     config_path = checkpoint / "config.json"
     weights_path = checkpoint / "model.safetensors"
-    config = json.loads(config_path.read_text(encoding="utf-8"))
+    raw_config = json.loads(config_path.read_text(encoding="utf-8"))
     state = load_file(str(weights_path), device="cpu")
-    if config.get("mlp_type") not in {"token_routed", "sort_split", "sort_split_moe"}:
+    mlp_type = raw_config.get("mlp_type")
+    if mlp_type in {"token_routed", "sort_split", "sort_split_moe"}:
+        model = convert_token_routed_checkpoint(state, raw_config)
+    elif mlp_type == "tr_hash_engine":
+        model = _load_current_engine_model(state, raw_config)
+    else:
         raise ValueError(
-            "the public 20B checkpoint is expected to use the historical "
-            f"serialized token_routed layout, got {config.get('mlp_type')!r}"
+            "unsupported routed checkpoint layout: "
+            f"mlp_type={mlp_type!r}"
         )
-    model = convert_token_routed_checkpoint(state, config)
     del state
     model.eval().requires_grad_(False).to(device)
     return model
@@ -322,6 +354,7 @@ def write_interactive_html(
     rows: list[dict],
     layers: tuple[int, ...],
     output_path: Path,
+    model_label: str,
 ) -> None:
     import plotly.graph_objects as go
 
@@ -388,7 +421,7 @@ def write_interactive_html(
                     {
                         "title": {
                             "text": (
-                                "TR-Hash 500M pretrained · routed expert contributions"
+                                f"{model_label} · routed expert contributions"
                                 f" · layer {layer_idx + 1}"
                             )
                         }
@@ -400,7 +433,7 @@ def write_interactive_html(
     figure.update_layout(
         title={
             "text": (
-                "TR-Hash 500M pretrained · routed expert contributions"
+                f"{model_label} · routed expert contributions"
                 f" · layer {layers[0] + 1}"
             ),
             "x": 0.5,
@@ -461,7 +494,7 @@ def write_interactive_html(
         include_plotlyjs=True,
         full_html=True,
         config={"responsive": True, "displaylogo": False},
-        div_id="trhash-500m-pretrain-expert-tsne",
+        div_id="trhash-routed-expert-tsne",
     )
 
 
@@ -480,6 +513,14 @@ def main() -> None:
     parser.add_argument("--perplexity", type=float, default=35.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--model-label", default=DEFAULT_MODEL_LABEL)
+    parser.add_argument("--artifact-label", default=DEFAULT_ARTIFACT_LABEL)
+    parser.add_argument(
+        "--source-token-exposure",
+        type=int,
+        default=DEFAULT_SOURCE_TOKEN_EXPOSURE,
+    )
+    parser.add_argument("--sft-tokens", type=int, default=0)
     args = parser.parse_args()
 
     checkpoint = args.checkpoint.resolve()
@@ -503,7 +544,7 @@ def main() -> None:
     records = read_probe_records(probe, args.probe_records)
     tokenizer = Tokenizer.load(str(checkpoint))
     encoded = encode_probe(tokenizer, records)
-    model = load_pretrained_model(checkpoint, device)
+    model = load_tr_hash_model(checkpoint, device)
     if max(args.layers) >= len(model.layers):
         raise ValueError(
             f"requested layer {max(args.layers)}, model has {len(model.layers)} layers"
@@ -576,7 +617,7 @@ def main() -> None:
             f"expert_counts={counts.tolist()} kl={kl_divergence:.4f}"
         )
 
-    write_interactive_html(all_rows, args.layers, output)
+    write_interactive_html(all_rows, args.layers, output, args.model_label)
     points_path.parent.mkdir(parents=True, exist_ok=True)
     with points_path.open("wb") as raw_handle:
         with gzip.GzipFile(
@@ -590,6 +631,9 @@ def main() -> None:
                 writer.writeheader()
                 writer.writerows(all_rows)
 
+    trainable_parameters = int(
+        sum(parameter.numel() for parameter in model.parameters())
+    )
     del model
     if device.type == "mps":
         torch.mps.empty_cache()
@@ -597,17 +641,18 @@ def main() -> None:
         torch.cuda.empty_cache()
 
     metadata = {
-        "title": "TR-Hash 500M pretrained routed-expert contribution t-SNE",
+        "title": f"{args.model_label} routed-expert contribution t-SNE",
         "scope": (
             "Exploratory geometry of routed residual contributions; not a "
             "specialization, quality, or routing-superiority claim."
         ),
         "checkpoint": {
-            "artifact": "tr_hash_moe_500m_20b/hf_base",
+            "artifact": args.artifact_label,
             "weights_sha256": sha256_file(checkpoint / "model.safetensors"),
             "config_sha256": sha256_file(checkpoint / "config.json"),
-            "trainable_parameters": 492_097_536,
-            "pretraining_tokens": 19_999_752_192,
+            "trainable_parameters": trainable_parameters,
+            "source_token_exposure": args.source_token_exposure,
+            "sft_tokens": args.sft_tokens,
         },
         "probe": {
             "name": "PIQA validation",
