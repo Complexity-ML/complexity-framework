@@ -10,7 +10,7 @@ if [[ ! -s /workspace/.hf_token ]]; then
 fi
 export HF_TOKEN="$(< /workspace/.hf_token)"
 
-exec python scripts/tokenize_luciole_16way_sft.py \
+exec python -m scripts.tokenize_luciole_16way_sft \
   --source /workspace/luciole-16way-sft \
   --tokenizer /workspace/tr-hash-refinement \
   --output /workspace/luciole-16way-tokenized/tr-hash-32k-v1 \
