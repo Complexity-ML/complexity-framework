@@ -55,7 +55,14 @@ def save_state(state_path: Path, state: dict) -> None:
     state_path.write_text(json.dumps(state, indent=2))
 
 
-def sync_once(checkpoint_dir: Path, repo_id: str, token: str, private: bool, keep_local: int) -> None:
+def sync_once(
+    checkpoint_dir: Path,
+    repo_id: str,
+    token: str,
+    private: bool,
+    keep_local: int,
+    path_prefix: str = "",
+) -> None:
     from huggingface_hub import HfApi, create_repo
 
     state_path = checkpoint_dir / STATE_FILENAME
@@ -86,7 +93,9 @@ def sync_once(checkpoint_dir: Path, repo_id: str, token: str, private: bool, kee
             folder_path=str(pack_dir),
             repo_id=repo_id,
             repo_type="model",
-            path_in_repo=pack_dir.name,
+            path_in_repo="/".join(
+                part for part in (path_prefix.strip("/"), pack_dir.name) if part
+            ),
             token=token,
         )
         uploaded.add(pack_dir.name)
@@ -130,10 +139,19 @@ def run_pass_with_timeout(pass_args: list[str], pass_timeout: float) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint-dir", required=True)
-    parser.add_argument("--repo-id", required=True, help="e.g. AETHORIA-AI/tr-hash-200m-70b-replay-checkpoints")
+    parser.add_argument(
+        "--repo-id",
+        required=True,
+        help="e.g. AETHORIA-AI/TR-HASH-MoE-200M-130B-Checkpoints",
+    )
     parser.add_argument("--hf-token-env", default="HF_TOKEN")
     parser.add_argument("--keep-local", type=int, default=1, help="most-recent uploaded checkpoints to keep on disk")
     parser.add_argument("--poll-interval", type=float, default=60.0)
+    parser.add_argument(
+        "--path-prefix",
+        default="",
+        help="Optional repository subdirectory for uploaded checkpoints.",
+    )
     parser.add_argument("--private", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--once", action="store_true", help="run a single pass instead of polling forever")
     parser.add_argument(
@@ -155,7 +173,14 @@ def main() -> None:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     if args.once:
-        sync_once(checkpoint_dir, args.repo_id, token, args.private, args.keep_local)
+        sync_once(
+            checkpoint_dir,
+            args.repo_id,
+            token,
+            args.private,
+            args.keep_local,
+            args.path_prefix,
+        )
         return
 
     pass_args = [
@@ -168,6 +193,8 @@ def main() -> None:
         "--private" if args.private else "--no-private",
         "--once",
     ]
+    if args.path_prefix:
+        pass_args.extend(["--path-prefix", args.path_prefix])
     while True:
         run_pass_with_timeout(pass_args, args.pass_timeout)
         time.sleep(args.poll_interval)

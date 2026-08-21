@@ -32,7 +32,11 @@ from torch.utils.data import DataLoader, IterableDataset
 from tqdm import tqdm
 
 from complexity.config import ModelConfig
-from complexity.core.losses import causal_lm_loss_from_hidden
+from complexity.core.losses import (
+    causal_lm_loss_from_hidden,
+    fused_linear_causal_lm_loss,
+    log_liger_fused_linear_ce_status,
+)
 from complexity.inference.chat_template import (
     default_chat_template,
     load_chat_template,
@@ -1260,6 +1264,49 @@ def sft_loss_from_hidden(
     return total / denom
 
 
+def compute_sft_loss(
+    hidden_states: torch.Tensor,
+    output_weight: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    fp32_loss: bool,
+    liger_loss: bool,
+    chunk_tokens: int,
+    example_weights: torch.Tensor | None = None,
+    sync_metrics: bool = True,
+) -> tuple[torch.Tensor, float]:
+    """Dispatch the SFT loss through one explicit, testable backend policy."""
+
+    if liger_loss:
+        if example_weights is not None:
+            raise ValueError("Liger SFT loss does not support per-example loss weights")
+        loss, metrics = fused_linear_causal_lm_loss(
+            hidden_states,
+            output_weight,
+            labels,
+            use_liger=True,
+            sync_metrics=sync_metrics,
+        )
+        return loss, float(metrics.ce)
+    if fp32_loss:
+        loss = sft_loss_from_hidden(
+            hidden_states,
+            output_weight,
+            labels,
+            chunk_tokens=chunk_tokens,
+            example_weights=example_weights,
+        )
+        return loss, float(loss.detach().item()) if sync_metrics else float("nan")
+    loss, metrics = causal_lm_loss_from_hidden(
+        hidden_states,
+        output_weight,
+        labels,
+        chunk_tokens=chunk_tokens,
+        sync_metrics=sync_metrics,
+    )
+    return loss, float(metrics.ce)
+
+
 @torch.no_grad()
 def evaluate_sft(
     model,
@@ -1269,6 +1316,7 @@ def evaluate_sft(
     device: torch.device,
     amp_dtype,
     fp32_loss: bool,
+    liger_loss: bool,
     chunk_tokens: int,
     distributed: bool,
     max_batches: int,
@@ -1283,7 +1331,12 @@ def evaluate_sft(
             break
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
-        example_weights = batch.get("loss_weight")
+        # The shard collator always emits ``loss_weight`` (unit weights for an
+        # ordinary unweighted run, plus zeroes on labels already masked with
+        # -100). Only the explicit FP32 weighted-loss backend consumes it.
+        # Passing these neutral tensors to Liger would incorrectly classify a
+        # normal packed batch as task-weighted SFT.
+        example_weights = batch.get("loss_weight") if fp32_loss else None
         if example_weights is not None:
             example_weights = example_weights.to(device, non_blocking=True)
         supervised = int((labels != -100).sum().item())
@@ -1291,21 +1344,16 @@ def evaluate_sft(
             continue
         with autocast(device, dtype=amp_dtype, enabled=amp_dtype is not None):
             outputs = model(input_ids, return_logits=False)
-            if fp32_loss:
-                loss = sft_loss_from_hidden(
-                    outputs["last_hidden_state"],
-                    raw_model.embed_tokens.weight,
-                    labels,
-                    chunk_tokens=chunk_tokens,
-                    example_weights=example_weights,
-                )
-            else:
-                loss, _ = causal_lm_loss_from_hidden(
-                    outputs["last_hidden_state"],
-                    raw_model.embed_tokens.weight,
-                    labels,
-                    chunk_tokens=chunk_tokens,
-                )
+            loss, _ = compute_sft_loss(
+                outputs["last_hidden_state"],
+                raw_model.embed_tokens.weight,
+                labels,
+                fp32_loss=fp32_loss,
+                liger_loss=liger_loss,
+                chunk_tokens=chunk_tokens,
+                example_weights=example_weights,
+                sync_metrics=False,
+            )
         loss_sum += loss.detach().float() * supervised
         token_count += supervised
     if distributed:
@@ -1574,6 +1622,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Use the generic causal_lm_loss_from_hidden path.",
     )
+    parser.add_argument(
+        "--sft-liger-loss",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use Liger fused linear cross-entropy for SFT without materializing "
+            "the [batch, sequence, vocabulary] logits tensor. Production CUDA "
+            "launchers should combine this with COMPLEXITY_REQUIRE_LIGER=1."
+        ),
+    )
     parser.add_argument("--log-steps", type=int, default=10)
     parser.add_argument(
         "--eval-steps",
@@ -1740,6 +1798,12 @@ def main():
     )
     args.use_custom_kernels = kernel_policy
     configure_torch_acceleration(kernel_policy=kernel_policy, log=is_main)
+    if args.sft_liger_loss:
+        if args.sft_fp32_loss:
+            raise ValueError("--sft-liger-loss requires --no-sft-fp32-loss")
+        if device.type != "cuda":
+            raise ValueError("--sft-liger-loss requires CUDA")
+        log_liger_fused_linear_ce_status(device.type)
 
     checkpoint_to_load = args.resume or args.checkpoint
     ckpt_dir, state = load_checkpoint_state(checkpoint_to_load, map_location="cpu")
@@ -2143,6 +2207,7 @@ def main():
             device=device,
             amp_dtype=amp_dtype,
             fp32_loss=args.sft_fp32_loss,
+            liger_loss=args.sft_liger_loss,
             chunk_tokens=args.loss_chunk_tokens,
             distributed=distributed,
             max_batches=args.eval_batches,
@@ -2157,6 +2222,7 @@ def main():
                 device=device,
                 amp_dtype=amp_dtype,
                 fp32_loss=args.sft_fp32_loss,
+                liger_loss=args.sft_liger_loss,
                 chunk_tokens=args.loss_chunk_tokens,
                 distributed=distributed,
                 max_batches=args.eval_batches,
@@ -2245,7 +2311,12 @@ def main():
         last_step = step
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
-        example_weights = batch.get("loss_weight")
+        # Task weighting is supported only by the explicit FP32 SFT loss. The
+        # Liger path is unweighted and must not receive the collator's neutral
+        # unit/ignored-position weights.
+        example_weights = (
+            batch.get("loss_weight") if args.sft_fp32_loss else None
+        )
         if example_weights is not None:
             example_weights = example_weights.to(device, non_blocking=True)
         stats = label_stats(labels, config.vocab_size)
@@ -2260,25 +2331,16 @@ def main():
         optimizer.zero_grad(set_to_none=True)
         with autocast(device, dtype=amp_dtype, enabled=amp_dtype is not None):
             outputs = model(input_ids, return_logits=False)
-            if args.sft_fp32_loss:
-                loss = sft_loss_from_hidden(
-                    outputs["last_hidden_state"],
-                    raw_model.embed_tokens.weight,
-                    labels,
-                    chunk_tokens=args.loss_chunk_tokens,
-                    example_weights=example_weights,
-                )
-            else:
-                loss, metrics = causal_lm_loss_from_hidden(
-                    outputs["last_hidden_state"],
-                    raw_model.embed_tokens.weight,
-                    labels,
-                    chunk_tokens=args.loss_chunk_tokens,
-                )
-        if args.sft_fp32_loss:
-            metrics_ce = float(loss.detach().item())
-        else:
-            metrics_ce = float(metrics.ce)
+            loss, metrics_ce = compute_sft_loss(
+                outputs["last_hidden_state"],
+                raw_model.embed_tokens.weight,
+                labels,
+                fp32_loss=args.sft_fp32_loss,
+                liger_loss=args.sft_liger_loss,
+                chunk_tokens=args.loss_chunk_tokens,
+                example_weights=example_weights,
+                sync_metrics=True,
+            )
         if not math.isfinite(metrics_ce):
             raise FloatingPointError(
                 "Non-finite SFT loss before backward: "
@@ -2314,6 +2376,7 @@ def main():
                 device=device,
                 amp_dtype=amp_dtype,
                 fp32_loss=args.sft_fp32_loss,
+                liger_loss=args.sft_liger_loss,
                 chunk_tokens=args.loss_chunk_tokens,
                 distributed=distributed,
                 max_batches=args.eval_batches,
@@ -2331,6 +2394,7 @@ def main():
                     device=device,
                     amp_dtype=amp_dtype,
                     fp32_loss=args.sft_fp32_loss,
+                    liger_loss=args.sft_liger_loss,
                     chunk_tokens=args.loss_chunk_tokens,
                     distributed=distributed,
                     max_batches=args.eval_batches,

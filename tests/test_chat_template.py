@@ -17,6 +17,7 @@ from complexity.inference.chat_template import (
     render_jinja_inference_prompt,
     render_jinja_messages,
     render_messages_before_assistant,
+    render_thinking_inference_prompt,
     validate_chat_template,
 )
 from scripts.convert_pt_to_mlx import write_chat_template
@@ -78,6 +79,12 @@ def test_template_renders_canonical_think_final_envelope() -> None:
     )
 
 
+def test_thinking_inference_prefills_canonical_start() -> None:
+    assert render_thinking_inference_prompt("Hello", default_chat_template()) == (
+        "User:\nHello\n\nAssistant:\n<think>\n"
+    )
+
+
 def test_legacy_v1_template_remains_readable() -> None:
     template = default_chat_template()
     template.pop("assistant_envelope")
@@ -117,6 +124,19 @@ def test_huggingface_template_uses_the_same_prompt_contract() -> None:
     assert "Assistant:\\n" in rendered
     assert '"<|endoftext|>"' not in rendered
     assert "+ eos_token" in rendered
+
+
+def test_huggingface_thinking_template_prefills_envelope() -> None:
+    from jinja2 import Template
+
+    rendered = Template(
+        huggingface_chat_template(default_chat_template(), force_thinking=True)
+    ).render(
+        messages=[{"role": "user", "content": "Hello"}],
+        eos_token="</s>",
+        add_generation_prompt=True,
+    )
+    assert rendered == "User:\nHello\n\nAssistant:\n<think>\n"
 
 
 def test_huggingface_template_matches_sft_for_multi_turn_conversation() -> None:

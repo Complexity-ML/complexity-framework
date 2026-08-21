@@ -116,8 +116,13 @@ def test_exported_bundle_loads_through_auto_model(tmp_path, monkeypatch):
 
     config = transformers.AutoConfig.from_pretrained(output, trust_remote_code=True)
     model = transformers.AutoModelForCausalLM.from_pretrained(output, trust_remote_code=True).eval()
+    raw_exported_config = __import__("json").loads(
+        (output / "config.json").read_text(encoding="utf-8")
+    )
     assert config.model_type == "tr_hash_moe"
     assert config.num_experts_per_tok == 2
+    assert raw_exported_config["top_k"] == 2
+    assert raw_exported_config["num_experts_per_tok"] == 2
     assert "top_k" not in config.to_dict()
     with safe_open(output / "model.safetensors", framework="pt") as checkpoint:
         assert checkpoint.metadata()["format"] == "pt"

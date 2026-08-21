@@ -31,7 +31,10 @@ TOKENIZER_FILES = {
 def build_transformers_config(raw: dict) -> dict:
     config = dict(raw)
     if "top_k" in config:
-        config["num_experts_per_tok"] = config.pop("top_k")
+        # Keep the native architectural key for TR-Hash-i64 while exposing the
+        # unambiguous Transformers MoE name. TRHashConfig consumes the legacy
+        # key on load, so it does not leak into GenerationConfig sampling.
+        config["num_experts_per_tok"] = config["top_k"]
     config.update(
         {
             "model_type": "tr_hash_moe",

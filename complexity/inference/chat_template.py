@@ -81,6 +81,25 @@ def validate_chat_template(template: dict[str, Any]) -> dict[str, Any]:
     return dict(template)
 
 
+def align_chat_template_eos(
+    template: dict[str, Any],
+    *,
+    eos_token: str,
+) -> dict[str, Any]:
+    """Align a chat template to the loaded tokenizer's EOS spelling.
+
+    The semantic contract is the EOS token ID. Native and exported tokenizers
+    can spell that same ID differently, so SFT must not encode an unknown EOS
+    spelling as a sequence of ordinary tokens between conversation turns.
+    """
+
+    if not isinstance(eos_token, str) or not eos_token:
+        raise ValueError("chat-template EOS alignment requires a non-empty token")
+    aligned = validate_chat_template(template)
+    aligned["eos_token"] = eos_token
+    return aligned
+
+
 def load_chat_template(path: str | Path | None = None) -> dict[str, Any]:
     if path is None:
         return default_chat_template()
@@ -173,6 +192,23 @@ def render_inference_prompt(user_content: str, template: dict[str, Any]) -> str:
     )
 
 
+def render_thinking_inference_prompt(
+    user_content: str, template: dict[str, Any]
+) -> str:
+    """Render inference with the canonical thinking envelope prefilled.
+
+    Training keeps ``<think>`` in the supervised completion. At inference,
+    prefilling that learned first token makes Thinking mode deterministic
+    without changing the training projection or the ordinary chat mode.
+    """
+
+    template = validate_chat_template(template)
+    envelope = template.get("assistant_envelope")
+    if not envelope:
+        raise ValueError("Chat template has no assistant envelope")
+    return render_inference_prompt(user_content, template) + envelope["think_start"]
+
+
 def render_messages_before_assistant(
     messages: Iterable[dict[str, Any]],
     template: dict[str, Any],
@@ -235,7 +271,9 @@ def render_assistant_envelope(
     )
 
 
-def huggingface_chat_template(template: dict[str, Any]) -> str:
+def huggingface_chat_template(
+    template: dict[str, Any], *, force_thinking: bool = False
+) -> str:
     """Build a Jinja template aligned with the exported tokenizer's EOS ID.
 
     Native training tokenizers may spell ID 0 as ``<|endoftext|>`` while the
@@ -253,6 +291,14 @@ def huggingface_chat_template(template: dict[str, Any]) -> str:
         "user_prefix": json.dumps(user_prefix),
         "user_suffix": json.dumps(user_suffix),
         "assistant": json.dumps(template["assistant_prefix"]),
+        "thinking_generation": json.dumps(
+            template["assistant_prefix"]
+            + (
+                template["assistant_envelope"]["think_start"]
+                if force_thinking and template.get("assistant_envelope")
+                else ""
+            )
+        ),
     }
     if template["id"] == CHAT_TEMPLATE_ID:
         role_branches = (
@@ -281,6 +327,6 @@ def huggingface_chat_template(template: dict[str, Any]) -> str:
         + role_branches
         + "{%- endfor -%}"
         + "{%- if add_generation_prompt -%}"
-        + f"{{{{- {literals['assistant']} -}}}}"
+        + f"{{{{- {literals['thinking_generation']} -}}}}"
         + "{%- endif -%}"
     )

@@ -63,6 +63,28 @@ def test_sync_once_uploads_new_checkpoints_and_records_state(mod, tmp_path, monk
     assert state["uploaded"] == ["token_pack_001_100", "token_pack_002_200"]
 
 
+def test_sync_once_supports_a_repository_path_prefix(mod, tmp_path, monkeypatch) -> None:
+    _make_checkpoint(tmp_path, "step_001563")
+    fake_api = MagicMock()
+    fake_module = type(
+        "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
+    )
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_module)
+
+    mod.sync_once(
+        tmp_path,
+        "org/repo",
+        token="fake",
+        private=False,
+        keep_local=3,
+        path_prefix="training/sft-v2-300k/checkpoints/",
+    )
+
+    assert fake_api.upload_folder.call_args.kwargs["path_in_repo"] == (
+        "training/sft-v2-300k/checkpoints/step_001563"
+    )
+
+
 def test_sync_once_never_uploads_a_partially_written_checkpoint(mod, tmp_path, monkeypatch) -> None:
     _make_checkpoint(tmp_path, "token_pack_001_100", complete=True)
     _make_checkpoint(tmp_path, "token_pack_002_200", complete=False)
