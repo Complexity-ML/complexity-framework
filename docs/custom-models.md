@@ -3,6 +3,10 @@
 `ModelConfig` composes registered attention, MLP, normalization, and position
 components into `ComplexityModel`.
 
+For the exact released 200M configuration, import
+`scripts.train_tr_hash_200m_200b.make_config`. The compact examples below are
+construction examples, not released checkpoints.
+
 ## Compose TR-GQA
 
 ```python
@@ -20,7 +24,8 @@ config = ModelConfig(
     intermediate_size=256,
     shared_expert=True,
     shared_intermediate_size=1536,
-    routing_strategy="modulo_cyclic",
+    routing_strategy="token_id_multi_hash",
+    route_hash_count=2,
     top_k=2,
 )
 model = ComplexityModel(config)
@@ -41,7 +46,8 @@ config = ModelConfig(
     intermediate_size=256,
     shared_expert=True,
     shared_intermediate_size=1536,
-    routing_strategy="modulo_cyclic",
+    routing_strategy="token_id_multi_hash",
+    route_hash_count=2,
     top_k=2,
 )
 model = ComplexityModel(config)

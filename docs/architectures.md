@@ -1,17 +1,43 @@
 # Architecture and naming
 
-Complexity Framework composes a sequence mixer and a feed-forward path in a
-pre-norm causal decoder:
+Complexity Framework composes attention and a feed-forward path in a pre-norm
+causal decoder:
 
 ```text
 x ─► RMSNorm ─► attention ─► residual add
-  └► RMSNorm ─► FFN       ─► residual add
+└─► RMSNorm ─► TR-MoE     ─► residual add
 ```
 
-Token identity may influence the FFN, attention, or an experimental lexical
-residual, but these mechanisms are configured independently.
+Token identity selects routed expert parameters. It does not replace
+attention: every selected expert transforms the current contextual hidden
+state.
 
-## Primary decoder families
+## Released TR-HASH MoE 200M
+
+The current reference release is TR-GQA with the following shape:
+
+```python
+from scripts.train_tr_hash_200m_200b import make_config
+
+config = make_config()
+```
+
+| Component | Released value |
+|---|---:|
+| Parameters | 201,194,368 |
+| Layers / hidden size | 16 / 896 |
+| Query / KV heads | 14 / 2 |
+| Vocabulary / context | 32,000 / 2,048 |
+| Shared SwiGLU width | 3,072 |
+| Stored routed width | 256 total = 4 experts × 64 |
+| Active routed width | 128 = top-2 × 64 |
+| Route construction | 2-channel multi-hash rendezvous voting |
+
+The release uses `intermediate_size=256`. In `TRHashEngineMLP`, this field is
+the total stored routed width, not a per-expert width. It is divided by
+`num_experts=4` when the engine is built.
+
+## Public decoder names
 
 ### TR-GQA
 
@@ -20,14 +46,13 @@ TR-GQA combines grouped-query attention with TR-MoE:
 ```python
 ModelConfig(
     attention_type="gqa",
-    num_attention_heads=8,
+    num_attention_heads=14,
     num_key_value_heads=2,
     mlp_type="tr_hash_engine",
 )
 ```
 
-Multiple query heads share each K/V head. The FFN contains a shared dense path
-and deterministic token-selected experts.
+Multiple query heads share each K/V head. The released 200M model is TR-GQA.
 
 ### TR-MHA
 
@@ -42,78 +67,77 @@ ModelConfig(
 )
 ```
 
-Every query head has its own K/V head. Only the attention layout changes;
-TR-MoE routing and expert computation remain the same.
+Only the attention layout changes. TR-MHA is implemented, but the 200M release
+metrics do not transfer to an untrained TR-MHA configuration.
 
-### Dense controls
+### TR-MoE
 
-The old `mlp_type="swiglu"`/`"gelu"`/`"geglu"`/`"standard"` registry entries
-were removed. The explicitly named `dense_deterministic` control remains: it
-is a dense SwiGLU FFN with deterministic Gaussian initialization and is useful
-for bounded initialization comparisons. It is not the canonical TR-GQA or
-TR-MHA feed-forward path and must be labeled explicitly in results.
+For layer `l`, contextual hidden state `x`, token ID `t`, shared branch `S`,
+expert `E`, fixed route table `R`, fixed route weights `a`, and output scales
+`α` and `β`:
 
-## TR-MoE block
+```text
+TRMoE_l(x, t) = α S_l(x)
+              + β Σ_j a_j E_l,R[l,j,t](x)
+```
 
-For hidden state \(x\) and token identifier \(t\):
+The released model uses two routes with `a=(0.5, 0.5)`, `α=1`, and `β=2`.
+Both expert outputs therefore contribute equally. Routes are persisted
+`[top_k, vocab_size]` lookup tables with no learned gate and no auxiliary
+load-balancing loss.
 
-\[
-\mathrm{TRMoE}(x,t)
-=g_s\,\mathrm{Shared}(x)
-+g_r\sum_{k=1}^{K}w_k\,\mathrm{Expert}_{r_{l,k}(t)}(x).
-\]
+## Multi-hash route construction
 
-- \(r_{l,k}(t)\) is a deterministic layer-specific lookup.
-- The selected experts process the contextual hidden state \(x\), not an
-  embedding-only representation.
-- The shared path is optional in code but enabled in the principal TR-GQA and
-  TR-MHA configurations.
-- Gates \(g_s\) and \(g_r\) may be fixed or learned.
-- No learned MoE router or auxiliary load-balancing loss is required for
-  lexical routing.
+For each layer and token/expert pair, the release computes two independent
+32-bit rendezvous scores. Scores are summed across channels, then the two
+highest-scoring distinct experts become the fixed top-2 route. Construction is
+deterministic from token ID, expert ID, layer index, and route seed.
 
-See [TR-MoE internals](token-routed.md).
+The result is compiled at model construction or loaded from the checkpoint.
+Inference does not execute a routing neural network. Optimized and PyTorch
+paths consume the same route table.
 
-## Experimental routed-attention adapters
+## Other routing strategies
 
-The attention registry also exposes:
+`TRHashEngineMLP` accepts:
 
-- `tr_mha` / `token_routed_mha`;
-- `tr_mha_v2` / `token_routed_mha_v2`.
+- `modulo_cyclic`;
+- `token_id_balanced_hash`;
+- `token_id_multi_hash`;
+- `token_id_hierarchical_hash`.
 
-These keep a full MHA path and add low-rank token-routed Q/V residual adapters.
-They are **not** the same configuration as MHA + `TRHashEngineMLP`. The first
-prototype evaluates contextual logits across all route experts; v2 restricts
-contextual reweighting to two fixed token-ID candidates and starts the routed
-up-projection at zero.
+Compatibility aliases may parse in `ModelConfig`, but new release documents
+should use one of the canonical values above. Historical stochastic,
+frequency-aware, hidden-state LSH, and learned-router paths are not the current
+TR-Hash execution contract.
 
-See [`../TR_MHA.md`](../TR_MHA.md).
+## Dense controls and experimental attention adapters
 
-## Other implemented sequence mixers
+`dense_deterministic` is a separately named deterministic-initialization dense
+SwiGLU control. It is useful for bounded comparisons but is not TR-MoE.
 
-| Registry value | Status | Description |
-| --- | --- | --- |
-| `gqa`, `mha`, `mqa` | baseline | Standard causal attention variants |
-| `lexical_gqa`, `lexical_key_gqa` | experiment | Lexical residuals around GQA |
-| `causal_conv`, `causal_state_conv` | experiment | Attention-free causal convolution |
-| `causal_fast_weight_conv` | experiment | Fixed-state fast-weight convolution |
-| `routed_gqa` | prototype | Routed GQA implementation |
+The attention registry values `tr_mha` and `tr_mha_v2` add experimental
+token-routed residual adapters inside MHA. They are not synonyms for
+**TR-MHA = MHA + TR-MoE** and do not inherit the 200M release evidence.
 
-These are research alternatives and should not be presented as equivalent
-evidence without a matched run.
+Other sequence mixers and multimodal position-routed modules are experimental.
+Their routing keys and evidence must be documented separately.
 
 ## Configuration invariants
 
-- `hidden_size` must be divisible by `num_attention_heads`.
-- `num_attention_heads` must be divisible by `num_key_value_heads`.
-- MHA requires equal query and K/V head counts.
-- `top_k` cannot exceed `num_experts`.
-- TR-MoE requires `token_ids` to preserve lexical routing.
-- Exact parameter matching must be checked after model construction.
+- `hidden_size` is divisible by `num_attention_heads`;
+- query-head count is divisible by KV-head count;
+- MHA uses equal query and KV head counts;
+- routed `intermediate_size` is divisible by `num_experts`;
+- `top_k` does not exceed `num_experts`;
+- `route_hash_count` is between 2 and 8;
+- TR-MoE receives the original token IDs;
+- persisted route tables must be loaded with the expert weights they trained;
+- parameter and active-width claims are measured after construction.
 
 ## Related pages
 
-- [TR-MoE internals](token-routed.md)
+- [TR-HASH MoE 200M release](tr-hash-200m-release.md)
+- [TR-Hash engine](tr-hash-engine.md)
 - [Getting started](getting-started.md)
-- [Run configurations](run_configs.md)
-- [API reference](api.md)
+- [Historical TokenRoutedMLP migration](token-routed.md)

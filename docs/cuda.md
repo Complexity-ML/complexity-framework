@@ -103,13 +103,19 @@ The opt-in is experimental and should be benchmarked against the fallback.
 `static_expert_capacity=True` selects an export-friendly route intended for
 pipeline tracing. It disables CGGR in the current implementation.
 
-## Large-vocabulary SFT loss
+## SFT loss and Liger
 
 Materializing all logits for every token can dominate memory. The current
-LoRA-SFT runner computes tied-head loss in token chunks; configure the chunk
-size with `--loss-chunk-tokens`. `--sft-fp32-loss` keeps that loss calculation
-in FP32 for stability while the model runs under BF16 autocast. The historical
-`--loss-backend` selector belonged to the removed pretraining runner.
+`scripts.sft_tr` runner computes tied-head loss in token chunks; configure the
+chunk size with `--loss-chunk-tokens`. `--sft-fp32-loss` keeps that loss
+calculation in FP32 for stability while the model runs under BF16 autocast.
+This applies to both explicit full-parameter and LoRA modes.
+
+The released 200M full-SFT launcher requires `liger_kernel` during preflight
+and requests the tested custom CUDA/Triton path with
+`--use-custom-kernels true`. A production launcher that requires Liger must
+fail when it is unavailable. Portable tests and non-production experiments may
+use the PyTorch reference, but their logs must identify the fallback.
 
 ## Memory controls
 
@@ -123,18 +129,20 @@ in FP32 for stability while the model runs under BF16 autocast. The historical
 
 ## Compilation
 
-`torch.compile` remains shape- and backend-sensitive but is not exposed by the
-current LoRA-SFT CLI. Custom-kernel selection is controlled with
+`torch.compile` remains shape- and backend-sensitive and is not the release
+SFT acceleration contract. Custom-kernel selection is controlled with
 `--use-custom-kernels {auto,true,false}`. Exclude initialization and warm-up
 from throughput measurements and verify numerical parity before comparing
 paths.
 
 ## Serving
 
-The repository provides checkpoint export and OpenAI-compatible clients.
-Upstream vLLM/SGLang does not automatically understand a custom TR-MoE
-checkpoint. A serving integration must implement the architecture and its
-route tables.
+The repository provides checkpoint export, diagnostic eager generation, and
+OpenAI-compatible clients. The released 200M model is served by
+[`TR-Hash-i64`](https://github.com/Complexity-ML/TR-Hash-i64), which implements
+the custom architecture, persisted route tables, continuous batching, and its
+own inference quantization/graph policy. Upstream vLLM/SGLang does not
+automatically understand a TR-MoE checkpoint.
 
 No device-specific tokens/s value is treated as universal documentation.
 Always report hardware, dtype, batch/concurrency, prompt length, generated

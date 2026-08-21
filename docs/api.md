@@ -3,6 +3,10 @@
 This page covers the stable research-facing surface. The source remains the
 authority for experimental fields.
 
+For the released 200M model, prefer
+`scripts.train_tr_hash_200m_200b.make_config()` over manually reconstructing
+the shape. See [TR-HASH MoE 200M release](tr-hash-200m-release.md).
+
 ## Top-level imports
 
 ```python
@@ -45,7 +49,9 @@ The package also exports:
 | --- | --- |
 | `mlp_type` | set `tr_hash_engine` for TR-MoE |
 | `num_experts` | routed expert count |
-| `routing_strategy` | `modulo_cyclic` or `token_id_balanced_hash` |
+| `intermediate_size` | total stored routed width; divided by `num_experts` in `TRHashEngineMLP` |
+| `routing_strategy` | canonical values: `modulo_cyclic`, `token_id_balanced_hash`, `token_id_multi_hash`, `token_id_hierarchical_hash` |
+| `route_hash_count` | independent rendezvous channels for `token_id_multi_hash` (2–8) |
 | `shared_expert` | enable dense shared SwiGLU |
 | `shared_intermediate_size` | shared branch width |
 | `shared_expert_chunk_tokens` | chunk shared computation over tokens |
@@ -118,8 +124,11 @@ from complexity.inference import (
 )
 ```
 
-`create_external_backend` accepts `"vllm"` or `"sglang"` and calls
-`/v1/completions` or `/v1/chat/completions`.
+`create_external_backend` accepts `"vllm"` or `"sglang"` as client labels and
+calls `/v1/completions` or `/v1/chat/completions`. These labels select an HTTP
+adapter; they do not teach an upstream runtime the TR-MoE architecture. The
+released model is served by
+[`TR-Hash-i64`](https://github.com/Complexity-ML/TR-Hash-i64).
 
 ```python
 backend = create_external_backend(
@@ -180,13 +189,17 @@ from complexity.core.mlp import MLPConfig, TRHashEngineMLP
 
 layer = TRHashEngineMLP(
     MLPConfig(
-        hidden_size=384,
-        intermediate_size=128,
+        hidden_size=896,
+        intermediate_size=256,  # total routed width: 4 experts × 64
         vocab_size=32_000,
         num_experts=4,
         shared_expert=True,
-        shared_intermediate_size=1536,
+        shared_intermediate_size=3072,
+        routing_strategy="token_id_multi_hash",
+        route_hash_count=2,
         top_k=2,
+        top_k_primary_weight=0.5,
+        routed_output_scale=2.0,
     )
 )
 output = layer(hidden_states, token_ids=input_ids)

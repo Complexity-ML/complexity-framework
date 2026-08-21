@@ -81,7 +81,7 @@ Layers / hidden size & 16 / 896 \\
 GQA query / KV heads & 14 / 2 \\
 Vocabulary / context & 32,000 / 2,048 \\
 Shared SwiGLU width & 3,072 \\
-Stored experts / width & 4 / 256 \\
+Stored experts / width & 4 / 64 \\
 Active experts & top-2 \\
 Routing channels & 2 hashes \\
 \bottomrule
@@ -93,7 +93,7 @@ Let $x_l$ be a contextual hidden state at layer $l$, $t$ its token ID, $S_l$ the
 \begin{equation}
 F_l(x_l,t)=S_l(x_l)+2\sum_{j=1}^{2}0.5\,E_{l,R_{l,j}(t)}(x_l).
 \end{equation}
-Thus the routed contribution is the sum of the two selected expert outputs. The shared branch remains active for every token and is substantially wider than each expert. Stored intermediate width is $3072+4\times256=4096$; active intermediate width is $3072+2\times256=3584$. Expert tensors account for 5.47\% of model parameters.
+Thus the routed contribution is the sum of the two selected expert outputs. The shared branch remains active for every token and is substantially wider than each expert. In the public configuration, \texttt{intermediate\_size=256} denotes total routed width: four width-64 experts are stored, and top-2 activates 128 routed channels. Stored intermediate width is therefore $3072+4\times64=3328$; active intermediate width is $3072+2\times64=3200$. Expert tensors account for 5.47\% of model parameters.
 
 \subsection{Multi-hash route construction}
 For every layer, token/expert pairs receive two independent 32-bit rendezvous scores. Scores are summed across hash channels, and the two experts with the largest totals become the token's fixed routes. The result is compiled into the ordinary $[\mathrm{top\mbox{-}k},\mathrm{vocab}]$ dispatch table. Consequently, multi-hash construction adds no per-token learned routing network and no additional scoring operation during inference.

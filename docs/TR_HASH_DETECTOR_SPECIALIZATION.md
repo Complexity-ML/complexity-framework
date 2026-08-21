@@ -1,5 +1,10 @@
 # TR-Hash detector specialization
 
+> **Historical experimental branch.** The released detector is Vision v8 and
+> is documented in [`tr-hash-object-detection.md`](tr-hash-object-detection.md).
+> The v6 ablation plan below is retained for provenance and is not the current
+> training or serving recipe.
+
 The experimental specialization path extends the v6 COCO detector while
 preserving its hierarchical TR-Hash tower.
 

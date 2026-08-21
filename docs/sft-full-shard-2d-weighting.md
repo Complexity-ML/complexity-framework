@@ -1,6 +1,11 @@
 # Two-dimensional full-shard SFT weighting
 
-This guide documents the current Card Corpus V2 LoRA-SFT mixture policy. The
+> **Historical 500M LoRA experiment.** This weighting system remains
+> executable for reproduction, but it is not the recipe behind the released
+> TR-HASH MoE 200M assistant. The 200M release uses unweighted Luciole 16-way
+> full-parameter SFT.
+
+This guide documents the Card Corpus V2 LoRA-SFT mixture policy. The
 policy changes loss contribution without filtering, duplicating, resampling,
 or republishing dataset rows.
 

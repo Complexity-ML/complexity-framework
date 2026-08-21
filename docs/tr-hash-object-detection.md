@@ -1,6 +1,11 @@
 # TR-Hash Object Detection and Serving
 
-The v6 detector is a compact, anchor-free, single-stage model. A TR-Hash
+> **Current vision release: v8.** The released 2.53M-parameter detector uses a
+> native COCO pretraining stage followed by full-parameter clean-image
+> supervised fine-tuning. Its reported SFT result is 20.05 AP50-95. This vision
+> lineage is separate from the TR-HASH MoE 200M language model.
+
+The v8 detector is a compact, anchor-free, single-stage model. A TR-Hash
 vision tower feeds a lightweight additive PAN with top-down and bottom-up
 cross-scale fusion. Its one-to-many branch
 provides dense supervision during training and class-aware batched NMS removes
@@ -20,12 +25,20 @@ TR-Hash vision tower
                  +-- LTRB/DFL regression + quality-class QFL heads
 ```
 
-For a 128 px input, width 128, four tower layers, and four routed experts, the
-default P2 plus one-to-one configuration has 927,246 parameters with 20
-classes (approximately 0.93 million). Disabling both optional branches reduces
-it to 810,452 parameters. Parameter count is not a quality metric by itself:
-compare accuracy, latency, memory, and deployment size using the same dataset
-and evaluation protocol.
+The released v8 profile uses seven tower layers, hidden size 128, eight stored
+experts with deterministic top-2 routing, shared width 216, expert width 27,
+P2/P3/P4/P5 features, and a 96-wide detection head. It contains approximately
+2.53M parameters. Parameter count is not a quality metric by itself: compare
+accuracy, latency, memory, and deployment size under the same protocol.
+
+| Checkpoint | AP50-95 | Interpretation |
+|---|---:|---|
+| Native pretraining | 16.59 | Mosaic + MixUp MuSGD stage |
+| Full-parameter SFT | **20.05** | clean-image refinement; +20.9% relative |
+
+An independent reproduction reported O2M+NMS mAP50 0.325, mAP50-95 0.200,
+and AR100 0.379; its NMS-free probe reported mAP50 0.140 and mAP50-95 0.096.
+These are single-run release measurements, not a multi-seed superiority claim.
 
 ## Detection pretraining pipeline
 
@@ -58,15 +71,16 @@ components while keeping the TR-Hash tower at four experts with top-2 routing:
 - each pyramid level learns a positive DFL-logit scale;
 - two PAN passes use positive per-channel normalized fusion weights.
 
-The baseline deliberately remains P3/P4/P5 and O2M + NMS. P2 is a separate
-controlled ablation, so any small-object AP gain is measurable.
+The released profile enables P2 and uses O2M + NMS. Disable P2 explicitly for
+the controlled small-object ablation; do not infer the head set from an old
+artifact directory name.
 
 ```bash
-# Baseline: about 2.76M parameters.
+# Released P2 profile: approximately 2.53M parameters.
 bash scripts/vast_train_detector_coco_v08_nano.sh
 
-# Same recipe plus P2: about 3.02M parameters.
-bash scripts/vast_train_detector_coco_v08_nano_p2.sh
+# Controlled no-P2 ablation.
+P2_HEAD=0 bash scripts/vast_train_detector_coco_v08_nano.sh
 ```
 
 Both launchers select checkpoints with official COCO mAP50-95. Compare them at
@@ -81,7 +95,7 @@ below; when omitted, the trainer creates a deterministic 80/20 split.
 
 ```bash
 cf-detector-train \
-  --output artifacts/detector_v06 \
+  --output artifacts/detector_v08_custom \
   --yolo-images data/objects/images/train \
   --yolo-labels data/objects/labels/train \
   --validation-yolo-images data/objects/images/val \
@@ -139,7 +153,7 @@ and values are source class IDs.
 
 ```bash
 cf-detector-train \
-  --detector-checkpoint artifacts/detector_v06/best \
+  --detector-checkpoint artifacts/detector_v08_custom/best \
   --class-map data/custom/class-map.json \
   --yolo-images data/custom/images/train \
   --yolo-labels data/custom/labels/train \
@@ -173,7 +187,7 @@ long-lived process:
 ```bash
 pip install -e ".[serve]"
 cf-detector-serve \
-  --checkpoint artifacts/detector_coco_v06_native/best \
+  --checkpoint artifacts/detector_coco_v08_nano_sft/best \
   --device mps \
   --host 127.0.0.1 --port 8000
 ```
@@ -251,7 +265,7 @@ COCO draft can be created while training is active:
 
 ```bash
 python scripts/publish_tr_hash_vision_hf.py \
-  --repo-id AETHORIA-AI/TR-HASH-Vision-v6-1M-COCO \
+  --repo-id AETHORIA-AI/TR-HASH-Vision-v8-2M-COCO \
   --dataset coco \
   --training --push
 ```
@@ -262,9 +276,9 @@ the model card and metrics have been reviewed.
 
 ```bash
 python scripts/publish_tr_hash_vision_hf.py \
-  --repo-id AETHORIA-AI/TR-HASH-Vision-v6-1M-COCO \
+  --repo-id AETHORIA-AI/TR-HASH-Vision-v8-2M-COCO-SFT \
   --dataset coco \
-  --checkpoint artifacts/detector_coco_v06_native/best \
+  --checkpoint artifacts/detector_coco_v08_nano_sft/best \
   --push --public
 ```
 

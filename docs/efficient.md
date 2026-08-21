@@ -4,16 +4,22 @@ Efficiency depends on active parameters, sequence length, vocabulary size,
 device kernels, loss implementation, and communication topology. Profile the
 realized run instead of relying on a model-size label.
 
-## Current LoRA-SFT controls
+## Current 200M full-SFT controls
 
 1. Use BF16 on supported devices with `--bf16`.
-2. Enable activation checkpointing with `--grad-ckpt` when memory-bound.
-3. Bound tied-head loss memory with `--loss-chunk-tokens`.
-4. Keep the SFT loss in FP32 with `--sft-fp32-loss` when stability matters.
-5. Use `--use-custom-kernels auto` on tested NVIDIA CUDA environments.
-6. Use DDP when one complete model fits on every device.
+2. Bound tied-head loss memory with `--loss-chunk-tokens`.
+3. Use `--full-parameter` explicitly for the released recipe.
+4. Require Liger and `--use-custom-kernels true` in the production profile;
+   retain PyTorch fallback as the numerical regression reference.
+5. Use DDP when one complete model plus optimizer state fits on every device.
+6. Tune the per-rank microbatch from measured VRAM, then use gradient
+   accumulation only to reach the intended global batch.
 7. Measure the full eval and checkpoint boundary separately from steady-state
    training throughput.
+
+Activation checkpointing and FP32 chunked SFT loss remain available for
+memory- or stability-sensitive experiments, but they were not the defining
+settings of the promoted 200M full-SFT run.
 
 ## Full-shard loss weighting
 
@@ -27,10 +33,11 @@ See [Two-dimensional full-shard SFT weighting](sft-full-shard-2d-weighting.md).
 
 ## DDP
 
-`scripts/run_sft_curriculum.py --world-size 8` launches eight processes through
-`torch.distributed.run`. Batch size is per rank. The loader shards one shuffled
-full-shard stream deterministically across ranks and computes the exact
-complete-pass boundary.
+The released launcher uses `torch.distributed.run` with one process per GPU.
+Batch size is per rank. The loader shards one shuffled stream deterministically
+across ranks and computes the exact complete-pass boundary. The historical
+`scripts/run_sft_curriculum.py --world-size 8` path follows the same per-rank
+batch convention for 500M LoRA reproduction.
 
 TP/PP/DP files under `configs/run_configs/` are planning contracts validated by
 `cf-plan-cluster`; they need an external launcher.

@@ -69,7 +69,7 @@ def resume_skip_rows_for(args) -> int:
     multiplied by world_size, since each rank's iterator is already
     restricted to its own 1/world_size slice.
     """
-    if not args.resume:
+    if not getattr(args, "resume", None):
         return 0
     if args.resume == "auto":
         step = peek_latest_checkpoint_step(args.checkpoint_dir)

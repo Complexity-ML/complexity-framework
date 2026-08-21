@@ -1,5 +1,9 @@
 # Token-routed MHA adapter experiments
 
+> **Experimental, not the released 200M architecture.** The current public
+> model uses GQA plus TR-MoE. Nothing on this page inherits its training or
+> PIQA results.
+
 This page documents the attention registry values `tr_mha` and `tr_mha_v2`.
 
 > Naming note: the main README uses **TR-MHA** for the complete

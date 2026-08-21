@@ -1,5 +1,8 @@
 # TR-Hash Image + Text to Text
 
+> **Experimental modality.** The architecture is implemented, but it is not a
+> released 200M language-model checkpoint and does not inherit its PIQA result.
+
 This model is a direct vision-language generator:
 
 ```text

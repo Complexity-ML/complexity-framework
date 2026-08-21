@@ -1,82 +1,103 @@
-# Documentation
+# Complexity Framework documentation
 
-Complexity Framework is a PyTorch research stack for deterministic
-TR-Hash Mixture-of-Experts (TR-MoE) language and multimodal models.
+Complexity Framework is the PyTorch research and training stack behind the
+released TR-HASH MoE 200M language-model lineage and separate experimental
+multimodal systems.
 
 ## Start here
 
-1. [Architecture and naming](architectures.md)
-2. [Getting started](getting-started.md)
-3. [TR-Hash execution engine](tr-hash-engine.md)
-4. [TokenRoutedMLP (removed) and migrating to TR-Hash](token-routed.md)
-5. [Training](training.md)
-6. [Two-dimensional full-shard SFT weighting](sft-full-shard-2d-weighting.md)
-7. [Run configurations](run_configs.md)
-8. [GPU and dispatch paths](cuda.md)
-9. [API reference](api.md)
-10. [Claude's role in this project](claude-role.md)
+1. [TR-HASH MoE 200M release](tr-hash-200m-release.md) — architecture,
+   checkpoints, metrics, evaluation protocol, and limitations.
+2. [Getting started](getting-started.md) — install, construct, load, and test a
+   model.
+3. [Architecture and naming](architectures.md) — TR-GQA, TR-MHA, and TR-MoE.
+4. [TR-Hash execution engine](tr-hash-engine.md) — routes, widths, backends,
+   and CUDA Graph constraints.
+5. [Training](training.md) — base pretraining, refinement, full SFT, evaluation,
+   export, and resume boundaries.
+6. [GPU and dispatch paths](cuda.md) — PyTorch fallback, Triton/CGGR, Liger,
+   ROCm, and reporting.
+7. [API reference](api.md) — public Python and CLI surfaces.
 
-## Architecture vocabulary
+## Current 200M release path
 
-| Public name | Attention | FFN |
-| --- | --- | --- |
-| TR-GQA | GQA | TR-MoE |
-| TR-MHA | MHA | TR-MoE |
+```text
+130B replay-scheduled base pretraining
+        ↓ fresh optimizer, weights only
+32.07B unique-token full-parameter refinement (stopped at step 8,156)
+        ↓ full checkpoint weights
+3 epochs Luciole 16-way full-parameter instruction SFT
+        ↓ PIQA selection
+epoch 2 / step 926 promoted to the root SafeTensors release
+        ↓
+TR-Hash-i64 OpenAI-compatible serving
+```
 
-TR-GQA and TR-MHA share the same `TRHashEngineMLP`. They differ only in the
-attention head layout. The framework is currently scoped to TR-Hash MoE only
-— dense and learned-router baselines were removed and will return later as
-explicit comparisons.
-
-The registry values `tr_mha` and `tr_mha_v2` refer to experimental routed
-residual adapters inside attention. They are documented separately in
-[`../TR_MHA.md`](../TR_MHA.md) to avoid conflating them with the main
-MHA + TR-MoE architecture.
-
-## Additional guides
-
-- [MoE comparison](moe.md)
-- [Custom models and registries](custom-models.md)
-- [Efficient training](efficient.md)
-- [Multimodal prototypes](multimodal.md)
+The source-token lineage is approximately 162.07B exposures, plus 238.9M
+supervised SFT tokens. The SFT is full parameter, not LoRA. See the
+[release page](tr-hash-200m-release.md) before quoting any metric.
 
 ## Document status
 
 | Area | Status | Entry point |
 |---|---|---|
-| Architecture and TR-Hash runtime | current | [Architecture](architectures.md), [TR-Hash engine](tr-hash-engine.md) |
-| LoRA instruction tuning | current | [Training](training.md), [2D full-shard weighting](sft-full-shard-2d-weighting.md) |
-| CUDA and dispatch | current | [GPU and dispatch paths](cuda.md) |
-| Multimodal and generative modules | experimental | [Multimodal prototypes](multimodal.md) and the modality guides below |
-| TokenRoutedMLP migration | compatibility only | [Migration guide](token-routed.md) |
-| o200k/Dense pretraining records | historical, non-runnable | [Run configurations](run_configs.md), [200M B200 runbook](200m-o200k-b200-runbook.md) |
+| 200M release and metrics | **current** | [Release](tr-hash-200m-release.md) |
+| Architecture and TR-Hash runtime | **current** | [Architecture](architectures.md), [engine](tr-hash-engine.md) |
+| 200M pretraining, refinement, full SFT | **current** | [Training](training.md), [streaming data](tr-hash-200m-streaming-data.md) |
+| CUDA, Triton, Liger, fallback | **current** | [GPU and dispatch](cuda.md) |
+| Public Python surface | **current** | [API reference](api.md) |
+| TokenRoutedMLP conversion | compatibility only | [Migration](token-routed.md) |
+| 500M LoRA / 2D loss weighting | historical experiment | [Legacy weighting](sft-full-shard-2d-weighting.md) |
+| o200k Dense/TR comparison plans | historical, non-runnable | [Run configurations](run_configs.md), [B200 runbook](200m-o200k-b200-runbook.md) |
+| Multimodal and generative modules | experimental | [Multimodal index](multimodal.md) |
+| Vision detector | separate released lineage | [Object detection](tr-hash-object-detection.md) |
 
 Historical documents preserve evidence provenance. Their commands must not be
-treated as supported entrypoints unless a current guide explicitly says so.
+treated as supported entry points unless a current page explicitly says so.
 
-## Multimodal and generative models
+## Architecture vocabulary
 
+| Public name | Attention | Feed-forward path |
+|---|---|---|
+| TR-GQA | grouped-query attention | TR-MoE |
+| TR-MHA | multi-head attention | TR-MoE |
+| TR-MoE | attention-independent | shared SwiGLU plus fixed token-ID experts |
+
+The registry values `tr_mha` and `tr_mha_v2` are experimental token-routed
+residual adapters inside attention. They are not synonyms for the released
+GQA + TR-MoE architecture.
+
+## Supporting guides
+
+- [Custom models and registries](custom-models.md)
+- [Efficient training](efficient.md)
+- [Run configurations and planners](run_configs.md)
+- [Two-dimensional full-shard weighting (historical 500M LoRA)](sft-full-shard-2d-weighting.md)
+- [Historical TokenRoutedMLP migration](token-routed.md)
+- [Hugging Face organization card](huggingface-org-card.md)
+- [Use of generative AI tools](claude-role.md)
+
+## Multimodal and vision guides
+
+- [Multimodal prototypes](multimodal.md)
 - [TR-Hash image editor](tr-hash-image-editor.md)
 - [TR-Hash image-text-to-text](tr-hash-image-text-to-text.md)
 - [TR-Hash text-to-image](tr-hash-text-to-image.md)
 - [TR-Hash object detection and serving](tr-hash-object-detection.md)
-- [TR-Hash detector specialization and ablations](TR_HASH_DETECTOR_SPECIALIZATION.md)
+- [Detector specialization and ablations](TR_HASH_DETECTOR_SPECIALIZATION.md)
 - [TR-Hash sensor fusion](tr_hash_sensor_fusion.md)
-
-## Operations
-
-- [200M o200k B200 runbook](200m-o200k-b200-runbook.md)
-- [Hugging Face org card](huggingface-org-card.md)
+- [Vision dependency stack](vision-dependency-stack.md)
 
 ## Evidence policy
 
-A configuration file or model implementation is not a completed experiment.
-Documentation distinguishes:
+A configuration or implementation is not a completed experiment. Documents
+use these labels:
 
-- **implemented**: represented in code and tests;
-- **pilot**: bounded evidence, usually short or single-seed;
-- **controlled comparison**: matched protocol with tracked metrics;
-- **planned**: a launch or cluster plan without completed metrics.
+- **current**: matches the released code and artifacts;
+- **compatibility**: supported only for migration or conversion;
+- **historical**: preserves an earlier experiment but is not the default path;
+- **experimental**: implemented without release-level evidence;
+- **planned**: a protocol or launch shape without completed metrics.
 
-Claims should point to the tracked configuration, metrics, or artifact that
-supports them.
+Every numerical claim should identify the checkpoint, data or token exposure,
+evaluation split, runtime, and artifact that supports it.

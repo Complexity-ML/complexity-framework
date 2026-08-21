@@ -1,5 +1,8 @@
 # TR-Hash text-to-image
 
+> **Experimental modality.** This trainable configuration is separate from the
+> released TR-HASH MoE 200M language model and TR-HASH Vision v8 detector.
+
 The image generator is a 203.5M-parameter latent rectified-flow transformer.
 It is native to Complexity Framework and uses the canonical `TRHashEngine` in
 every image block.

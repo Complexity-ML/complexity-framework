@@ -1,9 +1,15 @@
 # TR-Hash 200M remote token data
 
-The 200B pretokenized mixture is the immutable source repository for the active
-70B quality replay. The replay runs without storing every token shard at once:
+> **Current data path, completed release run.** The base replay described here
+> produced the released 130B-exposure checkpoint. Reusing the launcher starts a
+> new run or an exact resume; it does not continue the published model by
+> implication.
+
+The 200B pretokenized mixture is the immutable source repository for the 70B
+quality replay. The replay runs without storing every token shard at once:
 manifests are downloaded during preflight, binary shards are fetched lazily,
-memory-mapped from local NVMe, and evicted from a 10 GiB shared cache.
+memory-mapped from local NVMe, and evicted from a bounded shared cache. The
+tracked launcher defaults to 24 GiB; the example below deliberately uses 10.
 
 ```bash
 TOKENIZED_DATA=hf://datasets/Pacific-i64/data-32k-200b-tokens \
@@ -84,19 +90,22 @@ batch of tokens.
 ## Supervisor template
 
 An 8x RTX 5090 template is provided at
-`configs/supervisor/tr_hash_200m_70b_replay_8x5090.conf`. Installing it does
-not start training because both `autostart` and `autorestart` are disabled:
+`configs/supervisor/tr_hash_200m_70b_replay_8x5090.conf`. It currently has
+`autostart=true` and `autorestart=unexpected`: `supervisorctl update` may start
+the job immediately. Audit `/workspace/run_200m.sh`, credentials, data access,
+disk capacity, and every environment variable before installing the template.
+For an inspect-only installation, copy and edit it to `autostart=false` first.
 
 ```bash
 sudo cp configs/supervisor/tr_hash_200m_70b_replay_8x5090.conf \
   /etc/supervisor/conf.d/tr_hash_200m_70b_replay.conf
 sudo supervisorctl reread
-sudo supervisorctl update
+sudo supervisorctl update  # may start immediately: see warning above
 supervisorctl status tr_hash_200m_70b_replay
 ```
 
-Start it only after the tokenizer, Hub access and local cache volume have been
-verified:
+If the installed copy has `autostart=false`, start it only after the tokenizer,
+Hub access and local cache volume have been verified:
 
 ```bash
 supervisorctl start tr_hash_200m_70b_replay

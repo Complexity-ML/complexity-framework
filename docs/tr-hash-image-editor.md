@@ -1,5 +1,8 @@
 # TR-Hash instruction-guided image editor
 
+> **Experimental modality.** This implementation has no released checkpoint or
+> benchmark claim in the TR-HASH MoE 200M language-model lineage.
+
 This model learns the direct mapping
 
 ```text

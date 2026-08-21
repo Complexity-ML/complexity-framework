@@ -1,42 +1,47 @@
-# Claude's role in this project
+# Use of generative AI tools
 
-This project uses Claude (Anthropic) as an implementation and documentation
-assistant. This page states plainly what that means, so credit is not
-misattributed.
+> **Compatibility filename.** This page was originally named for one assistant.
+> The policy now applies to every generative AI coding or writing tool used on
+> the project, including Claude and Codex.
 
-**Claude acts as a maintainer, not a designer.** The architecture, training
-recipes, and research direction below are conceived by Boris Peyriguere;
-Claude implements, tests, documents, and keeps the codebase consistent with
-those decisions.
+The architecture, training objectives, release decisions, and research claims
+are directed and approved by Boris Peyriguere. Generative AI tools assist with
+implementation, testing, documentation, consistency checks, and artifact
+packaging; they are not credited as the research designer or accountable
+author.
 
-## What Claude does
+## Permitted assistance
 
-- Implements code from decisions the maintainer has already made: model
-  configs, training scripts, dataset loaders, loss functions, tests,
-  conversion/export tooling.
-- Writes and edits documentation, model cards, and READMEs describing work
-  the maintainer directed.
-- Runs and monitors training jobs, evaluations, and smoke tests; reports
-  results.
-- Publishes files to GitHub and Hugging Face on explicit instruction.
-- Proposes implementation-level fixes (bugs, test gaps, inconsistent
-  numbers) and flags risks (VRAM budgets, eligibility rules, stale docs)
-  during that work.
+- implement maintainer-specified model, data, training, evaluation, and export
+  changes;
+- run tests and compare outputs against explicit invariants;
+- edit documentation and model cards from measured artifacts;
+- identify inconsistent dimensions, metrics, links, or release labels;
+- prepare commits and publish them only when explicitly authorized;
+- disclose uncertainty and distinguish inference from measured evidence.
 
-## What Claude does not do
+## Human responsibility
 
-- **Architecture conception.** TR-Hash's deterministic token-ID routing,
-  the TR-GQA/TR-MHA attention variants, the shared-SwiGLU-plus-routed-expert
-  design -- these are the maintainer's design, not Claude's.
-- **Training recipe design.** Token budgets, unique-vs-replay token
-  accounting, warmup-stable-decay schedules, the phased pretrain -> SFT ->
-  optional-LoRA structure -- decided by the maintainer.
-- **Research direction.** What to build, what to train, what to publish,
-  and when -- decided by the maintainer.
+The maintainer remains responsible for:
 
-## Commit attribution
+- architecture and experimental design;
+- dataset provenance and license compliance;
+- rental, training, and deployment authorization;
+- benchmark protocol and contamination risk;
+- the truthfulness of public claims;
+- final review of code, weights, model cards, papers, and releases.
 
-Commits in this repository use a "Maintained-By: Claude" trailer instead of
-"Co-Authored-By: Claude" -- accurate to the role above. Co-authorship
-implies shared design credit; Claude maintains code to the designer's
-specification, it doesn't co-design it.
+## Evidence rules
+
+AI-generated prose is not evidence. A numerical claim must be checked against a
+tracked log, metric file, checkpoint, manifest, or deterministic computation.
+Tools must not turn a planned run into a completed result, call refinement SFT,
+describe LoRA as full-parameter training, infer kernel use from a requested
+flag, or promote a checkpoint without the stated selection protocol.
+
+## Disclosure
+
+Release papers should state material use of generative AI tools. The current
+200M paper discloses assistance with language editing, consistency checks, and
+PDF packaging and states that the author reviewed the numerical claims and
+takes responsibility for the final text.

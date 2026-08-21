@@ -23,7 +23,8 @@ protocol.
 
 The current public reference is a 201,194,368-parameter decoder with 16 layers,
 hidden size 896, GQA (14 query heads / 2 KV heads), a 32,000-token vocabulary,
-one shared width-3,072 SwiGLU path, and four stored width-256 residual experts.
+one shared width-3,072 SwiGLU path, and four stored width-64 residual experts
+(256 total routed width, 128 active with top-2).
 Multi-hash rendezvous voting compiles each token ID to a persisted top-2 route;
 there is no learned router or load-balancing loss.
 
@@ -172,13 +173,16 @@ tr_gqa = ModelConfig(
     vocab_size=32_000,
     mlp_type="tr_hash_engine",
     num_experts=4,
-    intermediate_size=256,
+    intermediate_size=256,  # total routed width: 4 experts × 64
     shared_expert=True,
     shared_intermediate_size=3072,
     routing_strategy="token_id_multi_hash",
     route_hash_count=2,
     top_k=2,
     top_k_primary_weight=0.5,
+    shared_output_scale=1.0,
+    routed_output_scale=2.0,
+    use_qk_norm=True,
     max_position_embeddings=2048,
     tie_word_embeddings=True,
 )
@@ -196,18 +200,30 @@ tr_mha_model = ComplexityModel(tr_mha)
 Both models require the original `token_ids` during the forward pass because
 TR-MoE routes from token identity while transforming contextual hidden states.
 
-## Train from a tracked configuration
+## Reproduce the 200M training lineage
 
-The `cf-o200k-pretrain` CLI and the `complexity/training/o200k/` pipeline it
-drove were removed with the rest of this cycle's TR-Hash refocus, along with
-the Dense architecture they were built to compare against. A replacement
-training entrypoint is not yet in place. The tracked YAML configurations
-under [`configs/run_configs`](configs/run_configs) and the settings they
-describe (token accounting, resume validation, cluster plans) still document
-the intended run shapes — see [`docs/run_configs.md`](docs/run_configs.md) —
-but currently need a driver to execute against. `cf-plan-run` and
-`cf-plan-cluster` remain available for token-budget and cluster-sizing
-arithmetic independent of any specific pipeline.
+The released text pipeline has three distinct stages. Refinement is continued
+language-model training with a fresh optimizer; it is not instruction SFT.
+The final assistant stage is full-parameter instruction SFT, not LoRA.
+
+| Stage | Production entry point |
+|---|---|
+| 130B replay pretraining | `scripts/vast_pretrain_tr_hash_200m_70b_replay.sh` |
+| 32.07B unique-token refinement | `scripts/vast_finetune_tr_hash_200m_70b_unique_phase2.sh` |
+| Luciole 16-way full SFT | `scripts/vast_sft_200m_luciole_16way_full_3e.sh` |
+| Three-checkpoint PIQA evaluation | `scripts/eval_full_sft_piqa_3.sh` |
+| SafeTensors release export | `scripts/export_full_sft_release.py` |
+
+These `vast_*` scripts are tracked production profiles for `/workspace`
+machines. They validate the expected checkpoint, dataset manifest, tokenizer,
+distributed world size, Liger availability, kernel policy, and save/evaluation
+boundaries before optimization. Read [Training](docs/training.md) and adapt the
+path variables rather than copying a command blindly.
+
+The former `cf-o200k-pretrain` driver and its Dense comparison path were
+removed. Their YAMLs and runbook remain explicitly historical evidence, not
+current launchers. `cf-plan-run` and `cf-plan-cluster` still perform arithmetic
+and validation without launching a job.
 
 ## Audit pretrained routed-expert geometry
 
@@ -238,158 +254,38 @@ manifest containing the checkpoint, tokenizer/config, probe, HTML, and point
 hashes. The t-SNE remains an exploratory visualization, not evidence of expert
 specialization, downstream quality, or superiority over another architecture.
 
-## Legacy 500M LoRA experiment (deprecated release path)
+## Full-parameter instruction SFT
 
-This section documents the historical 500M experiment for reproducibility; it
-is not the release path used by the current 200M assistant. The current release
-uses full-parameter SFT, and LoRA artifacts are not promoted as 200M model
-releases.
+The current SFT runner is `scripts.sft_tr`. It supports explicit
+`--full-parameter` training as well as experimental LoRA mode. The promoted
+200M recipe uses:
 
-The 500M LoRA-SFT runner accepts pre-tokenized, indexed native-32k shards with separate
-`input_ids.bin` (`uint32`) and `labels.bin` (`int32`) files. Prompt and padding
-labels must be `-100`; only assistant tokens contribute to the causal loss.
-The held-out `eval` shard is finite and is never repeated during evaluation.
+- the step-8,156 refinement checkpoint as its source;
+- the audited 209,000-example Luciole 16-way train split;
+- final-assistant-only labels and packed sequences;
+- three epochs, BF16, AdamW, a continuous cosine schedule, and Liger plus the
+  tested custom CUDA/Triton path;
+- complete held-out evaluation and a resumable checkpoint at every epoch;
+- PIQA evaluation of all three epoch checkpoints before root promotion.
 
-```bash
-python -m scripts.sft_500m_32k_tr \
-  --checkpoint /path/to/pretrained/checkpoint.pt \
-  --sft-bin /path/to/complexity-atlas-posttrain/tokenized/32k-v2 \
-  --tokenizer ./tokenizer \
-  --steps 900 \
-  --batch-size 32 \
-  --seq-len 512 \
-  --lr 5e-5 \
-  --lora-rank 64 \
-  --lora-alpha 128 \
-  --lora-dropout 0.05 \
-  --bf16 \
-  --eval-at-start \
-  --eval-steps 10 \
-  --eval-batches 0 \
-  --save-best \
-  --early-stopping-patience 3 \
-  --early-stopping-min-delta 0.001 \
-  --save-steps 0 \
-  --save-model-only \
-  --run-name sft-atlas-instruct \
-  --save-dir checkpoints/sft-atlas-instruct
-```
+The exact command and preflight checks are tracked in
+[`scripts/vast_sft_200m_luciole_16way_full_3e.sh`](scripts/vast_sft_200m_luciole_16way_full_3e.sh).
+See [Training](docs/training.md) for the argument contract and
+[TR-HASH MoE 200M release](docs/tr-hash-200m-release.md) for measured results.
 
-The runner requires a positive LoRA rank and does not expose a full-parameter
-SFT path. LoRA keeps the pretrained model weights frozen while adapting the
-selected attention, shared MLP, and TR-Hash expert projections. Evaluation at
-step zero establishes the pretrained baseline;
-`--save-best` writes validation-selected checkpoints under `SAVE_DIR/best`, and
-patience stops the run after consecutive non-improving evaluations.
-`--save-model-only` omits AdamW and scheduler state for compact evaluation and
-inference checkpoints. The held-out shard should contain at least 500
-independently authored examples before its NLL is treated as a stable capability
-estimate.
-
-### Two-dimensional full-shard loss balancing (Card Corpus V2)
-
-`configs/sft_500m_32k_v2_balanced.yaml` keeps every training example for one
-complete epoch (`max_examples: all`, `balance_by: none`). It does not create a
-smaller curriculum. At startup, the binary-shard loader counts the supervised
-assistant labels that are actually visible after the 512-token context window,
-then derives a loss multiplier for each task or explicit `task × domain` cell.
-Balancing is hierarchical:
-
-1. each loss group receives its configured global share;
-2. each semantic loss cell receives its configured share inside that group.
-
-| Invariant | Raw full shard | Optimizer behavior |
-|---|---:|---:|
-| Rows visited per epoch | 100% | 100% |
-| Distilled reasoning | natural row/token count | 20% of weighted token loss |
-| Natural conversation | natural row/token count | 20% of weighted token loss |
-| Instruction + structured | natural row/token count | 60% of weighted token loss |
-
-The first dimension is the group mixture. Measured on the 224,654-row audited
-V2 32K train shard, it changes the effective gradient mixture without changing
-row exposure:
-
-| Loss group | Raw supervised-token share | Weighted-loss target |
-|---|---:|---:|
-| Distilled reasoning | 90.74% | 20% |
-| Natural conversation | 1.41% | 20% |
-| Instruction + structured | 7.85% | 60% |
-
-The second dimension controls the task mixture inside each group. The current
-audited targets and measured coefficients are:
-
-| Group | Task family | Global weighted-loss target | Runtime coefficient |
-|---|---|---:|---:|
-| Reasoning | `reasoning_verification` | 9.25% | 0.1953x |
-| Reasoning | `explanation_learning` | 8.00% | 0.2005x |
-| Reasoning | `casual_reasoning` cell | 1.50% | 0.4555x |
-| Reasoning | `planning_comparison` | 0.50% | 6.1332x |
-| Reasoning | `troubleshooting` | 0.50% | 4.7781x |
-| Reasoning | `critique_revision` | 0.25% | 25.6761x |
-| Conversation | `casual_social` cell | 14.00% | 23.7657x |
-| Conversation | `conversation_empathy` | 6.00% | 7.3117x |
-| Instruction | `context_clarification` | 10.00% | 6.3253x |
-| Instruction | `extraction_classification` | 8.00% | 9.0486x |
-| Instruction | `grounded_qa` | 8.00% | 11.6392x |
-| Instruction | `practical_action` | 4.00% | 25.3305x |
-| Instruction | `brainstorming_creativity` | 3.50% | 25.6163x |
-| Instruction | `safety_uncertainty` | 7.00% | 6.2611x |
-| Instruction | `summarization_synthesis` | 7.00% | 5.3167x |
-| Instruction | `writing_transformation` | 6.00% | 6.0676x |
-| Instruction | `casual_instruction` cell | 6.50% | 6.6077x |
-
-For loss cell `c` in group `g`, the runtime multiplier is:
-
-```text
-loss_weight(c) = group_target(g) * cell_target(c | g) / raw_token_share(c)
-```
-
-The group targets sum to one, every group's task targets sum to one, and every
-selected loss cell must appear exactly once. `max_task_loss_weight: 30.0` is a hard
-guard: planning and training fail if a shard change would require a larger
-coefficient. The measured targets, coefficients, achieved group shares, and
-achieved task shares are printed before any optimizer step.
-
-The YAML expresses both dimensions directly:
-
-```yaml
-loss_groups:
-  natural_conversation:
-    target_share: 0.20
-    tasks: [casual_social, conversation_empathy]
-    task_target_shares:
-      casual_social: 0.70
-      conversation_empathy: 0.30
-```
-
-See [Two-dimensional full-shard SFT weighting](docs/sft-full-shard-2d-weighting.md)
-for the complete framework contract, runtime audit fields, continuation
-semantics, failure conditions, and regression suite.
-
-With eight ranks and 24 examples per rank, this shard produces 1,171 optimizer
-steps. The end of step 1,171 is the single-epoch save/evaluation boundary; the
-base profile does not start a second epoch automatically. The tracked
-`configs/sft_500m_32k_v2_balanced_continuation.yaml` profile performs two
-additional complete passes from a selected epoch-one checkpoint using the same
-two-dimensional targets. Every row is still shuffled and consumed; only its
-assistant-token contribution to the gradient changes.
-
-```bash
-python -m scripts.run_sft_curriculum \
-  --checkpoint artifacts/tr_hash_moe_500m_20b_hf \
-  --sft-bin artifacts/complexity_card_corpus_v2_229026/tokenized/32k-v2 \
-  --curriculum-config configs/sft_500m_32k_v2_balanced.yaml \
-  --through-stage full-shard-weighted \
-  --output-root artifacts/tr_hash_500m_32k_v2_weighted_lora \
-  --world-size 8 --batch-size 24 --lora-rank 32 --lora-alpha 32 \
-  --dry-run
-```
+The older 500M LoRA/Card Corpus V2 path remains available only for historical
+reproduction. Its two-dimensional loss-weighting contract is preserved in
+[the legacy guide](docs/sft-full-shard-2d-weighting.md); it is not the training
+recipe behind the current 200M assistant.
 
 ## Inference boundary
 
 The framework owns model definition, training, evaluation, conversion, and
-serving clients. Native `ComplexityModel.generate()` is intentionally disabled.
-Text generation is delegated to an OpenAI-compatible vLLM or SGLang runtime.
+diagnostic eager generation. Native `ComplexityModel.generate()` remains
+disabled so a custom architecture is not accidentally presented as supported
+by a generic serving stack. The released 200M model is served by
+[`TR-Hash-i64`](https://github.com/Complexity-ML/TR-Hash-i64), which implements
+the persisted TR-Hash routes and exposes an OpenAI-compatible API.
 
 ```bash
 complexity inference generate my-model \
@@ -412,9 +308,11 @@ text = backend.complete(
 )
 ```
 
-Serving compatibility depends on the external runtime supporting the exported
-TR-MoE architecture. The client alone does not add model support to upstream
-vLLM or SGLang.
+The external client labels are currently `vllm` and `sglang`, but the HTTP
+contract is OpenAI-compatible. Selecting a client label does not add TR-MoE
+support to an upstream runtime. Use TR-Hash-i64 for the released model, or
+explicitly implement the architecture and its persisted route tables in the
+chosen server.
 
 ## Validation
 
@@ -422,9 +320,11 @@ vLLM or SGLang.
 python -m pytest -q \
   tests/test_models.py \
   tests/test_tr_hash_engine.py \
+  tests/test_tr_hash_200m_pretraining.py \
+  tests/test_sft_bin.py \
+  tests/test_tokenize_luciole_16way_sft.py \
   tests/test_tr_hash_dynamic_moe.py \
   tests/test_token_routed_to_tr_hash_conversion.py \
-  tests/test_100m_ablation_configs.py \
   tests/test_tr_mha.py \
   tests/test_external_inference.py
 ```
@@ -448,10 +348,12 @@ spikes/                      isolated research prototypes
 ## Documentation
 
 - [Documentation index](docs/index.md)
+- [TR-HASH MoE 200M release](docs/tr-hash-200m-release.md)
 - [Architecture and naming](docs/architectures.md)
 - [TR-MoE internals](docs/tr-hash-engine.md)
 - [Getting started](docs/getting-started.md)
 - [Training](docs/training.md)
+- [Efficient training](docs/efficient.md)
 - [Two-dimensional full-shard SFT weighting](docs/sft-full-shard-2d-weighting.md)
 - [Run configurations](docs/run_configs.md)
 - [GPU and dispatch paths](docs/cuda.md)

@@ -1,5 +1,8 @@
 # TR-Hash Robot Perception
 
+> **Experimental perception system.** This position-routed sensor model is
+> separate from the token-ID-routed 200M language-model release.
+
 `TRHashSensorFusionClassifier` is a multimodal perception model: sensors ->
 encoders -> TR-Hash fusion -> fused state -> classification head. It predicts
 one of `num_classes` states from any available combination of depth, infrared,

@@ -3,12 +3,12 @@
 ## Requirements
 
 - Python 3.10 or newer;
-- a PyTorch build matched to the machine;
-- enough memory for the selected vocabulary, model profile, batch, and
-  sequence length.
+- a PyTorch build matched to CPU, CUDA, ROCm, or Apple MPS;
+- `safetensors` for released checkpoints;
+- enough memory for the selected model, batch, sequence length, and optimizer.
 
-The package does not depend on a generic `torch` wheel because CUDA, ROCm, CPU,
-and MPS installations require different builds.
+PyTorch is intentionally not pinned as a package dependency because its wheel
+must match the target backend.
 
 ## Install from source
 
@@ -19,13 +19,18 @@ cd complexity-framework
 python3 -m venv .venv
 source .venv/bin/activate
 
+# Install the appropriate PyTorch build first.
 pip install torch
 pip install -e ".[dev,tools]"
 ```
 
-For Linux GPU backends, consult [GPU and dispatch paths](cuda.md).
+For backend-specific wheels and kernel policy, read
+[GPU and dispatch paths](cuda.md).
 
-## Build a first TR-GQA model
+## Build a small TR-GQA model
+
+This smoke model uses the same multi-hash routing family as the released 200M
+checkpoint while remaining small enough for CPU tests.
 
 ```python
 import torch
@@ -42,12 +47,14 @@ config = ModelConfig(
     max_position_embeddings=128,
     mlp_type="tr_hash_engine",
     num_experts=4,
-    intermediate_size=64,
+    intermediate_size=64,          # total stored routed width: 4 × 16
     shared_expert=True,
     shared_intermediate_size=256,
-    routing_strategy="modulo_cyclic",
+    routing_strategy="token_id_multi_hash",
+    route_hash_count=2,
     top_k=2,
     top_k_primary_weight=0.5,
+    use_custom_kernels=False,
 )
 
 model = ComplexityModel(config)
@@ -56,71 +63,110 @@ result = model(input_ids)
 
 print(result["logits"].shape)
 print(model.num_parameters())
+print(model.layers[0].mlp.capability_summary("cpu"))
 ```
 
-The model passes `input_ids` to every TR-MoE layer as route identifiers.
+The model passes the original `input_ids` to every TR-MoE layer. Token IDs
+select parameters; the selected experts still transform contextual hidden
+states produced by attention.
 
-## Switch to TR-MHA
+## Recreate the released 200M shape
+
+Use the exact configuration from `scripts.train_tr_hash_200m_200b.make_config`
+rather than copying dimensions by hand:
 
 ```python
-from dataclasses import replace
+from complexity import ComplexityModel
+from scripts.train_tr_hash_200m_200b import make_config
 
-tr_mha_config = replace(
-    config,
-    attention_type="mha",
-    num_key_value_heads=config.num_attention_heads,
-)
-tr_mha_model = ComplexityModel(tr_mha_config)
+config = make_config()
+model = ComplexityModel(config)
+
+assert model.num_parameters() == 201_194_368
+assert model.layers[0].mlp.engine.config.expert_width == 64
+assert model.layers[0].mlp.engine.config.stored_routed_width == 256
+assert model.layers[0].mlp.engine.config.active_routed_width == 128
 ```
 
-TR-GQA and TR-MHA use the same TR-MoE FFN. Only the attention head layout
-changes.
+Constructing this model allocates the full weights. Use the small smoke model
+when only validating an installation.
 
-## Run a local SFT smoke test
+## Load a released checkpoint
 
-The current text-training entrypoint is LoRA-only. Use a release-ready binary
-SFT shard and a positive rank; `--cpu` is intended only for bounded smoke
-tests. See [Training](training.md) and
-[Two-dimensional full-shard SFT weighting](sft-full-shard-2d-weighting.md).
+Download one complete Hugging Face repository, preserving `config.json`,
+`model.safetensors`, tokenizer files, route metadata, and the chat template:
 
-## Save and load
+```bash
+python -m pip install --upgrade huggingface_hub
+```
+
+```bash
+hf download AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT \
+  --local-dir checkpoints/tr-hash-moe-200m-sft
+```
+
+Then load the framework model:
+
+```python
+from complexity import ComplexityModel
+
+model = ComplexityModel.from_pretrained("checkpoints/tr-hash-moe-200m-sft")
+model.eval()
+```
+
+Do not copy only `model.safetensors`: configuration, tokenizer, persisted
+routes, and `chat_template.jinja` are part of the release contract.
+
+## Save and reload
 
 ```python
 model.save_pretrained("checkpoints/example")
 restored = ComplexityModel.from_pretrained("checkpoints/example")
 ```
 
-`save_pretrained` writes `config.json` plus `model.safetensors` when
-`safetensors` is available.
+`save_pretrained` writes `config.json` and `model.safetensors` when
+`safetensors` is installed. Distributed DTensor/FSDP saves are collective; all
+ranks must enter the save call.
+
+## Training entry points
+
+The current production language-model path is:
+
+1. replay-scheduled base pretraining;
+2. fresh-optimizer full-parameter refinement;
+3. three-epoch full-parameter Luciole instruction SFT;
+4. PIQA checkpoint selection and SafeTensors export.
+
+See [Training](training.md) for commands and preflight requirements. The old
+statement that text training is LoRA-only is no longer true.
 
 ## Generate text
 
-`ComplexityModel.generate()` intentionally raises an error. Serve a compatible
-export through vLLM or SGLang and use the external client:
+`ComplexityModel.generate()` intentionally raises. Production generation for
+the released checkpoint belongs to
+[TR-Hash-i64](https://github.com/Complexity-ML/TR-Hash-i64), which implements
+the custom architecture and exposes OpenAI-compatible endpoints.
 
-```python
-from complexity.inference import ExternalGenerationConfig, create_external_backend
-
-backend = create_external_backend(
-    "vllm",
-    base_url="http://localhost:8000",
-    model="example",
-)
-print(
-    backend.complete(
-        "The experiment shows",
-        ExternalGenerationConfig(max_tokens=64),
-    )
-)
+```bash
+curl http://localhost:7860/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "tr-hash-moe-200m",
+    "messages": [{"role": "user", "content": "Explain deterministic token routing."}],
+    "temperature": 0.4,
+    "top_p": 0.85,
+    "max_tokens": 384
+  }'
 ```
 
-The external server must itself support the exported architecture.
+The framework also contains eager diagnostic generation scripts used for
+checkpoint tests. They are not a continuous-batching production server.
 
 ## Next steps
 
+- [TR-HASH MoE 200M release](tr-hash-200m-release.md)
 - [Architecture and naming](architectures.md)
-- [TR-MoE internals](token-routed.md)
+- [TR-Hash engine](tr-hash-engine.md)
 - [Training](training.md)
-- [Two-dimensional full-shard SFT weighting](sft-full-shard-2d-weighting.md)
-- [Run configurations](run_configs.md)
+- [GPU and dispatch paths](cuda.md)
 - [API reference](api.md)

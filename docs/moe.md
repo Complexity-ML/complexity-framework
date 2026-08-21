@@ -23,19 +23,25 @@ from complexity.core.mlp import MLPConfig, TRHashEngineMLP
 
 mlp = TRHashEngineMLP(
     MLPConfig(
-        hidden_size=768,
-        intermediate_size=512,
-        shared_intermediate_size=2048,
+        hidden_size=896,
+        intermediate_size=256,  # total routed width: 4 × 64
+        shared_intermediate_size=3072,
         vocab_size=32_000,
         num_experts=4,
         shared_expert=True,
-        routing_strategy="token_id_balanced_hash",
+        routing_strategy="token_id_multi_hash",
+        route_hash_count=2,
         top_k=2,
         top_k_primary_weight=0.5,
+        routed_output_scale=2.0,
     )
 )
 output = mlp(hidden_states, token_ids=input_ids)
 ```
+
+This is the MLP shape used by the released 200M model. In `MLPConfig`,
+`intermediate_size` is divided across stored experts; it is not the width of
+each expert. See the [release contract](tr-hash-200m-release.md).
 
 ## Fair comparisons
 
