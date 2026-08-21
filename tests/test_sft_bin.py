@@ -25,6 +25,7 @@ from scripts.sft_500m_32k_tr import (
     SFTJsonlDataset,
     apply_reasoning_envelope,
     build_parser,
+    configure_sft_parameters,
     early_stopping_is_eligible,
     format_record,
     load_checkpoint_state,
@@ -565,6 +566,7 @@ def test_early_stopping_can_require_multiple_complete_epochs() -> None:
 def test_step_limited_probe_uses_its_actual_lr_schedule_horizon() -> None:
     assert lr_schedule_horizon(500, 2_962) == 500
     assert lr_schedule_horizon(5_000, 2_962) == 2_962
+    assert lr_schedule_horizon(5_000, 2_962, reset_each_epoch=False) == 5_000
 
 
 def test_sft_bin_resolves_matched_and_natural_eval_partitions(
@@ -952,14 +954,14 @@ def test_sft_parser_exposes_conservative_training_controls() -> None:
 
 
 @pytest.mark.parametrize("rank", ["0", "-1"])
-def test_sft_parser_rejects_full_parameter_training(rank: str) -> None:
+def test_sft_parser_rejects_nonpositive_lora_rank(rank: str) -> None:
     with pytest.raises(SystemExit):
         build_parser().parse_args(
             ["--checkpoint", "checkpoint", "--lora-rank", rank]
         )
 
 
-def test_every_500m_shell_launcher_selects_lora_explicitly() -> None:
+def test_every_500m_shell_launcher_selects_adaptation_mode_explicitly() -> None:
     launchers = [
         path
         for path in Path("scripts").glob("*.sh")
@@ -967,7 +969,24 @@ def test_every_500m_shell_launcher_selects_lora_explicitly() -> None:
     ]
     assert launchers
     for launcher in launchers:
-        assert "--lora-rank" in launcher.read_text(encoding="utf-8"), launcher
+        source = launcher.read_text(encoding="utf-8")
+        assert "--lora-rank" in source or "--full-parameter" in source, launcher
+
+
+def test_full_parameter_mode_unfreezes_every_parameter() -> None:
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.LayerNorm(4))
+    model.requires_grad_(False)
+    args = build_parser().parse_args(
+        ["--checkpoint", "checkpoint", "--full-parameter"]
+    )
+
+    stats = configure_sft_parameters(args, model)
+
+    assert stats["mode"] == "full-parameter"
+    assert stats["trainable"] == stats["total"]
+    assert stats["frozen"] == 0
+    assert stats["token_io_frozen"] is False
+    assert all(parameter.requires_grad for parameter in model.parameters())
 
 
 def test_sft_parser_supports_a_finite_epoch_budget() -> None:
@@ -1008,6 +1027,21 @@ def test_packed_launcher_derives_steps_and_epoch_boundaries() -> None:
     assert "--eval-every-epoch" in launcher
     assert "--save-milestones" not in launcher
     assert "--steps 2160" not in launcher
+
+
+def test_luciole_16way_full_sft_launcher_is_three_epoch_full_parameter() -> None:
+    launcher = Path(
+        "scripts/vast_sft_200m_luciole_16way_full_3e.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "luciole-16way-sft" in launcher
+    assert "--epochs 3" in launcher
+    assert "--full-parameter" in launcher
+    assert "--no-reset-lr-each-epoch" in launcher
+    assert "--save-every-epoch" in launcher
+    assert "--eval-every-epoch" in launcher
+    assert "--lora-rank" not in launcher
+    assert "--reasoning-envelope" not in launcher
 
 
 def test_sft_parser_and_state_support_exact_resume() -> None:

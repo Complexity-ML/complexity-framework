@@ -22,37 +22,26 @@ from complexity.training.finetuning import (
 PROJECT_ROOT = Path(__file__).parents[1]
 
 
-def test_only_vision_shaped_pipelines_are_exempt_from_full_parameter_ban() -> None:
-    """Regression guard: full-parameter adaptation of *language* weights is
-    banned everywhere except a genuinely vision-only update, or the one
-    text-shaped exception that proves it isn't a language-instruction corpus
-    in disguise. Image-generation SFT qualifies outright (no language decoder
-    at all). Image-text-to-text SFT qualifies only because its script freezes
-    the language decoder for the whole stage (see
-    freeze_decoder_for_vision_only_sft). text-continued-pretraining qualifies
-    only when unique_tokens exactly matches the completed pretrain's
-    unique_tokens -- proof it's a clean single pass over the *same* corpus,
-    not a small instruction dataset routed around the LoRA-only ban -- so a
-    plain TEXT_SUPERVISED_FINETUNING pipeline name (any language-instruction
-    SFT) must still be rejected outright."""
+def test_full_parameter_pipeline_allowlist_is_explicit() -> None:
+    """Regression guard: every full-parameter pipeline is named explicitly."""
 
     assert FULL_PARAMETER_FINETUNING_PIPELINES == {
         VISION_SUPERVISED_FINETUNING,
         IMAGE_GENERATION_SUPERVISED_FINETUNING,
         IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING,
+        TEXT_SUPERVISED_FINETUNING,
         TEXT_CONTINUED_PRETRAINING,
     }
     validate_full_parameter_finetuning(VISION_SUPERVISED_FINETUNING)
     validate_full_parameter_finetuning(IMAGE_GENERATION_SUPERVISED_FINETUNING)
     validate_full_parameter_finetuning(IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING)
+    validate_full_parameter_finetuning(TEXT_SUPERVISED_FINETUNING)
     validate_full_parameter_finetuning(
         TEXT_CONTINUED_PRETRAINING,
         unique_tokens=70_000_000_000,
         pretrain_unique_tokens=70_000_000_000,
     )
 
-    with pytest.raises(ValueError, match="restricted to"):
-        validate_full_parameter_finetuning(TEXT_SUPERVISED_FINETUNING)
     with pytest.raises(ValueError, match="restricted to"):
         validate_full_parameter_finetuning("unknown-finetuning")
 
@@ -156,7 +145,7 @@ def test_v8_vision_sft_launcher_resets_training_with_a_clean_recipe() -> None:
     assert "lora" not in command.lower()
 
 
-def test_text_sft_launchers_remain_lora_only() -> None:
+def test_text_sft_launchers_require_an_explicit_adaptation_mode() -> None:
     for path in (
         Path("scripts/sft_500m_32k_tr.py"),
         Path("scripts/run_sft_curriculum.py"),

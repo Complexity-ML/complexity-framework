@@ -41,6 +41,10 @@ from complexity.inference.chat_template import (
 )
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
+from complexity.training.finetuning import (
+    TEXT_SUPERVISED_FINETUNING,
+    validate_full_parameter_finetuning,
+)
 from complexity.training.lora import (
     LoRAConfig,
     adapter_state_dict,
@@ -961,7 +965,10 @@ def build_optimizer(args, raw_model):
     for name, param in raw_model.named_parameters():
         if not param.requires_grad:
             continue
-        expert = "parametrizations.expert_" in name and ".lora_" in name
+        expert = (
+            ("parametrizations.expert_" in name and ".lora_" in name)
+            or ".engine.expert_" in name
+        )
         no_decay = param.ndim < 2 or "bias" in name or "norm" in name
         prefix = "expert" if expert else "base"
         groups[f"{prefix}_{'no_decay' if no_decay else 'decay'}"].append(param)
@@ -985,6 +992,46 @@ def build_optimizer(args, raw_model):
     )
 
 
+def configure_sft_parameters(args, raw_model) -> dict[str, int | bool | str]:
+    """Select explicit full-parameter SFT or the default LoRA adaptation."""
+
+    if args.full_parameter:
+        validate_full_parameter_finetuning(TEXT_SUPERVISED_FINETUNING)
+        raw_model.requires_grad_(True)
+        total = sum(parameter.numel() for parameter in raw_model.parameters())
+        trainable = sum(
+            parameter.numel()
+            for parameter in raw_model.parameters()
+            if parameter.requires_grad
+        )
+        return {
+            "mode": "full-parameter",
+            "modules": sum(1 for _ in raw_model.modules()),
+            "linear_modules": sum(
+                1 for module in raw_model.modules() if isinstance(module, torch.nn.Linear)
+            ),
+            "expert_tensors": sum(
+                1 for name, _ in raw_model.named_parameters() if ".engine.expert_" in name
+            ),
+            "trainable": trainable,
+            "total": total,
+            "frozen": total - trainable,
+            "token_io_frozen": False,
+        }
+
+    targets = tuple(name.strip() for name in args.lora_targets.split(",") if name.strip())
+    stats: dict[str, int | bool | str] = apply_lora(
+        raw_model,
+        rank=args.lora_rank,
+        alpha=args.lora_alpha,
+        dropout=args.lora_dropout,
+        targets=targets,
+    )
+    stats["mode"] = "lora"
+    stats["token_io_frozen"] = True
+    return stats
+
+
 RESUME_ARGUMENTS = (
     "jsonl",
     "sft_bin",
@@ -1006,6 +1053,8 @@ RESUME_ARGUMENTS = (
     "grad_ckpt",
     "loss_chunk_tokens",
     "sft_fp32_loss",
+    "full_parameter",
+    "reset_lr_each_epoch",
     "lora_rank",
     "lora_alpha",
     "lora_dropout",
@@ -1122,14 +1171,19 @@ def early_stopping_is_eligible(
     return step >= steps_per_epoch * minimum_epochs
 
 
-def lr_schedule_horizon(step_limit: int, steps_per_epoch: int) -> int:
-    """Use the actual probe budget when it is shorter than one epoch."""
+def lr_schedule_horizon(
+    step_limit: int,
+    steps_per_epoch: int,
+    *,
+    reset_each_epoch: bool = True,
+) -> int:
+    """Resolve a per-epoch or whole-run learning-rate schedule horizon."""
 
     if step_limit < 1:
         raise ValueError("step_limit must be positive")
     if steps_per_epoch < 1:
         raise ValueError("steps_per_epoch must be positive")
-    return min(step_limit, steps_per_epoch)
+    return min(step_limit, steps_per_epoch) if reset_each_epoch else step_limit
 
 
 def label_stats(labels: torch.Tensor, vocab_size: int) -> dict[str, int]:
@@ -1384,18 +1438,7 @@ def save_best_checkpoint(
 def positive_lora_rank(value: str) -> int:
     rank = int(value)
     if rank <= 0:
-        from complexity.training.finetuning import (
-            TEXT_SUPERVISED_FINETUNING,
-            validate_full_parameter_finetuning,
-        )
-
-        try:
-            validate_full_parameter_finetuning(TEXT_SUPERVISED_FINETUNING)
-        except ValueError as error:
-            raise argparse.ArgumentTypeError(str(error)) from error
-        raise argparse.ArgumentTypeError(
-            "must be positive; full-parameter SFT is disabled"
-        )
+        raise argparse.ArgumentTypeError("must be positive")
     return rank
 
 
@@ -1470,10 +1513,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--beta2", type=float, default=0.95)
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
     parser.add_argument(
+        "--full-parameter",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Train every model parameter. This is an explicit alternative to "
+            "the default LoRA mode; --lora-* options are ignored."
+        ),
+    )
+    parser.add_argument(
         "--lora-rank",
         type=positive_lora_rank,
         default=16,
-        help="LoRA rank. Must be positive; full-parameter SFT is not supported.",
+        help="LoRA rank used when --full-parameter is disabled.",
     )
     parser.add_argument("--lora-alpha", type=float, default=16.0)
     parser.add_argument("--lora-dropout", type=float, default=0.05)
@@ -1591,6 +1643,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Derive validation cadence from the realized epoch size.",
     )
     parser.add_argument(
+        "--reset-lr-each-epoch",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Reset warmup/cosine scheduling at epoch boundaries. Disable for "
+            "one continuous schedule over the complete multi-epoch run."
+        ),
+    )
+    parser.add_argument(
         "--save-milestones",
         default="",
         help="Comma-separated exact optimizer steps to checkpoint in addition to --save-steps.",
@@ -1640,8 +1701,8 @@ def main():
         raise ValueError("runtime curriculum selection requires --sft-bin")
     if args.early_stopping_min_epochs < 0:
         raise ValueError("--early-stopping-min-epochs cannot be negative")
-    if args.lora_rank <= 0:
-        raise ValueError("--lora-rank must be positive; full-parameter SFT is disabled")
+    if not args.full_parameter and args.lora_rank <= 0:
+        raise ValueError("--lora-rank must be positive in LoRA mode")
     if args.expert_lr_multiplier <= 0:
         raise ValueError("--expert-lr-multiplier must be positive")
     if not 0.0 <= args.min_eval_fraction <= 1.0:
@@ -1700,25 +1761,25 @@ def main():
     load_model_state_compat(raw_model, state["model"])
     if args.grad_ckpt:
         raw_model.gradient_checkpointing_enable()
-    targets = tuple(name.strip() for name in args.lora_targets.split(",") if name.strip())
-    parameter_stats = apply_lora(
-        raw_model,
-        rank=args.lora_rank,
-        alpha=args.lora_alpha,
-        dropout=args.lora_dropout,
-        targets=targets,
-    )
-    parameter_stats["token_io_frozen"] = True
+    parameter_stats = configure_sft_parameters(args, raw_model)
     if args.resume is not None:
         saved_adapter = state.get("lora_adapter")
-        if saved_adapter is None:
+        if args.full_parameter and saved_adapter is not None:
+            raise ValueError("full-parameter resume checkpoint unexpectedly contains LoRA state")
+        if not args.full_parameter and saved_adapter is None:
             raise ValueError("LoRA resume checkpoint does not contain adapter state")
-        load_adapter_state_dict(raw_model, saved_adapter)
-        # ``model`` is deliberately canonical/merged so it works in the
-        # normal runtime. Undo that merge before continuing LoRA training.
-        unmerge_adapter_from_base(raw_model)
+        if saved_adapter is not None:
+            load_adapter_state_dict(raw_model, saved_adapter)
+            # ``model`` is deliberately canonical/merged so it works in the
+            # normal runtime. Undo that merge before continuing LoRA training.
+            unmerge_adapter_from_base(raw_model)
     if parameter_stats["trainable"] == 0:
         raise ValueError("SFT configuration froze every model parameter")
+    if args.full_parameter and parameter_stats["trainable"] != parameter_stats["total"]:
+        raise ValueError(
+            "full-parameter SFT audit failed: "
+            f"trainable={parameter_stats['trainable']:,} total={parameter_stats['total']:,}"
+        )
 
     model = raw_model
     if distributed:
@@ -1890,7 +1951,11 @@ def main():
     optimizer = build_optimizer(args, raw_model)
     base_lrs = [group["lr"] for group in optimizer.param_groups]
 
-    schedule_horizon = lr_schedule_horizon(args.steps, steps_per_epoch)
+    schedule_horizon = lr_schedule_horizon(
+        args.steps,
+        steps_per_epoch,
+        reset_each_epoch=args.reset_lr_each_epoch,
+    )
 
     def build_epoch_lr_lambda():
         warmup_steps = max(1, int(schedule_horizon * args.warmup_ratio))
@@ -1933,11 +1998,17 @@ def main():
             f"SFT source: {ckpt_dir} "
             f"(checkpoint step={loaded_checkpoint_step}, resume step={resume_step})"
         )
-        logger.info(
-            f"LoRA: rank={args.lora_rank} alpha={args.lora_alpha:g} "
-            f"dropout={args.lora_dropout:g} modules={parameter_stats['modules']} "
-            f"trainable={parameter_stats['trainable']:,}"
-        )
+        if args.full_parameter:
+            logger.info(
+                "SFT mode: full-parameter "
+                f"trainable={parameter_stats['trainable']:,}/{parameter_stats['total']:,}"
+            )
+        else:
+            logger.info(
+                f"SFT mode: LoRA rank={args.lora_rank} alpha={args.lora_alpha:g} "
+                f"dropout={args.lora_dropout:g} modules={parameter_stats['modules']} "
+                f"trainable={parameter_stats['trainable']:,}"
+            )
         if args.resume is not None:
             logger.info(
                 "Resumed exactly: optimizer, scheduler, data cursor, and "
@@ -2162,10 +2233,11 @@ def main():
         epoch_idx = (step - 1) // steps_per_epoch
         if epoch_idx > current_epoch:
             current_epoch = epoch_idx
-            for group, base_lr in zip(optimizer.param_groups, base_lrs):
-                group["lr"] = base_lr
-            scheduler = reset_epoch_scheduler()
-            if is_main:
+            if args.reset_lr_each_epoch:
+                for group, base_lr in zip(optimizer.param_groups, base_lrs):
+                    group["lr"] = base_lr
+                scheduler = reset_epoch_scheduler()
+            if is_main and args.reset_lr_each_epoch:
                 logger.info(
                     f"Resetting LR scheduler for epoch {current_epoch + 1} "
                     f"({epoch_idx + 1}/{max(args.epochs or 1, epoch_idx + 1)})"
@@ -2389,8 +2461,8 @@ def main():
             break
 
     # ``save_steps=0`` disables periodic checkpoints, not the final artifact.
-    # A completed LoRA run without a final adapter is not useful and cannot be
-    # reconstructed after the worker processes exit.
+    # A completed run always gets a final artifact when it did not land exactly
+    # on a periodic or milestone checkpoint.
     if last_step > 0 and not (
         (args.save_steps > 0 and last_step % args.save_steps == 0)
         or last_step in save_milestones

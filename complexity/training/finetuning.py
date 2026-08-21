@@ -8,10 +8,10 @@ IMAGE_GENERATION_SUPERVISED_FINETUNING = "image-generation-supervised-finetuning
 IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING = "image-text-to-text-supervised-finetuning"
 TEXT_CONTINUED_PRETRAINING = "text-continued-pretraining"
 
-# Full-parameter adaptation is deliberately exceptional. Text SFT remains
-# LoRA-only; detector/vision refinement and text-to-image aesthetic SFT may
-# update the complete model because they operate on a task checkpoint or an
-# image corpus rather than a language instruction corpus.
+# Full-parameter adaptation is deliberately explicit. Text SFT may update the
+# complete model only when its trainer selects the dedicated full-parameter
+# mode; LoRA remains the default. Detector/vision refinement and text-to-image
+# aesthetic SFT may also update the complete model.
 #
 # image-text-to-text SFT is exempted too, but only in the narrow sense that
 # matches this rationale: its curated stage trains on an image-grounded
@@ -39,6 +39,7 @@ FULL_PARAMETER_FINETUNING_PIPELINES = frozenset(
         VISION_SUPERVISED_FINETUNING,
         IMAGE_GENERATION_SUPERVISED_FINETUNING,
         IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING,
+        TEXT_SUPERVISED_FINETUNING,
         TEXT_CONTINUED_PRETRAINING,
     }
 )
@@ -50,7 +51,7 @@ def validate_full_parameter_finetuning(
     unique_tokens: int | None = None,
     pretrain_unique_tokens: int | None = None,
 ) -> None:
-    """Reject full-parameter SFT unless the pipeline is explicitly exempted.
+    """Reject full-parameter SFT unless the pipeline is explicitly allowed.
 
     text-continued-pretraining carries an extra condition: unique_tokens
     (the plan actually being trained on) must exactly equal
