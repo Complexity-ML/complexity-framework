@@ -14,9 +14,39 @@ token IDs ──► embeddings ──► GQA (TR-GQA) or MHA (TR-MHA) ──► 
                                                            └─ routed experts: fixed token-ID table
 ```
 
-This is an active research codebase, not a finished foundation model. Numerical
-results are reported only with their model size, token budget, seed, hardware,
-and evaluation protocol.
+This is the implementation behind the released **TR-HASH MoE 200M** lineage,
+not a claim of a general-purpose foundation model. Numerical results are
+reported only with their exact checkpoint, token budget, and evaluation
+protocol.
+
+## Current reference release: TR-HASH MoE 200M
+
+The current public reference is a 201,194,368-parameter decoder with 16 layers,
+hidden size 896, GQA (14 query heads / 2 KV heads), a 32,000-token vocabulary,
+one shared width-3,072 SwiGLU path, and four stored width-256 residual experts.
+Multi-hash rendezvous voting compiles each token ID to a persisted top-2 route;
+there is no learned router or load-balancing loss.
+
+| Phase | Progress represented by released weights | Loss / perplexity signal | PIQA acc / acc_norm |
+| --- | --- | --- | --- |
+| Base pretraining | 165,298 steps; 129,995,636,736 token exposures | Last logged training minibatch: 2.652628 / 14.19 | 65.45% / 65.61% |
+| Full-parameter refinement | Step 8,156 / 17,802; 32.07B additional unique-token exposures | Terminal displayed training loss / PPL: 2.3208 / 10.2 | 68.66% / 68.39% |
+| Full-parameter SFT | 3 epochs; 238.9M supervised tokens; epoch 2 promoted | Epoch-3 matched eval: 1.220861 / 3.39 | **68.82% / 69.31%** (epoch 2) |
+
+The refinement was intentionally stopped at 45.8% of its planned 70B-token
+pass. Consequently, `160B` is a rounded lineage label for approximately
+162.07B source-token exposures, not a claim that the planned refinement
+completed. The released assistant is a **full-parameter SFT, not LoRA**.
+PIQA uses all 1,838 validation examples, zero-shot causal continuation
+log-likelihood, no chat template, and maximum sequence length 2,048. Training
+loss, held-out SFT loss, and PIQA are different measurements and are not
+presented as interchangeable.
+
+- [130B base checkpoint](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-130B)
+- [≈162B interrupted refinement checkpoint](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-160B-Refinement)
+- [Released full-parameter SFT](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT)
+- [Live 200M chat](https://www.complexity-ai.fr/ai-lab)
+- [200M release paper](https://www.complexity-ai.fr/papers/tr-hash-200m-multi-hash-routing.pdf)
 
 ## Architecture names
 
@@ -54,7 +84,8 @@ canonical implementation, backed by `complexity.tr_hash.TRHashEngine`:
 - narrow routed experts, `num_experts` in `{1, 2, 4, 8, 16}`;
 - deterministic per-layer token-to-expert tables, re-derived from
   `routing_strategy` at construction — `modulo_cyclic` (no corpus counts) or
-  `token_id_balanced_hash`;
+  `token_id_balanced_hash`; the released 200M uses
+  `token_id_multi_hash` with two rendezvous-hash channels;
 - top-k routes without a learned router or auxiliary balancing loss;
 - a universal PyTorch dispatch path and optional CUDA/Triton CGGR / hash-native
   fused paths, selected automatically per shape (`use_cggr`, `use_custom_kernels`);
@@ -133,20 +164,23 @@ from dataclasses import replace
 from complexity import ComplexityModel, ModelConfig
 
 tr_gqa = ModelConfig(
-    hidden_size=384,
-    num_hidden_layers=10,
-    num_attention_heads=8,
+    hidden_size=896,
+    num_hidden_layers=16,
+    num_attention_heads=14,
     num_key_value_heads=2,
     attention_type="gqa",
-    vocab_size=200_019,
+    vocab_size=32_000,
     mlp_type="tr_hash_engine",
     num_experts=4,
-    intermediate_size=128,
+    intermediate_size=256,
     shared_expert=True,
-    shared_intermediate_size=1536,
-    routing_strategy="modulo_cyclic",
+    shared_intermediate_size=3072,
+    routing_strategy="token_id_multi_hash",
+    route_hash_count=2,
     top_k=2,
     top_k_primary_weight=0.5,
+    max_position_embeddings=2048,
+    tie_word_embeddings=True,
 )
 
 tr_mha = replace(
@@ -187,22 +221,29 @@ includes the shared MLP output in the projected vector.
 ```bash
 pip install -e ".[viz]"
 python scripts/viz_pretrained_expert_tsne_3d.py \
-  --checkpoint artifacts/remote_runs/tr_hash_moe_500m_20b/hf_base \
+  --checkpoint /path/to/TR-HASH-MoE-200M-160B-SFT \
   --probe /path/to/physicaliqa-train-dev/dev.jsonl \
-  --layers 0,5,11,17,23 \
-  --output artifacts/evaluations/tr_hash_500m_pretrain_tsne/expert_tsne_3d.html
+  --layers 0,3,7,11,15 \
+  --model-label "TR-HASH MoE 200M full SFT" \
+  --source-token-exposure 162065132681 \
+  --sft-tokens 238900000 \
+  --output artifacts/evaluations/tr_hash_moe_200m_full_sft_tsne/expert_tsne_3d.html
 ```
 
-For the released 200M full-SFT checkpoint, use layers `0,3,7,11,15` and pass
-release-specific labels and token accounting through `--model-label`,
-`--artifact-label`, `--source-token-exposure`, and `--sft-tokens`.
+The older 492.1M/20B visualization remains reproducible by pointing the same
+script at its converted checkpoint and selecting layers `0,5,11,17,23`.
 
 The command also writes a deterministic compressed point table and a metadata
 manifest containing the checkpoint, tokenizer/config, probe, HTML, and point
 hashes. The t-SNE remains an exploratory visualization, not evidence of expert
 specialization, downstream quality, or superiority over another architecture.
 
-## LoRA instruction fine-tuning from binary shards
+## Legacy 500M LoRA experiment (deprecated release path)
+
+This section documents the historical 500M experiment for reproducibility; it
+is not the release path used by the current 200M assistant. The current release
+uses full-parameter SFT, and LoRA artifacts are not promoted as 200M model
+releases.
 
 The 500M LoRA-SFT runner accepts pre-tokenized, indexed native-32k shards with separate
 `input_ids.bin` (`uint32`) and `labels.bin` (`int32`) files. Prompt and padding
