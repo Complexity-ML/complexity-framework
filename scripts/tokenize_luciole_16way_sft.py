@@ -145,7 +145,7 @@ def main() -> None:
     parser.add_argument("--upload-repo", default=None)
     args = parser.parse_args()
 
-    tokenizer = Tokenizer.load(args.tokenizer)
+    tokenizer = Tokenizer.load(str(args.tokenizer))
     args.output.mkdir(parents=True, exist_ok=True)
     partition_metadata = {
         split: materialize_partition(
