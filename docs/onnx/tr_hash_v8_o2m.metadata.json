@@ -1,0 +1,23 @@
+{
+  "architecture_version": 8,
+  "image_size": 640,
+  "num_classes": 80,
+  "num_cells": 34000,
+  "regression_width": 68,
+  "reg_max": 16,
+  "scale_factors": [
+    1,
+    2,
+    4
+  ],
+  "grid_sizes": [
+    160,
+    80,
+    40,
+    20
+  ],
+  "p2_head": true,
+  "branch": "o2m",
+  "requires_nms": true,
+  "output_semantics": "raw_ltrb_dfl_and_quality_class_logits"
+}

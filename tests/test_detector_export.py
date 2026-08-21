@@ -13,7 +13,13 @@ from complexity.generative.detection import (
     load_detector_checkpoint,
 )
 from complexity.generative.detection.exporting import RawDetectorExport
-from scripts.check_onnx_parity import check_parity
+from scripts.check_onnx_parity import (
+    DEFAULT_PARITY_TOLERANCE,
+    V8_PARITY_TOLERANCES,
+    branch_from_sidecar,
+    calibrated_parity_tolerance,
+    check_parity,
+)
 from scripts.export_onnx import export_onnx
 
 
@@ -74,6 +80,35 @@ def test_auto_export_selects_the_production_branch() -> None:
     assert RawDetectorExport(classic).branch == "o2m"
     with pytest.raises(ValueError, match="end_to_end=True"):
         RawDetectorExport(classic, "nms-free")
+
+
+@pytest.mark.parametrize(
+    ("branch", "expected"),
+    (
+        ("o2m", 2e-3),
+        ("nms-free", 3.5e-3),
+    ),
+)
+def test_v8_exports_use_branch_calibrated_parity_tolerances(
+    branch: str,
+    expected: float,
+) -> None:
+    metadata = {"architecture_version": 8, "branch": branch}
+
+    assert V8_PARITY_TOLERANCES[branch] == expected
+    assert calibrated_parity_tolerance(metadata, branch) == expected
+
+
+def test_legacy_or_unlabelled_exports_keep_strict_parity_tolerance() -> None:
+    assert calibrated_parity_tolerance({}, "o2m") == DEFAULT_PARITY_TOLERANCE
+    assert (
+        calibrated_parity_tolerance({"architecture_version": 7}, "nms-free")
+        == DEFAULT_PARITY_TOLERANCE
+    )
+
+
+def test_sidecar_less_auto_branch_still_defers_to_model_resolution() -> None:
+    assert branch_from_sidecar({}, "auto") == "auto"
 
 
 @pytest.mark.parametrize("branch", ("nms-free", "o2m"))
