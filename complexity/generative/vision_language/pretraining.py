@@ -70,7 +70,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--data-root", type=Path, default=Path("data/vision"))
     parser.add_argument("--image-size", type=int, default=128)
-    parser.add_argument("--architecture-version", type=int, choices=(6,), default=6)
+    parser.add_argument("--architecture-version", type=int, choices=(8,), default=8)
     parser.add_argument("--patch-size", type=int, default=8)
     parser.add_argument("--hidden-size", type=int, default=128)
     parser.add_argument("--layers", type=int, default=4)
@@ -407,7 +407,7 @@ def main() -> None:
     )
     precision = "fp32" if device.type == "mps" else "bf16"
     config = TRHashDetectorConfig(
-        architecture_version=6,
+        architecture_version=args.architecture_version,
         image_size=args.image_size,
         patch_size=args.patch_size,
         vision_hidden_size=args.hidden_size,

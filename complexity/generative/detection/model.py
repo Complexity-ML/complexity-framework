@@ -2,7 +2,7 @@
 
 Predicts local LTRB box distributions and joint quality-class scores directly
 per backbone patch/grid cell (no anchors or region proposals). The backbone is
-the hierarchical v6 TR-Hash vision tower, so
+the hierarchical v8 TR-Hash vision tower, so
 detection gets the same real multi-expert TR-Hash MoE routing as
 classification — this is a detection *head* bolted onto a compliant
 backbone, not a separate architecture with its own routing scheme.

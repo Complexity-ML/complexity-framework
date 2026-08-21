@@ -297,7 +297,7 @@ def _model_card(
 ) -> str:
     model_name = repo_id.split("/")[-1]
     image_size = config.image_size if config is not None else 640
-    architecture_version = config.architecture_version if config is not None else 6
+    architecture_version = config.architecture_version if config is not None else 8
     dataset_name, dataset_type, dataset_tag, dataset_key = _dataset_metadata(class_names, dataset)
     if config is None:
         parameter_text = "approximately 1.12M"
@@ -355,7 +355,7 @@ model-index:
         else "This repository contains the validated TR-Hash detector checkpoint."
     )
     inference = (
-        "Inference instructions will be added when validated v6 weights are uploaded."
+        "Inference instructions will be added when validated v8 weights are uploaded."
         if training
         else f"""```python
 from PIL import Image

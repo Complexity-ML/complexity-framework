@@ -199,7 +199,7 @@ def test_export_includes_sibling_nms_free_metrics(tmp_path: Path):
 def test_training_draft_does_not_publish_checkpoint_weights(tmp_path: Path):
     output = export_detector_for_hub(
         tmp_path / "draft",
-        "AETHORIA-AI/TR-HASH-Vision-v6-1M-COCO",
+        "AETHORIA-AI/TR-HASH-Vision-v8-2M-COCO",
         class_names=COCO_CLASS_NAMES,
         training=True,
     )
@@ -220,7 +220,7 @@ def test_native_coco_release_requires_and_copies_complete_provenance(tmp_path: P
 
     output = export_detector_for_hub(
         tmp_path / "hub",
-        "AETHORIA-AI/TR-HASH-Vision-v6-1M-COCO",
+        "AETHORIA-AI/TR-HASH-Vision-v8-2M-COCO",
         checkpoint=checkpoint,
         class_names=COCO_CLASS_NAMES,
         dataset="coco",
@@ -246,7 +246,7 @@ def test_native_coco_release_rejects_external_weight_provenance(tmp_path: Path):
     with pytest.raises(ValueError, match="random initialization"):
         export_detector_for_hub(
             tmp_path / "hub",
-            "AETHORIA-AI/TR-HASH-Vision-v6-1M-COCO",
+            "AETHORIA-AI/TR-HASH-Vision-v8-2M-COCO",
             checkpoint=checkpoint,
             class_names=COCO_CLASS_NAMES,
             dataset="coco",
@@ -263,7 +263,7 @@ def test_training_draft_clears_stale_release_weights(tmp_path: Path):
 
     export_detector_for_hub(
         output,
-        "AETHORIA-AI/TR-HASH-Vision-v6-1M-COCO",
+        "AETHORIA-AI/TR-HASH-Vision-v8-2M-COCO",
         class_names=COCO_CLASS_NAMES,
         training=True,
         dataset="coco",

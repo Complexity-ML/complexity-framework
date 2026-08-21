@@ -156,6 +156,7 @@ def export_onnx(
     # Export metadata alongside for inference
     metadata_path = output_path.with_suffix(".json")
     metadata = {
+        "architecture_version": config.architecture_version,
         "image_size": config.image_size,
         "num_classes": config.num_classes,
         "num_cells": config.num_cells,

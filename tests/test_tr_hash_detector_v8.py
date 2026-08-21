@@ -1,4 +1,4 @@
-"""Architecture-v6 coverage for hierarchical and resolution-flexible detection."""
+"""Architecture-v8 coverage for hierarchical and resolution-flexible detection."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def _config(
     **overrides,
 ):
     fields = dict(
-        architecture_version=6,
+        architecture_version=8,
         image_size=image_size,
         patch_size=8,
         vision_hidden_size=16,
@@ -38,7 +38,7 @@ def _config(
     return TRHashDetectorConfig(**fields)
 
 
-def test_v6_uses_real_hierarchical_maps_and_dynamic_geometry():
+def test_v8_uses_real_hierarchical_maps_and_dynamic_geometry():
     model = TRHashObjectDetector(_config())
     full_features = model.tower(torch.randn(2, 3, 32, 32))
     assert [feature.shape[-2:] for feature in full_features] == [(4, 4), (2, 2), (1, 1)]
@@ -51,7 +51,7 @@ def test_v6_uses_real_hierarchical_maps_and_dynamic_geometry():
     assert torch.isfinite(losses["loss"])
 
 
-def test_v6_one_to_one_branch_trains_and_decodes_without_nms():
+def test_v8_one_to_one_branch_trains_and_decodes_without_nms():
     model = TRHashObjectDetector(_config(end_to_end=True))
     pixels = torch.randn(2, 3, 24, 24)
     branches = model(pixels, return_branches=True)
@@ -80,7 +80,7 @@ def test_v6_one_to_one_branch_trains_and_decodes_without_nms():
     assert all(len(result["boxes"]) == 5 for result in results)
 
 
-def test_v6_one_to_one_assignment_keeps_unique_targets_and_uses_p2_for_small_objects():
+def test_v8_one_to_one_assignment_keeps_unique_targets_and_uses_p2_for_small_objects():
     model = TRHashObjectDetector(_config(end_to_end=True))
     pixels = torch.randn(1, 3, 32, 32)
     one_to_many, _ = model.forward_branches(pixels)
@@ -221,7 +221,7 @@ def test_auxiliary_gate_level_and_object_losses_train_together():
     assert model.class_level_hash_gate.score.weight.grad is not None
 
 
-def test_v6_position_grids_transfer_across_resolutions(tmp_path):
+def test_v8_position_grids_transfer_across_resolutions(tmp_path):
     source = TRHashObjectDetector(_config(32))
     checkpoint = tmp_path / "tower"
     checkpoint.mkdir()

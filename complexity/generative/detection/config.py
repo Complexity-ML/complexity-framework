@@ -16,7 +16,7 @@ class TRHashDetectorConfig:
     unified sigmoid quality-class scores are enabled by default.
     """
 
-    architecture_version: int = 6
+    architecture_version: int = 8
     image_size: int = 224
     patch_size: int = 16
     vision_hidden_size: int = 384
@@ -85,8 +85,8 @@ class TRHashDetectorConfig:
     def __post_init__(self) -> None:
         object.__setattr__(self, "scale_factors", tuple(self.scale_factors))
         object.__setattr__(self, "vision_stage_depths", tuple(self.vision_stage_depths))
-        if self.architecture_version not in (6, 8):
-            raise ValueError("only detector architecture_version 6 and 8 are supported")
+        if self.architecture_version != 8:
+            raise ValueError("only detector architecture_version 8 is supported")
         if self.num_classes <= 0:
             raise ValueError("num_classes must be positive")
         if self.image_size <= 0 or self.patch_size <= 0:
@@ -216,10 +216,8 @@ class TRHashDetectorConfig:
     @classmethod
     def from_dict(cls, values: Dict[str, Any]) -> "TRHashDetectorConfig":
         values = dict(values)
-        if values.get("architecture_version") not in (6, 8):
-            raise ValueError(
-                "only TR-Hash detector architecture v6 and v8 checkpoints are supported"
-            )
+        if values.get("architecture_version") != 8:
+            raise ValueError("only TR-Hash detector architecture v8 checkpoints are supported")
         allowed = {item.name for item in fields(cls)}
         unknown = sorted(set(values) - allowed)
         if unknown:

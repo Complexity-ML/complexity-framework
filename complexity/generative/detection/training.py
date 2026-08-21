@@ -136,7 +136,7 @@ def parse_args() -> argparse.Namespace:
         "--detector-checkpoint",
         type=Path,
         default=None,
-        help="Transfer a v6 detector checkpoint, optionally onto new classes",
+        help="Transfer a v8 detector checkpoint, optionally onto new classes",
     )
     parser.add_argument(
         "--class-map",
@@ -161,8 +161,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--architecture-version",
         type=int,
-        choices=(6, 7, 8),
-        default=6,
+        choices=(8,),
+        default=8,
         help="detector architecture version",
     )
     parser.add_argument("--patch-size", type=int, default=16)
@@ -898,7 +898,7 @@ def load_pretrained_detector(
     *,
     class_mapping: Dict[int, int] | None = None,
 ) -> None:
-    """Transfer a v6 detector and optionally remap classification rows."""
+    """Transfer a v8 detector and optionally remap classification rows."""
 
     source_config = TRHashDetectorConfig.from_dict(
         json.loads((checkpoint / "config.json").read_text())

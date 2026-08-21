@@ -1,4 +1,4 @@
-"""Hierarchical TR-Hash vision tower for detector architecture v6.
+"""Hierarchical TR-Hash vision tower for detector architecture v8.
 
 The detector needs genuine features at progressively coarser strides rather
 than resampling one final ViT map.  This tower keeps deterministic TR-Hash
@@ -423,7 +423,7 @@ class HierarchicalTRHashVisionTower(nn.Module):
 
 
 class HierarchicalTRHashVisionClassifier(nn.Module):
-    """Classification pretraining wrapper for the detector's exact v6 tower."""
+    """Classification pretraining wrapper for the detector's exact v8 tower."""
 
     def __init__(self, config, num_classes: int):
         super().__init__()

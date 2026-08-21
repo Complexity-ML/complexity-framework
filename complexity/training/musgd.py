@@ -1,4 +1,4 @@
-"""MuSGD optimizer used by the TR-HASH Vision V6 training pipeline."""
+"""MuSGD optimizer used by the current TR-HASH Vision training pipeline."""
 
 from __future__ import annotations
 
@@ -122,7 +122,7 @@ def build_musgd_parameter_groups(
     momentum: float,
     weight_decay: float,
 ) -> list[dict[str, Any]]:
-    """Split V6 parameters into named MuSGD and SGD groups."""
+    """Split vision-model parameters into named MuSGD and SGD groups."""
 
     norm_types = tuple(
         module_type

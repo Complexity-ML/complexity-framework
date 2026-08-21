@@ -67,20 +67,24 @@ def test_default_head_uses_three_feature_scales():
     model = TRHashObjectDetector(config)
     assert len(model.head.regression_heads) == 3
     assert len(model.head.classification_heads) == 3
-    assert config.architecture_version == 6
+    assert config.architecture_version == 8
     assert config.neck_mode == "pan"
     assert model.neck is not None
     assert config.end_to_end
     assert model.one_to_one_head is not None
 
 
-def test_non_v6_config_is_rejected():
+def test_missing_architecture_version_is_rejected():
     values = _tiny_config().to_dict()
     values.pop("architecture_version")
-    values.pop("neck_mode")
 
-    with pytest.raises(ValueError, match="architecture v6"):
+    with pytest.raises(ValueError, match="architecture v8"):
         TRHashDetectorConfig.from_dict(values)
+
+
+def test_removed_architecture_v6_is_rejected():
+    with pytest.raises(ValueError, match="architecture_version 8"):
+        _tiny_config(architecture_version=6)
 
 
 def test_fpn_and_pan_are_identity_initialized_for_checkpoint_transfer():

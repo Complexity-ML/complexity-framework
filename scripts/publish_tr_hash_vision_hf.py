@@ -15,11 +15,11 @@ from complexity.generative.detection.hub import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo-id", default="AETHORIA-AI/TR-HASH-Vision-v6-1M-COCO")
+    parser.add_argument("--repo-id", default="AETHORIA-AI/TR-HASH-Vision-v8-2M-COCO")
     parser.add_argument("--dataset", choices=("coco", "voc"), default="coco")
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument(
-        "--output", type=Path, default=Path("artifacts/hf/tr-hash-vision-v6-1m-coco")
+        "--output", type=Path, default=Path("artifacts/hf/tr-hash-vision-v8-2m-coco")
     )
     parser.add_argument("--training", action="store_true", help="Publish a card-only draft")
     parser.add_argument("--push", action="store_true")
