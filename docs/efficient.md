@@ -29,7 +29,8 @@ normalizes by visible weighted-token mass. Extremely sparse task targets can
 increase gradient variance, so production curricula enforce
 `max_task_loss_weight` and fail before training when the cap is exceeded.
 
-See [Two-dimensional full-shard SFT weighting](sft-full-shard-2d-weighting.md).
+This optional weighting mechanism remains available through the generic SFT
+runner, but the retired 500M experiment-specific launchers are no longer kept.
 
 ## DDP
 

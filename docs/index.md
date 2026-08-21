@@ -47,7 +47,6 @@ supervised SFT tokens. The SFT is full parameter, not LoRA. See the
 | CUDA, Triton, Liger, fallback | **current** | [GPU and dispatch](cuda.md) |
 | Public Python surface | **current** | [API reference](api.md) |
 | TokenRoutedMLP conversion | compatibility only | [Migration](token-routed.md) |
-| 500M LoRA / 2D loss weighting | historical experiment | [Legacy weighting](sft-full-shard-2d-weighting.md) |
 | o200k Dense/TR comparison plans | historical, non-runnable | [Run configurations](run_configs.md), [B200 runbook](200m-o200k-b200-runbook.md) |
 | Multimodal and generative modules | experimental | [Multimodal index](multimodal.md) |
 | Vision detector | separate released lineage | [Object detection](tr-hash-object-detection.md) |
@@ -72,7 +71,6 @@ GQA + TR-MoE architecture.
 - [Custom models and registries](custom-models.md)
 - [Efficient training](efficient.md)
 - [Run configurations and planners](run_configs.md)
-- [Two-dimensional full-shard weighting (historical 500M LoRA)](sft-full-shard-2d-weighting.md)
 - [Historical TokenRoutedMLP migration](token-routed.md)
 - [Hugging Face organization card](huggingface-org-card.md)
 - [Use of generative AI tools](claude-role.md)

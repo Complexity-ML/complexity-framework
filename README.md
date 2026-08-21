@@ -210,9 +210,9 @@ The final assistant stage is full-parameter instruction SFT, not LoRA.
 |---|---|
 | 130B replay pretraining | `scripts/vast_pretrain_tr_hash_200m_70b_replay.sh` |
 | 32.07B unique-token refinement | `scripts/vast_finetune_tr_hash_200m_70b_unique_phase2.sh` |
-| Luciole 16-way full SFT | `scripts/vast_sft_200m_luciole_16way_full_3e.sh` |
-| Three-checkpoint PIQA evaluation | `scripts/eval_full_sft_piqa_3.sh` |
-| SafeTensors release export | `scripts/export_full_sft_release.py` |
+| Audited 300K full SFT v2 | `scripts/vast_sft_200m_clean_v2_full_3e.sh` |
+| Three-checkpoint PIQA + behavior evaluation | `scripts/vast_eval_200m_clean_sft_v2_all.sh` |
+| Promotion-gated F32 SafeTensors release | `scripts/export_sft_v2_release.py` |
 
 These `vast_*` scripts are tracked production profiles for `/workspace`
 machines. They validate the expected checkpoint, dataset manifest, tokenizer,
@@ -261,22 +261,17 @@ The current SFT runner is `scripts.sft_tr`. It supports explicit
 200M recipe uses:
 
 - the step-8,156 refinement checkpoint as its source;
-- the audited 209,000-example Luciole 16-way train split;
-- final-assistant-only labels and packed sequences;
-- three epochs, BF16, AdamW, a continuous cosine schedule, and Liger plus the
+- the audited 300,000-example SFT-v2 train split and 3,000-example eval split;
+- final-assistant-only labels, no truncation, and packed 2,048-token sequences;
+- three epochs, BF16 training, AdamW, a continuous cosine schedule, and Liger plus the
   tested custom CUDA/Triton path;
 - complete held-out evaluation and a resumable checkpoint at every epoch;
 - PIQA evaluation of all three epoch checkpoints before root promotion.
 
 The exact command and preflight checks are tracked in
-[`scripts/vast_sft_200m_luciole_16way_full_3e.sh`](scripts/vast_sft_200m_luciole_16way_full_3e.sh).
+[`scripts/vast_sft_200m_clean_v2_full_3e.sh`](scripts/vast_sft_200m_clean_v2_full_3e.sh).
 See [Training](docs/training.md) for the argument contract and
 [TR-HASH MoE 200M release](docs/tr-hash-200m-release.md) for measured results.
-
-The older 500M LoRA/Card Corpus V2 path remains available only for historical
-reproduction. Its two-dimensional loss-weighting contract is preserved in
-[the legacy guide](docs/sft-full-shard-2d-weighting.md); it is not the training
-recipe behind the current 200M assistant.
 
 ## Inference boundary
 
@@ -350,7 +345,8 @@ python -m pytest -q \
   tests/test_tr_hash_engine.py \
   tests/test_tr_hash_200m_pretraining.py \
   tests/test_sft_bin.py \
-  tests/test_tokenize_luciole_16way_sft.py \
+  tests/test_sft_v2_production_contract.py \
+  tests/test_sft_v2_regression_gate.py \
   tests/test_tr_hash_dynamic_moe.py \
   tests/test_token_routed_to_tr_hash_conversion.py \
   tests/test_tr_mha.py \
@@ -383,7 +379,6 @@ spikes/                      isolated research prototypes
 - [Getting started](docs/getting-started.md)
 - [Training](docs/training.md)
 - [Efficient training](docs/efficient.md)
-- [Two-dimensional full-shard SFT weighting](docs/sft-full-shard-2d-weighting.md)
 - [Run configurations](docs/run_configs.md)
 - [GPU and dispatch paths](docs/cuda.md)
 - [API reference](docs/api.md)

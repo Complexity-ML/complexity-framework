@@ -2,7 +2,7 @@
 
 > **Current path.** The released language-model recipe is 130B replay
 > pretraining, fresh-optimizer full-parameter refinement, then three epochs of
-> full-parameter Luciole instruction SFT. The framework is not LoRA-only.
+> full-parameter instruction SFT on the audited 300K v2 dataset.
 
 ## Stage boundaries
 
@@ -74,43 +74,31 @@ The public refinement stopped at step 8,156 / 17,802 after approximately
 32.07B additional exposures. `160B` in the repository name is a rounded source
 lineage label, not a completed 70B refinement claim.
 
-## Prepare the Luciole 16-way SFT data
+## Audited SFT v2 data
 
-The released dataset has 209,000 training examples and 2,100 held-out examples
-from 16 capped sources. Supervision includes only the final assistant answer;
-the prompt and prior assistant turns are masked.
-
-The production tokenizer wrapper is:
-
-```bash
-scripts/vast_tokenize_upload_luciole_16way_sft.sh
-```
-
-It pins the source revision, uses the refinement tokenizer, caps sequences at
-512 tokens, enforces a minimum completion length, writes the tokenized view,
-and can upload it to
-`AETHORIA-AI/luciole-16way-sft-209k`. The wrapper expects a private token file
-at `/workspace/.hf_token`; create it with mode `0600` and never commit it.
+`AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K` provides 300,000 training examples
+and 3,000 held-out examples, already encoded with the released 32K tokenizer.
+The manifest pins file hashes, 2,048-token sequence cap, EOS `</s>` (ID 0),
+final-assistant-only supervision and a no-truncation release gate.
 
 ## Stage 3: three-epoch full-parameter SFT
 
 The production recipe is tracked verbatim in
-`scripts/vast_sft_200m_luciole_16way_full_3e.sh`:
+`scripts/vast_sft_200m_clean_v2_full_3e.sh`:
 
 ```bash
 BASE_CHECKPOINT=/workspace/tr-hash-refinement \
-TOKENIZER=/workspace/tr-hash-refinement \
-DATA_ROOT=/workspace/luciole-16way-sft \
-NPROC_PER_NODE=8 \
-BATCH_SIZE_PER_GPU=48 \
-scripts/vast_sft_200m_luciole_16way_full_3e.sh
+DATASET_ROOT=/workspace/tr-hash-moe-200m-sft-v2-300k \
+NPROC_PER_NODE=4 \
+BATCH_SIZE_PER_GPU=16 \
+scripts/vast_sft_200m_clean_v2_full_3e.sh
 ```
 
 The launcher refuses `RESUME_FROM`, validates the dataset manifest, requires
 Liger, and invokes `scripts.sft_tr` with:
 
 - `--full-parameter`;
-- 3 epochs, packed 512-token sequences, BF16;
+- 3 epochs, packed 2,048-token sequences, BF16 training;
 - AdamW, LR `2e-5`, betas `0.9/0.95`, weight decay `0.1`;
 - 3% warmup and one continuous cosine schedule across all epochs;
 - custom kernels required by policy;
@@ -141,16 +129,17 @@ checkpoint and every epoch boundary. Rank zero writes
 `runs/<run-name>/metrics.csv`; checkpoint roots contain `step_*`, optional
 `best/`, and selection metadata.
 
-Evaluate all three full-SFT checkpoints on PIQA:
+Evaluate all three full-SFT checkpoints on PIQA and the behavioral panel:
 
 ```bash
-scripts/eval_full_sft_piqa_3.sh
+scripts/vast_eval_200m_clean_sft_v2_all.sh
 ```
 
-The script evaluates steps 463, 926, and 1,389 on separate GPUs when available.
+The script evaluates steps 1,994, 3,988, and 5,982 on separate GPUs when available.
 The release protocol uses the full 1,838-example PIQA validation split,
 zero-shot continuation likelihood, no chat template, FP16, and maximum length
-2,048. Epoch 2 / step 926 is the promoted root model.
+2,048. Promotion additionally requires code, maths, multi-turn memory and
+instruction-following regression gates to pass.
 
 Held-out SFT loss and PIQA select different properties. Report both; never
 claim that the lowest SFT loss automatically produces the best downstream or
@@ -158,12 +147,13 @@ chat checkpoint.
 
 ## Export and synchronization
 
-`scripts.export_full_sft_release` verifies that the supplied checkpoint matches
+`scripts.export_sft_v2_release` verifies that the supplied checkpoint matches
 PIQA selection, writes `model.safetensors`, performs a tensor-equality
 round-trip, copies tokenizer and chat-template assets, and records hashes and
-reports in the release manifest.
+reports in the release manifest. Root weights preserve the F32 checkpoint
+precision; FP16 bundles are benchmark-only MLX derivatives.
 
-`scripts/vast_sync_200m_luciole_full_sft.sh` uploads complete checkpoints to
+`scripts/vast_sync_200m_clean_sft_v2.sh` uploads complete checkpoints to
 `AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT`. Synchronization must finish before
 local checkpoint cleanup. The root model is a copied release artifact; the
 resumable epoch directories remain available for provenance.
@@ -191,21 +181,14 @@ resumable epoch directories remain available for provenance.
 
 See [GPU and dispatch paths](cuda.md).
 
-## Historical 500M LoRA curriculum
-
-The Card Corpus V2 two-dimensional weighting pipeline and
-`configs/sft_500m_32k_v2_balanced*.yaml` are preserved for reproducibility.
-They are not the current release path. See
-[Two-dimensional full-shard SFT weighting](sft-full-shard-2d-weighting.md) and
-[Run configurations](run_configs.md).
-
 ## Verification
 
 ```bash
 pytest -q \
   tests/test_tr_hash_200m_pretraining.py \
   tests/test_sft_bin.py \
-  tests/test_tokenize_luciole_16way_sft.py \
+  tests/test_sft_v2_production_contract.py \
+  tests/test_sft_v2_regression_gate.py \
   tests/test_sync_checkpoints_to_hf.py
 ```
 

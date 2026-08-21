@@ -58,38 +58,6 @@ def test_statistical_eval_requires_ten_percent_coverage() -> None:
         )
 
 
-def test_semantic_v2_epoch_uses_verified_dataset_and_rank_32() -> None:
-    launcher = Path("scripts/vast_sft_500m_32k_v2_balanced_lora.sh").read_text()
-    supervisor = Path(
-        "deploy/supervisor/tr_hash_500m_lora_v2_semantic_epoch.conf"
-    ).read_text()
-
-    assert "RESUME_FROM is not allowed" in launcher
-    assert '--checkpoint "$BASE_CHECKPOINT"' in launcher
-    assert '--curriculum-config "$CURRICULUM_CONFIG"' in launcher
-    assert "--through-stage full-shard-weighted" in launcher
-    assert 'SFT_BIN="artifacts/complexity_card_corpus_v2_229026/tokenized/32k-v2"' in supervisor
-    assert 'CURRICULUM_CONFIG="configs/sft_500m_32k_v2_balanced.yaml"' in supervisor
-    assert 'LORA_RANK="32"' in supervisor
-    assert 'LORA_ALPHA="32"' in supervisor
-    assert 'EXPERT_LR_MULTIPLIER="0.25"' in supervisor
-    assert 'BASE_CHECKPOINT="artifacts/tr_hash_moe_500m_20b_hf"' in supervisor
-    assert 'OUTPUT_ROOT="artifacts/tr_hash_500m_32k_v2_229026_clean_lora_r32"' in supervisor
-
-
-def test_v2_handoff_waits_for_clean_sensor_completion() -> None:
-    handoff = Path(
-        "deploy/supervisor/tr_hash_500m_lora_v2_229026_handoff.conf"
-    ).read_text()
-    script = Path("scripts/vast_wait_then_start_supervisor.sh").read_text()
-
-    assert 'WAIT_SERVICE="tr_hash_sensor_fusion_v1"' in handoff
-    assert 'COMPLETION_PATTERN="Training finished at step="' in handoff
-    assert 'START_SERVICE="tr_hash_500m_lora_v2_semantic_cells"' in handoff
-    assert 'grep -Fq "$COMPLETION_PATTERN" "$WAIT_LOG"' in script
-    assert 'supervisorctl start "$START_SERVICE"' in script
-
-
 def test_legacy_text_adaptation_entrypoints_stay_removed() -> None:
     legacy_paths = (
         "deploy/supervisor/tr_hash_500m_32k_sft.conf",
@@ -100,10 +68,13 @@ def test_legacy_text_adaptation_entrypoints_stay_removed() -> None:
         "scripts/vast_sft_500m_32k_v18_lora_epoch.sh",
         "scripts/vast_sft_500m_32k_v19_lora_epoch.sh",
         "scripts/vast_sft_500m_32k_v2_lora_epoch.sh",
+        "scripts/vast_sft_500m_32k_v2_balanced_lora.sh",
+        "scripts/vast_sft_500m_32k_v2_lora_3e_packed.sh",
+        "scripts/vast_sft_200m_luciole_16way_full_3e.sh",
+        "scripts/sft_tr_hash_200m_lora.sh",
     )
 
     assert all(not Path(path).exists() for path in legacy_paths)
-    assert Path("scripts/vast_sft_500m_32k_v2_balanced_lora.sh").exists()
 
 
 def test_mlx_regression_panel_is_version_neutral_and_covers_greeting() -> None:
@@ -1014,34 +985,6 @@ def test_sft_parser_supports_automatic_epoch_schedule() -> None:
     assert args.pack_sequences is True
     assert args.save_every_epoch is True
     assert args.eval_every_epoch is True
-
-
-def test_packed_launcher_derives_steps_and_epoch_boundaries() -> None:
-    launcher = Path("scripts/vast_sft_500m_32k_v2_lora_3e_packed.sh").read_text(
-        encoding="utf-8"
-    )
-
-    assert "--pack-sequences" in launcher
-    assert "--steps 0" in launcher
-    assert "--save-every-epoch" in launcher
-    assert "--eval-every-epoch" in launcher
-    assert "--save-milestones" not in launcher
-    assert "--steps 2160" not in launcher
-
-
-def test_luciole_16way_full_sft_launcher_is_three_epoch_full_parameter() -> None:
-    launcher = Path(
-        "scripts/vast_sft_200m_luciole_16way_full_3e.sh"
-    ).read_text(encoding="utf-8")
-
-    assert "luciole-16way-sft" in launcher
-    assert "--epochs 3" in launcher
-    assert "--full-parameter" in launcher
-    assert "--no-reset-lr-each-epoch" in launcher
-    assert "--save-every-epoch" in launcher
-    assert "--eval-every-epoch" in launcher
-    assert "--lora-rank" not in launcher
-    assert "--reasoning-envelope" not in launcher
 
 
 def test_sft_parser_and_state_support_exact_resume() -> None:

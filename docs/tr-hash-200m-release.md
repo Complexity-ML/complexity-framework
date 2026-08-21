@@ -53,7 +53,7 @@ load-balancing loss, and no per-token routing network at inference time.
 - [130B base checkpoint](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-130B)
 - [Step-8,156 refinement checkpoint](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-160B-Refinement)
 - [Promoted full-parameter SFT](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT)
-- [Luciole 16-way SFT dataset](https://huggingface.co/datasets/AETHORIA-AI/luciole-16way-sft-209k)
+- [Audited SFT v2 300K dataset](https://huggingface.co/datasets/AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K)
 - [Release paper](https://www.complexity-ai.fr/papers/tr-hash-200m-multi-hash-routing.pdf)
 - [Live TR-Hash-i64 chat](https://www.complexity-ai.fr/ai-lab)
 
@@ -82,11 +82,10 @@ as if they shared one sampling process.
 |---|---|
 | Base replay pretraining | `scripts/vast_pretrain_tr_hash_200m_70b_replay.sh` |
 | Unique-token refinement | `scripts/vast_finetune_tr_hash_200m_70b_unique_phase2.sh` |
-| Luciole dataset tokenization | `scripts/vast_tokenize_upload_luciole_16way_sft.sh` |
-| Three-epoch full SFT | `scripts/vast_sft_200m_luciole_16way_full_3e.sh` |
-| PIQA for all SFT epochs | `scripts/eval_full_sft_piqa_3.sh` |
-| SFT release export | `scripts/export_full_sft_release.py` |
-| Hugging Face synchronization | `scripts/vast_sync_200m_luciole_full_sft.sh` |
+| Three-epoch full SFT v2 | `scripts/vast_sft_200m_clean_v2_full_3e.sh` |
+| PIQA and behavior evaluation | `scripts/vast_eval_200m_clean_sft_v2_all.sh` |
+| SFT release export | `scripts/export_sft_v2_release.py` |
+| Hugging Face synchronization | `scripts/vast_sync_200m_clean_sft_v2.sh` |
 
 The `vast_*` launchers are production profiles for `/workspace` machines and
 expect the environment variables documented in [Training](training.md). Read
