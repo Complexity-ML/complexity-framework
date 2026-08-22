@@ -81,10 +81,15 @@ def load_hellaswag(maximum: int | None) -> list[Example]:
     )
 
 
-def load_arc_easy(maximum: int | None) -> list[Example]:
-    """Load ARC-Easy using the lm-evaluation-harness zero-shot contract."""
+def _load_arc(
+    *,
+    dataset_name: str,
+    benchmark: str,
+    maximum: int | None,
+) -> list[Example]:
+    """Load an AI2 ARC split using the lm-evaluation-harness contract."""
 
-    dataset = load_dataset("allenai/ai2_arc", "ARC-Easy", split="test")
+    dataset = load_dataset("allenai/ai2_arc", dataset_name, split="test")
 
     def examples() -> Iterable[Example]:
         for index, row in enumerate(dataset):
@@ -94,11 +99,11 @@ def load_arc_easy(maximum: int | None) -> list[Example]:
                 answer = labels.index(answer_key)
             except ValueError as error:
                 raise ValueError(
-                    f"ARC-Easy answer key {answer_key!r} is absent from "
+                    f"{dataset_name} answer key {answer_key!r} is absent from "
                     f"choice labels {labels!r} for example {row.get('id', index)!r}"
                 ) from error
             yield Example(
-                benchmark="arc_easy",
+                benchmark=benchmark,
                 example_id=str(row.get("id", index)),
                 context=f"Question: {row['question']}\nAnswer:",
                 continuations=tuple(
@@ -108,6 +113,22 @@ def load_arc_easy(maximum: int | None) -> list[Example]:
             )
 
     return _limit(examples(), maximum)
+
+
+def load_arc_easy(maximum: int | None) -> list[Example]:
+    return _load_arc(
+        dataset_name="ARC-Easy",
+        benchmark="arc_easy",
+        maximum=maximum,
+    )
+
+
+def load_arc_challenge(maximum: int | None) -> list[Example]:
+    return _load_arc(
+        dataset_name="ARC-Challenge",
+        benchmark="arc_challenge",
+        maximum=maximum,
+    )
 
 
 def load_mmlu(maximum: int | None) -> list[Example]:
@@ -164,6 +185,7 @@ def load_piqa(maximum: int | None) -> list[Example]:
 
 
 LOADERS = {
+    "arc_challenge": load_arc_challenge,
     "arc_easy": load_arc_easy,
     "hellaswag": load_hellaswag,
     "mmlu": load_mmlu,
@@ -315,7 +337,10 @@ def main() -> None:
     parser.add_argument(
         "--tasks",
         default="hellaswag,mmlu,piqa",
-        help="Comma-separated subset of arc_easy,hellaswag,mmlu,piqa.",
+        help=(
+            "Comma-separated subset of "
+            "arc_challenge,arc_easy,hellaswag,mmlu,piqa."
+        ),
     )
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--max-length", type=int, default=2048)

@@ -79,3 +79,30 @@ def test_arc_easy_limit_is_applied_after_formatting(monkeypatch) -> None:
 
     assert [example.example_id for example in examples] == ["0", "1"]
     assert [example.answer for example in examples] == [1, 1]
+
+
+def test_arc_challenge_uses_the_challenge_test_configuration(monkeypatch) -> None:
+    evaluator = _import_evaluator_without_mlx(monkeypatch)
+    calls = []
+    row = {
+        "id": "challenge-1",
+        "question": "Which force pulls objects toward Earth?",
+        "choices": {
+            "label": ["A", "B", "C", "D"],
+            "text": ["gravity", "friction", "magnetism", "electricity"],
+        },
+        "answerKey": "A",
+    }
+
+    def fake_load_dataset(path, name, split):
+        calls.append((path, name, split))
+        return [row]
+
+    monkeypatch.setattr(evaluator, "load_dataset", fake_load_dataset)
+
+    examples = evaluator.load_arc_challenge(maximum=None)
+
+    assert calls == [("allenai/ai2_arc", "ARC-Challenge", "test")]
+    assert examples[0].benchmark == "arc_challenge"
+    assert examples[0].answer == 0
+    assert examples[0].context.endswith("\nAnswer:")
