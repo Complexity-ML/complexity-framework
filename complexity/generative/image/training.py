@@ -25,6 +25,8 @@ from tqdm.auto import tqdm
 
 from complexity.training.finetuning import (
     IMAGE_GENERATION_SUPERVISED_FINETUNING,
+    REFINEMENT_STAGE,
+    SUPERVISED_FINETUNING_STAGE,
     validate_full_parameter_finetuning,
 )
 
@@ -61,6 +63,15 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=1.0,
         help="LR multiplier applied during the --sft-steps stage (typically < 1 for a clean SFT).",
+    )
+    parser.add_argument(
+        "--source-stage",
+        choices=(REFINEMENT_STAGE, SUPERVISED_FINETUNING_STAGE),
+        default=None,
+        help=(
+            "Lineage stage of the checkpoint entering --sft-shards. Required "
+            "for SFT; direct pretraining -> SFT is forbidden."
+        ),
     )
     parser.add_argument("--tokenizer", type=Path, default=Path("tokenizer/tokenizer.json"))
     parser.add_argument("--vae", default="stabilityai/sd-vae-ft-mse")
@@ -182,7 +193,10 @@ def main() -> None:
     if args.sft_lr_scale <= 0.0:
         raise ValueError("--sft-lr-scale must be positive")
     if args.sft_shards:
-        validate_full_parameter_finetuning(IMAGE_GENERATION_SUPERVISED_FINETUNING)
+        validate_full_parameter_finetuning(
+            IMAGE_GENERATION_SUPERVISED_FINETUNING,
+            source_stage=args.source_stage,
+        )
     rank, local_rank, world_size, device = setup_distributed()
     logging.basicConfig(
         level=logging.INFO if rank == 0 else logging.WARNING,

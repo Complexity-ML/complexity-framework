@@ -11,9 +11,11 @@ from complexity.generative.detection import TRHashObjectDetector, coco_v8_nano_c
 from complexity.generative.detection.training import resolve_initialization_provenance
 from complexity.training.finetuning import (
     FULL_PARAMETER_FINETUNING_PIPELINES,
+    IMAGE_EDITING_SUPERVISED_FINETUNING,
     IMAGE_GENERATION_SUPERVISED_FINETUNING,
     IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING,
-    TEXT_CONTINUED_PRETRAINING,
+    REFINEMENT_STAGE,
+    TEXT_REFINEMENT,
     TEXT_SUPERVISED_FINETUNING,
     VISION_SUPERVISED_FINETUNING,
     validate_full_parameter_finetuning,
@@ -27,17 +29,31 @@ def test_full_parameter_pipeline_allowlist_is_explicit() -> None:
 
     assert FULL_PARAMETER_FINETUNING_PIPELINES == {
         VISION_SUPERVISED_FINETUNING,
+        IMAGE_EDITING_SUPERVISED_FINETUNING,
         IMAGE_GENERATION_SUPERVISED_FINETUNING,
         IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING,
         TEXT_SUPERVISED_FINETUNING,
-        TEXT_CONTINUED_PRETRAINING,
+        TEXT_REFINEMENT,
     }
     validate_full_parameter_finetuning(VISION_SUPERVISED_FINETUNING)
-    validate_full_parameter_finetuning(IMAGE_GENERATION_SUPERVISED_FINETUNING)
-    validate_full_parameter_finetuning(IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING)
-    validate_full_parameter_finetuning(TEXT_SUPERVISED_FINETUNING)
     validate_full_parameter_finetuning(
-        TEXT_CONTINUED_PRETRAINING,
+        IMAGE_GENERATION_SUPERVISED_FINETUNING,
+        source_stage=REFINEMENT_STAGE,
+    )
+    validate_full_parameter_finetuning(
+        IMAGE_EDITING_SUPERVISED_FINETUNING,
+        source_stage=REFINEMENT_STAGE,
+    )
+    validate_full_parameter_finetuning(
+        IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING,
+        source_stage=REFINEMENT_STAGE,
+    )
+    validate_full_parameter_finetuning(
+        TEXT_SUPERVISED_FINETUNING,
+        source_stage=REFINEMENT_STAGE,
+    )
+    validate_full_parameter_finetuning(
+        TEXT_REFINEMENT,
         unique_tokens=70_000_000_000,
         pretrain_unique_tokens=70_000_000_000,
     )
@@ -46,18 +62,18 @@ def test_full_parameter_pipeline_allowlist_is_explicit() -> None:
         validate_full_parameter_finetuning("unknown-finetuning")
 
 
-def test_text_continued_pretraining_requires_the_unique_token_totals_to_match() -> None:
-    """The text-continued-pretraining exemption isn't a bare pipeline-name
+def test_text_refinement_requires_the_unique_token_totals_to_match() -> None:
+    """The text-refinement exemption isn't a bare pipeline-name
     check: a mismatched unique_tokens (a different, smaller corpus smuggled
     in under this pipeline's name) must still be rejected, and both totals
     must be supplied at all -- the exemption cannot be claimed silently."""
 
     with pytest.raises(ValueError, match="requires unique_tokens"):
-        validate_full_parameter_finetuning(TEXT_CONTINUED_PRETRAINING)
+        validate_full_parameter_finetuning(TEXT_REFINEMENT)
 
     with pytest.raises(ValueError, match="exactly match"):
         validate_full_parameter_finetuning(
-            TEXT_CONTINUED_PRETRAINING,
+            TEXT_REFINEMENT,
             unique_tokens=19_000_000,
             pretrain_unique_tokens=70_000_000_000,
         )

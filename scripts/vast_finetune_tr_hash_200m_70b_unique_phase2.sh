@@ -2,8 +2,7 @@
 set -euo pipefail
 
 # Phase 2: full-parameter text refinement of a completed TR-Hash 200M pretrain.
-# Text analogue of scripts/vast_finetune_detector_coco_v08_nano.sh's vision
-# SFT stage: reruns the SAME corpus the model already saw in phase 1 --
+# Reruns the SAME corpus the model already saw in phase 1 --
 # configs/replay_plans/tr_hash_70b_unique_only_phase2.json selects the exact
 # same 70B unique shards as the pretrain's unique_core phase, replay_passes=1
 # for every source (no repetition) -- with a fresh optimizer/scheduler and a
@@ -11,9 +10,10 @@ set -euo pipefail
 # phase-1 final weights (see CheckpointManager.load_weights_only); step,
 # optimizer, and scheduler all start clean.
 #
-# finetuning.validate_full_parameter_finetuning enforces that the plan's
-# unique_tokens exactly matches the pretrain's (69,997,690,880) before this
-# is allowed to run full-parameter at all -- see scripts/train_tr_hash_200m_200b.py.
+# finetuning.validate_refinement_plan verifies the complete unique_core
+# fingerprint (source, shard and exact row selections), rejects replay, and
+# also checks the 69,997,690,880-token total. Equal counts alone are not proof
+# of an identical corpus -- see scripts/train_tr_hash_200m_200b.py.
 
 REPO_ROOT="${REPO_ROOT:-/workspace/complexity-framework}"
 VENV_ACTIVATE="${VENV_ACTIVATE:-/venv/main/bin/activate}"

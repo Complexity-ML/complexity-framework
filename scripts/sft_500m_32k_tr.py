@@ -46,8 +46,12 @@ from complexity.inference.chat_template import (
 from complexity.models import ComplexityModel
 from complexity.tokenizer import Tokenizer
 from complexity.training.finetuning import (
+    REFINEMENT_STAGE,
+    SUPERVISED_FINETUNING_STAGE,
+    TEXT_MODEL_FAMILY,
     TEXT_SUPERVISED_FINETUNING,
     validate_full_parameter_finetuning,
+    validate_training_stage_transition,
 )
 from complexity.training.lora import (
     LoRAConfig,
@@ -999,8 +1003,22 @@ def build_optimizer(args, raw_model):
 def configure_sft_parameters(args, raw_model) -> dict[str, int | bool | str]:
     """Select explicit full-parameter SFT or the default LoRA adaptation."""
 
+    if args.source_stage is None:
+        raise ValueError(
+            f"SFT requires --source-stage {REFINEMENT_STAGE}; direct "
+            "pretraining -> SFT is forbidden"
+        )
+    validate_training_stage_transition(
+        TEXT_MODEL_FAMILY,
+        args.source_stage,
+        SUPERVISED_FINETUNING_STAGE,
+    )
+
     if args.full_parameter:
-        validate_full_parameter_finetuning(TEXT_SUPERVISED_FINETUNING)
+        validate_full_parameter_finetuning(
+            TEXT_SUPERVISED_FINETUNING,
+            source_stage=args.source_stage,
+        )
         raw_model.requires_grad_(True)
         total = sum(parameter.numel() for parameter in raw_model.parameters())
         trainable = sum(
@@ -1058,6 +1076,7 @@ RESUME_ARGUMENTS = (
     "loss_chunk_tokens",
     "sft_fp32_loss",
     "full_parameter",
+    "source_stage",
     "reset_lr_each_epoch",
     "lora_rank",
     "lora_alpha",
@@ -1567,6 +1586,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Train every model parameter. This is an explicit alternative to "
             "the default LoRA mode; --lora-* options are ignored."
+        ),
+    )
+    parser.add_argument(
+        "--source-stage",
+        choices=(REFINEMENT_STAGE, SUPERVISED_FINETUNING_STAGE),
+        default=None,
+        help=(
+            "Lineage stage of --checkpoint. Initial SFT must use refinement; "
+            "supervised-finetuning is accepted only for an additional SFT stage."
         ),
     )
     parser.add_argument(

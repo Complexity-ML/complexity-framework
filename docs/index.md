@@ -19,6 +19,10 @@ multimodal systems.
    ROCm, and reporting.
 7. [API reference](api.md) — public Python and CLI surfaces.
 
+All non-Vision release recipes follow `pretraining -> same-corpus refinement
+-> SFT`. Vision is the documented exception because its clean-image
+refinement is already integrated into the detector recipe.
+
 ## Current 200M release path
 
 ```text

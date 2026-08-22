@@ -85,6 +85,7 @@ python -m torch.distributed.run \
   --nproc_per_node "${NPROC_PER_NODE}" \
   -m scripts.sft_tr \
   --checkpoint "${BASE_CHECKPOINT}" \
+  --source-stage refinement \
   --sft-bin "${SFT_BIN}" \
   --require-release-ready \
   --tokenizer "${TOKENIZER}" \

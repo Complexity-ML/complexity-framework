@@ -32,6 +32,7 @@ fi
 COMMON_ARGS=(
   -m scripts.sft_500m_32k_tr
   --checkpoint "$CHECKPOINT"
+  --source-stage supervised-finetuning
   --tokenizer "$TOKENIZER"
   --jsonl "$DATA"
   --seq-len "$SEQ_LEN"

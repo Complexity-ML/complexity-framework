@@ -46,6 +46,13 @@ It does not extract or duplicate the 6.7 GB image bank.
 
 ## Four-GPU training
 
+The displayed command is stage 1 only. A release candidate must then run a
+weights-only refinement stage over the exact same image-caption corpus with a
+fresh optimizer and scheduler. Curated aesthetic or instruction shards are a
+third, SFT stage; they must not be presented as refinement. This non-Vision
+three-stage boundary is enforced for promoted recipes even though the modality
+remains experimental.
+
 Start with batch 2 per 16 GB GPU. Gradient checkpointing is enabled by default.
 
 ```bash

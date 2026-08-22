@@ -17,14 +17,16 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 from complexity.config import ModelConfig
 from complexity.training import (
-    TEXT_CONTINUED_PRETRAINING,
+    TEXT_REFINEMENT,
     PretokenizedCorpusMixtureDataset,
     TextCorpusSource,
     WeightedStreamingTextDataset,
     validate_full_parameter_finetuning,
+    validate_refinement_plan,
 )
 from complexity.training.runner import TrainRunner
 from complexity.utils.checkpointing import peek_latest_checkpoint_step
@@ -45,12 +47,33 @@ CORPUS_TOKEN_BUDGETS = {
 # -- row_alignment=512 rounds this slightly below the nominal 70B target from
 # scripts/build_tr_hash_70b_replay_plan.py's DEFAULT_UNIQUE_BUDGETS, so this
 # must be the exact recorded value, not 70_000_000_000). --init-checkpoint (a
-# full-parameter phase-2 refinement pass, see
-# finetuning.TEXT_CONTINUED_PRETRAINING) is only permitted when the plan
-# being trained on has this same unique_tokens total, proving it's a single
-# clean pass over the exact same corpus rather than a small
-# language-instruction dataset routed around the LoRA-only guard.
+# full-parameter phase-2 refinement pass, see finetuning.TEXT_REFINEMENT) is
+# permitted only when the plan has this same total *and* its complete
+# unique_core fingerprint matches the phase-1 plan. A matching count alone
+# does not prove corpus identity.
 PRETRAIN_UNIQUE_TOKENS = 69_997_690_880
+PRETRAIN_PLAN_PATH = (
+    Path(__file__).parents[1]
+    / "configs"
+    / "replay_plans"
+    / "tr_hash_70b_quality_replay.json"
+)
+
+
+def validate_text_refinement_plan(plan_path: str | os.PathLike[str]) -> str:
+    """Validate and fingerprint the exact phase-1 unique-corpus selection."""
+
+    refinement_path = Path(plan_path)
+    if not refinement_path.is_file():
+        raise ValueError(
+            "text refinement requires a local --tokenized-plan so its exact "
+            f"corpus selection can be audited; missing {refinement_path}"
+        )
+    with PRETRAIN_PLAN_PATH.open(encoding="utf-8") as handle:
+        pretrain_plan = json.load(handle)
+    with refinement_path.open(encoding="utf-8") as handle:
+        refinement_plan = json.load(handle)
+    return validate_refinement_plan(refinement_plan, pretrain_plan)
 
 
 def resume_skip_rows_for(args) -> int:
@@ -235,10 +258,22 @@ class TRHash200MPretrainRunner(TrainRunner):
                 )
             if getattr(args, "init_checkpoint", None):
                 validate_full_parameter_finetuning(
-                    TEXT_CONTINUED_PRETRAINING,
+                    TEXT_REFINEMENT,
                     unique_tokens=dataset.unique_tokens,
                     pretrain_unique_tokens=PRETRAIN_UNIQUE_TOKENS,
                 )
+                if not args.tokenized_plan:
+                    raise ValueError(
+                        "text refinement requires --tokenized-plan for exact "
+                        "pretraining-corpus verification"
+                    )
+                fingerprint = validate_text_refinement_plan(args.tokenized_plan)
+                if rank == 0:
+                    print(
+                        "[refinement contract] exact unique_core verified "
+                        f"sha256={fingerprint}",
+                        flush=True,
+                    )
             tokens_per_step = (
                 args.batch_size
                 * world_size

@@ -948,7 +948,13 @@ def test_full_parameter_mode_unfreezes_every_parameter() -> None:
     model = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.LayerNorm(4))
     model.requires_grad_(False)
     args = build_parser().parse_args(
-        ["--checkpoint", "checkpoint", "--full-parameter"]
+        [
+            "--checkpoint",
+            "checkpoint",
+            "--source-stage",
+            "refinement",
+            "--full-parameter",
+        ]
     )
 
     stats = configure_sft_parameters(args, model)
@@ -958,6 +964,21 @@ def test_full_parameter_mode_unfreezes_every_parameter() -> None:
     assert stats["frozen"] == 0
     assert stats["token_io_frozen"] is False
     assert all(parameter.requires_grad for parameter in model.parameters())
+
+
+def test_sft_runtime_requires_checkpoint_stage_provenance() -> None:
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.LayerNorm(4))
+    args = build_parser().parse_args(["--checkpoint", "checkpoint"])
+
+    with pytest.raises(ValueError, match="refinement"):
+        configure_sft_parameters(args, model)
+
+
+def test_sft_parser_rejects_direct_pretraining_source() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["--checkpoint", "checkpoint", "--source-stage", "pretraining"]
+        )
 
 
 def test_sft_parser_supports_a_finite_epoch_budget() -> None:

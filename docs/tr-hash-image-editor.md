@@ -31,11 +31,12 @@ The source and target must be a genuine aligned edit pair. Captions paired to
 one image are not sufficient. Metadata should preserve the license and origin
 of both images.
 
-## Initialize from the text-to-image model
+## Initialize from the refined text-to-image model
 
-The editor can reuse a text-to-image checkpoint with the same architecture.
-New source-conditioning gates start at zero, preserving the base model before
-edit fine-tuning.
+The editor can reuse a **refined** text-to-image checkpoint with the same
+architecture. Direct initialization from stage-1 pretraining is outside the
+release contract. New source-conditioning gates start at zero, preserving the
+source model before edit SFT.
 
 ```bash
 torchrun --standalone --nproc_per_node=4 \
@@ -45,6 +46,7 @@ torchrun --standalone --nproc_per_node=4 \
   --samples-per-epoch 300000 \
   --tokenizer tokenizer/tokenizer.json \
   --init-text-to-image /workspace/checkpoints/text-to-image/step_0100000 \
+  --source-stage refinement \
   --output /workspace/artifacts/tr-hash-image-editor-200m \
   --epochs 3 \
   --batch-size 8 \

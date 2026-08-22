@@ -164,6 +164,11 @@ The current production language-model path is:
 3. three-epoch full-parameter Luciole instruction SFT;
 4. PIQA checkpoint selection and SafeTensors export.
 
+The first three steps are also the default contract for other non-Vision model
+families. Refinement means the exact pretraining corpus with fresh optimizer
+and scheduler state; task data belongs only to SFT. Vision is explicitly
+exempt because its existing clean-image phase is integrated refinement.
+
 See [Training](training.md) for commands and preflight requirements. The old
 statement that text training is LoRA-only is no longer true.
 

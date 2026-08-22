@@ -6,6 +6,18 @@
 
 ## Stage boundaries
 
+This is the framework-wide release contract for every non-Vision model family:
+
+```text
+pretraining -> refinement (same corpus, fresh optimizer) -> SFT
+```
+
+Direct `pretraining -> SFT` transitions are rejected by
+`validate_training_stage_transition`. Refinement identity is checked from the
+complete `unique_core` source/shard/row selection; equal token totals are not
+enough. Vision does not receive a duplicate stage: its canonical augmentation
+anneal and clean-image phase already supply refinement inside that recipe.
+
 | Stage | Objective | State carried forward |
 |---|---|---|
 | Base pretraining | causal language modeling over the replay schedule | final model weights |
@@ -69,6 +81,10 @@ The committed plan
 69,997,690,880 unique tokens once, with no replay or augmentation. The launcher
 loads phase-1 weights through `--init-checkpoint` but creates a fresh optimizer,
 scheduler, and step count.
+
+Before allocating a model, the trainer hashes both plans' exact `unique_core`
+contracts and requires identical fingerprints. Changing one shard or row while
+preserving the total token count fails closed.
 
 The public refinement stopped at step 8,156 / 17,802 after approximately
 32.07B additional exposures. `160B` in the repository name is a rounded source
@@ -164,6 +180,8 @@ resumable epoch directories remain available for provenance.
   distributed RNG, world size, and training-critical arguments must match.
 - `--init-checkpoint` or `--checkpoint` means weights-only initialization for a
   new stage with fresh optimization state.
+- every text SFT launcher must declare `--source-stage refinement`; an
+  additional SFT-on-SFT stage declares `--source-stage supervised-finetuning`;
 - changing epochs, dataset mixture, loss policy, or LR schedule creates a new
   stage; it is not an exact resume.
 - never resume full SFT from an experimental LoRA checkpoint or silently load a

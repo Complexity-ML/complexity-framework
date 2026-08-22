@@ -20,6 +20,13 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+from complexity.training.finetuning import (
+    IMAGE_EDITING_SUPERVISED_FINETUNING,
+    REFINEMENT_STAGE,
+    SUPERVISED_FINETUNING_STAGE,
+    validate_full_parameter_finetuning,
+)
+
 from .codec import FrozenAutoencoderKL
 from .config import TRHashImageConfig
 from .edit_data import AtlasImageEditTarDataset, collate_atlas_image_edits
@@ -50,6 +57,15 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Initialize shared weights from a text-to-image checkpoint",
+    )
+    parser.add_argument(
+        "--source-stage",
+        choices=(REFINEMENT_STAGE, SUPERVISED_FINETUNING_STAGE),
+        default=None,
+        help=(
+            "Lineage stage of --init-text-to-image. Required for edit SFT; "
+            "direct pretraining -> SFT is forbidden."
+        ),
     )
     parser.add_argument("--samples-per-epoch", type=int, default=0)
     parser.add_argument("--epochs", type=int, default=1)
@@ -112,6 +128,11 @@ def save_edit_checkpoint(
 
 def main() -> None:
     args = parse_args()
+    if args.init_text_to_image is not None:
+        validate_full_parameter_finetuning(
+            IMAGE_EDITING_SUPERVISED_FINETUNING,
+            source_stage=args.source_stage,
+        )
     rank, local_rank, world_size, device = setup_distributed()
     logging.basicConfig(
         level=logging.INFO if rank == 0 else logging.WARNING,

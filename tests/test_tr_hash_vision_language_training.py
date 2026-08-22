@@ -225,10 +225,14 @@ def test_freeze_decoder_for_vision_only_sft_leaves_only_vision_trainable():
 def test_image_text_to_text_sft_is_exempt_from_the_full_parameter_ban():
     from complexity.training.finetuning import (
         IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING,
+        REFINEMENT_STAGE,
         validate_full_parameter_finetuning,
     )
 
-    validate_full_parameter_finetuning(IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING)
+    validate_full_parameter_finetuning(
+        IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING,
+        source_stage=REFINEMENT_STAGE,
+    )
 
 
 def test_end_to_end_batch_from_shard_to_loss_backward(tmp_path):

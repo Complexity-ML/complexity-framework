@@ -45,6 +45,12 @@ consume.
 The default configuration has about 11.6M parameters. There is no reduced or
 legacy variant -- every capability above is always active.
 
+For a promoted non-Vision lineage, training follows the same three boundaries
+as the language stack: general sensor pretraining, a fresh-optimizer pass over
+the exact same corpus for refinement, then labeled downstream SFT. The CUHK-X
+command below remains an experimental task-training recipe; it is not evidence
+that a complete three-stage release lineage was run.
+
 ## Input contract
 
 ```python

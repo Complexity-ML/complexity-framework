@@ -23,7 +23,10 @@ token counts, and then invoke DDP. They are production profiles for the
 
 The refinement launcher uses the committed immutable plan
 `configs/replay_plans/tr_hash_70b_unique_only_phase2.json`. It loads base model
-weights only and starts a fresh optimizer and scheduler.
+weights only and starts a fresh optimizer and scheduler. The runtime compares
+the exact `unique_core` fingerprint against the base plan; a matching token
+count with different source rows is rejected. All text SFT launchers declare
+their checkpoint provenance through `--source-stage`.
 
 ## 2. Historical o200k and cluster-plan YAMLs
 

@@ -23,6 +23,8 @@ from tqdm.auto import tqdm
 
 from complexity.training.finetuning import (
     IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING,
+    REFINEMENT_STAGE,
+    SUPERVISED_FINETUNING_STAGE,
     validate_full_parameter_finetuning,
 )
 
@@ -60,6 +62,15 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=1.0,
         help="LR multiplier applied during the --sft-steps stage (typically < 1 for a clean SFT).",
+    )
+    parser.add_argument(
+        "--source-stage",
+        choices=(REFINEMENT_STAGE, SUPERVISED_FINETUNING_STAGE),
+        default=None,
+        help=(
+            "Lineage stage of the checkpoint entering --sft-shards. Required "
+            "for SFT; direct alignment/pretraining -> SFT is forbidden."
+        ),
     )
     parser.add_argument("--default-prompt", default=DEFAULT_PROMPT, help="Prompt used when a shard has none")
     parser.add_argument("--tokenizer", type=Path, default=Path("tokenizer/tokenizer.json"))
@@ -252,7 +263,10 @@ def main() -> None:
     if args.sft_steps > args.max_steps:
         raise ValueError("--sft-steps cannot exceed --max-steps")
     if args.sft_shards:
-        validate_full_parameter_finetuning(IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING)
+        validate_full_parameter_finetuning(
+            IMAGE_TEXT_TO_TEXT_SUPERVISED_FINETUNING,
+            source_stage=args.source_stage,
+        )
 
     rank, local_rank, world_size, device = setup_distributed()
     logging.basicConfig(

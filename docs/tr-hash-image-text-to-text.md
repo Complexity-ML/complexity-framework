@@ -48,7 +48,9 @@ output["loss"].backward()
 ```
 
 For initial alignment, an image-caption corpus can use a fixed user request
-such as `Describe this image.` and supervise the caption. A conversational VLM
-then requires a second stage containing image-grounded questions, answers,
-corrections, comparisons, and multi-turn follow-ups. Caption-only data is not
-enough to teach reliable visual dialogue.
+such as `Describe this image.` and supervise the caption. The aligned model is
+then refined once over that exact same corpus with fresh optimization state.
+Only after refinement does conversational SFT introduce image-grounded
+questions, answers, corrections, comparisons, and multi-turn follow-ups.
+Caption-only data is not enough to teach reliable visual dialogue, and new
+dialogue data must not be labelled refinement.

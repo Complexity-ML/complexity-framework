@@ -202,9 +202,12 @@ TR-MoE routes from token identity while transforming contextual hidden states.
 
 ## Reproduce the 200M training lineage
 
-The released text pipeline has three distinct stages. Refinement is continued
-language-model training with a fresh optimizer; it is not instruction SFT.
-The final assistant stage is full-parameter instruction SFT, not LoRA.
+Every non-Vision release lineage has three distinct stages: pretraining,
+same-corpus refinement with fresh optimization state, then task SFT. A new
+corpus is never labelled refinement. Vision is the sole exception because its
+augmentation-annealed, clean-image refinement is already part of the detector
+pretraining recipe. The final 200M assistant stage is full-parameter
+instruction SFT, not LoRA.
 
 | Stage | Production entry point |
 |---|---|

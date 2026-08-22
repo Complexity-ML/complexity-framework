@@ -1,9 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# Phase 2: full-parameter supervised vision refinement of a completed native
-# v8 detector. This transfers model/EMA weights and intentionally resets the
-# optimizer, scheduler, epoch, step, and RNG state.
+# Vision recipe exception: its existing clean-image phase is the refinement
+# component of the detector's pretraining lineage. Do not insert the generic
+# non-Vision refinement stage before this phase. It transfers model/EMA weights
+# and intentionally resets optimizer, scheduler, epoch, step, and RNG state.
 export TRAINING_PURPOSE=vision-supervised-finetuning
 export DETECTOR_CHECKPOINT="${DETECTOR_CHECKPOINT:-artifacts/detector_coco_v08_nano_o2m/best}"
 export OUTPUT="${OUTPUT:-artifacts/detector_coco_v08_nano_sft}"
