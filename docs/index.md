@@ -18,6 +18,8 @@ multimodal systems.
 6. [GPU and dispatch paths](cuda.md) — PyTorch fallback, Triton/CGGR, Liger,
    ROCm, and reporting.
 7. [API reference](api.md) — public Python and CLI surfaces.
+8. [Released clean SFT v2](tr-hash-200m-clean-sft-v2.md) — audited 300K
+   mixture, reusable 32K token shards, completed training, and epoch metrics.
 
 All non-Vision release recipes follow `pretraining -> same-corpus refinement
 -> SFT`. Vision is the documented exception because its clean-image
@@ -30,15 +32,16 @@ refinement is already integrated into the detector recipe.
         ↓ fresh optimizer, weights only
 32.07B unique-token full-parameter refinement (stopped at step 8,156)
         ↓ full checkpoint weights
-3 epochs Luciole 16-way full-parameter instruction SFT
+3 epochs audited 300K full-parameter instruction SFT v2
         ↓ PIQA selection
-epoch 2 / step 926 promoted to the root SafeTensors release
+epoch 3 / step 5,982 copied to the root F32 SafeTensors release
         ↓
 TR-Hash-i64 OpenAI-compatible serving
 ```
 
-The source-token lineage is approximately 162.07B exposures, plus 238.9M
-supervised SFT tokens. The SFT is full parameter, not LoRA. See the
+The source-token lineage is approximately 162.07B exposures. SFT v2 then uses
+202,948,693 tokenized training tokens per epoch, for 608,846,079 token
+exposures over three epochs. The SFT is full parameter, not LoRA. See the
 [release page](tr-hash-200m-release.md) before quoting any metric.
 
 ## Document status
@@ -48,6 +51,7 @@ supervised SFT tokens. The SFT is full parameter, not LoRA. See the
 | 200M release and metrics | **current** | [Release](tr-hash-200m-release.md) |
 | Architecture and TR-Hash runtime | **current** | [Architecture](architectures.md), [engine](tr-hash-engine.md) |
 | 200M pretraining, refinement, full SFT | **current** | [Training](training.md), [streaming data](tr-hash-200m-streaming-data.md) |
+| 200M clean SFT v2 | **released; epoch 3 at repository root** | [SFT v2](tr-hash-200m-clean-sft-v2.md) |
 | CUDA, Triton, Liger, fallback | **current** | [GPU and dispatch](cuda.md) |
 | Public Python surface | **current** | [API reference](api.md) |
 | TokenRoutedMLP conversion | compatibility only | [Migration](token-routed.md) |

@@ -32,7 +32,7 @@ there is no learned router or load-balancing loss.
 | --- | --- | --- | --- |
 | Base pretraining | 165,298 steps; 129,995,636,736 token exposures | Last logged training minibatch: 2.652628 / 14.19 | 65.45% / 65.61% |
 | Full-parameter refinement | Step 8,156 / 17,802; 32.07B additional unique-token exposures | Terminal displayed training loss / PPL: 2.3208 / 10.2 | 68.66% / 68.39% |
-| Full-parameter SFT | 3 epochs; 238.9M supervised tokens; epoch 2 promoted | Epoch-3 matched eval: 1.220861 / 3.39 | **68.82% / 69.31%** (epoch 2) |
+| Full-parameter SFT v2 | 300,000 train / 3,000 held-out examples; 3 epochs; epoch 3 released | Epoch-3 matched eval: **0.959617 / 2.61** | **68.01% / 69.10%** (epoch 3) |
 
 The refinement was intentionally stopped at 45.8% of its planned 70B-token
 pass. Consequently, `160B` is a rounded lineage label for approximately
@@ -243,9 +243,9 @@ python scripts/viz_pretrained_expert_tsne_3d.py \
   --checkpoint /path/to/TR-HASH-MoE-200M-160B-SFT \
   --probe /path/to/physicaliqa-train-dev/dev.jsonl \
   --layers 0,3,7,11,15 \
-  --model-label "TR-HASH MoE 200M full SFT" \
+  --model-label "TR-HASH MoE 200M full SFT v2" \
   --source-token-exposure 162065132681 \
-  --sft-tokens 238900000 \
+  --sft-tokens 608846079 \
   --output artifacts/evaluations/tr_hash_moe_200m_full_sft_tsne/expert_tsne_3d.html
 ```
 
@@ -381,6 +381,7 @@ spikes/                      isolated research prototypes
 - [TR-MoE internals](docs/tr-hash-engine.md)
 - [Getting started](docs/getting-started.md)
 - [Training](docs/training.md)
+- [Released clean SFT v2](docs/tr-hash-200m-clean-sft-v2.md)
 - [Efficient training](docs/efficient.md)
 - [Run configurations](docs/run_configs.md)
 - [GPU and dispatch paths](docs/cuda.md)

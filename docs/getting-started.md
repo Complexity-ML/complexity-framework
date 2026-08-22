@@ -161,7 +161,7 @@ The current production language-model path is:
 
 1. replay-scheduled base pretraining;
 2. fresh-optimizer full-parameter refinement;
-3. three-epoch full-parameter Luciole instruction SFT;
+3. three-epoch full-parameter instruction SFT on the audited 300K v2 dataset;
 4. PIQA checkpoint selection and SafeTensors export.
 
 The first three steps are also the default contract for other non-Vision model

@@ -11,7 +11,7 @@
 |---|---:|---:|---:|
 | Base pretraining | step 165,298; 129,995,636,736 token exposures | final logged minibatch loss 2.652628; PPL 14.19 | 65.45% / 65.61% |
 | Full-parameter refinement | step 8,156 / 17,802; +32,069,495,945 unique-token exposures | terminal displayed loss 2.3208; PPL 10.2 | 68.66% / 68.39% |
-| Full-parameter instruction SFT | 3 epochs; 238.9M supervised tokens | epoch-3 held-out loss 1.220861; PPL 3.39 | **68.82% / 69.31%** at promoted epoch 2 |
+| Full-parameter instruction SFT v2 | 300,000 train / 3,000 held-out examples; 3 epochs | epoch-3 held-out loss **0.959617**; PPL **2.61** | **68.01% / 69.10%** at released epoch 3 |
 
 The base and refinement stages represent exactly 162,065,132,681 source-token
 exposures. `160B` in repository names is a rounded lineage label. The
@@ -19,9 +19,9 @@ refinement stopped at 45.8% of its planned 70B-token pass; the release does not
 claim that the pass completed.
 
 The instruction model is a **full-parameter SFT**, not LoRA or QLoRA. All
-201,194,368 parameters were trainable. Epoch 2 was selected by downstream PIQA;
-epoch 3 has the lowest matched SFT validation loss but was not silently
-substituted for the benchmark-selected checkpoint.
+201,194,368 parameters were trainable. The released epoch 3 has both the
+lowest matched SFT validation loss and the strongest normalized PIQA result of
+the three v2 checkpoints.
 
 ## Architecture contract
 
@@ -57,10 +57,10 @@ load-balancing loss, and no per-token routing network at inference time.
 - [Release paper](https://www.complexity-ai.fr/papers/tr-hash-200m-multi-hash-routing.pdf)
 - [Live TR-Hash-i64 chat](https://www.complexity-ai.fr/ai-lab)
 
-The root SFT `model.safetensors` is epoch 2 / step 926. Its published SHA-256
-is `2dd5a35624dda4cb267d872f974fd448c9e085004c163b31772515bfd9573caa`.
-The three training checkpoints remain available for audit and exact metric
-provenance.
+The root SFT `model.safetensors` is epoch 3 / step 5,982 in F32. Its exact
+SHA-256 is recorded in the published release manifest. The root file is a copy
+of the released checkpoint; training metrics and evaluation reports retain
+the exact provenance.
 
 ## Evaluation protocol
 

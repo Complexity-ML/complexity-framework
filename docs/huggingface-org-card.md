@@ -26,9 +26,10 @@ the current contextual hidden state.
 
 The reference lineage is **TR-HASH MoE 200M**: 201.2M parameters, a completed
 129.996B-token base run, an interrupted 32.069B-token full-parameter
-refinement, and three epochs of full-parameter instruction SFT. The promoted
-epoch-2 checkpoint reaches 68.82% PIQA accuracy and 69.31% normalized accuracy
-under the published zero-shot continuation protocol.
+refinement, and three epochs of full-parameter instruction SFT on the audited
+300K v2 mixture. The released epoch-3 checkpoint reaches 68.01% PIQA accuracy
+and 69.10% normalized accuracy under the published zero-shot continuation
+protocol; its matched held-out SFT loss is 0.959617 (PPL 2.61).
 
 - [Base](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-130B)
 - [Refinement](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-160B-Refinement)

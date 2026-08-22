@@ -161,3 +161,32 @@ def test_hugging_face_org_card_targets_current_organization() -> None:
     card = (ROOT / "docs/huggingface-org-card.md").read_text(encoding="utf-8")
     assert "title: AETHORIA-AI" in card
     assert "https://huggingface.co/AETHORIA-AI" in card
+
+
+def test_current_200m_docs_report_released_sft_v2_epoch_3() -> None:
+    documents = {
+        path: path.read_text(encoding="utf-8")
+        for path in (
+            ROOT / "README.md",
+            ROOT / "docs/index.md",
+            ROOT / "docs/tr-hash-200m-release.md",
+            ROOT / "docs/tr-hash-200m-clean-sft-v2.md",
+            ROOT / "docs/huggingface-org-card.md",
+        )
+    }
+    combined = "\n".join(documents.values())
+
+    for expected in ("0.959617", "2.61", "68.01%", "69.10%"):
+        assert expected in combined
+    assert "step 5,982" in combined
+
+    stale_release_claims = (
+        "238.9M supervised tokens",
+        "69.31% normalized accuracy",
+        "epoch 2 / step 926",
+        "prepared, not trained",
+        "Candidate recipe, not a released model result",
+    )
+    for path, text in documents.items():
+        for stale in stale_release_claims:
+            assert stale not in text, f"stale SFT v1 claim in {path}: {stale}"

@@ -138,6 +138,14 @@ reach the intended global batch.
 The current 200M release uses the first mode. Experimental LoRA runs are not
 release substitutes and should not be merged into a full-parameter model card.
 
+## Released clean SFT v2 result
+
+The three-epoch v2 run completed at step 5,982. Matched held-out loss decreased
+from 1.722610 at the source checkpoint to 0.959617 (PPL 2.61) after epoch 3.
+The root release is the epoch-3 checkpoint in F32 SafeTensors. See
+[Clean SFT v2](tr-hash-200m-clean-sft-v2.md) for the dataset contract and the
+complete epoch table.
+
 ## Evaluation and checkpoint selection
 
 Matched SFT evaluation consumes the finite held-out split at the source
@@ -145,7 +153,7 @@ checkpoint and every epoch boundary. Rank zero writes
 `runs/<run-name>/metrics.csv`; checkpoint roots contain `step_*`, optional
 `best/`, and selection metadata.
 
-Evaluate all three full-SFT checkpoints on PIQA and the behavioral panel:
+Evaluate all three full-SFT checkpoints on PIQA and the regression panel:
 
 ```bash
 scripts/vast_eval_200m_clean_sft_v2_all.sh
@@ -154,8 +162,8 @@ scripts/vast_eval_200m_clean_sft_v2_all.sh
 The script evaluates steps 1,994, 3,988, and 5,982 on separate GPUs when available.
 The release protocol uses the full 1,838-example PIQA validation split,
 zero-shot continuation likelihood, no chat template, FP16, and maximum length
-2,048. Promotion additionally requires code, maths, multi-turn memory and
-instruction-following regression gates to pass.
+2,048. The regression panel remains a diagnostic artifact; it is not reported
+as an extra public benchmark column.
 
 Held-out SFT loss and PIQA select different properties. Report both; never
 claim that the lowest SFT loss automatically produces the best downstream or

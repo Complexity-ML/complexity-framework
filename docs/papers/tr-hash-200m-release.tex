@@ -47,7 +47,7 @@
 \maketitle
 
 \begin{abstract}
-We report the released training lineage of \model, a 201.2M-parameter decoder-only language model whose feed-forward blocks combine an always-on shared SwiGLU path with four deterministic token-ID-routed residual experts, two active per token. Routing is compiled once per layer by multi-hash rendezvous voting; it has no learned gate and adds no runtime routing model. The lineage comprises (i) a completed 129.996B-token replay-scheduled base pretraining run, (ii) a fresh-optimizer full-parameter refinement stopped at step 8,156 after 32.069B additional unique-token exposures, and (iii) three epochs of full-parameter supervised fine-tuning (SFT) over 238.9M supervised tokens. On the full 1,838-example PIQA validation split, zero-shot causal continuation scoring without a chat template moves from 65.45/65.61 accuracy/length-normalized accuracy for the base checkpoint to 68.66/68.39 after refinement and 68.82/69.31 for the promoted SFT epoch-2 checkpoint. Matched held-out SFT loss decreases from 1.7628 before SFT to 1.2209 after epoch 3. These are single-lineage results without a parameter-matched dense or learned-router control, multi-seed replication, or contamination audit; they establish a reproducible released artifact, not architectural superiority.
+We report the released training lineage of \model, a 201.2M-parameter decoder-only language model whose feed-forward blocks combine an always-on shared SwiGLU path with four deterministic token-ID-routed residual experts, two active per token. Routing is compiled once per layer by multi-hash rendezvous voting; it has no learned gate and adds no runtime routing model. The lineage comprises (i) a completed 129.996B-token replay-scheduled base pretraining run, (ii) a fresh-optimizer full-parameter refinement stopped at step 8,156 after 32.069B additional unique-token exposures, and (iii) three epochs of full-parameter supervised fine-tuning (SFT) on an audited 300,000-example v2 mixture with 202.949M tokenized training tokens per epoch. On the full 1,838-example PIQA validation split, zero-shot causal continuation scoring without a chat template moves from 65.45/65.61 accuracy/length-normalized accuracy for the base checkpoint to 68.66/68.39 after refinement and 68.01/69.10 for the released SFT epoch-3 checkpoint. Matched held-out SFT loss decreases from 1.7226 before SFT to 0.9596 after epoch 3. These are single-lineage results without a parameter-matched dense or learned-router control, multi-seed replication, or contamination audit; they establish a reproducible released artifact, not architectural superiority.
 \end{abstract}
 
 \section{Introduction}
@@ -58,7 +58,7 @@ This paper updates the earlier architecture-and-plan report for \model. That rep
 The contributions are:
 \begin{enumerate}
   \item an exact description of the released 201.2M multi-hash shared-plus-residual architecture;
-  \item an auditable accounting of 129.996B base exposures, 32.069B refinement exposures, and 238.9M supervised SFT tokens;
+  \item an auditable accounting of 129.996B base exposures, 32.069B refinement exposures, and 608.846M tokenized SFT exposures across three epochs;
   \item checkpoint-level PIQA results under one fixed zero-shot continuation protocol; and
   \item explicit separation of training minibatch loss, matched SFT validation loss, downstream accuracy, and qualitative chat behavior.
 \end{enumerate}
@@ -108,7 +108,7 @@ The exported tables are training-independent. Across the 16 layers, route tables
   \foreach \x/\c/\title/\sub in {
     0.8/trblue/{Base pretraining}/{129.996B replay exposures},
     6.0/trgreen/{Full refinement}/{32.069B unique exposures},
-    11.1/trviolet/{Full SFT}/{238.9M supervised tokens}}
+    11.1/trviolet/{Full SFT v2}/{608.846M token exposures}}
   {
     \fill[\c] (\x,0) circle (3pt);
     \node[anchor=south west,text=\c,font=\bfseries] at (\x+0.1,0.15) {\title};
@@ -116,7 +116,7 @@ The exported tables are training-independent. Across the 16 layers, route tables
   }
   \node[draw=tramber,rounded corners=2pt,fill=tramber!8,align=center,font=\scriptsize] at (8.7,1.15) {stopped at step 8,156 / 17,802\\45.8\% of planned refinement};
   \draw[tramber,dashed] (8.7,0.82) -- (8.7,0.05);
-  \node[draw=trviolet,rounded corners=2pt,fill=trviolet!8,align=center,font=\scriptsize] at (13.6,1.15) {epoch 2 promoted\\69.31\% PIQA acc\_norm};
+  \node[draw=trviolet,rounded corners=2pt,fill=trviolet!8,align=center,font=\scriptsize] at (13.6,1.15) {epoch 3 released\\69.10\% PIQA acc\_norm};
   \draw[trviolet,dashed] (13.6,0.82) -- (13.6,0.05);
 \end{tikzpicture}
 \caption{Released lineage. The ``160B'' repository name is a rounded label for approximately 162.065B source-token exposures; it does not imply that the planned 70B-token refinement completed.}
@@ -130,9 +130,9 @@ The base run selects 70B unique tokens from a larger immutable, pretokenized mix
 Refinement starts from base weights only, with a fresh optimizer and learning-rate schedule. It revisits the same 70B unique-token selection without replay or augmentation. The run is stopped at step 8,156 of 17,802 after approximately 32,069,495,945 additional source-token exposures (45.8\% of the planned pass). The terminal progress display records training loss 2.3208 and perplexity 10.2. The release therefore preserves an evaluated intermediate checkpoint; no process is expected to complete the remaining refinement steps.
 
 \subsection{Stage 3: full-parameter instruction SFT}
-Instruction post-training starts from the step-8,156 refinement checkpoint. The model is trained for three epochs over the Luciole 16-way instruction mixture, totaling 238.9M supervised tokens. The mixture covers instruction following, conversation, reasoning, code, mathematics, science, safety, retrieval, rewriting, and summarization. The \code{complexity-chat-v2} template is used for SFT and chat serving. All model parameters are optimized; this stage is not LoRA or QLoRA.
+Instruction post-training starts from the step-8,156 refinement checkpoint. The model is trained for three epochs over the audited SFT v2 mixture: 300,000 training examples and 3,000 held-out examples, encoded with the released 32,000-token tokenizer and capped at the native 2,048-token context without truncation. The training split contains 202,948,693 tokenized tokens per epoch. It covers general instruction following, verified mathematics, execution-filtered code, constraints, rewriting, summarization, STEM, short multi-turn conversation, and English/French bilingual instruction. The \code{complexity-chat-v2} template is used for SFT and chat serving. All model parameters are optimized; this stage is not LoRA or QLoRA.
 
-The held-out SFT set contains 281,617 supervised tokens and is evaluated at the source checkpoint and each epoch boundary. Table~\ref{tab:sftloss} shows monotonic improvement through epoch 3. Checkpoint promotion is nevertheless based on downstream PIQA, not the smallest SFT loss alone, so epoch 2 is copied to the root release.
+The held-out SFT set contains 981,892 supervised tokens and is evaluated at the source checkpoint and each epoch boundary. Table~\ref{tab:sftloss} shows monotonic improvement through epoch 3. Epoch 3 also records the strongest normalized PIQA result of the three candidates and is copied to the root F32 SafeTensors release.
 
 \begin{table}[t]
 \centering
@@ -143,10 +143,10 @@ The held-out SFT set contains 281,617 supervised tokens and is evaluated at the 
 \toprule
 Checkpoint & Step & Loss & PPL \\
 \midrule
-SFT source & 0 & 1.762797 & 5.83 \\
-Epoch 1 & 463 & 1.260493 & 3.53 \\
-Epoch 2 & 926 & 1.226242 & 3.41 \\
-Epoch 3 & 1,389 & \textbf{1.220861} & \textbf{3.39} \\
+SFT source & 0 & 1.722610 & 5.60 \\
+Epoch 1 & 1,994 & 0.990943 & 2.69 \\
+Epoch 2 & 3,988 & 0.963912 & 2.62 \\
+Epoch 3 & 5,982 & \textbf{0.959617} & \textbf{2.61} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -157,7 +157,7 @@ We evaluate the full 1,838-example PIQA validation split~\cite{bisk2020piqa}. Ea
 
 \begin{table*}[t]
 \centering
-\caption{PIQA validation results for the released lineage. ``Source exposure'' excludes the 238.9M supervised SFT tokens. No significance test or multi-seed interval is claimed.}
+\caption{PIQA validation results for the released lineage. ``Source exposure'' excludes the 608.846M tokenized SFT exposures. No significance test or multi-seed interval is claimed.}
 \label{tab:piqa}
 \small
 \begin{tabularx}{\textwidth}{@{}l>{\raggedleft\arraybackslash}p{1.35in}>{\raggedleft\arraybackslash}p{0.72in}>{\raggedleft\arraybackslash}p{0.85in}X@{}}
@@ -166,12 +166,12 @@ Checkpoint & Source-token exposure & PIQA acc & PIQA acc\_norm & Release interpr
 \midrule
 Base final, step 165,298 & 129.996B & 65.45\% & 65.61\% & Completed replay-scheduled base model \\
 Refinement, step 8,156 & 162.065B & 68.66\% & 68.39\% & Interrupted full-parameter intermediate \\
-Full SFT, epoch 2 & 162.065B + SFT & \textbf{68.82\%} & \textbf{69.31\%} & Promoted root assistant checkpoint \\
+Full SFT v2, epoch 3 & 162.065B + SFT & \textbf{68.01\%} & \textbf{69.10\%} & Released root assistant checkpoint \\
 \bottomrule
 \end{tabularx}
 \end{table*}
 
-Refinement provides the largest observed PIQA change relative to the released base: +3.21 points in accuracy and +2.78 points in normalized accuracy. Full SFT retains that improvement and adds +0.16 / +0.92 points relative to refinement. PIQA does not measure instruction following, safety, code generation, or open-ended chat quality; it is used here as a narrow checkpoint-selection sanity check.
+Refinement provides the largest observed PIQA change relative to the released base: +3.21 points in accuracy and +2.78 points in normalized accuracy. Full SFT v2 retains that improvement and changes PIQA by -0.65 / +0.71 points relative to refinement. PIQA does not measure instruction following, safety, code generation, or open-ended chat quality; it is used here as a narrow checkpoint-selection sanity check.
 
 \subsection{What the losses mean}
 The three loss signals in this report have different sampling processes. The base and refinement numbers are terminal training displays from autoregressive corpus training. Table~\ref{tab:sftloss} is a matched held-out SFT evaluation over supervised labels. Table~\ref{tab:piqa} is a discrete multiple-choice continuation benchmark. A lower SFT loss does not guarantee a higher PIQA score, and none of these numbers alone establishes assistant quality.
@@ -179,12 +179,7 @@ The three loss signals in this report have different sampling processes. The bas
 \section{Implementation and Release Artifacts}
 The canonical implementation is maintained in the open-source Complexity Framework. The TR-Hash engine exposes a universal PyTorch path, optional Triton/CUDA grouped dispatch, and a CUDA-graph inference path while preserving the same persisted routes. The release includes configuration, tokenizer assets, Safetensors weights, model cards, training logs where available, and an OpenAI-compatible serving stack in TR-Hash-i64.
 
-The promoted root SFT weights have SHA-256
-\begin{center}
-\scriptsize\code{2dd5a35624dda4cb267d872f974fd448}\\[-1pt]
-\code{c9e085004c163b31772515bfd9573caa}.
-\end{center}
-The release is available at \url{https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT}; the base and refinement repositories retain their distinct roles. The public chat at \url{https://www.complexity-ai.fr/ai-lab} loads the promoted full-SFT model. Experimental LoRA repositories are not part of this lineage.
+The released epoch-3 checkpoint is exported as F32 SafeTensors at the model repository root; its exact SHA-256 is recorded in the accompanying release manifest. The release is available at \url{https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT}; the base and refinement repositories retain their distinct roles. The public chat at \url{https://www.complexity-ai.fr/ai-lab} loads the released full-SFT model. Experimental LoRA repositories are not part of this lineage.
 
 An interactive 3-D t-SNE artifact probes routed residual contributions on natural PIQA text. It samples two routed contribution vectors per token from layers 1, 4, 8, 12, and 16, excludes the shared branch, L2-normalizes vectors, and applies PCA followed by t-SNE. This is an exploratory inspection tool, not evidence of semantic specialization or quality.
 
@@ -194,7 +189,7 @@ This study has one architecture, one training lineage, and no parameter-matched 
 The model is small and experimental. It may hallucinate, repeat, refuse benign requests, comply with unsafe requests, emit biased content, fail arithmetic or code, and lose coherence over long contexts. The public chat is a research demonstration, not a reliable agent or decision system. The CC BY-NC 4.0 model license does not replace source-dataset terms; users remain responsible for provenance and compliance.
 
 \section{Conclusion}
-\model{} demonstrates that a 201.2M-parameter decoder with fixed, multi-hash token-ID routing can be trained end to end through a long base run, continued with fresh-optimizer full-parameter refinement, and converted into an instruction-tuned assistant by full-parameter SFT. The released epoch-2 checkpoint improves PIQA acc\_norm from 65.61\% at the base endpoint to 69.31\%, while epoch 3 reaches the lowest matched SFT loss. The result is best read as a transparent artifact lineage with precise accounting and known limits, not as proof that deterministic routing outperforms dense or learned alternatives.
+\model{} demonstrates that a 201.2M-parameter decoder with fixed, multi-hash token-ID routing can be trained end to end through a long base run, continued with fresh-optimizer full-parameter refinement, and converted into an instruction-tuned assistant by full-parameter SFT. The released SFT v2 epoch-3 checkpoint improves PIQA acc\_norm from 65.61\% at the base endpoint to 69.10\% and reaches a matched held-out SFT loss of 0.959617. The result is best read as a transparent artifact lineage with precise accounting and known limits, not as proof that deterministic routing outperforms dense or learned alternatives.
 
 \paragraph{Reproducibility.}
 Code: \url{https://github.com/Complexity-ML/complexity-framework}. Runtime: \url{https://github.com/Complexity-ML/TR-Hash-i64}. Model collection: \url{https://huggingface.co/AETHORIA-AI}.
