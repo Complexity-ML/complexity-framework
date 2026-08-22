@@ -3,7 +3,8 @@
 
 Scores continuations by causal log-likelihood; it does not generate text and
 does not apply the chat template. This matches the standard zero-shot setup
-for HellaSwag, MMLU, and PIQA more closely than sampled chat generation.
+for ARC-Easy, HellaSwag, MMLU, and PIQA more closely than sampled chat
+generation.
 """
 
 from __future__ import annotations
@@ -80,6 +81,35 @@ def load_hellaswag(maximum: int | None) -> list[Example]:
     )
 
 
+def load_arc_easy(maximum: int | None) -> list[Example]:
+    """Load ARC-Easy using the lm-evaluation-harness zero-shot contract."""
+
+    dataset = load_dataset("allenai/ai2_arc", "ARC-Easy", split="test")
+
+    def examples() -> Iterable[Example]:
+        for index, row in enumerate(dataset):
+            labels = [str(value) for value in row["choices"]["label"]]
+            answer_key = str(row["answerKey"])
+            try:
+                answer = labels.index(answer_key)
+            except ValueError as error:
+                raise ValueError(
+                    f"ARC-Easy answer key {answer_key!r} is absent from "
+                    f"choice labels {labels!r} for example {row.get('id', index)!r}"
+                ) from error
+            yield Example(
+                benchmark="arc_easy",
+                example_id=str(row.get("id", index)),
+                context=f"Question: {row['question']}\nAnswer:",
+                continuations=tuple(
+                    " " + str(value).lstrip() for value in row["choices"]["text"]
+                ),
+                answer=answer,
+            )
+
+    return _limit(examples(), maximum)
+
+
 def load_mmlu(maximum: int | None) -> list[Example]:
     dataset = load_dataset("cais/mmlu", "all", split="test")
     letters = "ABCD"
@@ -134,6 +164,7 @@ def load_piqa(maximum: int | None) -> list[Example]:
 
 
 LOADERS = {
+    "arc_easy": load_arc_easy,
     "hellaswag": load_hellaswag,
     "mmlu": load_mmlu,
     "piqa": load_piqa,
@@ -284,7 +315,7 @@ def main() -> None:
     parser.add_argument(
         "--tasks",
         default="hellaswag,mmlu,piqa",
-        help="Comma-separated subset of hellaswag,mmlu,piqa.",
+        help="Comma-separated subset of arc_easy,hellaswag,mmlu,piqa.",
     )
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--max-length", type=int, default=2048)
