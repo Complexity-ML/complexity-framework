@@ -12,6 +12,9 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-artifacts/tr_hash_moe_200m_sft_v3_32004_full_3e}"
 DETECTED_GPU_COUNT="$(python -c 'import torch; print(torch.cuda.device_count())')"
 NPROC_PER_NODE="${NPROC_PER_NODE:-${DETECTED_GPU_COUNT}}"
 BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-16}"
+LEARNING_RATE="${LEARNING_RATE:-2e-5}"
+EPOCHS="${EPOCHS:-3}"
+RUN_NAME="${RUN_NAME:-tr-hash-moe-200m-sft-v3-32004-full-3e}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export COMPLEXITY_REQUIRE_LIGER=1
 
@@ -103,10 +106,10 @@ python -m torch.distributed.run \
   --tokenizer "${TOKENIZER}" \
   --pack-sequences \
   --steps 0 \
-  --epochs 3 \
+  --epochs "${EPOCHS}" \
   --batch-size "${BATCH_SIZE_PER_GPU}" \
   --seq-len 2048 \
-  --lr 2e-5 \
+  --lr "${LEARNING_RATE}" \
   --weight-decay 0.1 \
   --beta1 0.9 \
   --beta2 0.95 \
@@ -121,7 +124,7 @@ python -m torch.distributed.run \
   --save-total-limit 3 \
   --save-best \
   --save-dir "${OUTPUT_ROOT}" \
-  --run-name tr-hash-moe-200m-sft-v3-32004-full-3e \
+  --run-name "${RUN_NAME}" \
   --seed 42 \
   --use-custom-kernels true \
   --full-parameter \
