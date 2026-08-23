@@ -113,16 +113,17 @@ candidate_names=()
 candidate_paths=()
 declare -A seen_candidates=()
 add_candidate() {
-  local name="$1" path="$2"
+  local name="$1" path
+  path="$(realpath -m "$2")"
   [[ -s "${path}/checkpoint.pt" ]] || return 0
   [[ -z "${seen_candidates[${path}]:-}" ]] || return 0
   seen_candidates["${path}"]=1
   candidate_names+=("${name}")
   candidate_paths+=("${path}")
 }
-add_candidate step250 "${CHECKPOINT_ROOT}/step_000250"
-add_candidate step500 "${CHECKPOINT_ROOT}/step_000500"
 add_candidate piqa "${piqa_selected}"
+add_candidate step500 "${CHECKPOINT_ROOT}/step_000500"
+add_candidate step4000 "${CHECKPOINT_ROOT}/step_004000"
 add_candidate final "${final_selected}"
 if (( ${#candidate_paths[@]} > GPU_COUNT )); then
   echo "Reasoning candidate count exceeds visible GPUs." >&2

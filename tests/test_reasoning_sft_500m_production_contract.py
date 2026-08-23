@@ -80,10 +80,11 @@ def test_reasoning_evaluator_waits_then_scores_every_checkpoint() -> None:
     assert "selected_arc_zero_shot_full.json" in launcher
     assert "scripts.merge_arc_generative_shards" in launcher
     assert "scripts.promote_reasoning_sft_checkpoint" in launcher
-    assert "add_candidate step250" in launcher
-    assert "add_candidate step500" in launcher
     assert "add_candidate piqa" in launcher
+    assert "add_candidate step500" in launcher
+    assert "add_candidate step4000" in launcher
     assert "add_candidate final" in launcher
+    assert 'path="$(realpath -m "$2")"' in launcher
     assert "scripts.select_reasoning_sft_checkpoint" in launcher
     assert "scripts.eval_arc_generative" in launcher
     assert "scripts.eval_torch_chat_panel" in launcher
