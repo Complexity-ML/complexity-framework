@@ -22,6 +22,7 @@ def promote(
     *,
     piqa_tolerance: float = 0.01,
     arc_tolerance: float = 0.02,
+    arc_norm_tolerance: float = 0.01,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     candidates = {
         _checkpoint_directory(candidate["checkpoint"]): dict(candidate)
@@ -36,6 +37,7 @@ def promote(
         raise ValueError("reasoning, zero-shot and PIQA candidate sets do not match")
     best_piqa = max(candidates[path]["piqa_acc_norm"] for path in paths)
     source_arc = float(source_zero_shot["combined"]["acc"])
+    source_arc_norm = float(source_zero_shot["combined"]["acc_norm"])
     audited = []
     for path in sorted(paths):
         candidate = candidates[path]
@@ -43,9 +45,11 @@ def promote(
         zero_report = zero_shot[path]
         candidate["arc_reasoning"] = reasoning_report["combined"]
         candidate["arc_zero_shot"] = zero_report["combined"]
-        candidate["retention_eligible"] = (
-            candidate["piqa_acc_norm"] >= best_piqa - piqa_tolerance
-            and float(zero_report["combined"]["acc"]) >= source_arc - arc_tolerance
+        candidate["retention_eligible"] = candidate[
+            "piqa_acc_norm"
+        ] >= best_piqa - piqa_tolerance and (
+            float(zero_report["combined"]["acc"]) >= source_arc - arc_tolerance
+            or float(zero_report["combined"]["acc_norm"]) >= source_arc_norm - arc_norm_tolerance
         )
         audited.append(candidate)
     eligible = [candidate for candidate in audited if candidate["retention_eligible"]]
@@ -68,7 +72,8 @@ def promote(
     summary["selection_policy"] = (
         "maximum 128-question ARC native reasoning accuracy among the PIQA-best and "
         f"final checkpoints, subject to PIQA acc_norm within {piqa_tolerance:.2f} and "
-        f"full Combined ARC raw accuracy within {arc_tolerance:.2f} of the source; "
+        f"full Combined ARC raw accuracy within {arc_tolerance:.2f} or normalized "
+        f"accuracy within {arc_norm_tolerance:.2f} of the source; "
         "then flexible reasoning accuracy, strict format rate, held-out SFT loss and PIQA"
     )
     return summary, reasoning[selected_path], zero_shot[selected_path]
