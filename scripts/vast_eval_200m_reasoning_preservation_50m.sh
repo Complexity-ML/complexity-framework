@@ -43,7 +43,8 @@ for checkpoint in "${checkpoints[@]}"; do
 done
 
 evaluate_candidate() {
-  local slot="$1" name="$2" checkpoint="$3" output="${EVALUATION_ROOT}/${name}"
+  local slot="$1" name="$2" checkpoint="$3"
+  local output="${EVALUATION_ROOT}/${name}"
   mkdir -p "${output}"
   if [[ ! -s "${output}/piqa.json" ]]; then
     CUDA_VISIBLE_DEVICES="${slot}" python -m scripts.eval_torch_piqa "${checkpoint}" \
