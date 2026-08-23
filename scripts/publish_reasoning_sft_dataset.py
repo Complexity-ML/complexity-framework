@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-from huggingface_hub import HfApi, create_repo, hf_hub_download
+from huggingface_hub import HfApi, create_repo, get_token, hf_hub_download
 
 REPO_ID = "AETHORIA-AI/TR-HASH-MoE-200M-Reasoning-SFT-500M"
 TOKENIZED = Path("tokenized/tr-hash-32k-v2-2048")
@@ -67,9 +67,12 @@ def main() -> None:
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--repo-id", default=REPO_ID)
     args = parser.parse_args()
-    token = os.environ.get("HF_TOKEN")
+    # Interactive workstations normally authenticate through Hugging Face's
+    # local token cache, while unattended GPU hosts inject HF_TOKEN.  Support
+    # both without ever printing the credential.
+    token = os.environ.get("HF_TOKEN") or get_token()
     if not token:
-        raise SystemExit("HF_TOKEN is required")
+        raise SystemExit("Hugging Face authentication is required")
     validation = validate_local(args.dataset)
     local_hashes = {str(path): sha256(args.dataset / path) for path in HASHED_FILES}
 

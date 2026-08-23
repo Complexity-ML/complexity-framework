@@ -72,7 +72,9 @@ def test_reasoning_evaluator_waits_then_scores_every_checkpoint() -> None:
 def test_reasoning_bootstrap_downloads_audited_inputs_and_installs_supervisor() -> None:
     launcher = Path("scripts/vast_prepare_200m_reasoning_sft_500m.sh").read_text()
     assert "AETHORIA-AI/TR-HASH-MoE-200M-160B-Refinement" in launcher
+    assert "ad4e9217b637720fb939babe8c8ce285a804ade2" in launcher
     assert "AETHORIA-AI/TR-HASH-MoE-200M-Reasoning-SFT-500M" in launcher
+    assert "ba07ae135e4a8bdb6daf4cea30f4bc04d1a93033" in launcher
     assert "500_000_000 <= actual < 500_020_000" in launcher
     assert "Dataset file verification failed" in launcher
     assert "liger_fused_linear_ce" in launcher
