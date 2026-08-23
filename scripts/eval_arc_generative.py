@@ -84,6 +84,20 @@ NATIVE_RECIPES = {
         "top_k": 30,
         "repetition_penalty": 1.05,
     },
+    "tr_hash_torch_direct": {
+        "max_new_tokens": 64,
+        "temperature": 0.30,
+        "top_p": 0.90,
+        "top_k": 30,
+        "repetition_penalty": 1.05,
+    },
+    "tr_hash_torch_constrained": {
+        "max_new_tokens": 1,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "top_k": 0,
+        "repetition_penalty": 1.0,
+    },
 }
 
 
@@ -383,6 +397,27 @@ class TRHashTorchGenerator:
         )
 
 
+class TRHashTorchConstrainedGenerator(TRHashTorchGenerator):
+    """Choose one ARC label from the next-token logits after a fixed prefix."""
+
+    def generate(self, prompt: str, *, seed: int, allowed: tuple[str, ...]) -> str:
+        del seed
+        rendered = self.render([{"role": "user", "content": prompt}], self.chat_template)
+        rendered += "Final answer:"
+        prompt_ids = self.tokenizer.encode(rendered, add_special_tokens=False)
+        allowed_ids = []
+        for label in allowed:
+            encoded = self.tokenizer.encode(f" {label}", add_special_tokens=False)
+            if len(encoded) != 1:
+                raise ValueError(f"answer label {label!r} is not one token: {encoded}")
+            allowed_ids.append(encoded[0])
+        tokens = self.torch.tensor([prompt_ids], dtype=self.torch.long, device=self.device)
+        with self.torch.inference_mode():
+            logits = self.model(tokens)["logits"][0, -1].float()
+        choice = int(logits[allowed_ids].argmax().item())
+        return f"Final answer: {allowed[choice]}"
+
+
 class NautileTorchGenerator:
     def __init__(
         self,
@@ -461,10 +496,15 @@ def make_generator(args: argparse.Namespace) -> Generator:
         return TRHashMLXGenerator(args.model_dir, **common)
     if args.backend == "tr_hash_mlx_constrained":
         return TRHashMLXConstrainedGenerator(args.model_dir, **common)
-    if args.backend == "tr_hash_torch":
+    if args.backend in {"tr_hash_torch", "tr_hash_torch_direct", "tr_hash_torch_constrained"}:
         if args.tokenizer is None:
             raise ValueError("--tokenizer is required for tr_hash_torch")
-        return TRHashTorchGenerator(
+        generator = (
+            TRHashTorchConstrainedGenerator
+            if args.backend == "tr_hash_torch_constrained"
+            else TRHashTorchGenerator
+        )
+        return generator(
             args.model_dir,
             tokenizer_path=args.tokenizer,
             device=args.device,
@@ -526,6 +566,8 @@ def main() -> None:
             "tr_hash_mlx_constrained",
             "tr_hash_mlx_open",
             "tr_hash_torch",
+            "tr_hash_torch_direct",
+            "tr_hash_torch_constrained",
             "nautile_torch",
         ),
     )
@@ -637,7 +679,7 @@ def main() -> None:
             if args.backend in {"nautile_torch", "tr_hash_torch"}
             else (
                 "direct_constrained_single_answer_letter_without_reasoning"
-                if args.backend == "tr_hash_mlx_constrained"
+                if args.backend in {"tr_hash_mlx_constrained", "tr_hash_torch_constrained"}
                 else (
                     "direct_open_answer_text_without_option_letters_or_reasoning"
                     if args.backend == "tr_hash_mlx_open"
