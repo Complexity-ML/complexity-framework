@@ -331,7 +331,7 @@ def materialize_release(
     output: Path,
     *,
     sequence_length: int = 2048,
-    source_dataset: str = "AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K",
+    source_dataset: str = "AETHORIA-AI/TR-HASH-MoE-200M-SFT-v3-32004-300K",
     source_revision: str = "main",
     resume: bool = False,
 ) -> dict[str, Any]:
@@ -419,7 +419,7 @@ def main() -> None:
     parser.add_argument("--seq-len", type=int, default=2048)
     parser.add_argument(
         "--source-dataset",
-        default="AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K",
+        default="AETHORIA-AI/TR-HASH-MoE-200M-SFT-v3-32004-300K",
     )
     parser.add_argument("--source-revision", default="main")
     parser.add_argument(

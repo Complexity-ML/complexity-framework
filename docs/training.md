@@ -97,7 +97,7 @@ lineage label, not a completed 70B refinement claim.
 
 ## Audited SFT v3 data
 
-`AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K` now provides a text-recompiled
+`AETHORIA-AI/TR-HASH-MoE-200M-SFT-v3-32004-300K` provides a text-recompiled
 32,004-token release: 299,331 training examples and 2,990 held-out examples.
 Every supervised completion contains the exact IDs 32000--32003 for the
 think/final envelope. The manifest pins file hashes, the 2,048-token sequence

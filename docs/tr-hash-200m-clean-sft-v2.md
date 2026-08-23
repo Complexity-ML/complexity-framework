@@ -48,7 +48,7 @@ history. The aggregate is multi-license; row provenance is retained in
 ## Published dataset
 
 The public dataset is
-[`AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K`](https://huggingface.co/datasets/AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K).
+[`AETHORIA-AI/TR-HASH-MoE-200M-SFT-v3-32004-300K`](https://huggingface.co/datasets/AETHORIA-AI/TR-HASH-MoE-200M-SFT-v3-32004-300K).
 The historical revision contained two equivalent representations:
 
 1. `train.jsonl` / `eval.jsonl`, for inspection and independent processing;

@@ -53,7 +53,7 @@ load-balancing loss, and no per-token routing network at inference time.
 - [130B base checkpoint](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-130B)
 - [Step-8,156 refinement checkpoint](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-160B-Refinement)
 - [Promoted full-parameter SFT](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT)
-- [Audited SFT v2 300K dataset](https://huggingface.co/datasets/AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K)
+- [Audited SFT v3 32,004 300K dataset](https://huggingface.co/datasets/AETHORIA-AI/TR-HASH-MoE-200M-SFT-v3-32004-300K)
 - [Release paper](https://www.complexity-ai.fr/papers/tr-hash-200m-multi-hash-routing.pdf)
 - [Live TR-Hash-i64 chat](https://www.complexity-ai.fr/ai-lab)
 
