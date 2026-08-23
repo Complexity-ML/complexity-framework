@@ -79,9 +79,11 @@ NATIVE_RECIPES = {
     },
     "tr_hash_torch": {
         "max_new_tokens": 256,
-        "temperature": 0.30,
-        "top_p": 0.90,
-        "top_k": 30,
+        # Checkpoint ranking must not depend on one lucky sampling seed.  The
+        # released interactive sampling recipe is evaluated separately.
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "top_k": 0,
         "repetition_penalty": 1.05,
     },
     "tr_hash_torch_direct": {
@@ -155,23 +157,26 @@ def evenly_spaced(rows: list[ARCExample], maximum: int | None) -> list[ARCExampl
     return [rows[round(index * (len(rows) - 1) / (maximum - 1))] for index in range(maximum)]
 
 
-def build_prompt(example: ARCExample, *, reasoning: bool = True) -> str:
+def build_prompt(
+    example: ARCExample,
+    *,
+    reasoning: bool = True,
+    prompt_style: str = "minimal",
+) -> str:
     choices = "\n".join(
         f"{label}. {choice}" for label, choice in zip(example.labels, example.choices, strict=True)
     )
+    question = f"Question: {example.question}\n\nChoices:\n{choices}"
+    if prompt_style == "bare":
+        return question
+    if prompt_style != "minimal":
+        raise ValueError(f"unsupported prompt style: {prompt_style}")
     allowed = ", ".join(example.labels)
     if reasoning:
-        instruction = (
-            "Solve this multiple-choice science question. Think step by step, then "
-            f"end with exactly `Final answer: X`, where X is one of {allowed}. "
-            "After that line, write nothing else."
-        )
+        instruction = f"Think step by step. End with `Final answer: X` (X = {allowed})."
     else:
-        instruction = (
-            "Select the correct option. Reply with exactly `Final answer: X`, where "
-            f"X is one of {allowed}. Do not explain your answer or write anything else."
-        )
-    return f"{instruction}\n\nQuestion: {example.question}\n\nChoices:\n{choices}"
+        instruction = f"Reply only with `Final answer: X` (X = {allowed})."
+    return f"{instruction}\n\n{question}"
 
 
 def build_open_answer_prompt(example: ARCExample) -> str:
@@ -582,6 +587,7 @@ def main() -> None:
     parser.add_argument("--top-p", type=float)
     parser.add_argument("--top-k", type=int)
     parser.add_argument("--repetition-penalty", type=float)
+    parser.add_argument("--prompt-style", choices=("minimal", "bare"), default="minimal")
     parser.add_argument("--device", default="mps")
     parser.add_argument("--tokenizer", type=Path)
     parser.add_argument("--seed", type=int, default=1729)
@@ -627,6 +633,7 @@ def main() -> None:
             else build_prompt(
                 example,
                 reasoning=args.backend in {"nautile_torch", "tr_hash_torch"},
+                prompt_style=args.prompt_style,
             )
         )
         completion_started = time.monotonic()
@@ -675,15 +682,19 @@ def main() -> None:
         "recipe": "backend_native",
         "protocol": "zero_shot_generative_reasoning_final_answer_extraction",
         "prompt_contract": (
-            "native_reasoning_then_answer_letter"
-            if args.backend in {"nautile_torch", "tr_hash_torch"}
+            "bare_question_and_labeled_choices_without_instruction"
+            if args.prompt_style == "bare"
             else (
-                "direct_constrained_single_answer_letter_without_reasoning"
-                if args.backend in {"tr_hash_mlx_constrained", "tr_hash_torch_constrained"}
+                "native_reasoning_then_answer_letter"
+                if args.backend in {"nautile_torch", "tr_hash_torch"}
                 else (
-                    "direct_open_answer_text_without_option_letters_or_reasoning"
-                    if args.backend == "tr_hash_mlx_open"
-                    else "direct_explicit_final_answer_letter_without_reasoning"
+                    "direct_constrained_single_answer_letter_without_reasoning"
+                    if args.backend in {"tr_hash_mlx_constrained", "tr_hash_torch_constrained"}
+                    else (
+                        "direct_open_answer_text_without_option_letters_or_reasoning"
+                        if args.backend == "tr_hash_mlx_open"
+                        else "direct_explicit_final_answer_letter_without_reasoning"
+                    )
                 )
             )
         ),

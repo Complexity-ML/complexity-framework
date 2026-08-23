@@ -194,6 +194,21 @@ python -m scripts.promote_reasoning_sft_checkpoint \
   --selected-reasoning-report "${EVALUATION_ROOT}/selected_arc_reasoning_64.json" \
   --selected-zero-shot-report "${EVALUATION_ROOT}/selected_arc_zero_shot_full.json"
 selected="$(< "${EVALUATION_ROOT}/selected_checkpoint.txt")"
+
+# Diagnostic requested for the promoted checkpoint: repeat the same balanced
+# 64-question probe with no instruction block at all.  This does not influence
+# promotion; it isolates whether the formatting instruction itself helps or
+# distracts the compact model.
+CUDA_VISIBLE_DEVICES=0 python -m scripts.eval_arc_generative \
+  tr_hash_torch "${selected}" \
+  --tokenizer "${TOKENIZER}" \
+  --arc-easy-samples "${ARC_PROBE}/samples_arc_easy.jsonl" \
+  --arc-challenge-samples "${ARC_PROBE}/samples_arc_challenge.jsonl" \
+  --max-samples-per-task "${ARC_SAMPLES_PER_TASK:-32}" \
+  --prompt-style bare --device cuda \
+  --output "${EVALUATION_ROOT}/selected_arc_reasoning_64_bare.json" \
+  > "${EVALUATION_ROOT}/selected_arc_reasoning_64_bare.log" 2>&1
+
 CUDA_VISIBLE_DEVICES=0 python -m scripts.eval_torch_chat_panel \
   --checkpoint "${selected}" --tokenizer "${TOKENIZER}" \
   --panel configs/tr_hash_200m_sft_v2_regression.json --device cuda \
