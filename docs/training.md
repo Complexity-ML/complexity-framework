@@ -42,6 +42,11 @@ Override documented environment variables when using another layout. Run the
 preflight and a bounded smoke test before an expensive job. Do not embed access
 tokens in scripts, supervisor configurations, logs, or Git history.
 
+Long-running jobs use `complexity.training.SupervisorManager` and a validated
+`SupervisorProgram`. The framework atomically generates the host configuration;
+static instance-specific Supervisor files are not versioned. Never put tokens,
+passwords, API keys, or other credentials in a program environment mapping.
+
 ## Stage 1: replay-scheduled base pretraining
 
 Entry point:

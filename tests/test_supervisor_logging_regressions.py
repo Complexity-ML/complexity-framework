@@ -13,15 +13,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from complexity.training.supervisor import tr_hash_sft_32004_program
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SUPERVISOR_CONF_DIRS = ("configs/supervisor", "deploy/supervisor")
-
-
-def _supervisor_confs() -> list[Path]:
-    confs: list[Path] = []
-    for directory in SUPERVISOR_CONF_DIRS:
-        confs.extend((REPO_ROOT / directory).glob("*.conf"))
-    return confs
 
 
 def _launcher_scripts() -> list[Path]:
@@ -29,11 +23,14 @@ def _launcher_scripts() -> list[Path]:
 
 
 def test_no_supervisor_conf_logs_through_the_portal_stdout_capture() -> None:
-    confs = _supervisor_confs()
-    assert confs, "expected at least one committed supervisor conf"
-    for conf in confs:
-        text = conf.read_text(encoding="utf-8")
-        assert "/dev/stdout" not in text, f"{conf} logs through /dev/stdout"
+    rendered = tr_hash_sft_32004_program().render()
+    assert "/dev/stdout" not in rendered
+    assert "stdout_logfile=/workspace/complexity-framework/artifacts/" in rendered
+
+
+def test_static_supervisor_configs_stay_removed() -> None:
+    assert not list((REPO_ROOT / "configs/supervisor").glob("*.conf"))
+    assert not list((REPO_ROOT / "deploy/supervisor").glob("*.conf"))
 
 
 def test_no_vast_launcher_pipes_torchrun_through_pty_or_tee() -> None:

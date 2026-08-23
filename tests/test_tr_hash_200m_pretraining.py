@@ -9,16 +9,17 @@ from types import SimpleNamespace
 import pytest
 
 from complexity.models import ComplexityModel
-from complexity.training import WeightedStreamingTextDataset, resolve_warmup_steps
+from complexity.training import (
+    SupervisorProgram,
+    WeightedStreamingTextDataset,
+    resolve_warmup_steps,
+)
 from complexity.training.packing import resolve_token_pack_schedule
 from complexity.training.runner import log_routing_diagnostic, routing_diagnostic
 
 SCRIPT = Path("scripts/train_tr_hash_200m_200b.py")
 TOKENIZER_LAUNCHER = Path("scripts/cpu_tokenize_tr_hash_200m_200b.sh")
 REPLAY_LAUNCHER = Path("scripts/vast_pretrain_tr_hash_200m_70b_replay.sh")
-REPLAY_SUPERVISOR = Path(
-    "configs/supervisor/tr_hash_200m_70b_replay_8x5090.conf"
-)
 
 
 def _load_training_script():
@@ -44,12 +45,15 @@ def test_true_200b_token_budget_is_not_compressed() -> None:
 
 def test_one_billion_token_warmup_scales_with_global_batch() -> None:
     tokens_per_step = 8 * 8 * 8 * 1024
-    assert resolve_warmup_steps(
-        max_steps=381_470,
-        tokens_per_step=tokens_per_step,
-        warmup_steps=None,
-        warmup_tokens=1_000_000_000,
-    ) == 1908
+    assert (
+        resolve_warmup_steps(
+            max_steps=381_470,
+            tokens_per_step=tokens_per_step,
+            warmup_steps=None,
+            warmup_tokens=1_000_000_000,
+        )
+        == 1908
+    )
 
     with pytest.raises(ValueError, match="mutually exclusive"):
         resolve_warmup_steps(
@@ -78,8 +82,8 @@ def test_200m_profile_keeps_dense_shared_swiglu_and_narrow_experts() -> None:
     assert config.intermediate_size // config.num_experts == 64
     assert config.shared_intermediate_size > config.intermediate_size // config.num_experts
 
-    defaults = module.build_runner()._build_parser().parse_args(
-        ["--stack-edu-data", "stack/*.jsonl.gz"]
+    defaults = (
+        module.build_runner()._build_parser().parse_args(["--stack-edu-data", "stack/*.jsonl.gz"])
     )
     assert defaults.target_tokens == 200_000_000_000
     assert defaults.token_packs == 40
@@ -247,8 +251,8 @@ def test_production_launcher_streams_the_70b_replay_without_worker_cache_thrash(
     assert "--tokenized-cache-dir" in source
     assert "--tokenized-cache-gb" in source
     assert "--tokenized-prefetch-shards" in source
-    assert 'TOKENIZED_CACHE_GB:-24' in source
-    assert 'NUM_WORKERS:-0' in source
+    assert "TOKENIZED_CACHE_GB:-24" in source
+    assert "NUM_WORKERS:-0" in source
     assert "export PYTHONUNBUFFERED=1" in source
     assert "TR_HASH_LINE_PROGRESS" not in source
     assert "--save-steps 0" in source
@@ -267,7 +271,14 @@ def test_cpu_tokenizer_publishes_to_the_approved_dataset_repo() -> None:
 
 def test_70b_replay_supervisor_survives_a_crash_or_reboot_unattended() -> None:
     launcher = REPLAY_LAUNCHER.read_text(encoding="utf-8")
-    supervisor = REPLAY_SUPERVISOR.read_text(encoding="utf-8")
+    supervisor = SupervisorProgram(
+        name="tr_hash_200m_70b_replay",
+        command=("/bin/bash", "/workspace/run_200m.sh"),
+        directory=Path("/workspace/complexity-framework"),
+        stdout_logfile=Path(
+            "/workspace/complexity-framework/artifacts/tr_hash_200m_70b_replay.log"
+        ),
+    ).render()
 
     assert "build_tr_hash_70b_replay_plan" in launcher
     assert 'export TARGET_TOKENS="$planned_tokens"' in launcher

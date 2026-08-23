@@ -87,30 +87,37 @@ Use the exact `trained_tokens` written by the plan rather than assuming the
 rounded example value; row alignment can add or remove less than one global
 batch of tokens.
 
-## Supervisor template
+## Supervisor integration
 
-An 8x RTX 5090 template is provided at
-`configs/supervisor/tr_hash_200m_70b_replay_8x5090.conf`. It currently has
-`autostart=true` and `autorestart=unexpected`: `supervisorctl update` may start
-the job immediately. Audit `/workspace/run_200m.sh`, credentials, data access,
-disk capacity, and every environment variable before installing the template.
-For an inspect-only installation, copy and edit it to `autostart=false` first.
+Generate host configuration through the framework API; static machine-specific
+Supervisor files are no longer versioned. Audit `/workspace/run_200m.sh`,
+credentials, data access, disk capacity, and every environment variable before
+calling `apply()`: an autostart program can start during `supervisorctl update`.
 
-```bash
-sudo cp configs/supervisor/tr_hash_200m_70b_replay_8x5090.conf \
-  /etc/supervisor/conf.d/tr_hash_200m_70b_replay.conf
-sudo supervisorctl reread
-sudo supervisorctl update  # may start immediately: see warning above
-supervisorctl status tr_hash_200m_70b_replay
+```python
+from pathlib import Path
+
+from complexity.training import SupervisorManager, SupervisorProgram
+
+program = SupervisorProgram(
+    name="tr_hash_200m_70b_replay",
+    command=("/bin/bash", "/workspace/run_200m.sh"),
+    directory=Path("/workspace/complexity-framework"),
+    stdout_logfile=Path(
+        "/workspace/complexity-framework/artifacts/tr_hash_200m_70b_replay.log"
+    ),
+    autostart=False,
+    autorestart="unexpected",
+)
+manager = SupervisorManager()
+manager.install(program)
+manager.apply()
+manager.status(program.name)
 ```
 
-If the installed copy has `autostart=false`, start it only after the tokenizer,
-Hub access and local cache volume have been verified:
-
-```bash
-supervisorctl start tr_hash_200m_70b_replay
-tail -f artifacts/tr_hash_200m_70b_replay.log
-```
+Start an inspect-only installation after verifying the tokenizer, Hub access,
+and local cache volume with `manager.start(program.name)`. Use
+`autostart=True` only for an audited unattended deployment.
 
 For a clean machine-readable live view, follow the same append-only artifact
 pattern as the Vision trainer:
