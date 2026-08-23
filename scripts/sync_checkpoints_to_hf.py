@@ -30,6 +30,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 STATE_FILENAME = ".synced_checkpoints.json"
 
 
+def load_hf_token(token_file: Path | None, env_name: str) -> str:
+    """Load an HF token without exposing it in Supervisor configuration."""
+    token = None
+    if token_file is not None:
+        if not token_file.is_file():
+            raise SystemExit(f"HF token file does not exist: {token_file}")
+        mode = token_file.stat().st_mode & 0o777
+        if mode & 0o077:
+            raise SystemExit(f"HF token file must not be group/world accessible: {token_file}")
+        token = token_file.read_text(encoding="utf-8").strip()
+    if not token:
+        token = os.environ.get(env_name)
+    if not token:
+        raise SystemExit(f"neither --hf-token-file nor {env_name} supplied a token")
+    return token
+
+
 def is_complete_checkpoint(path: Path) -> bool:
     # runner.py's plain "final" export (no step suffix) is a lightweight
     # HF-compatible snapshot: model.safetensors only, no checkpoint.pt.
@@ -93,9 +110,7 @@ def sync_once(
             folder_path=str(pack_dir),
             repo_id=repo_id,
             repo_type="model",
-            path_in_repo="/".join(
-                part for part in (path_prefix.strip("/"), pack_dir.name) if part
-            ),
+            path_in_repo="/".join(part for part in (path_prefix.strip("/"), pack_dir.name) if part),
             token=token,
         )
         uploaded.add(pack_dir.name)
@@ -129,7 +144,9 @@ def run_pass_with_timeout(pass_args: list[str], pass_timeout: float) -> bool:
         subprocess.run(pass_args, timeout=pass_timeout, check=True)
         return True
     except subprocess.TimeoutExpired:
-        logger.error(f"sync pass exceeded {pass_timeout:.0f}s (stalled connection?), killed it, retrying")
+        logger.error(
+            f"sync pass exceeded {pass_timeout:.0f}s (stalled connection?), killed it, retrying"
+        )
         return False
     except subprocess.CalledProcessError:
         logger.exception("sync pass failed, will retry")
@@ -145,7 +162,14 @@ def main() -> None:
         help="e.g. AETHORIA-AI/TR-HASH-MoE-200M-130B-Checkpoints",
     )
     parser.add_argument("--hf-token-env", default="HF_TOKEN")
-    parser.add_argument("--keep-local", type=int, default=1, help="most-recent uploaded checkpoints to keep on disk")
+    parser.add_argument(
+        "--hf-token-file",
+        type=Path,
+        help="Protected local token file; preferred for Supervisor-managed jobs.",
+    )
+    parser.add_argument(
+        "--keep-local", type=int, default=1, help="most-recent uploaded checkpoints to keep on disk"
+    )
     parser.add_argument("--poll-interval", type=float, default=60.0)
     parser.add_argument(
         "--path-prefix",
@@ -153,7 +177,9 @@ def main() -> None:
         help="Optional repository subdirectory for uploaded checkpoints.",
     )
     parser.add_argument("--private", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--once", action="store_true", help="run a single pass instead of polling forever")
+    parser.add_argument(
+        "--once", action="store_true", help="run a single pass instead of polling forever"
+    )
     parser.add_argument(
         "--pass-timeout",
         type=float,
@@ -165,9 +191,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    token = os.environ.get(args.hf_token_env)
-    if not token:
-        raise SystemExit(f"{args.hf_token_env} is not set in the environment")
+    token = load_hf_token(args.hf_token_file, args.hf_token_env)
 
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -186,13 +210,19 @@ def main() -> None:
     pass_args = [
         sys.executable,
         str(Path(__file__).resolve()),
-        "--checkpoint-dir", str(checkpoint_dir),
-        "--repo-id", args.repo_id,
-        "--hf-token-env", args.hf_token_env,
-        "--keep-local", str(args.keep_local),
+        "--checkpoint-dir",
+        str(checkpoint_dir),
+        "--repo-id",
+        args.repo_id,
+        "--hf-token-env",
+        args.hf_token_env,
+        "--keep-local",
+        str(args.keep_local),
         "--private" if args.private else "--no-private",
         "--once",
     ]
+    if args.hf_token_file is not None:
+        pass_args.extend(["--hf-token-file", str(args.hf_token_file)])
     if args.path_prefix:
         pass_args.extend(["--path-prefix", args.path_prefix])
     while True:

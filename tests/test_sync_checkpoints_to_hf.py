@@ -36,6 +36,30 @@ def test_checkpoint_step_parses_trailing_segment(mod, tmp_path) -> None:
     assert mod.checkpoint_step(Path("token_pack_garbage")) == -1
 
 
+def test_load_hf_token_prefers_a_protected_file(mod, tmp_path, monkeypatch) -> None:
+    token_file = tmp_path / ".hf_token"
+    token_file.write_text("file-token\n")
+    token_file.chmod(0o600)
+    monkeypatch.setenv("TEST_HF_TOKEN", "environment-token")
+
+    assert mod.load_hf_token(token_file, "TEST_HF_TOKEN") == "file-token"
+
+
+def test_load_hf_token_rejects_group_or_world_permissions(mod, tmp_path) -> None:
+    token_file = tmp_path / ".hf_token"
+    token_file.write_text("secret")
+    token_file.chmod(0o644)
+
+    with pytest.raises(SystemExit, match="must not be group/world accessible"):
+        mod.load_hf_token(token_file, "TEST_HF_TOKEN")
+
+
+def test_load_hf_token_falls_back_to_environment(mod, monkeypatch) -> None:
+    monkeypatch.setenv("TEST_HF_TOKEN", "environment-token")
+
+    assert mod.load_hf_token(None, "TEST_HF_TOKEN") == "environment-token"
+
+
 def test_is_complete_checkpoint_requires_checkpoint_file(mod, tmp_path) -> None:
     complete = _make_checkpoint(tmp_path, "token_pack_001_100", complete=True)
     partial = _make_checkpoint(tmp_path, "token_pack_002_200", complete=False)
@@ -52,9 +76,7 @@ def test_sync_once_uploads_new_checkpoints_and_records_state(mod, tmp_path, monk
     fake_module = type(
         "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
     )
-    monkeypatch.setitem(
-        __import__("sys").modules, "huggingface_hub", fake_module
-    )
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_module)
 
     mod.sync_once(tmp_path, "org/repo", token="fake", private=True, keep_local=5)
 
@@ -93,9 +115,7 @@ def test_sync_once_never_uploads_a_partially_written_checkpoint(mod, tmp_path, m
     fake_module = type(
         "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
     )
-    monkeypatch.setitem(
-        __import__("sys").modules, "huggingface_hub", fake_module
-    )
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_module)
 
     mod.sync_once(tmp_path, "org/repo", token="fake", private=True, keep_local=5)
 
@@ -112,9 +132,7 @@ def test_sync_once_prunes_local_copies_beyond_keep_local(mod, tmp_path, monkeypa
     fake_module = type(
         "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
     )
-    monkeypatch.setitem(
-        __import__("sys").modules, "huggingface_hub", fake_module
-    )
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_module)
 
     mod.sync_once(tmp_path, "org/repo", token="fake", private=True, keep_local=1)
 
@@ -122,7 +140,9 @@ def test_sync_once_prunes_local_copies_beyond_keep_local(mod, tmp_path, monkeypa
     assert remaining == ["token_pack_003_300"]
 
 
-def test_sync_once_backs_up_final_and_interrupted_checkpoints_too(mod, tmp_path, monkeypatch) -> None:
+def test_sync_once_backs_up_final_and_interrupted_checkpoints_too(
+    mod, tmp_path, monkeypatch
+) -> None:
     """Regression guard: the sync used to glob only token_pack_*, so a run
     that finished cleanly (final_N) or crashed (interrupted_N) never got its
     last checkpoint backed up to HF."""
@@ -134,9 +154,7 @@ def test_sync_once_backs_up_final_and_interrupted_checkpoints_too(mod, tmp_path,
     fake_module = type(
         "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
     )
-    monkeypatch.setitem(
-        __import__("sys").modules, "huggingface_hub", fake_module
-    )
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_module)
 
     mod.sync_once(tmp_path, "org/repo", token="fake", private=True, keep_local=5)
 
@@ -151,9 +169,7 @@ def test_sync_once_ignores_the_tensorboard_directory(mod, tmp_path, monkeypatch)
     fake_module = type(
         "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
     )
-    monkeypatch.setitem(
-        __import__("sys").modules, "huggingface_hub", fake_module
-    )
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_module)
 
     mod.sync_once(tmp_path, "org/repo", token="fake", private=True, keep_local=5)
 
@@ -173,9 +189,7 @@ def test_sync_once_backs_up_the_plain_final_export_too(mod, tmp_path, monkeypatc
     fake_module = type(
         "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
     )
-    monkeypatch.setitem(
-        __import__("sys").modules, "huggingface_hub", fake_module
-    )
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_module)
 
     mod.sync_once(tmp_path, "org/repo", token="fake", private=True, keep_local=5)
 
@@ -183,7 +197,9 @@ def test_sync_once_backs_up_the_plain_final_export_too(mod, tmp_path, monkeypatc
     assert uploaded_names == {"final"}
 
 
-def test_sync_once_never_prunes_the_final_export_even_when_oldest_by_sort(mod, tmp_path, monkeypatch) -> None:
+def test_sync_once_never_prunes_the_final_export_even_when_oldest_by_sort(
+    mod, tmp_path, monkeypatch
+) -> None:
     """Regression guard: checkpoint_step("final") returns -1 (no numeric
     suffix), which would sort it as the OLDEST checkpoint and make
     keep_local pruning delete it first — the one directory that must never
@@ -199,9 +215,7 @@ def test_sync_once_never_prunes_the_final_export_even_when_oldest_by_sort(mod, t
     fake_module = type(
         "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
     )
-    monkeypatch.setitem(
-        __import__("sys").modules, "huggingface_hub", fake_module
-    )
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_module)
 
     mod.sync_once(tmp_path, "org/repo", token="fake", private=True, keep_local=1)
 
@@ -211,7 +225,9 @@ def test_sync_once_never_prunes_the_final_export_even_when_oldest_by_sort(mod, t
     assert remaining_packs == ["token_pack_002_200"]
 
 
-def test_sync_once_never_prunes_a_checkpoint_that_was_not_uploaded(mod, tmp_path, monkeypatch) -> None:
+def test_sync_once_never_prunes_a_checkpoint_that_was_not_uploaded(
+    mod, tmp_path, monkeypatch
+) -> None:
     _make_checkpoint(tmp_path, "token_pack_001_100")
 
     def failing_upload_folder(*args, **kwargs):
@@ -222,9 +238,7 @@ def test_sync_once_never_prunes_a_checkpoint_that_was_not_uploaded(mod, tmp_path
     fake_module = type(
         "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
     )
-    monkeypatch.setitem(
-        __import__("sys").modules, "huggingface_hub", fake_module
-    )
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_module)
 
     with pytest.raises(RuntimeError):
         mod.sync_once(tmp_path, "org/repo", token="fake", private=True, keep_local=0)
