@@ -70,8 +70,8 @@ def promote(
     summary["selected"] = selected
     summary["reasoning_candidates"] = audited
     summary["selection_policy"] = (
-        "maximum 128-question ARC native reasoning accuracy among the PIQA-best and "
-        f"final checkpoints, subject to PIQA acc_norm within {piqa_tolerance:.2f} and "
+        "maximum matched-probe ARC native reasoning accuracy among screened early, "
+        f"PIQA-best and final checkpoints, subject to PIQA acc_norm within {piqa_tolerance:.2f} and "
         f"full Combined ARC raw accuracy within {arc_tolerance:.2f} or normalized "
         f"accuracy within {arc_norm_tolerance:.2f} of the source; "
         "then flexible reasoning accuracy, strict format rate, held-out SFT loss and PIQA"

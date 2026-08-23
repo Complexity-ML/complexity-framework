@@ -80,8 +80,10 @@ def test_reasoning_evaluator_waits_then_scores_every_checkpoint() -> None:
     assert "selected_arc_zero_shot_full.json" in launcher
     assert "scripts.merge_arc_generative_shards" in launcher
     assert "scripts.promote_reasoning_sft_checkpoint" in launcher
-    assert "candidate_names=(piqa)" in launcher
-    assert "candidate_names+=(final)" in launcher
+    assert "add_candidate step250" in launcher
+    assert "add_candidate step500" in launcher
+    assert "add_candidate piqa" in launcher
+    assert "add_candidate final" in launcher
     assert "scripts.select_reasoning_sft_checkpoint" in launcher
     assert "scripts.eval_arc_generative" in launcher
     assert "scripts.eval_torch_chat_panel" in launcher
@@ -89,6 +91,16 @@ def test_reasoning_evaluator_waits_then_scores_every_checkpoint() -> None:
     assert "scripts.export_reasoning_sft_release" in launcher
     assert "scripts.publish_reasoning_sft_release" in launcher
     assert ".evaluation_complete" in launcher
+    assert "autorestart=unexpected" in supervisor
+
+
+def test_low_lr_evaluator_waits_for_isolated_run_and_publishes_best() -> None:
+    supervisor = Path(
+        "deploy/supervisor/tr_hash_200m_reasoning_sft_500m_lr5e7_eval.conf"
+    ).read_text()
+    assert 'CHECKPOINT_ROOT="artifacts/tr_hash_moe_200m_reasoning_sft_500m_lr5e7_full_1e"' in supervisor
+    assert 'ARC_SAMPLES_PER_TASK="32"' in supervisor
+    assert 'RELEASE_ROOT="artifacts/releases/tr_hash_moe_200m_reasoning_sft_500m_lr5e7"' in supervisor
     assert "autorestart=unexpected" in supervisor
 
 

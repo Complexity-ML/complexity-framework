@@ -106,11 +106,27 @@ python -m scripts.select_reasoning_sft_checkpoint \
 
 piqa_selected="$(< "${EVALUATION_ROOT}/selected_checkpoint.txt")"
 final_selected="${checkpoints[$((${#checkpoints[@]} - 1))]}"
-candidate_names=(piqa)
-candidate_paths=("${piqa_selected}")
-if [[ "${final_selected}" != "${piqa_selected}" ]]; then
-  candidate_names+=(final)
-  candidate_paths+=("${final_selected}")
+# Screen the early checkpoints where the original, higher-LR experiment peaked,
+# then include the PIQA-selected and final checkpoints.  Deduplication keeps the
+# candidate set within the visible GPU count on the intended 4x/8x hosts.
+candidate_names=()
+candidate_paths=()
+declare -A seen_candidates=()
+add_candidate() {
+  local name="$1" path="$2"
+  [[ -s "${path}/checkpoint.pt" ]] || return 0
+  [[ -z "${seen_candidates[${path}]:-}" ]] || return 0
+  seen_candidates["${path}"]=1
+  candidate_names+=("${name}")
+  candidate_paths+=("${path}")
+}
+add_candidate step250 "${CHECKPOINT_ROOT}/step_000250"
+add_candidate step500 "${CHECKPOINT_ROOT}/step_000500"
+add_candidate piqa "${piqa_selected}"
+add_candidate final "${final_selected}"
+if (( ${#candidate_paths[@]} > GPU_COUNT )); then
+  echo "Reasoning candidate count exceeds visible GPUs." >&2
+  exit 2
 fi
 SHARDS_PER_CANDIDATE="$((GPU_COUNT / ${#candidate_paths[@]}))"
 (( SHARDS_PER_CANDIDATE >= 1 )) || exit 2
@@ -126,7 +142,7 @@ for index in "${!candidate_paths[@]}"; do
       --tokenizer "${TOKENIZER}" \
       --arc-easy-samples "${ARC_PROBE}/samples_arc_easy.jsonl" \
       --arc-challenge-samples "${ARC_PROBE}/samples_arc_challenge.jsonl" \
-      --max-samples-per-task "${ARC_SAMPLES_PER_TASK:-64}" \
+      --max-samples-per-task "${ARC_SAMPLES_PER_TASK:-32}" \
       --num-shards "${SHARDS_PER_CANDIDATE}" --shard-index "${shard}" \
       --device cuda --output "${output}" > "${output%.json}.log" 2>&1 &
     pids+=("$!"); names+=("${candidate_names[$index]} reasoning shard ${shard}")
@@ -143,22 +159,23 @@ for index in "${!candidate_paths[@]}"; do
     merge_args+=(--shard "${EVALUATION_ROOT}/${prefix}.shard${shard}.json")
   done
   python -m scripts.merge_arc_generative_shards "${merge_args[@]}" \
-    --expected-examples "$((2 * ${ARC_SAMPLES_PER_TASK:-64}))" \
+    --expected-examples "$((2 * ${ARC_SAMPLES_PER_TASK:-32}))" \
     --output "${EVALUATION_ROOT}/${prefix}.json" > "${EVALUATION_ROOT}/${prefix}.log" 2>&1
   reasoning_args+=(--reasoning-report "${EVALUATION_ROOT}/${prefix}.json")
 done
 
-pids=(); names=()
+# Establish the source retention reference first, then use every GPU for the
+# candidate batch.  This also works when four distinct candidates are present.
 CUDA_VISIBLE_DEVICES=0 python -m scripts.eval_torch_arc_zero_shot "${REFINEMENT}" \
   --tokenizer "${TOKENIZER}" --arc-easy-samples "${ARC_PROBE}/samples_arc_easy.jsonl" \
   --arc-challenge-samples "${ARC_PROBE}/samples_arc_challenge.jsonl" --batch-size 64 \
   --output "${EVALUATION_ROOT}/source_arc_zero_shot_full.json" \
-  > "${EVALUATION_ROOT}/source_arc_zero_shot_full.log" 2>&1 &
-pids+=("$!"); names+=(source)
+  > "${EVALUATION_ROOT}/source_arc_zero_shot_full.log" 2>&1
+pids=(); names=()
 zero_args=()
 for index in "${!candidate_paths[@]}"; do
   output="${EVALUATION_ROOT}/candidate_${candidate_names[$index]}_arc_zero_shot_full.json"
-  CUDA_VISIBLE_DEVICES="$((index + 1))" python -m scripts.eval_torch_arc_zero_shot \
+  CUDA_VISIBLE_DEVICES="${index}" python -m scripts.eval_torch_arc_zero_shot \
     "${candidate_paths[$index]}" --tokenizer "${TOKENIZER}" \
     --arc-easy-samples "${ARC_PROBE}/samples_arc_easy.jsonl" \
     --arc-challenge-samples "${ARC_PROBE}/samples_arc_challenge.jsonl" --batch-size 64 \
