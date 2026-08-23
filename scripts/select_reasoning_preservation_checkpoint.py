@@ -24,6 +24,26 @@ def behavior_passes(report: dict[str, Any], prompt_ids: set[str]) -> int:
     return len(prompt_ids - failed)
 
 
+def evaluation_equivalent(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Return whether two candidates tie at the resolution of the fixed probes.
+
+    PIQA contains 1,838 examples and combined ARC contains 3,548 examples.  A
+    one-example tolerance prevents float serialization from making the final
+    checkpoint lose an otherwise indistinguishable tie.  The 64-question
+    reasoning probe and the discrete assistant panel must match exactly.
+    """
+
+    return (
+        left["arc_reasoning_native_accuracy"]
+        == right["arc_reasoning_native_accuracy"]
+        and left["behavior_passes"] == right["behavior_passes"]
+        and abs(left["piqa_acc"] - right["piqa_acc"]) <= 1 / 1_838
+        and abs(left["piqa_acc_norm"] - right["piqa_acc_norm"]) <= 1 / 1_838
+        and abs(left["arc_acc"] - right["arc_acc"]) <= 1 / 3_548
+        and abs(left["arc_acc_norm"] - right["arc_acc_norm"]) <= 1 / 3_548
+    )
+
+
 def build_summary(
     evaluation_root: Path,
     metrics_path: Path,
@@ -113,13 +133,19 @@ def build_summary(
         if eligible
         else None
     )
+    if selected is not None:
+        final = max(eligible, key=lambda item: item["step"])
+        if evaluation_equivalent(final, selected):
+            selected = final
     return {
         "schema_version": 1,
         "selection_policy": (
             "retain source SFT PIQA within 0.005, behavior panel within one pass, "
             "and full ARC raw or normalized accuracy within 0.01; then maximize "
             "native ARC-64 generative accuracy, behavior passes, PIQA, ARC retention, "
-            "held-out loss and prefer the earlier step"
+            "held-out loss and prefer the earlier step, except that the final "
+            "checkpoint wins an evaluation-equivalent tie (same ARC-64 and "
+            "behavior results; PIQA and full ARC within one example)"
         ),
         "release_ready": selected is not None,
         "source": {
