@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "name": "tr-hash-moe-200m-reasoning-sft-500m",
+  "seed": 42,
+  "sequence_length": 2048,
+  "target_unique_formatted_tokens": 500000000,
+  "sources": [
+    {
+      "name": "clean_sft_v2_exact_replay",
+      "local_jsonl": "${REPLAY_JSONL}",
+      "license": "mixed-see-source-manifest",
+      "adapter": "messages",
+      "capability": "capability_replay",
+      "train_token_target": 202948693,
+      "eval_target_examples": 0,
+      "trusted_tokenized_replay": true,
+      "expected_train_examples": 300000,
+      "max_scan_examples": 300000
+    },
+    {
+      "name": "openr1_math_verified_new",
+      "dataset": "open-r1/OpenR1-Math-220k",
+      "config": "all",
+      "split": "train",
+      "revision": "e4e141ec9dea9f8326f4d347be56105859b2bd68",
+      "license": "apache-2.0",
+      "adapter": "openr1_math_verified",
+      "capability": "verified_math_reasoning",
+      "train_token_target": 66000000,
+      "eval_target_examples": 500,
+      "max_scan_examples": 220000
+    },
+    {
+      "name": "numina_math_15_validated",
+      "dataset": "AI-MO/NuminaMath-1.5",
+      "config": "default",
+      "split": "train",
+      "revision": "1b05109f9e5c1ad06c0663519502416c30b300f8",
+      "license": "apache-2.0",
+      "adapter": "numina_math_15",
+      "capability": "validated_math_reasoning",
+      "train_token_target": 183000000,
+      "eval_target_examples": 1000,
+      "exclude_values": {
+        "source": ["gsm8k", "math"]
+      },
+      "max_scan_examples": 896000
+    },
+    {
+      "name": "luciole_stem_new",
+      "dataset": "OpenLLM-France/Luciole-PostTraining-Dataset-1.1",
+      "config": "sft_instruct",
+      "split": "nemotron_stem",
+      "revision": "95df4f0dfd1abefafd9a7baac795c3e4304a9f99",
+      "license": "cc-by-4.0",
+      "adapter": "messages",
+      "capability": "stem_reasoning",
+      "train_token_target": 34000000,
+      "eval_target_examples": 350,
+      "max_scan_examples": 65700
+    },
+    {
+      "name": "bigcode_self_oss_exec_new",
+      "dataset": "bigcode/self-oss-instruct-sc2-exec-filter-50k",
+      "config": "default",
+      "split": "train",
+      "revision": "356bb069eee815daa6e23e9a282eeefe1490ad44",
+      "license": "odc-by-1.0",
+      "adapter": "instruction_response",
+      "capability": "execution_checked_code",
+      "train_token_target": 3500000,
+      "eval_target_examples": 100,
+      "require_valid_python": true,
+      "max_scan_examples": 50000
+    },
+    {
+      "name": "smoltalk_constraints_new",
+      "dataset": "HuggingFaceTB/smoltalk",
+      "config": "smol-constraints",
+      "split": "train",
+      "revision": "5feaf2fd3ffca7c237fc38d1861bc30365d48ffa",
+      "license": "apache-2.0",
+      "adapter": "messages",
+      "capability": "instruction_constraints",
+      "train_token_target": 850000,
+      "eval_target_examples": 200,
+      "max_scan_examples": 36000
+    },
+    {
+      "name": "luciole_precise_instruction_new",
+      "dataset": "OpenLLM-France/Luciole-PostTraining-Dataset-1.1",
+      "config": "sft_instruct",
+      "split": "dolci_instruct_precise_if",
+      "revision": "95df4f0dfd1abefafd9a7baac795c3e4304a9f99",
+      "license": "cc-by-4.0",
+      "adapter": "messages",
+      "capability": "precise_instruction",
+      "train_token_target": 7800000,
+      "eval_target_examples": 200,
+      "max_scan_examples": 42000
+    },
+    {
+      "name": "numina_math_15_exact_fill",
+      "dataset": "AI-MO/NuminaMath-1.5",
+      "config": "default",
+      "split": "train",
+      "revision": "1b05109f9e5c1ad06c0663519502416c30b300f8",
+      "license": "apache-2.0",
+      "adapter": "numina_math_15",
+      "capability": "validated_math_reasoning_fill",
+      "train_token_target": 1901307,
+      "fill_to_total": true,
+      "eval_target_examples": 0,
+      "exclude_values": {
+        "source": [
+          "gsm8k",
+          "math"
+        ]
+      },
+      "max_scan_examples": 896000
+    }
+  ],
+  "protected_benchmarks": [
+    {
+      "name": "arc_easy",
+      "dataset": "allenai/ai2_arc",
+      "config": "ARC-Easy",
+      "revision": "210d026faf9955653af8916fad021475a3f00453",
+      "splits": ["train", "validation", "test"],
+      "text_field": "question"
+    },
+    {
+      "name": "arc_challenge",
+      "dataset": "allenai/ai2_arc",
+      "config": "ARC-Challenge",
+      "revision": "210d026faf9955653af8916fad021475a3f00453",
+      "splits": ["train", "validation", "test"],
+      "text_field": "question"
+    },
+    {
+      "name": "piqa",
+      "archive_url": "https://storage.googleapis.com/ai2-mosaic/public/physicaliqa/physicaliqa-train-dev.zip",
+      "archive_sha256": "54d32a04f59a7e354396f321723c8d7ec35cc6b08506563d8d1ffcc15ce98ddd",
+      "members": [
+        "physicaliqa-train-dev/train.jsonl",
+        "physicaliqa-train-dev/dev.jsonl"
+      ],
+      "text_field": "goal"
+    },
+    {
+      "name": "gsm8k",
+      "dataset": "openai/gsm8k",
+      "config": "main",
+      "revision": "740312add88f781978c0658806c59bc2815b9866",
+      "splits": ["train", "test"],
+      "text_field": "question"
+    },
+    {
+      "name": "hellaswag",
+      "dataset": "Rowan/hellaswag",
+      "config": "default",
+      "revision": "218ec52e09a7e7462a5400043bb9a69a41d06b76",
+      "splits": ["train", "validation", "test"],
+      "text_field": "ctx"
+    }
+  ],
+  "quality_policy": {
+    "min_assistant_chars": 16,
+    "reject_refusals": true,
+    "reject_repeated_lines": true,
+    "reject_template_artifacts": true,
+    "strip_empty_think_tags": true,
+    "reject_any_token_truncation": true,
+    "deduplicate_exact_conversations": true,
+    "deduplicate_normalized_content": true,
+    "require_benchmark_contamination_audit": true
+  }
+}
