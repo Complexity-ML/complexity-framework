@@ -80,8 +80,11 @@ def repository_checkpoint_name(path: Path, steps_per_epoch: int | None) -> str:
 
 def load_state(state_path: Path) -> dict:
     if state_path.exists():
-        return json.loads(state_path.read_text())
-    return {"uploaded": []}
+        state = json.loads(state_path.read_text())
+        state.setdefault("uploaded", [])
+        state.setdefault("destinations", {})
+        return state
+    return {"uploaded": [], "destinations": {}}
 
 
 def save_state(state_path: Path, state: dict) -> None:
@@ -102,6 +105,7 @@ def sync_once(
     state_path = checkpoint_dir / STATE_FILENAME
     state = load_state(state_path)
     uploaded = set(state["uploaded"])
+    destinations = dict(state["destinations"])
 
     # Watch every checkpoint tag the trainer can produce (token_pack_*,
     # final_*, interrupted_*, best_*, step_*, ...), not just token-pack
@@ -120,21 +124,27 @@ def sync_once(
     create_repo(repo_id, repo_type="model", private=private, token=token, exist_ok=True)
 
     for pack_dir in candidates:
-        if pack_dir.name in uploaded:
-            continue
         repository_name = repository_checkpoint_name(pack_dir, steps_per_epoch)
+        repository_path = "/".join(
+            part for part in (path_prefix.strip("/"), repository_name) if part
+        )
+        # A checkpoint is only current when both its local identity and exact
+        # Hub destination match. This prevents a stale state file from
+        # silently preserving an obsolete, deeply nested repository layout.
+        if pack_dir.name in uploaded and destinations.get(pack_dir.name) == repository_path:
+            continue
         logger.info(f"Uploading {pack_dir.name} as {repository_name} to {repo_id} ...")
         api.upload_folder(
             folder_path=str(pack_dir),
             repo_id=repo_id,
             repo_type="model",
-            path_in_repo="/".join(
-                part for part in (path_prefix.strip("/"), repository_name) if part
-            ),
+            path_in_repo=repository_path,
             token=token,
         )
         uploaded.add(pack_dir.name)
+        destinations[pack_dir.name] = repository_path
         state["uploaded"] = sorted(uploaded)
+        state["destinations"] = destinations
         save_state(state_path, state)
         logger.info(f"Uploaded {pack_dir.name}")
 

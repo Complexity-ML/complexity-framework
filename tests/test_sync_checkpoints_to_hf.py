@@ -83,6 +83,10 @@ def test_sync_once_uploads_new_checkpoints_and_records_state(mod, tmp_path, monk
     assert fake_api.upload_folder.call_count == 2
     state = json.loads((tmp_path / mod.STATE_FILENAME).read_text())
     assert state["uploaded"] == ["token_pack_001_100", "token_pack_002_200"]
+    assert state["destinations"] == {
+        "token_pack_001_100": "token_pack_001_100",
+        "token_pack_002_200": "token_pack_002_200",
+    }
 
 
 def test_sync_once_supports_a_repository_path_prefix(mod, tmp_path, monkeypatch) -> None:
@@ -135,10 +139,73 @@ def test_sync_once_can_publish_epoch_boundaries_with_short_names(
 
 
 def test_repository_checkpoint_name_keeps_non_boundary_checkpoints(mod) -> None:
+    assert [
+        mod.repository_checkpoint_name(Path(f"step_{step:06d}"), 3040)
+        for step in (3040, 6080, 9120)
+    ] == ["epoch_1", "epoch_2", "epoch_3"]
     assert mod.repository_checkpoint_name(Path("step_003041"), 3040) == "step_003041"
     assert mod.repository_checkpoint_name(Path("interrupted_003040"), 3040) == (
         "interrupted_003040"
     )
+
+
+def test_legacy_state_is_reuploaded_when_repository_layout_changes(
+    mod, tmp_path, monkeypatch
+) -> None:
+    _make_checkpoint(tmp_path, "step_003040")
+    (tmp_path / mod.STATE_FILENAME).write_text(
+        json.dumps({"uploaded": ["step_003040"]}), encoding="utf-8"
+    )
+    fake_api = MagicMock()
+    fake_module = type(
+        "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
+    )
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_module)
+
+    mod.sync_once(
+        tmp_path,
+        "org/repo",
+        token="fake",
+        private=False,
+        keep_local=3,
+        path_prefix="checkpoints",
+        steps_per_epoch=3040,
+    )
+
+    assert fake_api.upload_folder.call_count == 1
+    assert fake_api.upload_folder.call_args.kwargs["path_in_repo"] == "checkpoints/epoch_1"
+    state = json.loads((tmp_path / mod.STATE_FILENAME).read_text())
+    assert state["destinations"] == {"step_003040": "checkpoints/epoch_1"}
+
+
+def test_current_destination_is_not_uploaded_twice(mod, tmp_path, monkeypatch) -> None:
+    _make_checkpoint(tmp_path, "step_003040")
+    (tmp_path / mod.STATE_FILENAME).write_text(
+        json.dumps(
+            {
+                "uploaded": ["step_003040"],
+                "destinations": {"step_003040": "checkpoints/epoch_1"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake_api = MagicMock()
+    fake_module = type(
+        "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
+    )
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_module)
+
+    mod.sync_once(
+        tmp_path,
+        "org/repo",
+        token="fake",
+        private=False,
+        keep_local=3,
+        path_prefix="checkpoints",
+        steps_per_epoch=3040,
+    )
+
+    assert fake_api.upload_folder.call_count == 0
 
 
 def test_sync_once_never_uploads_a_partially_written_checkpoint(mod, tmp_path, monkeypatch) -> None:
