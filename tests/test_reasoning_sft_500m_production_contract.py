@@ -62,7 +62,10 @@ def test_reasoning_evaluator_waits_then_scores_every_checkpoint() -> None:
     assert "scripts.eval_torch_arc_zero_shot" in launcher
     assert "source_arc_zero_shot_full.json" in launcher
     assert "selected_arc_zero_shot_full.json" in launcher
-    assert "CUDA_VISIBLE_DEVICES=2 python -m scripts.eval_arc_generative" in launcher
+    assert "scripts.merge_arc_generative_shards" in launcher
+    assert "scripts.promote_reasoning_sft_checkpoint" in launcher
+    assert "candidate_names=(piqa)" in launcher
+    assert "candidate_names+=(final)" in launcher
     assert "scripts.select_reasoning_sft_checkpoint" in launcher
     assert "scripts.eval_arc_generative" in launcher
     assert "scripts.eval_torch_chat_panel" in launcher

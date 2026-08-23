@@ -104,68 +104,84 @@ python -m scripts.select_reasoning_sft_checkpoint \
   --output "${EVALUATION_ROOT}/summary.json" \
   --selected-checkpoint "${EVALUATION_ROOT}/selected_checkpoint.txt"
 
-selected="$(< "${EVALUATION_ROOT}/selected_checkpoint.txt")"
+piqa_selected="$(< "${EVALUATION_ROOT}/selected_checkpoint.txt")"
+final_selected="${checkpoints[$((${#checkpoints[@]} - 1))]}"
+candidate_names=(piqa)
+candidate_paths=("${piqa_selected}")
+if [[ "${final_selected}" != "${piqa_selected}" ]]; then
+  candidate_names+=(final)
+  candidate_paths+=("${final_selected}")
+fi
+SHARDS_PER_CANDIDATE="$((GPU_COUNT / ${#candidate_paths[@]}))"
+(( SHARDS_PER_CANDIDATE >= 1 )) || exit 2
 pids=()
 names=()
+for index in "${!candidate_paths[@]}"; do
+  for ((shard=0; shard<SHARDS_PER_CANDIDATE; shard++)); do
+    slot="$((index * SHARDS_PER_CANDIDATE + shard))"
+    prefix="candidate_${candidate_names[$index]}_arc_reasoning_64"
+    output="${EVALUATION_ROOT}/${prefix}.shard${shard}.json"
+    CUDA_VISIBLE_DEVICES="${slot}" python -m scripts.eval_arc_generative \
+      tr_hash_torch "${candidate_paths[$index]}" \
+      --tokenizer "${TOKENIZER}" \
+      --arc-easy-samples "${ARC_PROBE}/samples_arc_easy.jsonl" \
+      --arc-challenge-samples "${ARC_PROBE}/samples_arc_challenge.jsonl" \
+      --max-samples-per-task "${ARC_SAMPLES_PER_TASK:-64}" \
+      --num-shards "${SHARDS_PER_CANDIDATE}" --shard-index "${shard}" \
+      --device cuda --output "${output}" > "${output%.json}.log" 2>&1 &
+    pids+=("$!"); names+=("${candidate_names[$index]} reasoning shard ${shard}")
+  done
+done
+status=0
+for index in "${!pids[@]}"; do wait "${pids[$index]}" || status=1; done
+(( status == 0 )) || exit "${status}"
+reasoning_args=()
+for index in "${!candidate_paths[@]}"; do
+  prefix="candidate_${candidate_names[$index]}_arc_reasoning_64"
+  merge_args=()
+  for ((shard=0; shard<SHARDS_PER_CANDIDATE; shard++)); do
+    merge_args+=(--shard "${EVALUATION_ROOT}/${prefix}.shard${shard}.json")
+  done
+  python -m scripts.merge_arc_generative_shards "${merge_args[@]}" \
+    --expected-examples "$((2 * ${ARC_SAMPLES_PER_TASK:-64}))" \
+    --output "${EVALUATION_ROOT}/${prefix}.json" > "${EVALUATION_ROOT}/${prefix}.log" 2>&1
+  reasoning_args+=(--reasoning-report "${EVALUATION_ROOT}/${prefix}.json")
+done
 
-CUDA_VISIBLE_DEVICES=0 python -m scripts.eval_torch_arc_zero_shot \
-  "${REFINEMENT}" \
-  --tokenizer "${TOKENIZER}" \
-  --arc-easy-samples "${ARC_PROBE}/samples_arc_easy.jsonl" \
-  --arc-challenge-samples "${ARC_PROBE}/samples_arc_challenge.jsonl" \
-  --batch-size "${ARC_ZERO_SHOT_BATCH_SIZE:-64}" \
-  --max-length 2048 \
-  --dtype "${ARC_ZERO_SHOT_DTYPE:-float16}" \
+pids=(); names=()
+CUDA_VISIBLE_DEVICES=0 python -m scripts.eval_torch_arc_zero_shot "${REFINEMENT}" \
+  --tokenizer "${TOKENIZER}" --arc-easy-samples "${ARC_PROBE}/samples_arc_easy.jsonl" \
+  --arc-challenge-samples "${ARC_PROBE}/samples_arc_challenge.jsonl" --batch-size 64 \
   --output "${EVALUATION_ROOT}/source_arc_zero_shot_full.json" \
   > "${EVALUATION_ROOT}/source_arc_zero_shot_full.log" 2>&1 &
-pids+=("$!")
-names+=("source ARC zero-shot")
-
-CUDA_VISIBLE_DEVICES=1 python -m scripts.eval_torch_arc_zero_shot \
-  "${selected}" \
-  --tokenizer "${TOKENIZER}" \
-  --arc-easy-samples "${ARC_PROBE}/samples_arc_easy.jsonl" \
-  --arc-challenge-samples "${ARC_PROBE}/samples_arc_challenge.jsonl" \
-  --batch-size "${ARC_ZERO_SHOT_BATCH_SIZE:-64}" \
-  --max-length 2048 \
-  --dtype "${ARC_ZERO_SHOT_DTYPE:-float16}" \
-  --output "${EVALUATION_ROOT}/selected_arc_zero_shot_full.json" \
-  > "${EVALUATION_ROOT}/selected_arc_zero_shot_full.log" 2>&1 &
-pids+=("$!")
-names+=("selected ARC zero-shot")
-
-CUDA_VISIBLE_DEVICES=2 python -m scripts.eval_arc_generative \
-  tr_hash_torch "${selected}" \
-  --tokenizer "${TOKENIZER}" \
-  --arc-easy-samples "${ARC_PROBE}/samples_arc_easy.jsonl" \
-  --arc-challenge-samples "${ARC_PROBE}/samples_arc_challenge.jsonl" \
-  --max-samples-per-task "${ARC_SAMPLES_PER_TASK:-64}" \
-  --device cuda \
-  --output "${EVALUATION_ROOT}/selected_arc_reasoning_64.json" \
-  > "${EVALUATION_ROOT}/selected_arc_reasoning_64.log" 2>&1 &
-pids+=("$!")
-names+=("selected ARC reasoning 64+64")
-
-CUDA_VISIBLE_DEVICES=3 python -m scripts.eval_torch_chat_panel \
-  --checkpoint "${selected}" \
-  --tokenizer "${TOKENIZER}" \
-  --panel configs/tr_hash_200m_sft_v2_regression.json \
-  --device cuda \
-  --output "${EVALUATION_ROOT}/selected_chat_panel.json" \
-  > "${EVALUATION_ROOT}/selected_chat_panel.log" 2>&1 &
-pids+=("$!")
-names+=("selected chat panel")
-
-status=0
-for index in "${!pids[@]}"; do
-  if ! wait "${pids[$index]}"; then
-    echo "Evaluation failed: ${names[$index]}" >&2
-    status=1
-  fi
+pids+=("$!"); names+=(source)
+zero_args=()
+for index in "${!candidate_paths[@]}"; do
+  output="${EVALUATION_ROOT}/candidate_${candidate_names[$index]}_arc_zero_shot_full.json"
+  CUDA_VISIBLE_DEVICES="$((index + 1))" python -m scripts.eval_torch_arc_zero_shot \
+    "${candidate_paths[$index]}" --tokenizer "${TOKENIZER}" \
+    --arc-easy-samples "${ARC_PROBE}/samples_arc_easy.jsonl" \
+    --arc-challenge-samples "${ARC_PROBE}/samples_arc_challenge.jsonl" --batch-size 64 \
+    --output "${output}" > "${output%.json}.log" 2>&1 &
+  pids+=("$!"); names+=("${candidate_names[$index]} zero-shot")
+  zero_args+=(--zero-shot-report "${output}")
 done
-if (( status != 0 )); then
-  exit "${status}"
-fi
+status=0
+for index in "${!pids[@]}"; do wait "${pids[$index]}" || status=1; done
+(( status == 0 )) || exit "${status}"
+
+python -m scripts.promote_reasoning_sft_checkpoint \
+  --summary "${EVALUATION_ROOT}/summary.json" "${reasoning_args[@]}" "${zero_args[@]}" \
+  --source-zero-shot "${EVALUATION_ROOT}/source_arc_zero_shot_full.json" \
+  --selected-checkpoint "${EVALUATION_ROOT}/selected_checkpoint.txt" \
+  --selected-reasoning-report "${EVALUATION_ROOT}/selected_arc_reasoning_64.json" \
+  --selected-zero-shot-report "${EVALUATION_ROOT}/selected_arc_zero_shot_full.json"
+selected="$(< "${EVALUATION_ROOT}/selected_checkpoint.txt")"
+CUDA_VISIBLE_DEVICES=0 python -m scripts.eval_torch_chat_panel \
+  --checkpoint "${selected}" --tokenizer "${TOKENIZER}" \
+  --panel configs/tr_hash_200m_sft_v2_regression.json --device cuda \
+  --output "${EVALUATION_ROOT}/selected_chat_panel.json" \
+  > "${EVALUATION_ROOT}/selected_chat_panel.log" 2>&1
 
 while [[ ! -s /workspace/.hf_token ]]; do
   echo "Waiting for /workspace/.hf_token before evaluation upload..."

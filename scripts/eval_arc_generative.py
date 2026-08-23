@@ -543,8 +543,14 @@ def main() -> None:
     parser.add_argument("--device", default="mps")
     parser.add_argument("--tokenizer", type=Path)
     parser.add_argument("--seed", type=int, default=1729)
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
     args = parser.parse_args()
     apply_native_recipe(args)
+    if args.num_shards < 1:
+        raise ValueError("--num-shards must be positive")
+    if not 0 <= args.shard_index < args.num_shards:
+        raise ValueError("--shard-index must be within [0, num-shards)")
 
     examples: list[ARCExample] = []
     for task, path in (
@@ -553,6 +559,11 @@ def main() -> None:
     ):
         task_rows = load_lm_eval_samples(path, task)
         examples.extend(evenly_spaced(task_rows, args.max_samples_per_task))
+    examples = [
+        example
+        for index, example in enumerate(examples)
+        if index % args.num_shards == args.shard_index
+    ]
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     traces_path = args.output.with_suffix(".jsonl")
@@ -636,6 +647,7 @@ def main() -> None:
         ),
         "chat_template_applied": True,
         "selection": "evenly_spaced_within_each_full_public_test_split",
+        "shard": {"index": args.shard_index, "count": args.num_shards},
         "decoding": {
             "max_new_tokens": args.max_new_tokens,
             "max_thinking_tokens": args.max_thinking_tokens,
