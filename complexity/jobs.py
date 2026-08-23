@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import subprocess
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -159,15 +159,34 @@ class JobManager:
         with self.log_path(name).open(encoding="utf-8", errors="replace") as handle:
             return "".join(deque(handle, maxlen=lines))
 
-    def follow_logs(self, name: str, *, lines: int = 100) -> subprocess.CompletedProcess[bytes]:
-        """Follow one managed log with structured argv and no shell."""
+    def follow_logs(self, name: str, *, lines: int = 100) -> Iterator[str]:
+        """Yield one managed log with structured argv and no shell."""
 
         if lines <= 0:
             raise ValueError("lines must be greater than zero")
-        return subprocess.run(
+        process = subprocess.Popen(
             ["tail", "-n", str(lines), "-F", str(self.log_path(name))],
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
         )
+
+        def iterate() -> Iterator[str]:
+            try:
+                if process.stdout is None:
+                    raise RuntimeError("tail did not expose stdout")
+                yield from process.stdout
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+
+        return iterate()
 
     @staticmethod
     def _output(result: subprocess.CompletedProcess[str]) -> str:

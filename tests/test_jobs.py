@@ -128,3 +128,18 @@ def test_cli_status_uses_semantic_colors(monkeypatch: pytest.MonkeyPatch) -> Non
         ("evaluation", "[yellow]STOPPED[/yellow]", "Not started"),
         ("sync", "[bold red]FATAL[/bold red]", "exited too quickly"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("line", "style"),
+    [
+        ("[preflight] ready", "green"),
+        ("20:00:00 | INFO | model ready", "bright_blue"),
+        ("WARNING low disk", "yellow"),
+        ("torch.OutOfMemoryError", "bold red"),
+        ("TR-HASH MoE SFT", "cyan"),
+    ],
+)
+def test_cli_log_colors_follow_semantics(line: str, style: str) -> None:
+    jobs_cli = importlib.import_module("complexity.cli.commands.jobs")
+    assert jobs_cli._log_style(line) == style

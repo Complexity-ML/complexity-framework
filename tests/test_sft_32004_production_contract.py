@@ -6,7 +6,8 @@ def test_sft_32004_launcher_is_full_parameter_and_fresh() -> None:
 
     assert "--full-parameter" in launcher
     assert "--lora-" not in launcher
-    assert "--epochs 3" in launcher
+    assert 'EPOCHS="${EPOCHS:-3}"' in launcher
+    assert '--epochs "${EPOCHS}"' in launcher
     assert "--seq-len 2048" in launcher
     assert "--require-release-ready" in launcher
     assert "COMPLEXITY_REQUIRE_LIGER=1" in launcher
@@ -35,3 +36,12 @@ def test_sft_32004_launcher_refuses_stale_outputs() -> None:
         assert artifact in launcher
     assert "refuses stale training artifact" in launcher
     assert ".training_complete" in launcher
+
+
+def test_sft_runtime_uses_one_compact_rank_zero_startup_banner() -> None:
+    runtime = Path("scripts/sft_500m_32k_tr.py").read_text()
+
+    assert "log_liger_fused_linear_ce_status(device.type, log=is_main)" in runtime
+    assert "╭─ TR-HASH MoE SFT" in runtime
+    assert 'desc="TR-HASH MoE 200M · SFT v3"' in runtime
+    assert 'logger.info(f"Model:' not in runtime

@@ -61,6 +61,18 @@ def test_cuda_startup_reports_when_liger_is_enabled(
     assert "Liger fused linear CE: enabled" in caplog.messages
 
 
+def test_cuda_status_can_validate_without_repeating_rank_logs(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(fused_ce, "_liger_available", lambda: True)
+
+    with caplog.at_level(logging.INFO, logger=fused_ce.__name__):
+        assert fused_ce.log_liger_fused_linear_ce_status("cuda", log=False) is True
+
+    assert "Liger fused linear CE: enabled" not in caplog.messages
+
+
 @pytest.mark.skipif(
     not torch.cuda.is_available() or not fused_ce.has_liger_fused_linear_ce(),
     reason="requires CUDA and liger-kernel",

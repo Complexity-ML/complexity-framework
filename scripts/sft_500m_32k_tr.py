@@ -149,11 +149,7 @@ def apply_reasoning_envelope(
     final_start = int(discontinuities[-1] + 1) if discontinuities.size else 0
     final_active = active[final_start:]
     prompt = np.asarray(input_ids[: int(final_active[0]) + 1], dtype=np.int64)
-    response = [
-        int(token)
-        for token in labels[final_active]
-        if int(token) != int(eos_token_id)
-    ]
+    response = [int(token) for token in labels[final_active] if int(token) != int(eos_token_id)]
     fixed_tokens = len(prefix_ids) + len(suffix_ids) + 1
     response = response[: max(1, seq_len - fixed_tokens)]
     completion = [*prefix_ids, *response, *suffix_ids, int(eos_token_id)]
@@ -220,8 +216,7 @@ def load_checkpoint_state(
             converted_model = convert_token_routed_checkpoint(model_state, config)
             config = converted_model.config.to_dict()
             model_state = {
-                name: tensor.detach().cpu()
-                for name, tensor in converted_model.state_dict().items()
+                name: tensor.detach().cpu() for name, tensor in converted_model.state_dict().items()
             }
             del converted_model
         return ckpt, {
@@ -432,7 +427,9 @@ class SFTJsonlDataset(IterableDataset):
     @property
     def training_items(self) -> int:
         self._ensure_packing()
-        return self.packing_plan.packed_items if self.packing_plan is not None else len(self.records)
+        return (
+            self.packing_plan.packed_items if self.packing_plan is not None else len(self.records)
+        )
 
     def _tensor_item(self, item: int) -> dict[str, torch.Tensor]:
         self._ensure_packing()
@@ -519,7 +516,7 @@ def load_model_state_compat(
     unexpected_missing = [key for key in missing if not key.endswith(tolerated_suffixes)]
     if unexpected_missing or unexpected:
         raise RuntimeError(
-            "Checkpoint mismatch: " f"missing={unexpected_missing}, unexpected={list(unexpected)}"
+            f"Checkpoint mismatch: missing={unexpected_missing}, unexpected={list(unexpected)}"
         )
 
 
@@ -648,9 +645,7 @@ class SFTBinDataset(IterableDataset):
             )
         self.pack_sequences = bool(pack_sequences)
         if self.pack_sequences and reasoning_envelope:
-            raise ValueError(
-                "sequence packing is not yet compatible with --reasoning-envelope"
-            )
+            raise ValueError("sequence packing is not yet compatible with --reasoning-envelope")
         self.task_loss_weights: dict[str, float] = {}
         self.loss_target_audit: dict[str, Any] | None = None
         if self.loss_task_targets or self.loss_groups:
@@ -658,17 +653,11 @@ class SFTBinDataset(IterableDataset):
         self.packing_plan: SequencePackingPlan | None = (
             self._build_packing_plan() if self.pack_sequences else None
         )
-        self.packed_examples = (
-            self.packing_plan.packs if self.packing_plan is not None else None
-        )
+        self.packed_examples = self.packing_plan.packs if self.packing_plan is not None else None
 
     @property
     def training_items(self) -> int:
-        return (
-            len(self.packed_examples)
-            if self.packed_examples is not None
-            else len(self.examples)
-        )
+        return len(self.packed_examples) if self.packed_examples is not None else len(self.examples)
 
     def _build_packing_plan(self) -> SequencePackingPlan:
         """Pack complete examples into fixed windows without dropping rows.
@@ -679,10 +668,7 @@ class SFTBinDataset(IterableDataset):
         """
 
         return pack_example_lengths(
-            (
-                min(self.seq_len, int(example["num_tokens"]))
-                for example in self.examples
-            ),
+            (min(self.seq_len, int(example["num_tokens"])) for example in self.examples),
             sequence_length=self.seq_len,
             separator_tokens=1,
         )
@@ -727,8 +713,7 @@ class SFTBinDataset(IterableDataset):
             )
         if not mix["weights_within_cap"]:
             raise ValueError(
-                "task loss weights exceed max_task_loss_weight: "
-                f"{mix['overweight_tasks']}"
+                f"task loss weights exceed max_task_loss_weight: {mix['overweight_tasks']}"
             )
         if any(count <= 0 for count in token_counts.values()):
             raise ValueError("every loss-weighted task must have supervised tokens")
@@ -741,9 +726,7 @@ class SFTBinDataset(IterableDataset):
             **mix,
         }
 
-    def _unpadded_example(
-        self, example: dict[str, Any]
-    ) -> tuple[np.ndarray, np.ndarray, float]:
+    def _unpadded_example(self, example: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, float]:
         start = int(example["offset"])
         length = int(example["num_tokens"])
         end = start + length
@@ -799,14 +782,10 @@ class SFTBinDataset(IterableDataset):
                 input_parts.append(np.asarray([self.pad_id], dtype=np.int64))
                 label_parts.append(np.asarray([-100], dtype=np.int64))
                 weight_parts.append(np.asarray([0.0], dtype=np.float32))
-            input_ids, labels, loss_weight = self._unpadded_example(
-                self.examples[example_index]
-            )
+            input_ids, labels, loss_weight = self._unpadded_example(self.examples[example_index])
             input_parts.append(input_ids)
             label_parts.append(labels)
-            weight_parts.append(
-                np.full(len(labels), loss_weight, dtype=np.float32)
-            )
+            weight_parts.append(np.full(len(labels), loss_weight, dtype=np.float32))
         input_ids = np.concatenate(input_parts)
         labels = np.concatenate(label_parts)
         token_loss_weights = np.concatenate(weight_parts)
@@ -816,9 +795,7 @@ class SFTBinDataset(IterableDataset):
             padding = self.seq_len - len(input_ids)
             input_ids = np.pad(input_ids, (0, padding), constant_values=self.pad_id)
             labels = np.pad(labels, (0, padding), constant_values=-100)
-            token_loss_weights = np.pad(
-                token_loss_weights, (0, padding), constant_values=0.0
-            )
+            token_loss_weights = np.pad(token_loss_weights, (0, padding), constant_values=0.0)
         return {
             "input_ids": torch.from_numpy(input_ids.copy()),
             "labels": torch.from_numpy(labels.copy()),
@@ -923,20 +900,15 @@ def validate_sft_release_manifest(
     dataset_root = root.parent if (root / "sft.idx.json").exists() else root
     manifest_path = dataset_root / "manifest.json"
     if not manifest_path.exists():
-        raise FileNotFoundError(
-            f"release-ready SFT requires a manifest: {manifest_path}"
-        )
+        raise FileNotFoundError(f"release-ready SFT requires a manifest: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("quality_status") != "passed":
         raise ValueError(
-            "SFT release quality_status must be passed, got "
-            f"{manifest.get('quality_status')!r}"
+            f"SFT release quality_status must be passed, got {manifest.get('quality_status')!r}"
         )
     if manifest.get("release_quality", {}).get("ready") is not True:
         raise ValueError("SFT release_quality.ready must be true")
-    envelope_version = manifest.get("release_quality", {}).get(
-        "reasoning_envelope_version"
-    )
+    envelope_version = manifest.get("release_quality", {}).get("reasoning_envelope_version")
     if envelope_version and reasoning_envelope:
         raise ValueError(
             "SFT targets already contain reasoning envelopes; disable the "
@@ -974,9 +946,8 @@ def build_optimizer(args, raw_model):
         if not param.requires_grad:
             continue
         expert = (
-            ("parametrizations.expert_" in name and ".lora_" in name)
-            or ".engine.expert_" in name
-        )
+            "parametrizations.expert_" in name and ".lora_" in name
+        ) or ".engine.expert_" in name
         no_decay = param.ndim < 2 or "bias" in name or "norm" in name
         prefix = "expert" if expert else "base"
         groups[f"{prefix}_{'no_decay' if no_decay else 'decay'}"].append(param)
@@ -1022,9 +993,7 @@ def configure_sft_parameters(args, raw_model) -> dict[str, int | bool | str]:
         raw_model.requires_grad_(True)
         total = sum(parameter.numel() for parameter in raw_model.parameters())
         trainable = sum(
-            parameter.numel()
-            for parameter in raw_model.parameters()
-            if parameter.requires_grad
+            parameter.numel() for parameter in raw_model.parameters() if parameter.requires_grad
         )
         return {
             "mode": "full-parameter",
@@ -1257,8 +1226,7 @@ def sft_loss_from_hidden(
             ).reshape(-1)
         else:
             raise ValueError(
-                "example_weights must contain one scalar per batch example "
-                "or one scalar per token"
+                "example_weights must contain one scalar per batch example or one scalar per token"
             )
         denom = flat_weights[valid].sum().clamp_min(1e-12)
     total = flat_hidden.new_zeros((), dtype=torch.float32)
@@ -1623,10 +1591,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--reasoning-envelope",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help=(
-            "Wrap reasoning-task targets in "
-            "<think>...</think><final>...</final> at runtime."
-        ),
+        help=("Wrap reasoning-task targets in <think>...</think><final>...</final> at runtime."),
     )
     parser.add_argument("--min-completion-tokens", type=int, default=32)
     parser.add_argument("--bf16", action="store_true")
@@ -1795,9 +1760,7 @@ def main():
         raise ValueError("--min-eval-fraction must be between 0 and 1")
     try:
         save_milestones = {
-            int(value.strip())
-            for value in args.save_milestones.split(",")
-            if value.strip()
+            int(value.strip()) for value in args.save_milestones.split(",") if value.strip()
         }
     except ValueError as error:
         raise ValueError("--save-milestones must contain comma-separated integers") from error
@@ -1822,7 +1785,9 @@ def main():
     kernel_policy = (
         True
         if args.use_custom_kernels == "true"
-        else False if args.use_custom_kernels == "false" else "auto"
+        else False
+        if args.use_custom_kernels == "false"
+        else "auto"
     )
     args.use_custom_kernels = kernel_policy
     configure_torch_acceleration(kernel_policy=kernel_policy, log=is_main)
@@ -1831,7 +1796,7 @@ def main():
             raise ValueError("--sft-liger-loss requires --no-sft-fp32-loss")
         if device.type != "cuda":
             raise ValueError("--sft-liger-loss requires CUDA")
-        log_liger_fused_linear_ce_status(device.type)
+        log_liger_fused_linear_ce_status(device.type, log=is_main)
 
     checkpoint_to_load = args.resume or args.checkpoint
     ckpt_dir, state = load_checkpoint_state(checkpoint_to_load, map_location="cpu")
@@ -1882,12 +1847,8 @@ def main():
             find_unused_parameters=False,
         )
 
-    evaluation_enabled = (
-        args.eval_at_start or args.eval_steps > 0 or args.eval_every_epoch
-    )
-    reasoning_tokenizer = (
-        Tokenizer.load(args.tokenizer) if args.reasoning_envelope else None
-    )
+    evaluation_enabled = args.eval_at_start or args.eval_steps > 0 or args.eval_every_epoch
+    reasoning_tokenizer = Tokenizer.load(args.tokenizer) if args.reasoning_envelope else None
     if args.sft_bin is not None:
         train_ds = SFTBinDataset(
             args.sft_bin,
@@ -1968,16 +1929,13 @@ def main():
             else None
         )
         natural_eval_ds = None
-    if args.sft_bin is not None and int(train_ds.metadata["vocab_size"]) != int(
-        config.vocab_size
-    ):
+    if args.sft_bin is not None and int(train_ds.metadata["vocab_size"]) != int(config.vocab_size):
         raise ValueError(
             "SFT tokenizer/model vocabulary mismatch: "
             f"shard={train_ds.metadata['vocab_size']} model={config.vocab_size}"
         )
     if (
-        getattr(train_ds, "loss_task_targets", None)
-        or getattr(train_ds, "loss_groups", None)
+        getattr(train_ds, "loss_task_targets", None) or getattr(train_ds, "loss_groups", None)
     ) and not args.sft_fp32_loss:
         raise ValueError("task-weighted SFT requires --sft-fp32-loss")
     chat_template = train_ds.chat_template
@@ -1985,7 +1943,9 @@ def main():
         if evaluation_dataset is not None and evaluation_dataset.chat_template != chat_template:
             raise ValueError("Train and eval SFT shards use different chat templates")
     if evaluation_enabled and args.min_eval_fraction > 0:
-        train_examples = len(train_ds.examples) if args.sft_bin is not None else len(train_ds.records)
+        train_examples = (
+            len(train_ds.examples) if args.sft_bin is not None else len(train_ds.records)
+        )
         for partition_name, evaluation_dataset in (
             ("matched", matched_eval_ds),
             ("natural", natural_eval_ds),
@@ -2029,8 +1989,7 @@ def main():
         args.save_steps = steps_per_epoch
     if args.resume is not None and int(loaded_checkpoint_step) >= args.steps:
         raise ValueError(
-            f"resume step {loaded_checkpoint_step} must be smaller than "
-            f"target steps {args.steps}"
+            f"resume step {loaded_checkpoint_step} must be smaller than target steps {args.steps}"
         )
     minimum_selection_step = steps_per_epoch * args.early_stopping_min_epochs
     if args.early_stopping_patience > 0 and args.steps < minimum_selection_step:
@@ -2086,113 +2045,114 @@ def main():
     writer = None
     if is_main:
         run_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(
-            f"SFT source: {ckpt_dir} "
-            f"(checkpoint step={loaded_checkpoint_step}, resume step={resume_step})"
-        )
         if args.full_parameter:
-            logger.info(
-                "SFT mode: full-parameter "
-                f"trainable={parameter_stats['trainable']:,}/{parameter_stats['total']:,}"
+            mode_summary = (
+                "full-parameter · "
+                f"trainable {parameter_stats['trainable'] / 1e6:.1f}M/"
+                f"{parameter_stats['total'] / 1e6:.1f}M"
             )
         else:
-            logger.info(
-                f"SFT mode: LoRA rank={args.lora_rank} alpha={args.lora_alpha:g} "
+            mode_summary = (
+                f"LoRA r={args.lora_rank} α={args.lora_alpha:g} "
                 f"dropout={args.lora_dropout:g} modules={parameter_stats['modules']} "
-                f"trainable={parameter_stats['trainable']:,}"
+                f"trainable={parameter_stats['trainable'] / 1e6:.1f}M"
             )
-        if args.resume is not None:
-            logger.info(
-                "Resumed exactly: optimizer, scheduler, data cursor, and "
-                f"rank RNG state at step {resume_step}"
-            )
-        logger.info(f"Model: {parameter_stats['total'] / 1e6:.1f}M params")
-        logger.info(
-            "Parameters: "
-            f"trainable={parameter_stats['trainable'] / 1e6:.1f}M "
-            f"frozen={parameter_stats['frozen'] / 1e6:.1f}M "
-            f"token_io_frozen={parameter_stats['token_io_frozen']}"
-        )
         backend = backend_metadata(kernel_policy=kernel_policy)
-        logger.info(
-            "Backend: "
-            f"{backend['backend']} device={backend['device_name']} "
-            f"matmul={backend['matmul']} distributed={backend['distributed']} "
-            f"sdpa={backend['sdpa']} flash={backend['flash_attention']} "
-            f"custom_triton={backend['custom_triton']}"
-        )
-        logger.info(
-            f"Config: vocab={config.vocab_size}, hidden={config.hidden_size}, layers={config.num_hidden_layers}, "
-            f"GQA={config.num_attention_heads}/{config.num_key_value_heads}, "
-            f"TR experts={config.num_experts}, top_k={config.top_k}"
-        )
+        startup_lines = [
+            "╭─ TR-HASH MoE SFT ─────────────────────────────────────────",
+            (
+                f"│ model     {parameter_stats['total'] / 1e6:.1f}M · {mode_summary} · "
+                f"vocab {config.vocab_size:,}"
+            ),
+            (
+                f"│ source    {ckpt_dir} · checkpoint {loaded_checkpoint_step:,} · "
+                f"resume {resume_step:,}"
+            ),
+            (
+                f"│ compute   {backend['device_name']} · {world_size} rank(s) · "
+                f"{backend['matmul']} · Liger CE · Triton={backend['custom_triton']}"
+            ),
+            (
+                f"│ topology  {config.num_hidden_layers}L · hidden {config.hidden_size} · "
+                f"GQA {config.num_attention_heads}/{config.num_key_value_heads} · "
+                f"TR {config.num_experts}×top-{config.top_k}"
+            ),
+        ]
+        startup_notes: list[str] = []
+        startup_warnings: list[str] = []
+        if args.resume is not None:
+            startup_lines.append(
+                f"│ resume    optimizer + scheduler + data cursor + RNG at {resume_step:,}"
+            )
         if args.sft_bin is not None:
-            logger.info(
-                f"Dataset: SFT bin {train_ds.root} "
-                f"({len(train_ds.examples):,} examples, "
-                f"stage={train_ds.curriculum_stage or 'full-shard'})"
+            startup_lines.append(
+                f"│ data      {len(train_ds.examples):,} examples · "
+                f"{train_ds.curriculum_stage or 'full-shard'} · {train_ds.root}"
             )
             if train_ds.loss_target_audit is not None:
-                logger.info(
+                startup_notes.append(
                     "Full-shard task-weighted loss: "
                     + json.dumps(train_ds.loss_target_audit, sort_keys=True)
                 )
             if train_ds.packing_plan is not None:
                 plan = train_ds.packing_plan
-                logger.info(
-                    "Sequence packing: "
-                    f"{len(train_ds.examples):,} examples -> "
-                    f"{train_ds.training_items:,} packed sequences "
-                    f"({plan.payload_utilization:.1%} payload utilization, "
-                    f"{plan.compression_ratio:.2f}x fewer sequences)"
+                startup_lines.append(
+                    f"│ packing   {train_ds.training_items:,} sequences · "
+                    f"{plan.payload_utilization:.1%} payload · "
+                    f"{plan.compression_ratio:.2f}× compression"
                 )
             if evaluation_enabled:
-                logger.info(
-                    "Coverage: "
-                    f"{steps_per_epoch:,} steps/epoch; best-checkpoint selection "
-                    f"and early stopping start at step {minimum_selection_step:,}"
+                startup_lines.append(
+                    f"│ schedule  {args.epochs} epoch(s) · {steps_per_epoch:,} steps/epoch · "
+                    f"selection from {minimum_selection_step:,}"
                 )
             else:
-                logger.info(
-                    f"Coverage: {steps_per_epoch:,} steps/epoch; validation disabled"
+                startup_lines.append(
+                    f"│ schedule  {args.epochs} epoch(s) · {steps_per_epoch:,} steps/epoch · "
+                    "validation disabled"
                 )
             if train_ds.metadata["supervised_tokens"] < 3_000_000:
-                logger.warning(
+                startup_warnings.append(
                     "Training shard contains fewer than 3,000,000 supervised "
                     "tokens; use held-out early stopping and treat the run as "
                     "a small-data adaptation."
                 )
             if matched_eval_ds is not None:
-                logger.info(
-                    "Matched evaluation: "
-                    f"{matched_eval_ds.root} ({len(matched_eval_ds.examples):,} examples)"
+                startup_lines.append(
+                    f"│ eval      {len(matched_eval_ds.examples):,} matched examples · "
+                    f"{matched_eval_ds.root}"
                 )
             if natural_eval_ds is not None:
-                logger.info(
-                    "Natural-gold evaluation: "
-                    f"{natural_eval_ds.root} ({len(natural_eval_ds.examples):,} examples)"
+                startup_lines.append(
+                    f"│ transfer  {len(natural_eval_ds.examples):,} natural-gold examples · "
+                    f"{natural_eval_ds.root}"
                 )
             if natural_eval_ds is not None and len(natural_eval_ds.examples) < 500:
-                logger.warning(
+                startup_warnings.append(
                     "Natural-gold SFT evaluation contains fewer than 500 examples; "
                     "report it separately as a transfer diagnostic, not as the "
                     "checkpoint-selection metric."
                 )
         elif args.jsonl is None:
-            logger.info("Dataset: built-in toy SFT records")
+            startup_lines.append("│ data      built-in toy SFT records")
         else:
-            logger.info(f"Dataset: {args.jsonl} ({len(train_ds.records)} records)")
+            startup_lines.append(f"│ data      {len(train_ds.records):,} records · {args.jsonl}")
             if matched_eval_ds is not None:
-                logger.info(
-                    f"Evaluation: {args.eval_jsonl} "
-                    f"({len(matched_eval_ds.records)} held-out records)"
+                startup_lines.append(
+                    f"│ eval      {len(matched_eval_ds.records):,} held-out records · "
+                    f"{args.eval_jsonl}"
                 )
-        logger.info(f"Chat template: {chat_template['id']}")
+        startup_lines.append(f"│ template  {chat_template['id']}")
         if args.reasoning_envelope:
-            logger.info(
-                "Reasoning envelope: <think>/<final> enabled for "
-                + ", ".join(sorted(REASONING_ENVELOPE_PLANS))
+            startup_lines.append(
+                "│ reasoning <think>/<final> · " + ", ".join(sorted(REASONING_ENVELOPE_PLANS))
             )
+        startup_lines.append("╰──────────────────────────────────────────────────────────")
+        logger.info("\n" + "\n".join(startup_lines))
+        for message in startup_notes:
+            logger.info(message)
+        for message in startup_warnings:
+            logger.warning(message)
         metrics_path = run_dir / "metrics.csv"
         append_metrics = args.resume is not None and metrics_path.exists()
         csv_file = metrics_path.open("a" if append_metrics else "w", newline="")
@@ -2307,7 +2267,7 @@ def main():
         tqdm(
             total=args.steps,
             initial=resume_step,
-            desc="SFT 500M 32k TR",
+            desc="TR-HASH MoE 200M · SFT v3",
             unit="step",
             dynamic_ncols=True,
         )
@@ -2342,9 +2302,7 @@ def main():
         # Task weighting is supported only by the explicit FP32 SFT loss. The
         # Liger path is unweighted and must not receive the collator's neutral
         # unit/ignored-position weights.
-        example_weights = (
-            batch.get("loss_weight") if args.sft_fp32_loss else None
-        )
+        example_weights = batch.get("loss_weight") if args.sft_fp32_loss else None
         if example_weights is not None:
             example_weights = example_weights.to(device, non_blocking=True)
         stats = label_stats(labels, config.vocab_size)
@@ -2556,8 +2514,7 @@ def main():
     # A completed run always gets a final artifact when it did not land exactly
     # on a periodic or milestone checkpoint.
     if last_step > 0 and not (
-        (args.save_steps > 0 and last_step % args.save_steps == 0)
-        or last_step in save_milestones
+        (args.save_steps > 0 and last_step % args.save_steps == 0) or last_step in save_milestones
     ):
         save_checkpoint(
             args,

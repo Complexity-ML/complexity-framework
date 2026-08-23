@@ -59,6 +59,25 @@ def _print_status(raw_status: str) -> None:
         console.print("[dim]No managed jobs.[/dim]")
 
 
+def _log_style(line: str) -> str | None:
+    lowered = line.lower()
+    if any(marker in lowered for marker in ("traceback", "error", "fatal", "outofmemory")):
+        return "bold red"
+    if "warning" in lowered or "warn" in lowered:
+        return "yellow"
+    if "[preflight]" in lowered or "checkpoint saved" in lowered:
+        return "green"
+    if "tr-hash moe sft" in lowered or "%|" in line:
+        return "cyan"
+    if " | info | " in lowered:
+        return "bright_blue"
+    return None
+
+
+def _print_log_line(line: str) -> None:
+    console.print(line.rstrip("\n"), style=_log_style(line), markup=False)
+
+
 @jobs.command("submit")
 def submit_job(
     name: str = typer.Argument(..., help="Stable job name"),
@@ -110,9 +129,11 @@ def logs_job(
     manager = JobManager()
     try:
         if follow:
-            _call(lambda: manager.follow_logs(name, lines=lines))
+            for line in _call(lambda: manager.follow_logs(name, lines=lines)):
+                _print_log_line(line)
             return
-        console.print(_call(lambda: manager.logs(name, lines=lines)), end="")
+        for line in _call(lambda: manager.logs(name, lines=lines)).splitlines():
+            _print_log_line(line)
     except KeyboardInterrupt:
         raise typer.Exit(130) from None
 

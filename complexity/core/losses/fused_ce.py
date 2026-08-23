@@ -45,6 +45,7 @@ def _liger_available() -> bool:
             from liger_kernel.transformers.fused_linear_cross_entropy import (  # type: ignore[import-not-found]
                 LigerFusedLinearCrossEntropyFunction,  # noqa: F401
             )
+
             _liger_available._cache = True
         except Exception:
             _liger_available._cache = False
@@ -57,7 +58,7 @@ def has_liger_fused_linear_ce() -> bool:
     return _liger_available()
 
 
-def log_liger_fused_linear_ce_status(device_type: str) -> bool:
+def log_liger_fused_linear_ce_status(device_type: str, *, log: bool = True) -> bool:
     """Log the CUDA fused-CE backend selected for this process.
 
     Returns whether Liger is available.  CUDA training must never silently
@@ -67,7 +68,7 @@ def log_liger_fused_linear_ce_status(device_type: str) -> bool:
 
     available = _liger_available()
     if device_type == "cuda":
-        if available:
+        if available and log:
             logger.info("Liger fused linear CE: enabled")
         elif _liger_required():
             raise RuntimeError(
@@ -147,12 +148,12 @@ def fused_linear_causal_lm_loss(
                 weight,
                 labels_flat,
                 bias,
-                None,               # ce_weight
+                None,  # ce_weight
                 ignore_index,
                 float(z_loss_coef),
                 float(label_smoothing),
                 "mean",
-                None,               # softcap
+                None,  # softcap
                 z_loss_coef > 0.0,  # return_z_loss
             )
             # Normalize Liger output: recent versions always return a tuple
