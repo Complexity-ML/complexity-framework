@@ -17,7 +17,7 @@ from scripts.recompile_tr_hash_sft_32004 import (
     SPECIAL_TOKEN_IDS,
     validate_enveloped_messages,
 )
-from scripts.tokenize_tr_hash_200m_clean_sft_v2 import sha256
+from scripts.tokenize_tr_hash_sft_32004 import sha256
 
 TOKENIZED_SUBDIR = Path("tokenized/tr-hash-32k-v3-32004-2048")
 TOKENIZER_FILES = (
@@ -201,7 +201,7 @@ The scripts live in
 
 ```bash
 python -m scripts.recompile_tr_hash_sft_32004 ...
-python -m scripts.tokenize_tr_hash_200m_clean_sft_v2 ...
+python -m scripts.tokenize_tr_hash_sft_32004 ...
 python -m scripts.package_tr_hash_sft_32004_release ...
 ```
 

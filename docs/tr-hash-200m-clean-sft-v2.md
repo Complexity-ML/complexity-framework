@@ -2,6 +2,10 @@
 
 > **Released result.** The three-epoch full-parameter run completed at step
 > 5,982. Epoch 3 is copied to the model repository root as F32 SafeTensors.
+> This page is a historical record. Its 32,000-token launch, evaluation and
+> synchronization scripts were removed after the append-only 32,004-token
+> migration. See [the SFT 32,004 recipe](tr_hash_200m_sft_32004_recipe.md) for
+> the current pipeline.
 
 ## Purpose
 
@@ -36,20 +40,19 @@ SFT v2 therefore changes the data contract rather than repeating the same run:
 | English/French bilingual instruction | 5,000 |
 | **Total** | **300,000** |
 
-The exact upstream datasets, configs, revisions, row caps, licenses and
-rejection counts are recorded in
-[`configs/tr_hash_200m_clean_sft_v2.json`](../configs/tr_hash_200m_clean_sft_v2.json)
-and the published manifest. The aggregate is multi-license; row provenance is
-retained in `source` and `capability` fields.
+The exact upstream datasets, revisions, row caps, licenses and rejection
+counts remain recorded in the immutable published v2 manifest and repository
+history. The aggregate is multi-license; row provenance is retained in
+`source` and `capability` fields.
 
 ## Published dataset
 
 The public dataset is
 [`AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K`](https://huggingface.co/datasets/AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K).
-It contains two equivalent representations:
+The historical revision contained two equivalent representations:
 
 1. `train.jsonl` / `eval.jsonl`, for inspection and independent processing;
-2. `tokenized/tr-hash-32k-v2-2048/`, pre-encoded with the exact TR-HASH
+2. `tokenized/tr-hash-32k-v2-2048/`, pre-encoded with the former TR-HASH
    **32,000-entry** tokenizer.
 
 The tokenized representation is directly readable by `scripts.sft_tr`:
@@ -68,22 +71,14 @@ separator during SFT and Hugging Face/Space inference; the historical literal
 
 ## Dataset preflight
 
-The tracked cluster bootstrap downloads the published token shards and checks
-their manifest, hashes, tokenizer identity, sequence cap, example counts and
-no-truncation contract before training:
-
-```bash
-scripts/vast_prepare_200m_clean_sft_v2.sh
-```
-
-The source recipe above and the immutable published manifest are the
-provenance records for rebuilding or independently auditing the mixture.
+The historical source revision and its immutable manifest remain provenance
+records. Current preflight is implemented by
+`scripts/package_tr_hash_sft_32004_release.py` and enforced again by
+`scripts/vast_sft_200m_32004_full_3e.sh`.
 
 ## Completed training
 
-The production launcher is
-[`scripts/vast_sft_200m_clean_v2_full_3e.sh`](../scripts/vast_sft_200m_clean_v2_full_3e.sh).
-It requires:
+The removed historical launcher required:
 
 - the Refinement step-8,156 checkpoint as a weights-only source;
 - full-parameter training, never LoRA/QLoRA;
@@ -108,13 +103,5 @@ PIQA uses all 1,838 validation examples, zero-shot causal continuation
 likelihood, no chat template, FP16 weights, and a 2,048-token maximum length.
 The source checkpoint's matched held-out loss was 1.722610 (PPL 5.60).
 
-The regression panel remains reproducible with:
-
-```bash
-CHECKPOINT=/path/to/candidate \
-PIQA_PROBE=/path/to/physicaliqa-train-dev \
-scripts/eval_sft_v2_regression.sh
-```
-
-Its report supplements the public loss and PIQA measurements; it is not shown
-as a pass/fail column in the release table.
+The archived regression report supplements the public loss and PIQA
+measurements; it is not shown as a pass/fail column in the release table.

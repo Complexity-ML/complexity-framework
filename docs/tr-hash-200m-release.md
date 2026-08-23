@@ -82,10 +82,10 @@ as if they shared one sampling process.
 |---|---|
 | Base replay pretraining | `scripts/vast_pretrain_tr_hash_200m_70b_replay.sh` |
 | Unique-token refinement | `scripts/vast_finetune_tr_hash_200m_70b_unique_phase2.sh` |
-| Three-epoch full SFT v2 | `scripts/vast_sft_200m_clean_v2_full_3e.sh` |
-| PIQA and behavior evaluation | `scripts/vast_eval_200m_clean_sft_v2_all.sh` |
-| SFT release export | `scripts/export_sft_v2_release.py` |
-| Hugging Face synchronization | `scripts/vast_sync_200m_clean_sft_v2.sh` |
+| Historical three-epoch full SFT v2 | released checkpoint and archived run manifests |
+| Recompile text for the 32,004-token SFT v3 | `scripts/recompile_tr_hash_sft_32004.py` |
+| Tokenize and audit SFT v3 | `scripts/tokenize_tr_hash_sft_32004.py` / `scripts/package_tr_hash_sft_32004_release.py` |
+| Next three-epoch full SFT | `scripts/vast_sft_200m_32004_full_3e.sh` |
 
 The `vast_*` launchers are production profiles for `/workspace` machines and
 expect the environment variables documented in [Training](training.md). Read

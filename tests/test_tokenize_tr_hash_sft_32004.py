@@ -9,7 +9,7 @@ import pytest
 from complexity.tokenizer import Tokenizer
 from complexity.training.sft_shard import SHARD_FORMAT_V2
 from scripts.sft_500m_32k_tr import encode_sft_example
-from scripts.tokenize_tr_hash_200m_clean_sft_v2 import (
+from scripts.tokenize_tr_hash_sft_32004 import (
     REASONING_SPECIAL_TOKEN_IDS,
     encode_complete_example,
     materialize_partition,

@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from complexity.tokenizer import Tokenizer
-from scripts.prepare_tr_hash_200m_reasoning_sft_500m import make_benchmark_guard
 from scripts.recompile_tr_hash_sft_32004 import (
     FINAL_END,
     FINAL_START,
@@ -15,6 +14,7 @@ from scripts.recompile_tr_hash_sft_32004 import (
     THINK_END,
     THINK_START,
     _last_boxed,
+    make_benchmark_guard,
     recompile_partition,
     render_envelope,
     split_assistant_content,

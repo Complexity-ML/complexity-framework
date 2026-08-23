@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Encode the clean 300K SFT v2 release into reusable TR-HASH 32K shards.
+"""Encode audited SFT text into reusable TR-HASH 32,004-token shards.
 
-The source builder already rejects rows above the model context. This encoder
+The source compiler already rejects rows above the model context. This encoder
 checks that invariant again and fails instead of truncating either the prompt
 or the supervised completion.
 """

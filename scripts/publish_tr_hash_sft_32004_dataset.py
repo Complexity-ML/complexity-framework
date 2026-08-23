@@ -18,7 +18,7 @@ from huggingface_hub import (
 )
 
 from scripts.package_tr_hash_sft_32004_release import TOKENIZED_SUBDIR
-from scripts.tokenize_tr_hash_200m_clean_sft_v2 import sha256
+from scripts.tokenize_tr_hash_sft_32004 import sha256
 
 LARGE_RELEASE_FILES = (
     Path("train.jsonl"),

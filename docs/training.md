@@ -90,24 +90,26 @@ The public refinement stopped at step 8,156 / 17,802 after approximately
 32.07B additional exposures. `160B` in the repository name is a rounded source
 lineage label, not a completed 70B refinement claim.
 
-## Audited SFT v2 data
+## Audited SFT v3 data
 
-`AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K` provides 300,000 training examples
-and 3,000 held-out examples, already encoded with the released 32K tokenizer.
-The manifest pins file hashes, 2,048-token sequence cap, EOS `</s>` (ID 0),
-final-assistant-only supervision and a no-truncation release gate.
+`AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K` now provides a text-recompiled
+32,004-token release: 299,331 training examples and 2,990 held-out examples.
+Every supervised completion contains the exact IDs 32000--32003 for the
+think/final envelope. The manifest pins file hashes, the 2,048-token sequence
+cap, EOS `</s>` (ID 0), final-assistant-only supervision, source revisions,
+and a fail-closed no-truncation gate.
 
 ## Stage 3: three-epoch full-parameter SFT
 
 The production recipe is tracked verbatim in
-`scripts/vast_sft_200m_clean_v2_full_3e.sh`:
+`scripts/vast_sft_200m_32004_full_3e.sh`:
 
 ```bash
 BASE_CHECKPOINT=/workspace/tr-hash-refinement \
-DATASET_ROOT=/workspace/tr-hash-moe-200m-sft-v2-300k \
+DATASET_ROOT=/workspace/tr-hash-moe-200m-sft-v3-32004 \
 NPROC_PER_NODE=4 \
 BATCH_SIZE_PER_GPU=16 \
-scripts/vast_sft_200m_clean_v2_full_3e.sh
+scripts/vast_sft_200m_32004_full_3e.sh
 ```
 
 The launcher refuses `RESUME_FROM`, validates the dataset manifest, requires
@@ -138,7 +140,7 @@ reach the intended global batch.
 The current 200M release uses the first mode. Experimental LoRA runs are not
 release substitutes and should not be merged into a full-parameter model card.
 
-## Released clean SFT v2 result
+## Historical released clean SFT v2 result
 
 The three-epoch v2 run completed at step 5,982. Matched held-out loss decreased
 from 1.722610 at the source checkpoint to 0.959617 (PPL 2.61) after epoch 3.
@@ -153,13 +155,7 @@ checkpoint and every epoch boundary. Rank zero writes
 `runs/<run-name>/metrics.csv`; checkpoint roots contain `step_*`, optional
 `best/`, and selection metadata.
 
-Evaluate all three full-SFT checkpoints on PIQA and the regression panel:
-
-```bash
-scripts/vast_eval_200m_clean_sft_v2_all.sh
-```
-
-The script evaluates steps 1,994, 3,988, and 5,982 on separate GPUs when available.
+The historical v2 evaluation covered steps 1,994, 3,988, and 5,982.
 The release protocol uses the full 1,838-example PIQA validation split,
 zero-shot continuation likelihood, no chat template, FP16, and maximum length
 2,048. The regression panel remains a diagnostic artifact; it is not reported
@@ -171,16 +167,10 @@ chat checkpoint.
 
 ## Export and synchronization
 
-`scripts.export_sft_v2_release` verifies that the supplied checkpoint matches
-PIQA selection, writes `model.safetensors`, performs a tensor-equality
-round-trip, copies tokenizer and chat-template assets, and records hashes and
-reports in the release manifest. Root weights preserve the F32 checkpoint
-precision; FP16 bundles are benchmark-only MLX derivatives.
-
-`scripts/vast_sync_200m_clean_sft_v2.sh` uploads complete checkpoints to
-`AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT`. Synchronization must finish before
-local checkpoint cleanup. The root model is a copied release artifact; the
-resumable epoch directories remain available for provenance.
+The removed v2 export/synchronization launchers are not valid for vocab
+32,004. A future model release must be exported from a v3 checkpoint, preserve
+the four new embedding rows, perform a tensor-equality round trip, copy the v3
+tokenizer and chat template, and verify remote hashes before local cleanup.
 
 ## Resume rules
 
@@ -213,8 +203,9 @@ See [GPU and dispatch paths](cuda.md).
 pytest -q \
   tests/test_tr_hash_200m_pretraining.py \
   tests/test_sft_bin.py \
-  tests/test_sft_v2_production_contract.py \
-  tests/test_sft_v2_regression_gate.py \
+  tests/test_sft_32004_production_contract.py \
+  tests/test_recompile_tr_hash_sft_32004.py \
+  tests/test_tokenize_tr_hash_sft_32004.py \
   tests/test_sync_checkpoints_to_hf.py
 ```
 

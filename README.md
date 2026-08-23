@@ -213,9 +213,10 @@ instruction SFT, not LoRA.
 |---|---|
 | 130B replay pretraining | `scripts/vast_pretrain_tr_hash_200m_70b_replay.sh` |
 | 32.07B unique-token refinement | `scripts/vast_finetune_tr_hash_200m_70b_unique_phase2.sh` |
-| Audited 300K full SFT v2 | `scripts/vast_sft_200m_clean_v2_full_3e.sh` |
-| Three-checkpoint PIQA + behavior evaluation | `scripts/vast_eval_200m_clean_sft_v2_all.sh` |
-| Promotion-gated F32 SafeTensors release | `scripts/export_sft_v2_release.py` |
+| SFT v3 text recompilation for vocab 32,004 | `scripts/recompile_tr_hash_sft_32004.py` |
+| SFT v3 tokenization and binary manifests | `scripts/tokenize_tr_hash_sft_32004.py` |
+| Three-epoch full-parameter SFT v3 | `scripts/vast_sft_200m_32004_full_3e.sh` |
+| Dataset release audit and publication | `scripts/package_tr_hash_sft_32004_release.py` / `scripts/publish_tr_hash_sft_32004_dataset.py` |
 
 These `vast_*` scripts are tracked production profiles for `/workspace`
 machines. They validate the expected checkpoint, dataset manifest, tokenizer,
@@ -260,19 +261,21 @@ specialization, downstream quality, or superiority over another architecture.
 ## Full-parameter instruction SFT
 
 The current SFT runner is `scripts.sft_tr`. It supports explicit
-`--full-parameter` training as well as experimental LoRA mode. The promoted
-200M recipe uses:
+`--full-parameter` training as well as experimental LoRA mode. The next 200M
+recipe uses:
 
 - the step-8,156 refinement checkpoint as its source;
-- the audited 300,000-example SFT-v2 train split and 3,000-example eval split;
+- the audited 299,331-example SFT-v3 train split and 2,990-example eval split;
+- the append-only 32,004-token tokenizer and explicit think/final envelopes;
 - final-assistant-only labels, no truncation, and packed 2,048-token sequences;
 - three epochs, BF16 training, AdamW, a continuous cosine schedule, and Liger plus the
   tested custom CUDA/Triton path;
 - complete held-out evaluation and a resumable checkpoint at every epoch;
-- PIQA evaluation of all three epoch checkpoints before root promotion.
+- matched validation and downstream evaluation of all three epoch checkpoints
+  before any root promotion.
 
 The exact command and preflight checks are tracked in
-[`scripts/vast_sft_200m_clean_v2_full_3e.sh`](scripts/vast_sft_200m_clean_v2_full_3e.sh).
+[`scripts/vast_sft_200m_32004_full_3e.sh`](scripts/vast_sft_200m_32004_full_3e.sh).
 See [Training](docs/training.md) for the argument contract and
 [TR-HASH MoE 200M release](docs/tr-hash-200m-release.md) for measured results.
 
@@ -348,8 +351,9 @@ python -m pytest -q \
   tests/test_tr_hash_engine.py \
   tests/test_tr_hash_200m_pretraining.py \
   tests/test_sft_bin.py \
-  tests/test_sft_v2_production_contract.py \
-  tests/test_sft_v2_regression_gate.py \
+  tests/test_sft_32004_production_contract.py \
+  tests/test_recompile_tr_hash_sft_32004.py \
+  tests/test_tokenize_tr_hash_sft_32004.py \
   tests/test_tr_hash_dynamic_moe.py \
   tests/test_token_routed_to_tr_hash_conversion.py \
   tests/test_tr_mha.py \

@@ -10,12 +10,19 @@ only rows that no longer fit after the four-token envelope is added.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import io
 import json
 import re
+import unicodedata
+import urllib.request
+import zipfile
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
+
+from datasets import load_dataset
 
 from complexity.inference.chat_template import (
     align_chat_template_eos,
@@ -24,19 +31,9 @@ from complexity.inference.chat_template import (
 from complexity.tokenizer import Tokenizer
 
 try:
-    from scripts.prepare_tr_hash_200m_clean_sft import fit_complete_turns, sha256
-    from scripts.prepare_tr_hash_200m_reasoning_sft_500m import (
-        BenchmarkGuard,
-        benchmark_overlap,
-        load_protected_benchmark_prompts,
-    )
+    from scripts.sft_500m_32k_tr import format_record
 except ModuleNotFoundError:  # Direct ``python scripts/...`` execution.
-    from prepare_tr_hash_200m_clean_sft import fit_complete_turns, sha256
-    from prepare_tr_hash_200m_reasoning_sft_500m import (
-        BenchmarkGuard,
-        benchmark_overlap,
-        load_protected_benchmark_prompts,
-    )
+    from sft_500m_32k_tr import format_record
 
 
 THINK_START = "<|think_start|>"
@@ -70,6 +67,129 @@ class AssistantEnvelope:
     reasoning: str
     final: str
     extraction: str
+
+
+@dataclass(frozen=True)
+class BenchmarkGuard:
+    exact: frozenset[str]
+    sixteen_token_prefixes: frozenset[tuple[str, ...]]
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def normalize_for_dedup(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text).casefold()
+    return " ".join(re.findall(r"\w+", text, flags=re.UNICODE))
+
+
+def make_benchmark_guard(prompts: set[str]) -> BenchmarkGuard:
+    prefixes = {tuple(prompt.split()[:16]) for prompt in prompts if len(prompt.split()) >= 16}
+    return BenchmarkGuard(frozenset(prompts), frozenset(prefixes))
+
+
+def _benchmark_text(row: dict[str, Any], field: str) -> str:
+    return str(row.get(field, "") or "").strip()
+
+
+def load_protected_benchmark_prompts(recipe: dict[str, Any]) -> BenchmarkGuard:
+    protected: set[str] = set()
+    for benchmark in recipe.get("protected_benchmarks", []):
+        if "archive_url" in benchmark:
+            with urllib.request.urlopen(benchmark["archive_url"], timeout=120) as response:
+                payload = response.read()
+            actual_sha256 = hashlib.sha256(payload).hexdigest()
+            if actual_sha256 != benchmark["archive_sha256"]:
+                raise RuntimeError(f"{benchmark['name']} archive hash mismatch: {actual_sha256}")
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                for member in benchmark["members"]:
+                    with archive.open(member) as handle:
+                        for raw_line in handle:
+                            row = json.loads(raw_line.decode("utf-8"))
+                            text = normalize_for_dedup(
+                                _benchmark_text(row, benchmark["text_field"])
+                            )
+                            if text:
+                                protected.add(text)
+            continue
+        for split in benchmark["splits"]:
+            dataset = load_dataset(
+                benchmark["dataset"],
+                benchmark.get("config"),
+                split=split,
+                revision=benchmark["revision"],
+                streaming=True,
+            )
+            for row in dataset:
+                text = normalize_for_dedup(_benchmark_text(row, benchmark["text_field"]))
+                if text:
+                    protected.add(text)
+    return make_benchmark_guard(protected)
+
+
+def benchmark_overlap(
+    messages: list[dict[str, str]], protected_prompts: BenchmarkGuard | set[str]
+) -> bool:
+    guard = (
+        protected_prompts
+        if isinstance(protected_prompts, BenchmarkGuard)
+        else make_benchmark_guard(protected_prompts)
+    )
+    user_text = normalize_for_dedup(
+        "\n".join(message["content"] for message in messages if message["role"] == "user")
+    )
+    if user_text in guard.exact:
+        return True
+    words = user_text.split()
+    windows = {tuple(words[index : index + 16]) for index in range(len(words) - 15)}
+    return not windows.isdisjoint(guard.sixteen_token_prefixes)
+
+
+def _encoded_length(
+    messages: list[dict[str, str]],
+    tokenizer: Tokenizer,
+    chat_template: dict[str, Any],
+) -> int:
+    prompt, completion = format_record({"messages": messages}, chat_template)
+    return (
+        len(tokenizer.encode(prompt, add_special_tokens=False))
+        + len(tokenizer.encode(completion, add_special_tokens=False))
+        + 1
+    )
+
+
+def _drop_oldest_complete_turn(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    systems = [message for message in messages if message["role"] == "system"]
+    dialogue = [message for message in messages if message["role"] != "system"]
+    if len(dialogue) <= 2:
+        return messages
+    next_user = next(
+        (index for index in range(1, len(dialogue)) if dialogue[index]["role"] == "user"),
+        None,
+    )
+    if next_user is None:
+        return messages
+    return systems + dialogue[next_user:]
+
+
+def fit_complete_turns(
+    messages: list[dict[str, str]],
+    tokenizer: Tokenizer,
+    sequence_length: int,
+    chat_template: dict[str, Any],
+) -> list[dict[str, str]] | None:
+    candidate = [dict(message) for message in messages]
+    while _encoded_length(candidate, tokenizer, chat_template) > sequence_length:
+        reduced = _drop_oldest_complete_turn(candidate)
+        if reduced == candidate:
+            return None
+        candidate = reduced
+    return candidate
 
 
 def validate_tokenizer_32004(tokenizer: Tokenizer) -> None:
