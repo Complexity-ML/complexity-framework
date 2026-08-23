@@ -9,6 +9,7 @@ Usage:
     complexity profile model --hidden 2048 --layers 24
     complexity convert to-safetensors model.pt
     complexity serve start model.pt --port 8000
+    complexity jobs list
     complexity info version
 """
 
@@ -16,6 +17,7 @@ import sys
 
 try:
     import typer
+
     HAS_TYPER = True
 except ImportError:
     HAS_TYPER = False
@@ -23,7 +25,7 @@ except ImportError:
 
 
 if HAS_TYPER:
-    from .commands import train, inference, tokenize, profile, convert, serve, info
+    from .commands import convert, inference, info, jobs, profile, serve, tokenize, train
 
     # Create main app
     app = typer.Typer(
@@ -41,6 +43,7 @@ if HAS_TYPER:
     app.add_typer(convert, name="convert")
     app.add_typer(serve, name="serve")
     app.add_typer(info, name="info")
+    app.add_typer(jobs, name="jobs")
 
     @app.callback()
     def main_callback(
@@ -55,6 +58,7 @@ if HAS_TYPER:
         if version:
             try:
                 from complexity import __version__
+
                 typer.echo(f"complexity {__version__}")
             except ImportError:
                 typer.echo("complexity dev")
@@ -65,7 +69,7 @@ if HAS_TYPER:
         """
         Show quickstart guide.
         """
-        from .utils import console, print_markdown
+        from .utils import print_markdown
 
         guide = """
 # Complexity Framework - Quickstart
@@ -141,6 +145,15 @@ complexity info version      # Show version & deps
 complexity info model model.pt  # Inspect model
 complexity info tokens       # Show special tokens
 ```
+
+## Managed Jobs
+
+Long-running framework commands can share the same secure job lifecycle:
+```bash
+complexity jobs list
+complexity jobs status my-job
+complexity jobs restart my-job
+```
 """
         print_markdown(guide)
 
@@ -156,16 +169,18 @@ complexity info tokens       # Show special tokens
 
         try:
             import code
-            import torch
+
             import numpy as np
+            import torch
 
             # Import framework components
             try:
                 import complexity
                 from complexity.config import ModelConfig
-                from complexity.data import ComplexityTokenizer, ComplexityTemplate
+                from complexity.data import ComplexityTemplate, ComplexityTokenizer
                 from complexity.models import ComplexityModel
                 from complexity.training import Trainer, TrainingConfig
+
                 has_complexity = True
             except ImportError:
                 complexity = None
@@ -190,14 +205,16 @@ Type 'exit()' or Ctrl+D to quit.
             }
 
             if has_complexity:
-                local_vars.update({
-                    "ComplexityModel": ComplexityModel,
-                    "ModelConfig": ModelConfig,
-                    "ComplexityTokenizer": ComplexityTokenizer,
-                    "ComplexityTemplate": ComplexityTemplate,
-                    "Trainer": Trainer,
-                    "TrainingConfig": TrainingConfig,
-                })
+                local_vars.update(
+                    {
+                        "ComplexityModel": ComplexityModel,
+                        "ModelConfig": ModelConfig,
+                        "ComplexityTokenizer": ComplexityTokenizer,
+                        "ComplexityTemplate": ComplexityTemplate,
+                        "Trainer": Trainer,
+                        "TrainingConfig": TrainingConfig,
+                    }
+                )
 
             code.interact(banner=banner, local=local_vars)
 

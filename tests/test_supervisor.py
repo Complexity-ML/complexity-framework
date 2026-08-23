@@ -67,6 +67,7 @@ def test_manager_installs_atomically_with_private_permissions(tmp_path: Path) ->
     assert destination.read_text(encoding="utf-8") == _program().render()
     assert destination.stat().st_mode & 0o777 == 0o600
     assert not list(tmp_path.glob("*.tmp"))
+    assert manager.configuration_path("training_job") == destination
 
     assert manager.uninstall("training_job") == destination
     assert not destination.exists()

@@ -156,7 +156,7 @@ class SupervisorManager:
         """Atomically install one generated configuration with mode ``0600``."""
 
         self.config_directory.mkdir(parents=True, exist_ok=True)
-        destination = self.config_directory / f"{program.name}.conf"
+        destination = self.configuration_path(program.name)
         temporary_name: str | None = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -181,10 +181,15 @@ class SupervisorManager:
     def uninstall(self, name: str, *, missing_ok: bool = False) -> Path:
         """Remove exactly one validated generated configuration."""
 
-        _validate_program_name(name)
-        destination = self.config_directory / f"{name}.conf"
+        destination = self.configuration_path(name)
         destination.unlink(missing_ok=missing_ok)
         return destination
+
+    def configuration_path(self, name: str) -> Path:
+        """Return the exact generated configuration path for one validated job."""
+
+        _validate_program_name(name)
+        return self.config_directory / f"{name}.conf"
 
     def _control(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(

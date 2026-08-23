@@ -2,13 +2,14 @@
 CLI Commands for Complexity Framework.
 """
 
-from .train import train
-from .inference import inference
-from .tokenize import tokenize
-from .profile import profile
 from .convert import convert
-from .serve import serve
+from .inference import inference
 from .info import info_app as info
+from .jobs import jobs
+from .profile import profile
+from .serve import serve
+from .tokenize import tokenize
+from .train import train
 
 __all__ = [
     "train",
@@ -18,4 +19,5 @@ __all__ = [
     "convert",
     "serve",
     "info",
+    "jobs",
 ]
