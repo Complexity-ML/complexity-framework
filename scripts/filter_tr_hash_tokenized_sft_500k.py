@@ -23,7 +23,11 @@ from complexity.training.sft_shard import (
     MASKED_ASSISTANT_HISTORY,
     SHARD_FORMAT_V2,
 )
-from scripts.tokenize_tr_hash_sft_32004 import sha256
+
+try:
+    from scripts.tokenize_tr_hash_sft_32004 import sha256
+except ModuleNotFoundError:  # Direct ``python scripts/...`` execution.
+    from tokenize_tr_hash_sft_32004 import sha256
 
 TOKENIZED_SUBDIR = Path("tokenized/tr-hash-32k-v3-32004-2048")
 SPECIAL_TOKEN_IDS = {
