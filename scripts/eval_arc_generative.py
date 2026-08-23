@@ -251,6 +251,49 @@ def parse_open_answer(text: str, example: ARCExample) -> str | None:
     return None
 
 
+_NEXT_QUESTION = re.compile(r"\n\s*(?:#{1,6}\s*)?Question\s*:", re.IGNORECASE)
+_NATIVE_ANSWER_PATTERNS = (
+    re.compile(
+        r"(?i)\b(?:the\s+)?correct\s+(?:answer|choice|option)\s*(?:is|:|=|-)?\s*"
+        r"(?:option|choice)?\s*[\[({`*$'\"\\\s]*(?:boxed\s*\{\s*)?([A-E])\b"
+    ),
+    re.compile(
+        r"(?i)\banswer\s*(?:is|:|=|-)\s*(?:option|choice)?\s*"
+        r"[\[({`*$'\"\\\s]*(?:boxed\s*\{\s*)?([A-E])\b"
+    ),
+    re.compile(r"(?i)\\boxed\s*\{\s*([A-E])\s*\}"),
+    re.compile(r"(?i)^\s*\(?([A-E])\)?\s*[.):,-]"),
+)
+
+
+def first_response_segment(text: str) -> str:
+    """Keep the answer before the model starts synthesizing another example."""
+
+    return _NEXT_QUESTION.split(text, maxsplit=1)[0].strip()
+
+
+def parse_native_first_answer(text: str, example: ARCExample) -> str | None:
+    """Parse the first answer using formats present in the reasoning SFT data.
+
+    The training targets use natural forms such as ``the correct choice is
+    \\boxed{D}``, ``(B).`` and the literal answer text.  They do not enforce the
+    synthetic ``Final answer: X`` contract used by the initial probe.
+    """
+
+    segment = first_response_segment(text)
+    if not segment:
+        return None
+    candidates: list[tuple[int, str]] = []
+    for pattern in _NATIVE_ANSWER_PATTERNS:
+        candidates.extend(
+            (match.start(), match.group(1).upper()) for match in pattern.finditer(segment)
+        )
+    candidates = [(offset, label) for offset, label in candidates if label in example.labels]
+    if candidates:
+        return min(candidates, key=lambda item: item[0])[1]
+    return parse_open_answer(segment, example)
+
+
 class TRHashMLXGenerator:
     def __init__(
         self,
@@ -553,6 +596,18 @@ def attach_native_result(row: dict, backend: str) -> dict:
 
     if backend == "nautile_torch":
         field = "flexible_prediction"
+    elif backend == "tr_hash_torch":
+        field = "native_first_prediction"
+        if field not in row:
+            example = ARCExample(
+                task=row["task"],
+                doc_id=int(row["doc_id"]),
+                example_id=str(row["example_id"]),
+                question=row["question"],
+                choices=tuple(row["choices"]),
+                answer_index=int(row["answer_index"]),
+            )
+            row[field] = parse_native_first_answer(row["completion"], example)
     elif backend == "tr_hash_mlx_open":
         field = "open_prediction"
     else:
@@ -645,6 +700,7 @@ def main() -> None:
         strict_prediction = parse_strict_answer(completion, example.labels)
         flexible_prediction = parse_flexible_answer(completion, example.labels)
         open_prediction = parse_open_answer(completion, example)
+        native_first_prediction = parse_native_first_answer(completion, example)
         row = {
             **asdict(example),
             "labels": example.labels,
@@ -657,6 +713,8 @@ def main() -> None:
             "flexible_correct": flexible_prediction == example.answer,
             "open_prediction": open_prediction,
             "open_correct": open_prediction == example.answer,
+            "native_first_prediction": native_first_prediction,
+            "native_first_correct": native_first_prediction == example.answer,
             "elapsed_seconds": round(time.monotonic() - completion_started, 3),
         }
         attach_native_result(row, args.backend)

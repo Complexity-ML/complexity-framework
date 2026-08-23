@@ -11,6 +11,7 @@ from scripts.eval_arc_generative import (
     evenly_spaced,
     load_lm_eval_samples,
     parse_flexible_answer,
+    parse_native_first_answer,
     parse_open_answer,
     parse_strict_answer,
 )
@@ -145,6 +146,37 @@ def test_open_answer_parser_requires_one_named_choice() -> None:
     assert parse_open_answer("Ice is frozen water.", example) == "B"
     assert parse_open_answer("It could be ice or rain.", example) is None
     assert parse_open_answer("Cold water", example) is None
+
+
+def test_native_parser_uses_first_dataset_style_answer_before_next_question() -> None:
+    example = ARCExample(
+        task="arc_easy",
+        doc_id=2,
+        example_id="two",
+        question="What is frozen water?",
+        choices=("steam", "ice", "rain", "fog"),
+        answer_index=1,
+    )
+
+    completion = (
+        "The correct choice is $\\boxed{B}$.\n\n"
+        "Question: A generated follow-up?\nChoices:\nA. x\nB. y\nAnswer: A"
+    )
+
+    assert parse_native_first_answer(completion, example) == "B"
+
+
+def test_native_parser_maps_literal_answer_text() -> None:
+    example = ARCExample(
+        task="arc_easy",
+        doc_id=4,
+        example_id="four",
+        question="Which conducts electricity?",
+        choices=("glass rod", "wooden stick", "plastic straw", "metal nail"),
+        answer_index=3,
+    )
+
+    assert parse_native_first_answer("The correct answer is metal nail.", example) == "D"
 
 
 def test_strict_parser_rejects_missing_or_conflicting_declarations() -> None:
