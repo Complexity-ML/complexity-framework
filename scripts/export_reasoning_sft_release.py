@@ -46,6 +46,18 @@ def render_readme(
     selected_arc_zero_shot: dict[str, Any] | None,
 ) -> str:
     selected = summary["selected"]
+    selection_basis = summary.get("release_selection_basis", "automatic-evaluation")
+    if selection_basis == "free-generation-panel":
+        selection_description = (
+            "selected manually among the reasoning checkpoints for the strongest "
+            "free-generation behavior on the fixed eight-prompt assistant panel"
+        )
+    else:
+        selection_description = (
+            "selected among the saved training checkpoints by the documented "
+            "automatic evaluation policy"
+        )
+    learning_rate = float(summary.get("peak_learning_rate", 5e-6))
     rows = "\n".join(
         "| {step:,} | {loss:.6f} | {ppl:.2f} | {acc:.2f}% | {norm:.2f}% |".format(
             step=candidate["step"],
@@ -141,9 +153,13 @@ Full-parameter reasoning and instruction SFT of
 [`{DATASET}`](https://huggingface.co/datasets/{DATASET}). All 201.2M model
 parameters were trained; this release is **not LoRA or QLoRA**.
 
-The root `model.safetensors` is step **{selected["step"]:,}**, selected among
-the saved training checkpoints by full PIQA normalized accuracy, then raw
-accuracy and held-out SFT loss. Root weights are **F32 SafeTensors**.
+The root `model.safetensors` is step **{selected["step"]:,}**, {selection_description}.
+Root weights are **F32 SafeTensors**.
+
+This is an **experimental reasoning checkpoint**. On the matched free-generation
+panel it was stronger than the other later reasoning candidates, but it did not
+beat the released general-purpose Full SFT checkpoint. It must not be interpreted
+as a replacement for that model.
 
 ## Checkpoint results
 
@@ -170,7 +186,7 @@ Reports and raw generative traces are under `evaluation/reasoning-sft-500m/`.
 | Epochs | 1 |
 | Context | 2,048 tokens, sequence packed |
 | Optimizer | AdamW, betas 0.9 / 0.95, weight decay 0.1 |
-| LR | 5e-6 peak, 3% warmup, continuous cosine decay |
+| LR | {learning_rate:.1e} peak, 3% warmup, continuous cosine decay |
 | Precision | BF16 training; F32 root release |
 | Kernels | Liger required; custom Triton enabled |
 

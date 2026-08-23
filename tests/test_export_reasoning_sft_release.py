@@ -45,6 +45,8 @@ def test_export_reasoning_release_is_f32_and_preserves_routing_metadata(tmp_path
     summary = {
         "release_ready": True,
         "selection_policy": "full PIQA test policy",
+        "release_selection_basis": "free-generation-panel",
+        "peak_learning_rate": 5e-7,
         "selected": {
             "step": 250,
             "checkpoint": str(checkpoint),
@@ -124,6 +126,10 @@ def test_export_reasoning_release_is_f32_and_preserves_routing_metadata(tmp_path
     readme = (output / "README.md").read_text()
     assert "500,000,669 unique formatted tokens" in readme
     assert "does not force or fabricate a hidden `<think>` block" in readme
+    assert "strongest free-generation behavior" in readme
+    assert "did not" in readme
+    assert "beat the released general-purpose Full SFT checkpoint" in readme
+    assert "| LR | 5.0e-07 peak" in readme
     assert "ARC zero-shot retention" in readme
     assert "| Combined ARC | 42.00% | 44.00% | 43.00% | 45.00% |" in readme
     assert manifest["arc_zero_shot"]["source"]["combined"]["acc"] == 0.42
