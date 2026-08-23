@@ -236,7 +236,7 @@ def materialize_partition(
             handle.flush()
             os.fsync(handle.fileno())
 
-    return {
+    metadata = {
         "format": SHARD_FORMAT_V2,
         "assistant_supervision": FINAL_ASSISTANT_SUPERVISION,
         "history_assistant_turns": MASKED_ASSISTANT_HISTORY,
@@ -254,6 +254,10 @@ def materialize_partition(
             "examples.jsonl": sha256(index_path),
         },
     }
+    (target / "sft.idx.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return metadata
 
 
 def verify_source_compatibility(general_root: Path, reasoning_root: Path) -> tuple[dict, dict]:
@@ -294,6 +298,7 @@ def build_release(
         raise FileExistsError(output)
     recipe = load_recipe(recipe_path)
     general_manifest, reasoning_manifest = verify_source_compatibility(general_root, reasoning_root)
+    source_index = json.loads((general_root / "train" / "sft.idx.json").read_text(encoding="utf-8"))
     general_train = read_examples(general_root / "train", origin="sft-v2-general")
     reasoning_train = read_examples(reasoning_root / "train", origin="reasoning-500m")
     selected, selection = select_training_examples(general_train, reasoning_train, recipe)
@@ -314,6 +319,21 @@ def build_release(
         )
     )
     evaluation = materialize_partition(eval_examples, output / "eval", partition_name="eval")
+
+    inherited_index_keys = (
+        "chat_template_eos_token",
+        "chat_template_id",
+        "eos_token_id",
+        "sequence_length_cap",
+        "truncation_policy",
+        "vocab_size",
+    )
+    inherited_index = {key: source_index[key] for key in inherited_index_keys}
+    for partition_name, metadata in (("train", train), ("eval", evaluation)):
+        metadata.update(inherited_index)
+        (output / partition_name / "sft.idx.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
 
     shutil.copy2(general_root / "chat_template.json", output / "chat_template.json")
     tokenizer_output = output / "tokenizer"
