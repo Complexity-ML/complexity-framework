@@ -9,6 +9,7 @@ DATASET_ROOT="${DATASET_ROOT:-/workspace/tr-hash-moe-200m-reasoning-sft-500m}"
 SFT_BIN="${SFT_BIN:-${DATASET_ROOT}/tokenized/tr-hash-32k-v2-2048}"
 TOKENIZER="${TOKENIZER:-${SFT_BIN}/tokenizer}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-artifacts/tr_hash_moe_200m_reasoning_sft_500m_full_1e}"
+RUN_NAME="${RUN_NAME:-tr-hash-moe-200m-reasoning-sft-500m-full-1e}"
 DETECTED_GPU_COUNT="$(python -c 'import torch; print(torch.cuda.device_count())')"
 NPROC_PER_NODE="${NPROC_PER_NODE:-${DETECTED_GPU_COUNT}}"
 BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-16}"
@@ -111,7 +112,7 @@ python -m torch.distributed.run \
   --save-total-limit 24 \
   --save-best \
   --save-dir "${OUTPUT_ROOT}" \
-  --run-name tr-hash-moe-200m-reasoning-sft-500m-full-1e \
+  --run-name "${RUN_NAME}" \
   --seed 42 \
   --use-custom-kernels true \
   --full-parameter \

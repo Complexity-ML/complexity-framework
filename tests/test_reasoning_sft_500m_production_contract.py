@@ -53,6 +53,22 @@ def test_reasoning_checkpoint_sync_targets_dedicated_repo_and_keeps_resume_set()
     assert "autorestart=unexpected" in supervisor
 
 
+def test_low_lr_rerun_is_isolated_and_uploaded_separately() -> None:
+    training = Path(
+        "deploy/supervisor/tr_hash_200m_reasoning_sft_500m_lr5e7_full_1e.conf"
+    ).read_text()
+    sync = Path(
+        "deploy/supervisor/tr_hash_200m_reasoning_sft_500m_lr5e7_hf_sync.conf"
+    ).read_text()
+    assert 'LR="5e-7"' in training
+    assert (
+        'OUTPUT_ROOT="artifacts/tr_hash_moe_200m_reasoning_sft_500m_lr5e7_full_1e"'
+        in training
+    )
+    assert 'RUN_NAME="tr-hash-moe-200m-reasoning-sft-500m-lr5e7-full-1e"' in training
+    assert 'HF_PATH_PREFIX="training/reasoning-sft-500m-lr5e7/checkpoints"' in sync
+
+
 def test_reasoning_evaluator_waits_then_scores_every_checkpoint() -> None:
     launcher = Path("scripts/vast_eval_200m_reasoning_sft_500m.sh").read_text()
     supervisor = Path("deploy/supervisor/tr_hash_200m_reasoning_sft_500m_eval.conf").read_text()
