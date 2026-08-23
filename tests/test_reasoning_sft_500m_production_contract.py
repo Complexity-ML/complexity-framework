@@ -59,6 +59,10 @@ def test_reasoning_evaluator_waits_then_scores_every_checkpoint() -> None:
     assert '.training_complete"' in launcher
     assert '-path "${CHECKPOINT_ROOT}/step_*/*"' in launcher
     assert "scripts.eval_torch_piqa" in launcher
+    assert "scripts.eval_torch_arc_zero_shot" in launcher
+    assert "source_arc_zero_shot_full.json" in launcher
+    assert "selected_arc_zero_shot_full.json" in launcher
+    assert "CUDA_VISIBLE_DEVICES=2 python -m scripts.eval_arc_generative" in launcher
     assert "scripts.select_reasoning_sft_checkpoint" in launcher
     assert "scripts.eval_arc_generative" in launcher
     assert "scripts.eval_torch_chat_panel" in launcher

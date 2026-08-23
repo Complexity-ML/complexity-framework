@@ -70,6 +70,22 @@ def test_export_reasoning_release_is_f32_and_preserves_routing_metadata(tmp_path
     evaluations = tmp_path / "evaluations"
     evaluations.mkdir()
     (evaluations / "summary.json").write_text(json.dumps(summary))
+    source_arc = {
+        "benchmarks": {
+            "arc_easy": {"acc": 0.50, "acc_norm": 0.51},
+            "arc_challenge": {"acc": 0.25, "acc_norm": 0.26},
+        },
+        "combined": {"acc": 0.42, "acc_norm": 0.43},
+    }
+    selected_arc = {
+        "benchmarks": {
+            "arc_easy": {"acc": 0.52, "acc_norm": 0.53},
+            "arc_challenge": {"acc": 0.27, "acc_norm": 0.28},
+        },
+        "combined": {"acc": 0.44, "acc_norm": 0.45},
+    }
+    (evaluations / "source_arc_zero_shot_full.json").write_text(json.dumps(source_arc))
+    (evaluations / "selected_arc_zero_shot_full.json").write_text(json.dumps(selected_arc))
     tokenizer = tmp_path / "tokenizer"
     tokenizer.mkdir()
     (tokenizer / "tokenizer.json").write_text("{}")
@@ -108,3 +124,6 @@ def test_export_reasoning_release_is_f32_and_preserves_routing_metadata(tmp_path
     readme = (output / "README.md").read_text()
     assert "500,000,669 unique formatted tokens" in readme
     assert "does not force or fabricate a hidden `<think>` block" in readme
+    assert "ARC zero-shot retention" in readme
+    assert "| Combined ARC | 42.00% | 44.00% | 43.00% | 45.00% |" in readme
+    assert manifest["arc_zero_shot"]["source"]["combined"]["acc"] == 0.42

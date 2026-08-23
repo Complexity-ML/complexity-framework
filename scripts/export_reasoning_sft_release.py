@@ -39,7 +39,12 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def render_readme(summary: dict[str, Any], arc: dict[str, Any] | None) -> str:
+def render_readme(
+    summary: dict[str, Any],
+    arc: dict[str, Any] | None,
+    source_arc_zero_shot: dict[str, Any] | None,
+    selected_arc_zero_shot: dict[str, Any] | None,
+) -> str:
     selected = summary["selected"]
     rows = "\n".join(
         "| {step:,} | {loss:.6f} | {ppl:.2f} | {acc:.2f}% | {norm:.2f}% |".format(
@@ -66,6 +71,47 @@ from the full-split likelihood results.
 |---|---:|---:|---:|
 | ARC reasoning 128 | {100 * combined["strict_accuracy"]:.2f}% | {100 * combined["flexible_accuracy"]:.2f}% | {100 * combined["strict_format_rate"]:.2f}% |
 """
+    arc_retention_section = ""
+    if source_arc_zero_shot is not None and selected_arc_zero_shot is not None:
+        labels = (
+            ("ARC-Easy", "arc_easy"),
+            ("ARC-Challenge", "arc_challenge"),
+            ("Combined ARC", "combined"),
+        )
+        retention_rows = []
+        for label, key in labels:
+            source = (
+                source_arc_zero_shot[key]
+                if key == "combined"
+                else source_arc_zero_shot["benchmarks"][key]
+            )
+            selected_arc = (
+                selected_arc_zero_shot[key]
+                if key == "combined"
+                else selected_arc_zero_shot["benchmarks"][key]
+            )
+            retention_rows.append(
+                "| {label} | {source_acc:.2f}% | {selected_acc:.2f}% | "
+                "{source_norm:.2f}% | {selected_norm:.2f}% |".format(
+                    label=label,
+                    source_acc=100 * source["acc"],
+                    selected_acc=100 * selected_arc["acc"],
+                    source_norm=100 * source["acc_norm"],
+                    selected_norm=100 * selected_arc["acc_norm"],
+                )
+            )
+        arc_retention_section = """
+## ARC zero-shot retention
+
+The Refinement source and selected Reasoning-SFT checkpoint were evaluated
+with the same full-split causal-continuation protocol: no demonstrations, no
+chat template and no generated-answer parsing. This is the capability
+retention control; it is distinct from the generative reasoning probe below.
+
+| Benchmark | Source acc | Reasoning SFT acc | Source acc_norm | Reasoning SFT acc_norm |
+|---|---:|---:|---:|---:|
+{rows}
+""".format(rows="\n".join(retention_rows))
     return f"""---
 license: cc-by-nc-4.0
 language:
@@ -109,6 +155,7 @@ PIQA uses all 1,838 validation examples, zero-shot causal-continuation
 log-likelihood, no chat template, maximum length 2,048 and FP16 inference.
 No hidden quality threshold is applied: every saved checkpoint is reported.
 Reports and raw generative traces are under `evaluation/reasoning-sft-500m/`.
+{arc_retention_section}
 {arc_section}
 ## Training recipe
 
@@ -224,9 +271,20 @@ def export_release(
     shutil.copy2(metrics_path, reports / "metrics.csv")
     shutil.copy2(summary_path, reports / "selection_summary.json")
     shutil.copy2(dataset_audit, reports / "dataset-release-audit.json")
-    arc_path = evaluation_root / "selected_arc_reasoning_64.json"
-    arc = json.loads(arc_path.read_text(encoding="utf-8")) if arc_path.is_file() else None
-    (output / "README.md").write_text(render_readme(summary, arc), encoding="utf-8")
+
+    def load_optional_report(filename: str) -> dict[str, Any] | None:
+        path = evaluation_root / filename
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+    arc = load_optional_report("selected_arc_reasoning_64.json")
+    source_arc_zero_shot = load_optional_report("source_arc_zero_shot_full.json")
+    selected_arc_zero_shot = load_optional_report("selected_arc_zero_shot_full.json")
+    if (source_arc_zero_shot is None) != (selected_arc_zero_shot is None):
+        raise ValueError("ARC zero-shot source and selected reports must be paired")
+    (output / "README.md").write_text(
+        render_readme(summary, arc, source_arc_zero_shot, selected_arc_zero_shot),
+        encoding="utf-8",
+    )
 
     manifest = {
         "schema_version": 1,
@@ -251,6 +309,12 @@ def export_release(
         "num_experts": int(config["num_experts"]),
         "num_experts_per_tok": int(config["num_experts_per_tok"]),
     }
+    if source_arc_zero_shot is not None and selected_arc_zero_shot is not None:
+        manifest["arc_zero_shot"] = {
+            "protocol": "full_split_causal_choice_loglikelihood_no_chat_template",
+            "source": source_arc_zero_shot,
+            "selected": selected_arc_zero_shot,
+        }
     if not math.isfinite(manifest["matched_eval_loss"]):
         raise ValueError("Non-finite selected evaluation loss")
     (output / "release_manifest.json").write_text(

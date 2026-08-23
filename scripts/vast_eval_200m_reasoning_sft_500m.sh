@@ -10,6 +10,7 @@ EVALUATION_ROOT="${EVALUATION_ROOT:-artifacts/evaluations/tr_hash_moe_200m_reaso
 TOKENIZER="${TOKENIZER:-/workspace/tr-hash-moe-200m-reasoning-sft-500m/tokenized/tr-hash-32k-v2-2048/tokenizer}"
 PIQA_PROBE="${PIQA_PROBE:-/workspace/physicaliqa-train-dev/physicaliqa-train-dev}"
 ARC_PROBE="${ARC_PROBE:-/workspace/arc-evaluation-samples}"
+REFINEMENT="${REFINEMENT:-/workspace/tr-hash-refinement}"
 MODEL_REPO="${MODEL_REPO:-AETHORIA-AI/TR-HASH-MoE-200M-160B-Reasoning-SFT}"
 DATASET_ROOT="${DATASET_ROOT:-/workspace/tr-hash-moe-200m-reasoning-sft-500m}"
 RELEASE_ROOT="${RELEASE_ROOT:-artifacts/releases/tr_hash_moe_200m_reasoning_sft_500m}"
@@ -104,7 +105,36 @@ python -m scripts.select_reasoning_sft_checkpoint \
   --selected-checkpoint "${EVALUATION_ROOT}/selected_checkpoint.txt"
 
 selected="$(< "${EVALUATION_ROOT}/selected_checkpoint.txt")"
-CUDA_VISIBLE_DEVICES=0 python -m scripts.eval_arc_generative \
+pids=()
+names=()
+
+CUDA_VISIBLE_DEVICES=0 python -m scripts.eval_torch_arc_zero_shot \
+  "${REFINEMENT}" \
+  --tokenizer "${TOKENIZER}" \
+  --arc-easy-samples "${ARC_PROBE}/samples_arc_easy.jsonl" \
+  --arc-challenge-samples "${ARC_PROBE}/samples_arc_challenge.jsonl" \
+  --batch-size "${ARC_ZERO_SHOT_BATCH_SIZE:-64}" \
+  --max-length 2048 \
+  --dtype "${ARC_ZERO_SHOT_DTYPE:-float16}" \
+  --output "${EVALUATION_ROOT}/source_arc_zero_shot_full.json" \
+  > "${EVALUATION_ROOT}/source_arc_zero_shot_full.log" 2>&1 &
+pids+=("$!")
+names+=("source ARC zero-shot")
+
+CUDA_VISIBLE_DEVICES=1 python -m scripts.eval_torch_arc_zero_shot \
+  "${selected}" \
+  --tokenizer "${TOKENIZER}" \
+  --arc-easy-samples "${ARC_PROBE}/samples_arc_easy.jsonl" \
+  --arc-challenge-samples "${ARC_PROBE}/samples_arc_challenge.jsonl" \
+  --batch-size "${ARC_ZERO_SHOT_BATCH_SIZE:-64}" \
+  --max-length 2048 \
+  --dtype "${ARC_ZERO_SHOT_DTYPE:-float16}" \
+  --output "${EVALUATION_ROOT}/selected_arc_zero_shot_full.json" \
+  > "${EVALUATION_ROOT}/selected_arc_zero_shot_full.log" 2>&1 &
+pids+=("$!")
+names+=("selected ARC zero-shot")
+
+CUDA_VISIBLE_DEVICES=2 python -m scripts.eval_arc_generative \
   tr_hash_torch "${selected}" \
   --tokenizer "${TOKENIZER}" \
   --arc-easy-samples "${ARC_PROBE}/samples_arc_easy.jsonl" \
@@ -112,15 +142,30 @@ CUDA_VISIBLE_DEVICES=0 python -m scripts.eval_arc_generative \
   --max-samples-per-task "${ARC_SAMPLES_PER_TASK:-64}" \
   --device cuda \
   --output "${EVALUATION_ROOT}/selected_arc_reasoning_64.json" \
-  > "${EVALUATION_ROOT}/selected_arc_reasoning_64.log" 2>&1
+  > "${EVALUATION_ROOT}/selected_arc_reasoning_64.log" 2>&1 &
+pids+=("$!")
+names+=("selected ARC reasoning 64+64")
 
-CUDA_VISIBLE_DEVICES=0 python -m scripts.eval_torch_chat_panel \
+CUDA_VISIBLE_DEVICES=3 python -m scripts.eval_torch_chat_panel \
   --checkpoint "${selected}" \
   --tokenizer "${TOKENIZER}" \
   --panel configs/tr_hash_200m_sft_v2_regression.json \
   --device cuda \
   --output "${EVALUATION_ROOT}/selected_chat_panel.json" \
-  > "${EVALUATION_ROOT}/selected_chat_panel.log" 2>&1
+  > "${EVALUATION_ROOT}/selected_chat_panel.log" 2>&1 &
+pids+=("$!")
+names+=("selected chat panel")
+
+status=0
+for index in "${!pids[@]}"; do
+  if ! wait "${pids[$index]}"; then
+    echo "Evaluation failed: ${names[$index]}" >&2
+    status=1
+  fi
+done
+if (( status != 0 )); then
+  exit "${status}"
+fi
 
 while [[ ! -s /workspace/.hf_token ]]; do
   echo "Waiting for /workspace/.hf_token before evaluation upload..."
