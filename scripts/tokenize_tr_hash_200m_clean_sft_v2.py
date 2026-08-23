@@ -20,7 +20,11 @@ from typing import Any
 import numpy as np
 from tqdm import tqdm
 
-from complexity.inference.chat_template import align_chat_template_eos, default_chat_template
+from complexity.inference.chat_template import (
+    align_chat_template_eos,
+    huggingface_chat_template,
+    reasoning_chat_template_32004,
+)
 from complexity.tokenizer import Tokenizer
 from complexity.training.sft_shard import (
     FINAL_ASSISTANT_SUPERVISION,
@@ -38,8 +42,23 @@ TOKENIZER_FILES = (
     "tokenizer.json",
     "tokenizer_config.json",
     "special_tokens_map.json",
-    "chat_template.jinja",
+    "config.json",
 )
+REASONING_SPECIAL_TOKEN_IDS = {
+    "<|think_start|>": 32_000,
+    "<|think_end|>": 32_001,
+    "<|final_start|>": 32_002,
+    "<|final_end|>": 32_003,
+}
+
+
+def validate_reasoning_tokenizer(tokenizer: Tokenizer) -> None:
+    if len(tokenizer) != 32_004:
+        raise ValueError(f"expected canonical TR-HASH vocab 32,004, got {len(tokenizer):,}")
+    for token, expected_id in REASONING_SPECIAL_TOKEN_IDS.items():
+        encoded = tokenizer.encode(token, add_special_tokens=False)
+        if encoded != [expected_id]:
+            raise ValueError(f"{token} encoded as {encoded}, expected [{expected_id}]")
 
 
 def sha256(path: Path) -> str:
@@ -54,7 +73,7 @@ def tokenizer_aligned_chat_template(tokenizer: Tokenizer) -> dict[str, Any]:
     eos_text = tokenizer.decode([tokenizer.eos_token_id], skip_special_tokens=False)
     if tokenizer.encode(eos_text, add_special_tokens=False) != [tokenizer.eos_token_id]:
         raise ValueError("tokenizer EOS text does not round-trip to its EOS token ID")
-    return align_chat_template_eos(default_chat_template(), eos_token=eos_text)
+    return align_chat_template_eos(reasoning_chat_template_32004(), eos_token=eos_text)
 
 
 def _raw_token_ids(
@@ -139,6 +158,8 @@ def materialize_partition(
     examples = total_tokens = supervised_tokens = prompt_tokens = 0
     sources: Counter[str] = Counter()
     capabilities: Counter[str] = Counter()
+    special_input_counts: Counter[str] = Counter()
+    special_label_counts: Counter[str] = Counter()
     source_lines_consumed = 0
     output_mode = "wb"
     chat_template = chat_template or tokenizer_aligned_chat_template(tokenizer)
@@ -161,6 +182,8 @@ def materialize_partition(
         source_lines_consumed = int(state["source_lines_consumed"])
         sources.update(state.get("sources", {}))
         capabilities.update(state.get("capabilities", {}))
+        special_input_counts.update(state.get("special_input_counts", {}))
+        special_label_counts.update(state.get("special_label_counts", {}))
         output_mode = "ab"
         print(
             f"[tokenize resume] {source.name}: lines={source_lines_consumed:,} "
@@ -183,6 +206,8 @@ def materialize_partition(
             "supervised_tokens": supervised_tokens,
             "sources": dict(sources),
             "capabilities": dict(capabilities),
+            "special_input_counts": dict(special_input_counts),
+            "special_label_counts": dict(special_label_counts),
             "partial_bytes": {
                 "input_ids.bin": input_handle.tell(),
                 "labels.bin": label_handle.tell(),
@@ -253,6 +278,10 @@ def materialize_partition(
             supervised_tokens += completion_count
             sources[source_name] += 1
             capabilities[capability] += 1
+            for token, token_id in REASONING_SPECIAL_TOKEN_IDS.items():
+                special_input_counts[token] += int(np.count_nonzero(inputs == token_id))
+                visible = labels[labels != -100]
+                special_label_counts[token] += int(np.count_nonzero(visible == token_id))
             if line_number % checkpoint_every == 0:
                 checkpoint(input_handle, label_handle, index_handle, line_number)
 
@@ -279,6 +308,13 @@ def materialize_partition(
         "label_dtype": "int32-le",
         "sources": dict(sorted(sources.items())),
         "capabilities": dict(sorted(capabilities.items())),
+        "special_token_ids": REASONING_SPECIAL_TOKEN_IDS,
+        "special_token_input_counts": {
+            token: int(special_input_counts[token]) for token in REASONING_SPECIAL_TOKEN_IDS
+        },
+        "special_token_label_counts": {
+            token: int(special_label_counts[token]) for token in REASONING_SPECIAL_TOKEN_IDS
+        },
         "files": {name: sha256(path) for name, path in paths.items()},
     }
     metadata_path.write_text(
@@ -303,8 +339,7 @@ def materialize_release(
     if int(raw_manifest["sequence_length"]) != sequence_length:
         raise ValueError("raw dataset and token-shard context lengths differ")
     tokenizer = Tokenizer.load(str(tokenizer_path))
-    if len(tokenizer) != 32_000:
-        raise ValueError(f"expected the TR-HASH 32K tokenizer, got {len(tokenizer)} tokens")
+    validate_reasoning_tokenizer(tokenizer)
     chat_template = tokenizer_aligned_chat_template(tokenizer)
     output.mkdir(parents=True, exist_ok=True)
     partitions = {
@@ -337,6 +372,9 @@ def materialize_release(
     tokenizer_output.mkdir(exist_ok=True)
     for name in TOKENIZER_FILES:
         shutil.copy2(tokenizer_path / name, tokenizer_output / name)
+    (tokenizer_output / "chat_template.jinja").write_text(
+        huggingface_chat_template(chat_template), encoding="utf-8"
+    )
     manifest = {
         "schema_version": 2,
         "format": SHARD_FORMAT_V2,
@@ -354,9 +392,10 @@ def materialize_release(
         "nominal_target_unique_formatted_tokens": raw_manifest.get(
             "nominal_target_unique_formatted_tokens"
         ),
-        "actual_unique_formatted_tokens": expected_train_tokens,
+        "actual_unique_formatted_tokens": int(partitions["train"]["num_tokens"]),
         "token_quota_overshoot": raw_manifest.get("token_quota_overshoot"),
         "tokenizer_vocab_size": len(tokenizer),
+        "special_token_ids": REASONING_SPECIAL_TOKEN_IDS,
         "tokenizer_sha256": sha256(tokenizer_path / "tokenizer.json"),
         "chat_template_id": chat_template["id"],
         "chat_template_eos_token": chat_template["eos_token"],

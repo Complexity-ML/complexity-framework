@@ -8,10 +8,13 @@ import pytest
 from complexity.inference.chat_template import (
     CHAT_TEMPLATE_ID,
     LEGACY_CHAT_TEMPLATE_ID,
+    REASONING_CHAT_TEMPLATE_ID,
+    REASONING_SPECIAL_TOKEN_ENVELOPE,
     THINK_FINAL_ENVELOPE,
     default_chat_template,
     huggingface_chat_template,
     load_chat_template_jinja,
+    reasoning_chat_template_32004,
     render_assistant_envelope,
     render_inference_prompt,
     render_jinja_inference_prompt,
@@ -31,24 +34,18 @@ from scripts.export_tr_hash_vllm import (
 
 def test_template_renders_single_turn_exactly() -> None:
     template = default_chat_template()
-    assert template["training_projection"] == (
-        "naturalize_card_hand_supervise_all_assistant_turns"
-    )
+    assert template["training_projection"] == ("naturalize_card_hand_supervise_all_assistant_turns")
     assert template["id"] == "complexity-chat-v2"
     assert template["system_prompt"] == ""
     assert template["assistant_envelope"] == THINK_FINAL_ENVELOPE
-    assert render_inference_prompt("Hello", template) == (
-        "User:\nHello\n\nAssistant:\n"
-    )
+    assert render_inference_prompt("Hello", template) == ("User:\nHello\n\nAssistant:\n")
 
 
 def test_card_corpus_v2_direct_projection_is_supported() -> None:
     template = default_chat_template()
     template["training_projection"] = "card_corpus_v2_direct"
 
-    assert validate_chat_template(template)["training_projection"] == (
-        "card_corpus_v2_direct"
-    )
+    assert validate_chat_template(template)["training_projection"] == ("card_corpus_v2_direct")
 
 
 def test_template_renders_explicit_system_only_when_provided() -> None:
@@ -61,9 +58,25 @@ def test_template_renders_explicit_system_only_when_provided() -> None:
         template,
     )
 
-    assert prompt == (
-        "System:\nBe concise.\n\nUser:\nHello\n\nAssistant:\n"
+    assert prompt == ("System:\nBe concise.\n\nUser:\nHello\n\nAssistant:\n")
+
+
+@pytest.mark.parametrize("contract", [default_chat_template(), reasoning_chat_template_32004()])
+def test_modern_templates_preserve_explicit_system_messages(contract: dict) -> None:
+    messages = [
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Hello"},
+    ]
+    native = render_messages_before_assistant(messages, contract)
+    portable = render_jinja_messages(
+        messages,
+        huggingface_chat_template(contract),
+        eos_token="</s>",
+        add_generation_prompt=True,
     )
+
+    assert native == "System:\nBe concise.\n\nUser:\nHello\n\nAssistant:\n"
+    assert portable == native
 
 
 def test_template_renders_canonical_think_final_envelope() -> None:
@@ -74,14 +87,22 @@ def test_template_renders_canonical_think_final_envelope() -> None:
     )
 
     assert rendered == (
-        "<think>\nCompute, then verify.\n</think>\n"
-        "<final>\nThe answer is 4.\n</final>"
+        "<think>\nCompute, then verify.\n</think>\n<final>\nThe answer is 4.\n</final>"
     )
 
 
 def test_thinking_inference_prefills_canonical_start() -> None:
     assert render_thinking_inference_prompt("Hello", default_chat_template()) == (
         "User:\nHello\n\nAssistant:\n<think>\n"
+    )
+
+
+def test_32004_template_prefills_a_single_special_token() -> None:
+    template = reasoning_chat_template_32004()
+    assert template["id"] == REASONING_CHAT_TEMPLATE_ID
+    assert template["assistant_envelope"] == REASONING_SPECIAL_TOKEN_ENVELOPE
+    assert render_thinking_inference_prompt("Hello", template) == (
+        "User:\nHello\n\nAssistant:\n<|think_start|>"
     )
 
 
@@ -97,9 +118,7 @@ def test_legacy_v1_template_remains_readable() -> None:
     )
 
     assert validate_chat_template(template)["id"] == LEGACY_CHAT_TEMPLATE_ID
-    assert render_inference_prompt("Hello", template).startswith(
-        "System:\nLegacy system.\n\n"
-    )
+    assert render_inference_prompt("Hello", template).startswith("System:\nLegacy system.\n\n")
 
 
 def test_template_renders_prior_assistant_turn() -> None:
@@ -194,10 +213,7 @@ def test_standalone_jinja_renderer_matches_hf_and_vllm_contract(tmp_path) -> Non
         add_generation_prompt=True,
     )
 
-    assert rendered == (
-        "User:\nFirst\n\nAssistant:\nAnswer</s>"
-        "User:\nFollow-up\n\nAssistant:\n"
-    )
+    assert rendered == ("User:\nFirst\n\nAssistant:\nAnswer</s>User:\nFollow-up\n\nAssistant:\n")
 
 
 def test_standalone_jinja_renderer_builds_mlx_generation_prompt() -> None:
@@ -319,9 +335,7 @@ def test_hf_chat_template_is_a_standalone_jinja_file(tmp_path) -> None:
     assert path.name == "chat_template.jinja"
     assert "User:\\n" in path.read_text(encoding="utf-8")
     assert "+ eos_token" in path.read_text(encoding="utf-8")
-    tokenizer_config = json.loads(
-        (tmp_path / "tokenizer_config.json").read_text(encoding="utf-8")
-    )
+    tokenizer_config = json.loads((tmp_path / "tokenizer_config.json").read_text(encoding="utf-8"))
     assert "chat_template" not in tokenizer_config
     assert "chat_template_id" not in tokenizer_config
 
@@ -330,16 +344,13 @@ def test_base_export_removes_tokenizer_chat_template(tmp_path) -> None:
     output = tmp_path / "output"
     output.mkdir()
     (output / "tokenizer_config.json").write_text(
-        '{"chat_template": "stale", "chat_template_id": "chat-v1", '
-        '"model_max_length": 2048}',
+        '{"chat_template": "stale", "chat_template_id": "chat-v1", "model_max_length": 2048}',
         encoding="utf-8",
     )
 
     (output / "chat_template.jinja").write_text("stale", encoding="utf-8")
     jinja_path = configure_tokenizer_chat_template(output, None)
-    config = json.loads(
-        (output / "tokenizer_config.json").read_text(encoding="utf-8")
-    )
+    config = json.loads((output / "tokenizer_config.json").read_text(encoding="utf-8"))
 
     assert jinja_path is None
     assert not (output / "chat_template.jinja").exists()
@@ -367,9 +378,7 @@ def test_base_config_has_no_chat_template_metadata() -> None:
 
 def test_mlx_export_preserves_checkpoint_chat_template(tmp_path) -> None:
     template = default_chat_template()
-    template["training_projection"] = (
-        "naturalize_card_hand_preserve_assistant_turns"
-    )
+    template["training_projection"] = "naturalize_card_hand_preserve_assistant_turns"
 
     written = write_chat_template({"chat_template": template}, tmp_path)
 
@@ -379,8 +388,8 @@ def test_mlx_export_preserves_checkpoint_chat_template(tmp_path) -> None:
         huggingface_chat_template(template) + "\n"
     )
     assert (
-        __import__("json").loads(
-            (tmp_path / "chat_template.json").read_text()
-        )["training_projection"]
+        __import__("json").loads((tmp_path / "chat_template.json").read_text())[
+            "training_projection"
+        ]
         == "naturalize_card_hand_preserve_assistant_turns"
     )
