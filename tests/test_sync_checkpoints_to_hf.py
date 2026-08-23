@@ -107,6 +107,40 @@ def test_sync_once_supports_a_repository_path_prefix(mod, tmp_path, monkeypatch)
     )
 
 
+def test_sync_once_can_publish_epoch_boundaries_with_short_names(
+    mod, tmp_path, monkeypatch
+) -> None:
+    _make_checkpoint(tmp_path, "step_003040")
+    _make_checkpoint(tmp_path, "step_006080")
+    fake_api = MagicMock()
+    fake_module = type(
+        "hub", (), {"HfApi": lambda token=None: fake_api, "create_repo": MagicMock()}
+    )
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_module)
+
+    mod.sync_once(
+        tmp_path,
+        "org/repo",
+        token="fake",
+        private=False,
+        keep_local=3,
+        path_prefix="checkpoints",
+        steps_per_epoch=3040,
+    )
+
+    uploaded_paths = [
+        call.kwargs["path_in_repo"] for call in fake_api.upload_folder.call_args_list
+    ]
+    assert uploaded_paths == ["checkpoints/epoch_1", "checkpoints/epoch_2"]
+
+
+def test_repository_checkpoint_name_keeps_non_boundary_checkpoints(mod) -> None:
+    assert mod.repository_checkpoint_name(Path("step_003041"), 3040) == "step_003041"
+    assert mod.repository_checkpoint_name(Path("interrupted_003040"), 3040) == (
+        "interrupted_003040"
+    )
+
+
 def test_sync_once_never_uploads_a_partially_written_checkpoint(mod, tmp_path, monkeypatch) -> None:
     _make_checkpoint(tmp_path, "token_pack_001_100", complete=True)
     _make_checkpoint(tmp_path, "token_pack_002_200", complete=False)

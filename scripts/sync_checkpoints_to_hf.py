@@ -62,6 +62,22 @@ def checkpoint_step(path: Path) -> int:
         return -1
 
 
+def repository_checkpoint_name(path: Path, steps_per_epoch: int | None) -> str:
+    """Return a stable, human-readable Hub directory name.
+
+    Epoch-boundary ``step_*`` checkpoints are published as ``epoch_N`` when
+    the run supplies its exact number of optimizer steps per epoch. Other
+    checkpoint kinds retain their local name so interrupted and intermediate
+    recovery points remain unambiguous.
+    """
+    if steps_per_epoch is None or steps_per_epoch <= 0 or not path.name.startswith("step_"):
+        return path.name
+    step = checkpoint_step(path)
+    if step <= 0 or step % steps_per_epoch:
+        return path.name
+    return f"epoch_{step // steps_per_epoch}"
+
+
 def load_state(state_path: Path) -> dict:
     if state_path.exists():
         return json.loads(state_path.read_text())
@@ -79,6 +95,7 @@ def sync_once(
     private: bool,
     keep_local: int,
     path_prefix: str = "",
+    steps_per_epoch: int | None = None,
 ) -> None:
     from huggingface_hub import HfApi, create_repo
 
@@ -105,12 +122,15 @@ def sync_once(
     for pack_dir in candidates:
         if pack_dir.name in uploaded:
             continue
-        logger.info(f"Uploading {pack_dir.name} to {repo_id} ...")
+        repository_name = repository_checkpoint_name(pack_dir, steps_per_epoch)
+        logger.info(f"Uploading {pack_dir.name} as {repository_name} to {repo_id} ...")
         api.upload_folder(
             folder_path=str(pack_dir),
             repo_id=repo_id,
             repo_type="model",
-            path_in_repo="/".join(part for part in (path_prefix.strip("/"), pack_dir.name) if part),
+            path_in_repo="/".join(
+                part for part in (path_prefix.strip("/"), repository_name) if part
+            ),
             token=token,
         )
         uploaded.add(pack_dir.name)
@@ -176,6 +196,11 @@ def main() -> None:
         default="",
         help="Optional repository subdirectory for uploaded checkpoints.",
     )
+    parser.add_argument(
+        "--steps-per-epoch",
+        type=int,
+        help="Rename exact step_N epoch boundaries to epoch_N in the Hub repository.",
+    )
     parser.add_argument("--private", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--once", action="store_true", help="run a single pass instead of polling forever"
@@ -204,6 +229,7 @@ def main() -> None:
             args.private,
             args.keep_local,
             args.path_prefix,
+            args.steps_per_epoch,
         )
         return
 
@@ -225,6 +251,8 @@ def main() -> None:
         pass_args.extend(["--hf-token-file", str(args.hf_token_file)])
     if args.path_prefix:
         pass_args.extend(["--path-prefix", args.path_prefix])
+    if args.steps_per_epoch is not None:
+        pass_args.extend(["--steps-per-epoch", str(args.steps_per_epoch)])
     while True:
         run_pass_with_timeout(pass_args, args.pass_timeout)
         time.sleep(args.poll_interval)
