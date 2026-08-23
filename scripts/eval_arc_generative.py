@@ -195,12 +195,25 @@ _EXPLICIT_FINAL = re.compile(
     r"(?:option\s*)?[\[({`*\s]*([A-E])\b"
 )
 _THINK_END = ("<|think_end|>", "</think>")
+_FINAL_START = "<|final_start|>"
+_FINAL_END = "<|final_end|>"
+
+
+def final_answer_segment(text: str) -> str:
+    """Return only the supervised v3 final envelope when it is present."""
+
+    if _FINAL_START not in text:
+        return text
+    segment = text.split(_FINAL_START, 1)[1]
+    if _FINAL_END in segment:
+        segment = segment.split(_FINAL_END, 1)[0]
+    return segment.strip()
 
 
 def parse_strict_answer(text: str, allowed: tuple[str, ...]) -> str | None:
     """Accept one unambiguous explicit ``Final answer`` declaration."""
 
-    matches = [match.upper() for match in _EXPLICIT_FINAL.findall(text)]
+    matches = [match.upper() for match in _EXPLICIT_FINAL.findall(final_answer_segment(text))]
     matches = [match for match in matches if match in allowed]
     if not matches or len(set(matches)) != 1:
         return None
@@ -213,7 +226,7 @@ def parse_flexible_answer(text: str, allowed: tuple[str, ...]) -> str | None:
     strict = parse_strict_answer(text, allowed)
     if strict is not None:
         return strict
-    final_segment = text
+    final_segment = final_answer_segment(text)
     for marker in _THINK_END:
         if marker in final_segment:
             final_segment = final_segment.rsplit(marker, 1)[1]
@@ -234,7 +247,7 @@ def _normalize_answer_text(text: str) -> str:
 def parse_open_answer(text: str, example: ARCExample) -> str | None:
     """Map a free-text answer only when it unambiguously names one ARC choice."""
 
-    completion = _normalize_answer_text(text.replace("<|im_end|>", ""))
+    completion = _normalize_answer_text(final_answer_segment(text).replace("<|im_end|>", ""))
     if not completion:
         return None
     normalized_choices = [_normalize_answer_text(choice) for choice in example.choices]
@@ -280,7 +293,7 @@ def parse_native_first_answer(text: str, example: ARCExample) -> str | None:
     synthetic ``Final answer: X`` contract used by the initial probe.
     """
 
-    segment = first_response_segment(text)
+    segment = first_response_segment(final_answer_segment(text))
     if not segment:
         return None
     candidates: list[tuple[int, str]] = []
@@ -332,6 +345,10 @@ class TRHashMLXGenerator:
         self.top_p = top_p
         self.top_k = top_k
         self.repetition_penalty = repetition_penalty
+        marker_ids = self.tokenizer.encode(_FINAL_END, add_special_tokens=False)
+        if len(marker_ids) != 1:
+            raise ValueError(f"{_FINAL_END} must encode to one token, got {marker_ids}")
+        self.final_end_token_id = int(marker_ids[0])
 
     def render_prompt(self, prompt: str) -> str:
         return self.render(
@@ -369,6 +386,8 @@ class TRHashMLXGenerator:
             if token_id == self.tokenizer.eos_token_id:
                 break
             generated.append(token_id)
+            if token_id == self.final_end_token_id:
+                break
         return self.tokenizer.decode(generated, skip_special_tokens=False)
 
 
@@ -426,6 +445,10 @@ class TRHashTorchGenerator:
         self.top_p = top_p
         self.top_k = top_k
         self.repetition_penalty = repetition_penalty
+        marker_ids = self.tokenizer.encode(_FINAL_END, add_special_tokens=False)
+        if len(marker_ids) != 1:
+            raise ValueError(f"{_FINAL_END} must encode to one token, got {marker_ids}")
+        self.final_end_token_id = int(marker_ids[0])
 
     def generate(self, prompt: str, *, seed: int, allowed: tuple[str, ...]) -> str:
         del allowed
@@ -442,6 +465,8 @@ class TRHashTorchGenerator:
             self.top_k,
             self.repetition_penalty,
             64,
+            stop_token_ids=(self.final_end_token_id,),
+            skip_special_tokens=False,
         )
 
 

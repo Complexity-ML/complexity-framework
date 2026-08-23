@@ -52,9 +52,7 @@ def load_model(
     if missing or unexpected:
         raise RuntimeError(f"Checkpoint mismatch: missing={missing}, unexpected={unexpected}")
     model.eval()
-    chat_template = validate_chat_template(
-        state.get("chat_template", default_chat_template())
-    )
+    chat_template = validate_chat_template(state.get("chat_template", default_chat_template()))
     return model, Tokenizer.load(str(tokenizer_path)), chat_template
 
 
@@ -71,6 +69,8 @@ def generate_chat(
     repetition_penalty: float,
     repetition_context_size: int,
     stop_strings: tuple[str, ...] = (),
+    stop_token_ids: tuple[int, ...] = (),
+    skip_special_tokens: bool = True,
 ) -> str:
     input_ids = torch.tensor(
         [tokenizer.encode(prompt, add_special_tokens=False)],
@@ -109,14 +109,22 @@ def generate_chat(
         output_ids = torch.cat((output_ids, next_token), dim=1)
         if eos_token_id is not None and bool((next_token == eos_token_id).all()):
             break
+        if stop_token_ids and all(
+            int(token_id) in stop_token_ids for token_id in next_token.flatten().tolist()
+        ):
+            break
         if stop_strings:
             partial = tokenizer.decode(
-                output_ids[0, input_ids.shape[1] :], skip_special_tokens=True
+                output_ids[0, input_ids.shape[1] :],
+                skip_special_tokens=skip_special_tokens,
             )
             if any(stop in partial for stop in stop_strings):
                 break
     output_ids = output_ids[0]
-    text = tokenizer.decode(output_ids[input_ids.shape[1] :], skip_special_tokens=True)
+    text = tokenizer.decode(
+        output_ids[input_ids.shape[1] :],
+        skip_special_tokens=skip_special_tokens,
+    )
     for stop in ("<|endoftext|>", "\nUser:", "\n\nUser:", "\nAssistant:"):
         text = text.split(stop, 1)[0]
     return text.strip()
@@ -157,9 +165,7 @@ def generate_thinking_chat(
         repetition_context_size,
         stop_strings=("<think>", "</think>", "<final>", "</final>"),
     )
-    reasoning = before_first(
-        reasoning, ("<think>", "</think>", "<final>", "</final>")
-    )
+    reasoning = before_first(reasoning, ("<think>", "</think>", "<final>", "</final>"))
     final_prompt = prompt + reasoning + "\n</think>\n<final>\n"
     final = generate_chat(
         model,
@@ -192,7 +198,9 @@ def build_prompt(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Plain local chat generation without tool orchestration")
+    parser = argparse.ArgumentParser(
+        description="Plain local chat generation without tool orchestration"
+    )
     parser.add_argument("prompt", nargs="?", default="Hello")
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--tokenizer", type=Path, default=Path("tokenizer-o200k"))
@@ -227,17 +235,17 @@ def main() -> None:
         print("=== completion ===")
     generator = generate_thinking_chat if args.thinking else generate_chat
     completion = generator(
-            model,
-            tokenizer,
-            prompt,
-            device,
-            args.max_new_tokens,
-            args.temperature,
-            args.top_p,
-            args.top_k,
-            args.repetition_penalty,
-            args.repetition_context_size,
-        )
+        model,
+        tokenizer,
+        prompt,
+        device,
+        args.max_new_tokens,
+        args.temperature,
+        args.top_p,
+        args.top_k,
+        args.repetition_penalty,
+        args.repetition_context_size,
+    )
     print(completion)
 
 

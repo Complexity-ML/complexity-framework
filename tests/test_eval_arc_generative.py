@@ -9,6 +9,7 @@ from scripts.eval_arc_generative import (
     build_open_answer_prompt,
     build_prompt,
     evenly_spaced,
+    final_answer_segment,
     load_lm_eval_samples,
     parse_flexible_answer,
     parse_native_first_answer,
@@ -191,6 +192,27 @@ def test_flexible_parser_uses_post_thinking_segment_only() -> None:
     text = "A and B are weak. C is strongest.<|think_end|>\nC<|im_end|>"
 
     assert parse_flexible_answer(text, ("A", "B", "C", "D")) == "C"
+
+
+def test_v3_final_envelope_excludes_reasoning_letters() -> None:
+    example = ARCExample(
+        task="arc_easy",
+        doc_id=5,
+        example_id="five",
+        question="What is frozen water?",
+        choices=("steam", "ice", "rain", "fog"),
+        answer_index=1,
+    )
+    completion = (
+        "<|think_start|>A and C are distractors.<|think_end|>"
+        "<|final_start|>The correct answer is B.<|final_end|>"
+        "Answer: D"
+    )
+
+    assert final_answer_segment(completion) == "The correct answer is B."
+    assert parse_strict_answer(completion, example.labels) == "B"
+    assert parse_flexible_answer(completion, example.labels) == "B"
+    assert parse_native_first_answer(completion, example) == "B"
 
 
 def test_evenly_spaced_covers_both_ends() -> None:
