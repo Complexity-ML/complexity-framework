@@ -12,10 +12,7 @@ Python entry points they call:
 |---|---|---|
 | Replay pretraining | `scripts/vast_pretrain_tr_hash_200m_70b_replay.sh` | `scripts.train_tr_hash_200m_200b` |
 | Unique-token refinement | `scripts/vast_finetune_tr_hash_200m_70b_unique_phase2.sh` | `scripts.train_tr_hash_200m_200b` |
-| Recompile SFT text for vocab 32,004 | — | `scripts.recompile_tr_hash_sft_32004` |
-| Tokenize and audit SFT v3 | — | `scripts.tokenize_tr_hash_sft_32004` |
-| Three-epoch full SFT v3 | `scripts/vast_sft_200m_32004_full_3e.sh` | `scripts.sft_tr` |
-| Package/publish dataset release | — | `scripts.package_tr_hash_sft_32004_release` / `scripts.publish_tr_hash_sft_32004_dataset` |
+| Three-epoch full SFT v2, 32,000-token vocabulary | archived release profile | `scripts.sft_tr` |
 
 The launchers resolve environment variables, validate manifests and exact
 token counts, and then invoke DDP. They are production profiles for the

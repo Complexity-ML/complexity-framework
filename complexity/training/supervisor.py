@@ -229,41 +229,8 @@ def _validate_program_name(name: str) -> None:
         raise ValueError(f"invalid Supervisor program name: {name!r}")
 
 
-def tr_hash_sft_32004_program(
-    *,
-    workspace: str | Path = "/workspace/complexity-framework",
-    log_path: str | Path | None = None,
-    environment: Mapping[str, str] | None = None,
-) -> SupervisorProgram:
-    """Build the canonical unattended TR-HASH 32,004-token SFT service."""
-
-    workspace_path = Path(workspace)
-    if not workspace_path.is_absolute():
-        raise ValueError("workspace must be an absolute path")
-    resolved_log = (
-        Path(log_path)
-        if log_path is not None
-        else workspace_path / "artifacts/tr_hash_moe_200m_sft_v3_32004_full_3e.log"
-    )
-    return SupervisorProgram(
-        name="tr_hash_moe_200m_sft_v3_32004_full_3e",
-        command=(
-            "/bin/bash",
-            str(workspace_path / "scripts/vast_sft_200m_32004_full_3e.sh"),
-        ),
-        directory=workspace_path,
-        stdout_logfile=resolved_log,
-        environment={} if environment is None else environment,
-        autostart=True,
-        autorestart="unexpected",
-        startsecs=5,
-        stopwaitsecs=300,
-    )
-
-
 __all__ = [
     "AutoRestart",
     "SupervisorManager",
     "SupervisorProgram",
-    "tr_hash_sft_32004_program",
 ]

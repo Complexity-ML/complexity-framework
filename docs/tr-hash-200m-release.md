@@ -53,7 +53,8 @@ load-balancing loss, and no per-token routing network at inference time.
 - [130B base checkpoint](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-130B)
 - [Step-8,156 refinement checkpoint](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-160B-Refinement)
 - [Promoted full-parameter SFT](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT)
-- [Audited SFT v3 32,004 300K dataset](https://huggingface.co/datasets/AETHORIA-AI/TR-HASH-MoE-200M-SFT-v3-32004-300K)
+- [Audited SFT v2 300K dataset](https://huggingface.co/datasets/AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K)
+- [Canonical 32K tokenizer](https://huggingface.co/AETHORIA-AI/TR-HASH-Tokenizer-32K)
 - [Release paper](https://www.complexity-ai.fr/papers/tr-hash-200m-multi-hash-routing.pdf)
 - [Live TR-Hash-i64 chat](https://www.complexity-ai.fr/ai-lab)
 
@@ -82,10 +83,7 @@ as if they shared one sampling process.
 |---|---|
 | Base replay pretraining | `scripts/vast_pretrain_tr_hash_200m_70b_replay.sh` |
 | Unique-token refinement | `scripts/vast_finetune_tr_hash_200m_70b_unique_phase2.sh` |
-| Historical three-epoch full SFT v2 | released checkpoint and archived run manifests |
-| Recompile text for the 32,004-token SFT v3 | `scripts/recompile_tr_hash_sft_32004.py` |
-| Tokenize and audit SFT v3 | `scripts/tokenize_tr_hash_sft_32004.py` / `scripts/package_tr_hash_sft_32004_release.py` |
-| Next three-epoch full SFT | `scripts/vast_sft_200m_32004_full_3e.sh` |
+| Three-epoch full SFT v2, 32,000-token vocabulary | released checkpoint and archived run manifests |
 
 The `vast_*` launchers are production profiles for `/workspace` machines and
 expect the environment variables documented in [Training](training.md). Read

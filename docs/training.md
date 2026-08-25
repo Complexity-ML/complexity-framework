@@ -95,30 +95,37 @@ The public refinement stopped at step 8,156 / 17,802 after approximately
 32.07B additional exposures. `160B` in the repository name is a rounded source
 lineage label, not a completed 70B refinement claim.
 
-## Audited SFT v3 data
+## Audited SFT v2 data
 
-`AETHORIA-AI/TR-HASH-MoE-200M-SFT-v3-32004-300K` provides a text-recompiled
-32,004-token release: 299,331 training examples and 2,990 held-out examples.
-Every supervised completion contains the exact IDs 32000--32003 for the
-think/final envelope. The manifest pins file hashes, the 2,048-token sequence
-cap, EOS `</s>` (ID 0), final-assistant-only supervision, source revisions,
-and a fail-closed no-truncation gate.
+`AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K` provides the canonical
+32,000-token release: 300,000 training examples and 3,000 held-out examples.
+It uses the tokenizer stored with the released model and
+`AETHORIA-AI/TR-HASH-Tokenizer-32K`. The manifest pins file hashes, the
+2,048-token sequence cap, EOS `</s>` (ID 0), final-assistant-only supervision,
+source revisions and a fail-closed no-truncation gate.
 
 ## Stage 3: three-epoch full-parameter SFT
 
-The production recipe is tracked verbatim in
-`scripts/vast_sft_200m_32004_full_3e.sh`:
+The completed production run used `scripts.sft_tr` with the released
+32,000-token refinement checkpoint and audited SFT v2 binary dataset:
 
 ```bash
-BASE_CHECKPOINT=/workspace/tr-hash-refinement \
-DATASET_ROOT=/workspace/tr-hash-moe-200m-sft-v3-32004 \
-NPROC_PER_NODE=4 \
-BATCH_SIZE_PER_GPU=16 \
-scripts/vast_sft_200m_32004_full_3e.sh
+BASE_CHECKPOINT=/workspace/tr-hash-refinement
+SFT_BIN=/workspace/tr-hash-moe-200m-sft-v2/tokenized/tr-hash-32k-v2-2048
+
+python -m scripts.sft_tr \
+  --checkpoint "$BASE_CHECKPOINT" \
+  --tokenizer /workspace/tr-hash-tokenizer-32k \
+  --sft-bin "$SFT_BIN" \
+  --source-stage refinement \
+  --full-parameter \
+  --steps 0 \
+  --epochs 3 \
+  --seq-len 2048
 ```
 
-The launcher refuses `RESUME_FROM`, validates the dataset manifest, requires
-Liger, and invokes `scripts.sft_tr` with:
+The production profile starts from weights only, validates the dataset
+manifest, requires Liger, and invokes `scripts.sft_tr` with:
 
 - `--full-parameter`;
 - 3 epochs, packed 2,048-token sequences, BF16 training;
@@ -172,10 +179,9 @@ chat checkpoint.
 
 ## Export and synchronization
 
-The removed v2 export/synchronization launchers are not valid for vocab
-32,004. A future model release must be exported from a v3 checkpoint, preserve
-the four new embedding rows, perform a tensor-equality round trip, copy the v3
-tokenizer and chat template, and verify remote hashes before local cleanup.
+Export must preserve the 32,000 embedding rows, perform a tensor-equality round
+trip, copy the canonical 32K tokenizer and chat template, and verify remote
+hashes before local cleanup.
 
 ## Resume rules
 
@@ -208,9 +214,6 @@ See [GPU and dispatch paths](cuda.md).
 pytest -q \
   tests/test_tr_hash_200m_pretraining.py \
   tests/test_sft_bin.py \
-  tests/test_sft_32004_production_contract.py \
-  tests/test_recompile_tr_hash_sft_32004.py \
-  tests/test_tokenize_tr_hash_sft_32004.py \
   tests/test_sync_checkpoints_to_hf.py
 ```
 

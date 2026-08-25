@@ -8,7 +8,6 @@ import pytest
 from complexity.training.supervisor import (
     SupervisorManager,
     SupervisorProgram,
-    tr_hash_sft_32004_program,
 )
 
 
@@ -95,14 +94,3 @@ def test_manager_uses_argv_without_a_shell(monkeypatch: pytest.MonkeyPatch) -> N
     ]
     assert all(call[1].get("check") is True for call in calls)
     assert all("shell" not in call[1] for call in calls)
-
-
-def test_sft_factory_targets_the_canonical_32004_launcher() -> None:
-    program = tr_hash_sft_32004_program()
-    rendered = program.render()
-
-    assert program.name == "tr_hash_moe_200m_sft_v3_32004_full_3e"
-    assert "/workspace/complexity-framework/scripts/vast_sft_200m_32004_full_3e.sh" in rendered
-    assert "autorestart=unexpected" in rendered
-    assert "autostart=true" in rendered
-    assert "TOKEN" not in rendered

@@ -8,13 +8,10 @@ import pytest
 from complexity.inference.chat_template import (
     CHAT_TEMPLATE_ID,
     LEGACY_CHAT_TEMPLATE_ID,
-    REASONING_CHAT_TEMPLATE_ID,
-    REASONING_SPECIAL_TOKEN_ENVELOPE,
     THINK_FINAL_ENVELOPE,
     default_chat_template,
     huggingface_chat_template,
     load_chat_template_jinja,
-    reasoning_chat_template_32004,
     render_assistant_envelope,
     render_inference_prompt,
     render_jinja_inference_prompt,
@@ -61,8 +58,8 @@ def test_template_renders_explicit_system_only_when_provided() -> None:
     assert prompt == ("System:\nBe concise.\n\nUser:\nHello\n\nAssistant:\n")
 
 
-@pytest.mark.parametrize("contract", [default_chat_template(), reasoning_chat_template_32004()])
-def test_modern_templates_preserve_explicit_system_messages(contract: dict) -> None:
+def test_modern_template_preserves_explicit_system_messages() -> None:
+    contract = default_chat_template()
     messages = [
         {"role": "system", "content": "Be concise."},
         {"role": "user", "content": "Hello"},
@@ -94,15 +91,6 @@ def test_template_renders_canonical_think_final_envelope() -> None:
 def test_thinking_inference_prefills_canonical_start() -> None:
     assert render_thinking_inference_prompt("Hello", default_chat_template()) == (
         "User:\nHello\n\nAssistant:\n<think>\n"
-    )
-
-
-def test_32004_template_prefills_a_single_special_token() -> None:
-    template = reasoning_chat_template_32004()
-    assert template["id"] == REASONING_CHAT_TEMPLATE_ID
-    assert template["assistant_envelope"] == REASONING_SPECIAL_TOKEN_ENVELOPE
-    assert render_thinking_inference_prompt("Hello", template) == (
-        "User:\nHello\n\nAssistant:\n<|think_start|>"
     )
 
 

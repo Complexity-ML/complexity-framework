@@ -80,7 +80,7 @@ from .sequence_packing import (
     pack_example_lengths,
     resolve_epoch_schedule,
 )
-from .supervisor import SupervisorManager, SupervisorProgram, tr_hash_sft_32004_program
+from .supervisor import SupervisorManager, SupervisorProgram
 from .trainer import Trainer
 
 __all__ = [
@@ -139,5 +139,4 @@ __all__ = [
     "resolve_epoch_schedule",
     "SupervisorManager",
     "SupervisorProgram",
-    "tr_hash_sft_32004_program",
 ]

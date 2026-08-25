@@ -10,11 +10,9 @@ from jinja2 import Environment, StrictUndefined
 
 CHAT_TEMPLATE_ID = "complexity-chat-v2"
 LEGACY_CHAT_TEMPLATE_ID = "complexity-chat-v1"
-REASONING_CHAT_TEMPLATE_ID = "complexity-chat-v3-32004"
 SUPPORTED_CHAT_TEMPLATE_IDS = {
     LEGACY_CHAT_TEMPLATE_ID,
     CHAT_TEMPLATE_ID,
-    REASONING_CHAT_TEMPLATE_ID,
 }
 SUPPORTED_TRAINING_PROJECTIONS = {
     "naturalize_card_hand_preserve_assistant_turns",
@@ -30,14 +28,6 @@ THINK_FINAL_ENVELOPE = {
     "final_start": "\n<final>\n",
     "final_end": "\n</final>",
     "scope": "reasoning_tasks",
-}
-REASONING_SPECIAL_TOKEN_ENVELOPE = {
-    "type": "optional_think_final_special_tokens",
-    "think_start": "<|think_start|>",
-    "think_end": "<|think_end|>",
-    "final_start": "<|final_start|>",
-    "final_end": "<|final_end|>",
-    "scope": "all_assistant_turns",
 }
 REQUIRED_FIELDS = (
     "id",
@@ -69,20 +59,6 @@ def default_chat_template() -> dict[str, Any]:
     }
 
 
-def reasoning_chat_template_32004() -> dict[str, Any]:
-    """Return the explicit special-token contract for new 32,004 SFT runs."""
-
-    template = default_chat_template()
-    template.update(
-        {
-            "id": REASONING_CHAT_TEMPLATE_ID,
-            "version": 3,
-            "assistant_envelope": dict(REASONING_SPECIAL_TOKEN_ENVELOPE),
-        }
-    )
-    return template
-
-
 def validate_chat_template(template: dict[str, Any]) -> dict[str, Any]:
     missing = [field for field in REQUIRED_FIELDS if field not in template]
     if missing:
@@ -93,10 +69,6 @@ def validate_chat_template(template: dict[str, Any]) -> dict[str, Any]:
         envelope = template.get("assistant_envelope")
         if envelope != THINK_FINAL_ENVELOPE:
             raise ValueError("complexity-chat-v2 requires the canonical think/final protocol")
-    if template["id"] == REASONING_CHAT_TEMPLATE_ID:
-        envelope = template.get("assistant_envelope")
-        if envelope != REASONING_SPECIAL_TOKEN_ENVELOPE:
-            raise ValueError("complexity-chat-v3-32004 requires the four canonical special tokens")
     if not template["assistant_only_loss"]:
         raise ValueError("Complexity SFT requires assistant_only_loss=true")
     if template["training_projection"] not in SUPPORTED_TRAINING_PROJECTIONS:
@@ -255,7 +227,7 @@ def render_messages_before_assistant(
         if not content:
             continue
         if role == "system":
-            if template["id"] in {CHAT_TEMPLATE_ID, REASONING_CHAT_TEMPLATE_ID}:
+            if template["id"] == CHAT_TEMPLATE_ID:
                 parts.append(render_system_turn(content, template))
             continue
         if role == "user":
@@ -316,7 +288,7 @@ def huggingface_chat_template(template: dict[str, Any], *, force_thinking: bool 
             )
         ),
     }
-    if template["id"] in {CHAT_TEMPLATE_ID, REASONING_CHAT_TEMPLATE_ID}:
+    if template["id"] == CHAT_TEMPLATE_ID:
         role_branches = (
             "{%- if message['role'] == 'system' -%}"
             f"{{{{- {literals['system_prefix']} + (message['content'] | trim) + "

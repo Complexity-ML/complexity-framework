@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from complexity.training.supervisor import tr_hash_sft_32004_program
+from complexity.training.supervisor import SupervisorProgram
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -23,7 +23,12 @@ def _launcher_scripts() -> list[Path]:
 
 
 def test_no_supervisor_conf_logs_through_the_portal_stdout_capture() -> None:
-    rendered = tr_hash_sft_32004_program().render()
+    rendered = SupervisorProgram(
+        name="training_job",
+        command=("/bin/bash", "/workspace/complexity-framework/scripts/train.sh"),
+        directory=Path("/workspace/complexity-framework"),
+        stdout_logfile=Path("/workspace/complexity-framework/artifacts/training.log"),
+    ).render()
     assert "/dev/stdout" not in rendered
     assert "stdout_logfile=/workspace/complexity-framework/artifacts/" in rendered
 

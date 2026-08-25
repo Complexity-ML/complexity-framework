@@ -2,10 +2,9 @@
 
 > **Released result.** The three-epoch full-parameter run completed at step
 > 5,982. Epoch 3 is copied to the model repository root as F32 SafeTensors.
-> This page is a historical record. Its 32,000-token launch, evaluation and
-> synchronization scripts were removed after the append-only 32,004-token
-> migration. See [the SFT 32,004 recipe](tr_hash_200m_sft_32004_recipe.md) for
-> the current pipeline.
+> This page records the canonical 32,000-token full-parameter SFT release.
+> Load it with the tokenizer files stored in the model repository or with
+> [`AETHORIA-AI/TR-HASH-Tokenizer-32K`](https://huggingface.co/AETHORIA-AI/TR-HASH-Tokenizer-32K).
 
 ## Purpose
 
@@ -48,7 +47,7 @@ history. The aggregate is multi-license; row provenance is retained in
 ## Published dataset
 
 The public dataset is
-[`AETHORIA-AI/TR-HASH-MoE-200M-SFT-v3-32004-300K`](https://huggingface.co/datasets/AETHORIA-AI/TR-HASH-MoE-200M-SFT-v3-32004-300K).
+[`AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K`](https://huggingface.co/datasets/AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K).
 The historical revision contained two equivalent representations:
 
 1. `train.jsonl` / `eval.jsonl`, for inspection and independent processing;
@@ -71,10 +70,9 @@ separator during SFT and Hugging Face/Space inference; the historical literal
 
 ## Dataset preflight
 
-The historical source revision and its immutable manifest remain provenance
-records. Current preflight is implemented by
-`scripts/package_tr_hash_sft_32004_release.py` and enforced again by
-`scripts/vast_sft_200m_32004_full_3e.sh`.
+The published source revision and its immutable manifest remain the provenance
+record for the released 32,000-token run. The manifest pins tokenizer assets,
+split sizes, source identities, hashes and the no-truncation contract.
 
 ## Completed training
 
