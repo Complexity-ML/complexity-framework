@@ -90,6 +90,7 @@ GQA + TR-MoE architecture.
 - [TR-Hash image-text-to-text](tr-hash-image-text-to-text.md)
 - [TR-Hash text-to-image](tr-hash-text-to-image.md)
 - [TR-Hash object detection and serving](tr-hash-object-detection.md)
+- [TR-Hash Vision ONNX deployment](onnx_deploy.md)
 - [Detector specialization and ablations](TR_HASH_DETECTOR_SPECIALIZATION.md)
 - [TR-Hash sensor fusion](tr_hash_sensor_fusion.md)
 - [Vision dependency stack](vision-dependency-stack.md)
