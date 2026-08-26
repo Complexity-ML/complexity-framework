@@ -97,6 +97,29 @@ The result is compiled at model construction or loaded from the checkpoint.
 Inference does not execute a routing neural network. Optimized and PyTorch
 paths consume the same route table.
 
+## Required lexical refinement boundary
+
+TR-HASH language-model releases use a mandatory full-parameter refinement
+stage between base pretraining and instruction SFT. The routing table is
+lexical and fixed: a token ID continues to address the same expert routes
+during refinement, while attention still supplies the contextual hidden state
+transformed by those experts.
+
+Refinement reuses the exact pretraining `unique_core` once, with no replay,
+augmentation or new source, and starts a fresh optimizer and learning-rate
+schedule from the pretrained weights. This gives the shared SwiGLU path and
+the fixed routed experts a clean same-corpus optimization pass before the
+training objective changes to supervised instruction following.
+
+This is enforced as an architecture-training contract by Complexity Framework:
+
+```text
+pretraining -> same-corpus full-parameter refinement -> full-parameter SFT
+```
+
+A different corpus is not refinement. It must be identified as continued
+pretraining or supervised fine-tuning according to its objective.
+
 ## Other routing strategies
 
 `TRHashEngineMLP` accepts:

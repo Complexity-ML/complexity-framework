@@ -209,6 +209,14 @@ augmentation-annealed, clean-image refinement is already part of the detector
 pretraining recipe. The final 200M assistant stage is full-parameter
 instruction SFT, not LoRA.
 
+For lexical TR-MoE language models, refinement is a required architecture
+training boundary in this framework. Token IDs keep the same deterministic
+routes while the complete pretraining `unique_core` is revisited exactly once
+with all parameters trainable and a fresh optimizer/scheduler. This clean pass
+lets the shared path and every fixed lexical expert adapt without replay skew
+before instruction data changes the objective. Changing the corpus is
+continued pretraining or SFT, never refinement.
+
 | Stage | Production entry point |
 |---|---|
 | 130B replay pretraining | `scripts/vast_pretrain_tr_hash_200m_70b_replay.sh` |

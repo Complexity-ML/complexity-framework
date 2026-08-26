@@ -65,6 +65,20 @@ Persisted tables must stay paired with the expert weights they trained. Loading
 or converting a checkpoint must transplant its exact table rather than
 silently regenerate a different mapping.
 
+## Refinement support
+
+The engine supports full-parameter same-corpus refinement without changing
+token IDs, route tables or tensor layout. Refinement starts from pretrained
+weights only; the optimizer, scheduler and step counter are new. Gradients
+continue through attention, the shared SwiGLU path and both selected lexical
+experts, so the entire architecture remains trainable during this phase.
+
+Complexity Framework requires this refinement boundary before instruction SFT
+for lexical TR-HASH language models. `validate_refinement_plan` verifies one
+pass over the exact pretraining `unique_core`, and
+`validate_training_stage_transition` rejects a direct text
+`pretraining -> SFT` transition.
+
 ## Supported engine matrix
 
 | Axis | Contract |

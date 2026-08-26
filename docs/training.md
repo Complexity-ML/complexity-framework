@@ -18,6 +18,13 @@ complete `unique_core` source/shard/row selection; equal token totals are not
 enough. Vision does not receive a duplicate stage: its canonical augmentation
 anneal and clean-image phase already supply refinement inside that recipe.
 
+This boundary is mandatory for lexical TR-HASH language models in Complexity
+Framework. Because token identity selects fixed expert routes, refinement keeps
+the vocabulary and persisted routes unchanged while giving all attention,
+shared and routed parameters one clean pass over the exact pretraining corpus
+with fresh optimization state. It is the last causal-language-modeling phase
+before instruction data changes the objective.
+
 | Stage | Objective | State carried forward |
 |---|---|---|
 | Base pretraining | causal language modeling over the replay schedule | final model weights |
