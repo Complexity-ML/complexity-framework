@@ -111,6 +111,7 @@ serve = [
     "python-multipart>=0.0.9",
 ]
 export = [
+    "Pillow>=10.0.0",
     "onnx>=1.12.0; platform_system != 'Darwin'",
     "onnx>=1.12.0,<1.18.0; platform_system == 'Darwin' and python_version < '3.13'",
     "onnx>=1.20.0; platform_system == 'Darwin' and python_version >= '3.13'",

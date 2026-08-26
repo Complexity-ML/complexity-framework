@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Mapping, Sequence
-
 
 Box = tuple[float, float, float, float]
 
@@ -44,4 +43,3 @@ class DetectionResult:
     provider_used: str = ""
     branch_type: str = ""
     metadata: Mapping[str, object] = field(default_factory=dict)
-

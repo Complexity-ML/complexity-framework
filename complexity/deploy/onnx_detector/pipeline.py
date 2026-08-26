@@ -9,11 +9,10 @@ from typing import Sequence
 
 import numpy as np
 
+from . import postprocess
 from .dfl import decode_dfl_boxes
 from .grid import GridGeometry, generate_grid_geometry
-from .metadata import OnnxDetectorMetadata
-from . import postprocess
-from .metadata import load_metadata, validate_output_shape
+from .metadata import OnnxDetectorMetadata, load_metadata, validate_output_shape
 from .preprocess import preprocess_image, restore_boxes
 from .session import OnnxDetectorSession, OrtSessionConfig
 from .types import Detection, DetectionResult, TimingBreakdown

@@ -5,6 +5,17 @@ The ONNX file returns raw predictions; the deployment pipeline performs the
 same preprocessing, DFL decode, confidence filtering, and branch-specific
 postprocessing documented in [the contract](onnx_deploy_contract.md).
 
+## Installation
+
+Install the framework with its ONNX export/runtime dependencies:
+
+```bash
+python -m pip install -e ".[export]"
+```
+
+CUDA and TensorRT execution providers still require the matching NVIDIA runtime
+libraries for the installed ONNX Runtime build.
+
 ## Export Inputs
 
 Each deployed model needs two files:
@@ -92,4 +103,3 @@ Each detection contains:
 See [the deployment contract](onnx_deploy_contract.md) for the exact tensor
 layout, grid mapping, DFL decode formula, preprocessing, and sidecar validation
 rules.
-

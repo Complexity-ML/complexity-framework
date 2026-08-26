@@ -6,10 +6,14 @@ from complexity.deploy.onnx_detector.dfl import decode_dfl_boxes
 from complexity.deploy.onnx_detector.grid import generate_grid_geometry
 from complexity.deploy.onnx_detector.metadata import BranchType, OnnxDetectorMetadata
 from complexity.deploy.onnx_detector.pipeline import OnnxDetectorPipeline
-from complexity.deploy.onnx_detector.session import OnnxDetectorSession, OrtSessionConfig
 from complexity.deploy.onnx_detector.postprocess import (
     class_aware_nms,
     filter_by_confidence,
+)
+from complexity.deploy.onnx_detector.session import (
+    OnnxDetectorSession,
+    OrtSessionConfig,
+    _needs_cuda_dlls,
 )
 
 
@@ -53,6 +57,14 @@ def test_grid_mapping_is_row_major_and_counts_real_v8_cells() -> None:
     real_geometry = generate_grid_geometry(640, (160, 80, 40, 20))
     assert real_geometry.centers_xy.shape == (34000, 2)
     assert real_geometry.strides.shape == (34000,)
+
+
+def test_cuda_dll_preload_is_limited_to_nvidia_providers() -> None:
+    assert _needs_cuda_dlls(("CUDAExecutionProvider",))
+    assert _needs_cuda_dlls(("TensorrtExecutionProvider", "CPUExecutionProvider"))
+    assert not _needs_cuda_dlls(("CPUExecutionProvider",))
+    assert not _needs_cuda_dlls(("CoreMLExecutionProvider",))
+    assert not _needs_cuda_dlls(("DmlExecutionProvider",))
 
 
 def test_dfl_decode_matches_hand_computed_expectation() -> None:

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
-from pathlib import Path
 import site
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Sequence
 
 import numpy as np
@@ -89,7 +89,8 @@ class OnnxDetectorSession:
 
 
 def _needs_cuda_dlls(providers: Sequence[str]) -> bool:
-    return any(provider != "CPUExecutionProvider" for provider in providers)
+    cuda_providers = {"CUDAExecutionProvider", "TensorrtExecutionProvider"}
+    return any(provider in cuda_providers for provider in providers)
 
 
 def _needs_tensorrt_dlls(providers: Sequence[str]) -> bool:

@@ -4,21 +4,29 @@ on:
   pull_request:
     paths:
       - ".github/workflows/detector-export.yml"
+      - "complexity/deploy/onnx_detector/**"
       - "complexity/generative/detection/**"
       - "scripts/check_onnx_parity.py"
+      - "scripts/onnx_detect.py"
       - "scripts/export_onnx.py"
       - "scripts/export_tensorrt.py"
       - "tests/test_detector_export.py"
+      - "tests/test_onnx_detect_cli.py"
+      - "tests/test_onnx_detector_*.py"
       - "pyproject.toml"
   push:
     branches: [main]
     paths:
       - ".github/workflows/detector-export.yml"
+      - "complexity/deploy/onnx_detector/**"
       - "complexity/generative/detection/**"
       - "scripts/check_onnx_parity.py"
+      - "scripts/onnx_detect.py"
       - "scripts/export_onnx.py"
       - "scripts/export_tensorrt.py"
       - "tests/test_detector_export.py"
+      - "tests/test_onnx_detect_cli.py"
+      - "tests/test_onnx_detector_*.py"
       - "pyproject.toml"
 
 permissions:
@@ -42,10 +50,24 @@ jobs:
       - name: Lint detector export code
         run: >-
           ruff check
+          complexity/deploy/onnx_detector
           complexity/generative/detection/exporting.py
           scripts/check_onnx_parity.py
+          scripts/onnx_detect.py
           scripts/export_onnx.py
           scripts/export_tensorrt.py
           tests/test_detector_export.py
+          tests/test_onnx_detect_cli.py
+          tests/test_onnx_detector_core.py
+          tests/test_onnx_detector_metadata.py
+          tests/test_onnx_detector_pipeline.py
+          tests/test_onnx_detector_skeleton.py
       - name: Test ONNX branches and dynamic batch parity
-        run: pytest -q tests/test_detector_export.py
+        run: >-
+          pytest -q
+          tests/test_detector_export.py
+          tests/test_onnx_detect_cli.py
+          tests/test_onnx_detector_core.py
+          tests/test_onnx_detector_metadata.py
+          tests/test_onnx_detector_pipeline.py
+          tests/test_onnx_detector_skeleton.py
