@@ -5,16 +5,46 @@ Validation was run from commit `0fcf05c146f84a857d392b7da7d2947a41eb6d62`
 `AETHORIA-AI/TR-HASH-Vision-v8-2M-COCO-SFT`.
 
 The generated ONNX binaries are intentionally not committed to the source
-repository. Upload them as GitHub Release assets and link the release asset URLs
-from the release notes or from a follow-up update to this report. The release
-assets should include both ONNX binaries and their export metadata sidecars:
+repository — `*.onnx` is ignored — and are published as GitHub Release assets
+instead.
 
-- `tr_hash_v8_o2m.onnx`
-- `tr_hash_v8_o2m.json`
-- `tr_hash_v8_nms_free.onnx`
-- `tr_hash_v8_nms_free.json`
+## Releases
 
-Use the following hashes and sizes to verify the uploaded release artifacts:
+The `ONNX release` workflow (`.github/workflows/onnx-release.yml`) builds and
+publishes them. It is triggered manually, or by pushing a tag matching
+`onnx-v8-*`, and it aborts before uploading anything if the export fails, a
+parity gate fails, or a checksum does not match the manifest.
+
+Every input is pinned by [`release.json`](release.json): checkpoint repository
+and revision, opset, and the export toolchain. The toolchain pin is what makes
+the artifacts reproducible from a repository commit — a commit and a checkpoint
+revision alone do not determine the digest.
+
+The cheapest demonstration: re-exporting this same checkpoint under PyTorch
+`2.13.0` instead of `2.6.0` yields binaries exactly **one byte larger** on both
+branches (`11,104,477` and `11,108,684` against `11,104,476` and `11,108,683`
+above), and therefore entirely different digests. `torch.onnx.export` stamps its
+own version into the model's `producer_version` field, and `"2.13.0"` is one
+character longer than `"2.6.0"`. The graph is otherwise unchanged — the parity
+gates pass identically — but the bytes are not.
+
+Each release publishes five assets: both `.onnx` binaries, both metadata
+sidecars, and `manifest.json`. The manifest records the checkpoint revision, the
+framework commit, the opset, the input/output contract, and the size and
+SHA-256 of every asset. Verify a download against it:
+
+```bash
+python scripts/build_onnx_release.py --verify manifest.json
+```
+
+Rebuild the same artifacts locally with:
+
+```bash
+PYTHONPATH=. python scripts/build_onnx_release.py --output-dir dist/onnx
+```
+
+The historical artifacts below predate this workflow. Use the following hashes
+and sizes to verify them:
 
 | Branch | Artifact | Size | SHA-256 |
 |---|---:|---:|---|
