@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 from safetensors.torch import save_file
@@ -14,11 +15,19 @@ from complexity.generative.detection import (
 )
 from complexity.generative.detection.exporting import RawDetectorExport
 from scripts.check_onnx_parity import (
+    DECODED_BOX_GATE,
+    DECODED_SCORE_GATE,
     DEFAULT_PARITY_TOLERANCE,
+    RAW_GATE,
     V8_PARITY_TOLERANCES,
+    V8_TOLERANCES,
+    ParityTolerances,
     branch_from_sidecar,
     calibrated_parity_tolerance,
+    calibrated_tolerances,
     check_parity,
+    decode_context,
+    evaluate_gates,
 )
 from scripts.export_onnx import export_onnx
 
@@ -82,21 +91,48 @@ def test_auto_export_selects_the_production_branch() -> None:
         RawDetectorExport(classic, "nms-free")
 
 
+def sidecar_mapping(config: TRHashDetectorConfig, branch: str) -> dict:
+    """Mirror the metadata sidecar written by scripts/export_onnx.py."""
+
+    return {
+        "architecture_version": config.architecture_version,
+        "image_size": config.image_size,
+        "num_classes": config.num_classes,
+        "num_cells": config.num_cells,
+        "regression_width": config.regression_width,
+        "reg_max": config.reg_max,
+        "scale_factors": list(config.scale_factors),
+        "grid_sizes": list(config.grid_sizes),
+        "p2_head": config.p2_head,
+        "branch": branch,
+        "requires_nms": branch == "o2m",
+        "output_semantics": "raw_ltrb_dfl_and_quality_class_logits",
+    }
+
+
 @pytest.mark.parametrize(
-    ("branch", "expected"),
+    ("branch", "raw", "decoded_box", "decoded_score"),
     (
-        ("o2m", 2e-3),
-        ("nms-free", 3.5e-3),
+        ("o2m", 6e-3, 1.3e-4, 8e-5),
+        ("nms-free", 1e-2, 1.3e-4, 4e-5),
     ),
 )
 def test_v8_exports_use_branch_calibrated_parity_tolerances(
     branch: str,
-    expected: float,
+    raw: float,
+    decoded_box: float,
+    decoded_score: float,
 ) -> None:
     metadata = {"architecture_version": 8, "branch": branch}
 
-    assert V8_PARITY_TOLERANCES[branch] == expected
-    assert calibrated_parity_tolerance(metadata, branch) == expected
+    assert V8_PARITY_TOLERANCES[branch] == raw
+    assert calibrated_parity_tolerance(metadata, branch) == raw
+    assert V8_TOLERANCES[branch] == ParityTolerances(
+        raw=raw,
+        decoded_box=decoded_box,
+        decoded_score=decoded_score,
+    )
+    assert calibrated_tolerances(metadata, branch) == V8_TOLERANCES[branch]
 
 
 def test_legacy_or_unlabelled_exports_keep_strict_parity_tolerance() -> None:
@@ -105,6 +141,76 @@ def test_legacy_or_unlabelled_exports_keep_strict_parity_tolerance() -> None:
         calibrated_parity_tolerance({"architecture_version": 7}, "nms-free")
         == DEFAULT_PARITY_TOLERANCE
     )
+
+
+def test_legacy_exports_disable_the_decoded_gates() -> None:
+    legacy = calibrated_tolerances({"architecture_version": 7}, "o2m")
+
+    assert legacy.raw == DEFAULT_PARITY_TOLERANCE
+    assert legacy.decoded_box is None
+    assert legacy.decoded_score is None
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    (
+        {},
+        {"architecture_version": 7, "branch": "o2m"},
+        {"architecture_version": 8, "branch": "o2m"},  # decode fields missing
+    ),
+)
+def test_decode_context_is_unavailable_without_full_v8_metadata(metadata: dict) -> None:
+    assert decode_context(metadata) is None
+
+
+def test_decoded_gates_are_skipped_rather_than_failed_for_legacy_exports() -> None:
+    predictions = np.zeros((1, 4, 8), dtype=np.float32)
+    drifted = predictions + 5e-5
+
+    results = evaluate_gates(
+        predictions,
+        drifted,
+        calibrated_tolerances({}, "auto"),
+        decode_context({}),
+    )
+
+    assert [result.name for result in results] == [RAW_GATE]
+    assert results[0].passed
+
+
+def test_decoded_box_gate_catches_drift_the_raw_gate_tolerates() -> None:
+    """Amplification case: softmax turns a coherent logit tilt into box motion.
+
+    Tilting the DFL logits by ``epsilon * bin_index`` shifts the decoded
+    expectation by about ``epsilon * Var(bin)``, which is then scaled by the
+    stride. The raw drift stays under its (deliberately coarse) threshold while
+    the decoded box drift blows past its own.
+    """
+
+    config = tiny_config(end_to_end=False)
+    metadata = sidecar_mapping(config, "o2m")
+    context = decode_context(metadata)
+    assert context is not None
+
+    epsilon = 1e-3
+    bins = config.dfl_bins
+    tilt = epsilon * np.arange(bins, dtype=np.float32)
+
+    baseline = np.zeros((1, config.num_cells, config.prediction_width), dtype=np.float32)
+    drifted = baseline.copy()
+    # Same tilt on each of the four LTRB distributions; class logits untouched.
+    drifted[..., : config.regression_width] += np.tile(tilt, 4)
+
+    tolerances = ParityTolerances(raw=5e-3, decoded_box=1.3e-4, decoded_score=4e-5)
+    results = {
+        result.name: result
+        for result in evaluate_gates(baseline, drifted, tolerances, context)
+    }
+
+    assert results[RAW_GATE].passed, "raw drift must stay inside its tolerance"
+    assert not results[DECODED_BOX_GATE].passed, "decoded box drift must be caught"
+    assert results[DECODED_SCORE_GATE].passed, "gates must fail independently"
+    assert results[RAW_GATE].max_difference == pytest.approx(epsilon * (bins - 1))
 
 
 def test_sidecar_less_auto_branch_still_defers_to_model_resolution() -> None:
@@ -131,10 +237,21 @@ def test_dynamic_onnx_export_matches_the_selected_branch(tmp_path: Path, branch:
     assert metadata["architecture_version"] == 8
     assert metadata["branch"] == branch
     assert metadata["requires_nms"] is (branch == "o2m")
+    # The sidecar must be rich enough to drive the decoded gates.
+    assert decode_context(metadata) is not None
+    # Strict raw threshold, calibrated decoded thresholds: all three gates run.
     assert check_parity(
         checkpoint,
         output,
         num_tests=1,
         batch_size=2,
         tolerance=1e-4,
+    )
+    assert check_parity(
+        checkpoint,
+        output,
+        num_tests=1,
+        batch_size=2,
+        tolerance=1e-4,
+        skip_decoded=True,
     )
