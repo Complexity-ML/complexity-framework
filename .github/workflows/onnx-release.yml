@@ -73,18 +73,22 @@ jobs:
 
       - name: Require the release tag to resolve to the built commit
         env:
-          GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          # An existing tag pointing elsewhere would publish a manifest whose
-          # framework_commit cannot be checked out from the release itself.
-          TAG_SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha 2>/dev/null || true)
-          if [ -z "$TAG_SHA" ]; then
+          # If the tag already exists, it must resolve to the commit that built
+          # the manifest. If it does not exist yet, the release step will create
+          # it explicitly at $GITHUB_SHA.
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+            TAG_SHA=$(git rev-list -n 1 "$TAG")
+            if [ "$TAG_SHA" != "$GITHUB_SHA" ]; then
+              echo "Tag $TAG resolves to $TAG_SHA but the manifest records $GITHUB_SHA."
+              echo "Refusing to publish artifacts the tagged tree cannot reproduce."
+              exit 1
+            fi
+            echo "Tag $TAG is already bound to $GITHUB_SHA."
+          else
             echo "Tag $TAG does not exist yet; it will be created at $GITHUB_SHA."
-          elif [ "$TAG_SHA" != "$GITHUB_SHA" ]; then
-            echo "Tag $TAG resolves to $TAG_SHA but the manifest records $GITHUB_SHA."
-            echo "Refusing to publish artifacts the tagged tree cannot reproduce."
-            exit 1
           fi
 
       - name: Upload release assets
