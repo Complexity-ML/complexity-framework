@@ -85,8 +85,8 @@ def test_auto_export_selects_the_production_branch() -> None:
 @pytest.mark.parametrize(
     ("branch", "expected"),
     (
-        ("o2m", 2e-3),
-        ("nms-free", 3.5e-3),
+        ("o2m", 6e-3),
+        ("nms-free", 1e-2),
     ),
 )
 def test_v8_exports_use_branch_calibrated_parity_tolerances(

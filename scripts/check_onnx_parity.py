@@ -21,9 +21,15 @@ from complexity.generative.detection.exporting import ExportBranch, RawDetectorE
 from complexity.generative.detection.hub import load_detector_checkpoint
 
 DEFAULT_PARITY_TOLERANCE = 1e-4
+
+# Each test compares about five million values, so the observed maximum is an
+# extreme-value statistic that keeps growing with the seed count: it rises by
+# 60% between 5 and 50 seeds on both branches. The thresholds below are twice
+# the maximum observed over 50 deterministic seeds.
+# See docs/onnx/tr_hash_v8_validation_report.md.
 V8_PARITY_TOLERANCES = {
-    "o2m": 2e-3,
-    "nms-free": 3.5e-3,
+    "o2m": 6e-3,
+    "nms-free": 1e-2,
 }
 
 

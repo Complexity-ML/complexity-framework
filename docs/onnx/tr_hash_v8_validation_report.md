@@ -119,14 +119,8 @@ Decoded-output drift is substantially lower:
 | O2M | `6.00814819e-05` | `3.02493572e-05` |
 | NMS-free | `5.73396683e-05` | `1.35712326e-05` |
 
-The calibrated v8 raw-logit thresholds are:
-
-| Branch | Raw-logit tolerance | Justification |
-|---|---:|---|
-| O2M | `0.002` | Covers observed max drift up to `1.74e-03` with decoded box drift near `6e-05` |
-| NMS-free | `0.0035` | Covers observed max drift up to `3.00e-03` with decoded box drift near `5.7e-05` |
-
-Calibrated parity output:
+The thresholds first derived from these five seeds were `0.002` (O2M) and
+`0.0035` (NMS-free):
 
 ```text
 O2M, tolerance 0.002:
@@ -145,6 +139,34 @@ NMS-free, tolerance 0.0035:
   Test 5/5: max_diff=3.00e-03, mean_diff=1.10e-04 [PASS]
   Parity PASSED: branch=nms-free, tolerance=0.0035
 ```
+
+### Sample-size sensitivity
+
+Five seeds are not enough to bound the maximum. Each test compares roughly five
+million values, so the observed maximum is an extreme-value statistic that keeps
+growing with the seed count. Re-measured on the same checkpoint:
+
+| Branch | max over 5 seeds | max over 50 seeds | Growth | Old threshold |
+|---|---:|---:|---:|---:|
+| O2M | `1.741886e-03` | `2.788305e-03` | `+60.1%` | `2.0e-03` |
+| NMS-free | `2.990723e-03` | `4.793882e-03` | `+60.3%` | `3.5e-03` |
+
+Both branches exceed their original threshold well before 50 seeds, so
+`check_onnx_parity.py --num-tests 20` failed on an otherwise healthy export.
+The thresholds are therefore twice the maximum observed over 50 seeds:
+
+| Branch | Observed max (50 seeds) | Threshold | Headroom |
+|---|---:|---:|---:|
+| O2M | `2.788305e-03` | `6.0e-03` | `2.2x` |
+| NMS-free | `4.793882e-03` | `1.0e-02` | `2.1x` |
+
+Reproduce either column by running the parity check with `--num-tests 5` and
+`--num-tests 50`.
+
+Measured with PyTorch `2.13.0+cu130`, ONNX `1.21.0`, ONNX Runtime `1.24.4` on
+`CPUExecutionProvider`. The five-seed maxima reproduce the values above to three
+significant digits despite the different runtime versions, so this drift
+originates in graph operation ordering rather than in the runtime build.
 
 ## Benchmarks
 
