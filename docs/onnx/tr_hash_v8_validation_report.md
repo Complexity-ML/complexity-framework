@@ -168,6 +168,84 @@ Measured with PyTorch `2.13.0+cu130`, ONNX `1.21.0`, ONNX Runtime `1.24.4` on
 significant digits despite the different runtime versions, so this drift
 originates in graph operation ordering rather than in the runtime build.
 
+## Decoded Parity Gates
+
+Raw-logit tolerance is only a proxy for deployment behaviour, and the section
+above shows it is also the least stable quantity to gate on. `check_onnx_parity.py`
+therefore evaluates three independent gates on the same deterministic inputs:
+
+| Gate | Compares | Role |
+|---|---|---|
+| `raw` | exported logits | coarse export-integrity check |
+| `decoded-box` | normalized xyxy boxes after LTRB/DFL decode | deployment guarantee |
+| `decoded-score` | sigmoid quality-class scores | deployment guarantee |
+
+Each gate reports its own max and mean difference and fails independently, and
+the CLI names the failing gates in its summary. Decoding uses
+`complexity.deploy.onnx_detector`, so the gates exercise the deployment code
+path rather than a separate reimplementation.
+
+### Units
+
+Decoded box drift is reported in **normalized** box coordinates, matching the
+`box_norm` output of the deployment pipeline. The equivalent input-pixel drift
+is `640x` larger: a normalized `5.50e-05` is `3.52e-02` px on a 640px input.
+The five-seed table under Parity Results is also in normalized coordinates.
+
+### Stability and thresholds
+
+Decoded outputs are markedly more stable than raw logits under resampling,
+which is the quantitative case for gating on them:
+
+| Branch | Gate | max over 5 seeds | max over 50 seeds | Growth |
+|---|---|---:|---:|---:|
+| O2M | decoded-box | `4.904270e-05` | `5.497933e-05` | `+12.1%` |
+| O2M | decoded-score | `2.907962e-05` | `3.811717e-05` | `+31.1%` |
+| NMS-free | decoded-box | `5.540848e-05` | `6.532669e-05` | `+17.9%` |
+| NMS-free | decoded-score | `1.281500e-05` | `1.719594e-05` | `+34.2%` |
+
+Compare with `+60%` for raw logits on both branches. Thresholds follow the same
+rule as the raw gate: twice the maximum observed over 50 deterministic seeds.
+
+| Branch | Gate | Observed max (50 seeds) | Threshold | Headroom |
+|---|---|---:|---:|---:|
+| O2M | decoded-box | `5.497933e-05` | `1.3e-04` | `2.4x` |
+| O2M | decoded-score | `3.811717e-05` | `8.0e-05` | `2.1x` |
+| NMS-free | decoded-box | `6.532669e-05` | `1.3e-04` | `2.0x` |
+| NMS-free | decoded-score | `1.719594e-05` | `4.0e-05` | `2.3x` |
+
+`decoded-box` shares one threshold across branches because both use the same
+regression head and their box drift differs by only 19%. `decoded-score` is
+branch-specific because O2M score drift is 2.2x that of NMS-free.
+
+Legacy exports are unaffected: when the ONNX sidecar carries no v8 decode
+metadata, the decoded gates are skipped rather than failed, and the raw gate
+keeps its strict `1e-4` threshold. `--skip-decoded` forces that behaviour on any
+export.
+
+### Full gate output
+
+```bash
+PYTHONPATH=. python scripts/check_onnx_parity.py models/TR-HASH-Vision-v8-2M-COCO-SFT tr_hash_v8_o2m.onnx --num-tests 50
+PYTHONPATH=. python scripts/check_onnx_parity.py models/TR-HASH-Vision-v8-2M-COCO-SFT/best_nms_free tr_hash_v8_nms_free.onnx --num-tests 50
+```
+
+```text
+Parity PASSED: branch=o2m
+  raw           tol=6.00e-03 worst_max=2.79e-03 [PASS]
+  decoded-box   tol=1.30e-04 worst_max=5.50e-05 [PASS]
+  decoded-score tol=8.00e-05 worst_max=3.81e-05 [PASS]
+
+Parity PASSED: branch=nms-free
+  raw           tol=1.00e-02 worst_max=4.79e-03 [PASS]
+  decoded-box   tol=1.30e-04 worst_max=6.53e-05 [PASS]
+  decoded-score tol=4.00e-05 worst_max=1.72e-05 [PASS]
+```
+
+The decoded values differ slightly from the five-seed table under Parity
+Results because they are now computed with the shared `onnx_detector` decoder
+rather than an ad-hoc one.
+
 ## Benchmarks
 
 Benchmarks used batch size 1, `10` warmup runs, and `50` measured runs.
@@ -195,5 +273,7 @@ NMS-free was `0.858 ms` slower than O2M on mean latency, a `2.60%` increase.
 TR-HASH Vision v8 exports successfully to ONNX for both raw prediction
 branches. Branch behavior matches the expected architecture: NMS-free computes
 the extra one-to-one head path and is empirically slower than O2M. Deployment
-validation should use decoded-output drift and the calibrated v8 raw-logit
-thresholds above rather than the legacy `1e-4` raw-logit threshold.
+validation should rely on the `decoded-box` and `decoded-score` gates, which
+measure the outputs deployments actually consume and are three to five times
+more stable across seeds; the `raw` gate remains only as an export-integrity
+check.
