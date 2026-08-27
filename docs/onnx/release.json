@@ -2,7 +2,7 @@
   "checkpoint_repo": "AETHORIA-AI/TR-HASH-Vision-v8-2M-COCO-SFT",
   "checkpoint_revision": "f3b3e659612e543ca9ff91892c0662d38dc1a1d6",
   "opset": 17,
-  "parity_num_tests": 5,
+  "parity_num_tests": 50,
   "toolchain": {
     "torch": "2.13.0",
     "onnx": "1.21.0",

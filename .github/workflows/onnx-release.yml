@@ -26,7 +26,8 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Two 640px exports plus 50-seed parity gates on both branches.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -65,7 +66,26 @@ jobs:
         run: python scripts/build_onnx_release.py --output-dir dist/onnx
 
       - name: Re-verify the published files against the manifest
-        run: python scripts/build_onnx_release.py --verify dist/onnx/manifest.json
+        run: >-
+          python scripts/build_onnx_release.py
+          --verify dist/onnx/manifest.json
+          --expect-commit "$GITHUB_SHA"
+
+      - name: Require the release tag to resolve to the built commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          # An existing tag pointing elsewhere would publish a manifest whose
+          # framework_commit cannot be checked out from the release itself.
+          TAG_SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha 2>/dev/null || true)
+          if [ -z "$TAG_SHA" ]; then
+            echo "Tag $TAG does not exist yet; it will be created at $GITHUB_SHA."
+          elif [ "$TAG_SHA" != "$GITHUB_SHA" ]; then
+            echo "Tag $TAG resolves to $TAG_SHA but the manifest records $GITHUB_SHA."
+            echo "Refusing to publish artifacts the tagged tree cannot reproduce."
+            exit 1
+          fi
 
       - name: Upload release assets
         env:
@@ -75,6 +95,7 @@ jobs:
         run: |
           gh release view "$TAG" >/dev/null 2>&1 \
             || gh release create "$TAG" \
+                 --target "$GITHUB_SHA" \
                  --title "TR-HASH Vision v8 ONNX artifacts" \
                  --notes-file dist/onnx/RELEASE_NOTES.md \
                  $DRAFT

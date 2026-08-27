@@ -214,10 +214,26 @@ def build_manifest(
     }
 
 
-def verify_manifest(manifest: Mapping[str, Any], directory: Path) -> list[str]:
-    """Return one message per artifact that is missing, resized or altered."""
+def verify_manifest(
+    manifest: Mapping[str, Any],
+    directory: Path,
+    *,
+    expect_commit: str | None = None,
+) -> list[str]:
+    """Return one message per artifact that is missing, resized or altered.
+
+    ``expect_commit`` additionally binds the manifest to the commit publication
+    happens from: a release whose tag resolves elsewhere would document digests
+    that its own source tree cannot reproduce.
+    """
 
     problems: list[str] = []
+    if expect_commit is not None:
+        recorded = str(manifest.get("framework_commit", ""))
+        if recorded != expect_commit:
+            problems.append(
+                f"framework_commit {recorded or 'missing'}, expected {expect_commit}"
+            )
     for artifact in manifest["artifacts"]:
         path = Path(directory) / str(artifact["name"])
         if not path.is_file():
@@ -410,6 +426,11 @@ def parse_args() -> argparse.Namespace:
         help="Verify an existing manifest against the files beside it, then exit",
     )
     parser.add_argument(
+        "--expect-commit",
+        default=None,
+        help="With --verify, require the manifest to record this framework commit",
+    )
+    parser.add_argument(
         "--allow-toolchain-drift",
         action="store_true",
         help="Warn instead of failing when versions differ from the pin",
@@ -422,7 +443,11 @@ def main() -> None:
 
     if args.verify is not None:
         manifest = json.loads(args.verify.read_text())
-        problems = verify_manifest(manifest, args.verify.parent)
+        problems = verify_manifest(
+            manifest,
+            args.verify.parent,
+            expect_commit=args.expect_commit,
+        )
         if problems:
             print("Verification FAILED:")
             for problem in problems:

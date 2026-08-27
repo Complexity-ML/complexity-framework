@@ -28,10 +28,20 @@ own version into the model's `producer_version` field, and `"2.13.0"` is one
 character longer than `"2.6.0"`. The graph is otherwise unchanged — the parity
 gates pass identically — but the bytes are not.
 
+The release gate runs the parity checks at 50 seeds rather than the development
+default of 5, for the reason given under Sample-size sensitivity: five seeds
+underestimate the observed maximum by about 60%. A release is published rarely
+enough that the extra cost is irrelevant.
+
+The published tag is bound to the commit the manifest records: the workflow
+creates it at that commit, and refuses to publish if an existing tag resolves
+anywhere else. Otherwise a release could document digests that its own tagged
+tree cannot reproduce.
+
 Each release publishes five assets: both `.onnx` binaries, both metadata
 sidecars, and `manifest.json`. The manifest records the checkpoint revision, the
-framework commit, the opset, the input/output contract, and the size and
-SHA-256 of every asset. Verify a download against it:
+framework commit, the opset, the parity depth, the input/output contract, and
+the size and SHA-256 of every asset. Verify a download against it:
 
 ```bash
 python scripts/build_onnx_release.py --verify manifest.json

@@ -100,6 +100,9 @@ def test_committed_release_config_is_valid_and_pins_both_branches() -> None:
     assert {spec.branch for spec in config.branches} == {"o2m", "nms-free"}
     assert config.opset == 17
     assert set(config.toolchain) == {"torch", "onnx", "onnxruntime"}
+    # Five seeds underestimate the observed maxima (see the validation report),
+    # so a release gate has to be deeper than the development default.
+    assert config.parity_num_tests >= 20
 
 
 def test_a_moving_checkpoint_ref_is_rejected() -> None:
@@ -180,6 +183,17 @@ def test_verification_catches_a_truncated_or_missing_artifact(tmp_path: Path) ->
 
     assert "size" in problems
     assert "missing" in problems
+
+
+def test_verification_binds_the_manifest_to_the_publishing_commit(tmp_path: Path) -> None:
+    manifest = written_release(tmp_path)
+
+    assert verify_manifest(manifest, tmp_path, expect_commit="0" * 40) == []
+
+    problems = verify_manifest(manifest, tmp_path, expect_commit="1" * 40)
+
+    assert len(problems) == 1
+    assert "framework_commit" in problems[0]
 
 
 def test_release_notes_distinguish_the_two_branches(tmp_path: Path) -> None:
