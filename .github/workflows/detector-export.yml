@@ -6,11 +6,14 @@ on:
       - ".github/workflows/detector-export.yml"
       - "complexity/deploy/onnx_detector/**"
       - "complexity/generative/detection/**"
+      - "scripts/build_onnx_release.py"
       - "scripts/check_onnx_parity.py"
       - "scripts/onnx_detect.py"
       - "scripts/export_onnx.py"
       - "scripts/export_tensorrt.py"
+      - "docs/onnx/release.json"
       - "tests/test_detector_export.py"
+      - "tests/test_onnx_release.py"
       - "tests/test_onnx_detect_cli.py"
       - "tests/test_onnx_detector_*.py"
       - "pyproject.toml"
@@ -20,11 +23,14 @@ on:
       - ".github/workflows/detector-export.yml"
       - "complexity/deploy/onnx_detector/**"
       - "complexity/generative/detection/**"
+      - "scripts/build_onnx_release.py"
       - "scripts/check_onnx_parity.py"
       - "scripts/onnx_detect.py"
       - "scripts/export_onnx.py"
       - "scripts/export_tensorrt.py"
+      - "docs/onnx/release.json"
       - "tests/test_detector_export.py"
+      - "tests/test_onnx_release.py"
       - "tests/test_onnx_detect_cli.py"
       - "tests/test_onnx_detector_*.py"
       - "pyproject.toml"
@@ -52,6 +58,7 @@ jobs:
           ruff check
           complexity/deploy/onnx_detector
           complexity/generative/detection/exporting.py
+          scripts/build_onnx_release.py
           scripts/check_onnx_parity.py
           scripts/onnx_detect.py
           scripts/export_onnx.py
@@ -62,6 +69,7 @@ jobs:
           tests/test_onnx_detector_metadata.py
           tests/test_onnx_detector_pipeline.py
           tests/test_onnx_detector_skeleton.py
+          tests/test_onnx_release.py
       - name: Test ONNX branches and dynamic batch parity
         run: >-
           pytest -q
@@ -71,3 +79,4 @@ jobs:
           tests/test_onnx_detector_metadata.py
           tests/test_onnx_detector_pipeline.py
           tests/test_onnx_detector_skeleton.py
+          tests/test_onnx_release.py

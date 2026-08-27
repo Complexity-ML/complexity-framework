@@ -1,0 +1,108 @@
+name: ONNX release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create or update (e.g. onnx-v8-2026.08)"
+        required: true
+        type: string
+      draft:
+        description: "Publish as a draft release"
+        required: false
+        default: true
+        type: boolean
+  push:
+    tags:
+      - "onnx-v8-*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: onnx-release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Two 640px exports plus 50-seed parity gates on both branches.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Read the pinned toolchain
+        id: pins
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          toolchain = json.load(open("docs/onnx/release.json"))["toolchain"]
+          for package, version in toolchain.items():
+              print(f"{package}={version}")
+          PY
+
+      - name: Install the pinned export toolchain
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,export]" huggingface_hub
+          # Installed last so the pins win over the extras' version ranges.
+          python -m pip install "torch==${{ steps.pins.outputs.torch }}" \
+            --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install \
+            "onnx==${{ steps.pins.outputs.onnx }}" \
+            "onnxruntime==${{ steps.pins.outputs.onnxruntime }}"
+
+      - name: Test the release tooling
+        run: pytest -q tests/test_onnx_release.py
+
+      - name: Build, gate and verify the release
+        env:
+          PYTHONPATH: .
+        run: python scripts/build_onnx_release.py --output-dir dist/onnx
+
+      - name: Re-verify the published files against the manifest
+        run: >-
+          python scripts/build_onnx_release.py
+          --verify dist/onnx/manifest.json
+          --expect-commit "$GITHUB_SHA"
+
+      - name: Require the release tag to resolve to the built commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          # An existing tag pointing elsewhere would publish a manifest whose
+          # framework_commit cannot be checked out from the release itself.
+          TAG_SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha 2>/dev/null || true)
+          if [ -z "$TAG_SHA" ]; then
+            echo "Tag $TAG does not exist yet; it will be created at $GITHUB_SHA."
+          elif [ "$TAG_SHA" != "$GITHUB_SHA" ]; then
+            echo "Tag $TAG resolves to $TAG_SHA but the manifest records $GITHUB_SHA."
+            echo "Refusing to publish artifacts the tagged tree cannot reproduce."
+            exit 1
+          fi
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          DRAFT: ${{ github.event.inputs.draft == 'true' && '--draft' || '' }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" \
+                 --target "$GITHUB_SHA" \
+                 --title "TR-HASH Vision v8 ONNX artifacts" \
+                 --notes-file dist/onnx/RELEASE_NOTES.md \
+                 $DRAFT
+          gh release upload "$TAG" \
+            dist/onnx/manifest.json \
+            dist/onnx/tr_hash_v8_o2m.onnx \
+            dist/onnx/tr_hash_v8_o2m.json \
+            dist/onnx/tr_hash_v8_nms_free.onnx \
+            dist/onnx/tr_hash_v8_nms_free.json \
+            --clobber

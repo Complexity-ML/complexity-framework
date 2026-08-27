@@ -168,6 +168,11 @@ weights/
 *.gguf
 *.ggml
 
+# Exported inference graphs: published as release assets, never committed
+*.onnx
+*.engine
+/dist/
+
 # Training outputs
 artifacts/
 runs/
