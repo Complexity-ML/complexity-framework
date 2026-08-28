@@ -46,8 +46,8 @@ presented as interchangeable.
 - [130B base checkpoint](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-130B)
 - [≈162B interrupted refinement checkpoint](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-160B-Refinement)
 - [Released full-parameter SFT](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT)
+- [Research paper / preprint (DOI: 10.21203/rs.3.rs-10788774/v1)](https://doi.org/10.21203/rs.3.rs-10788774/v1)
 - [Live 200M chat](https://www.complexity-ai.fr/ai-lab)
-- [200M release paper](https://www.complexity-ai.fr/papers/tr-hash-200m-multi-hash-routing.pdf)
 
 ## Architecture names
 
