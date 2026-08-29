@@ -1462,9 +1462,11 @@ def build(
         int(os.environ.get("TR_HASH_SOURCE_PARALLELISM", configured_parallel_sources)),
     )
     queue_depth = max(1, int(config.get("producer_queue_depth", 2)))
+    scheduler = "ready_first" if config.get("direct_materialization", False) else "round_robin"
     LOGGER.info(
-        "source pipeline: parallel=%d deterministic_merge=round_robin queue_depth=%d",
+        "source pipeline: parallel=%d scheduler=%s queue_depth=%d",
         parallel_sources,
+        scheduler,
         queue_depth,
     )
     source_groups = (
