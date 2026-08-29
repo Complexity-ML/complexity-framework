@@ -1544,10 +1544,17 @@ def build(
                 contexts.append((source, packer, packets, worker))
 
             active = list(contexts)
+            ready_first = bool(config.get("direct_materialization", False))
             while active:
                 next_active = []
+                consumed_packet = False
                 for source, packer, packets, worker in active:
-                    packet = packets.get()
+                    try:
+                        packet = packets.get(timeout=0.05) if ready_first else packets.get()
+                    except queue.Empty:
+                        next_active.append((source, packer, packets, worker))
+                        continue
+                    consumed_packet = True
                     if packet.error is not None:
                         raise RuntimeError(
                             f"source producer failed: {packer.name}"
@@ -1576,6 +1583,8 @@ def build(
                         )
                     next_active.append((source, packer, packets, worker))
                 active = next_active
+                if ready_first and active and not consumed_packet:
+                    time.sleep(0.01)
         finally:
             stop.set()
             for _, packer, _, worker in contexts:

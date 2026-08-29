@@ -63,6 +63,8 @@ evicted before the next shard accumulates.
 
 Direct mode preserves each pinned upstream's native deterministic order
 (`shuffle_buffer=1`) so tokenization starts without a large in-memory shuffle.
+Its ready-first scheduler consumes whichever source queue is available instead
+of allowing one slow upstream or resume scan to block the other five streams.
 
 This fast path deliberately skips per-document filters, benchmark
 decontamination, and global exact deduplication. Dataset metadata records
