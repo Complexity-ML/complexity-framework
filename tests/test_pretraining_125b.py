@@ -12,6 +12,7 @@ from tokenizers import Tokenizer, models, pre_tokenizers
 from complexity.training import PretokenizedCorpusMixtureDataset
 from scripts.audit_tr_hash_pretraining_125b_release import audit_release_documents
 from scripts.build_agentic_pretraining_50b import (
+    _direct_parallel_source_groups,
     _mixture_manifest,
     _parallel_source_groups,
     _phase_boundaries,
@@ -171,6 +172,31 @@ def test_parallel_groups_diversify_upstreams_without_crossing_buckets() -> None:
     assert all(len({source["bucket"] for source in group}) == 1 for group in groups)
     flattened = [source["name"] for group in groups for source in group]
     assert sorted(flattened) == sorted(source["name"] for source in _config()["sources"])
+
+
+def test_direct_parallel_groups_start_agentic_and_foundation_together() -> None:
+    config = make_direct_source_curated_config(_config())
+    groups = _direct_parallel_source_groups(config["sources"], 6)
+    assert len(groups[0]) == 6
+    assert Counter(source["bucket"] for source in groups[0]) == {
+        "agentic": 3,
+        "foundation": 3,
+    }
+    flattened = [source["name"] for group in groups for source in group]
+    assert (
+        flattened
+        == [
+            source["name"]
+            for pair in zip(
+                [source for source in config["sources"] if source["bucket"] == "agentic"],
+                [source for source in config["sources"] if source["bucket"] == "foundation"],
+            )
+            for source in pair
+        ]
+        + [source["name"] for source in config["sources"] if source["bucket"] == "agentic"][
+            len([source for source in config["sources"] if source["bucket"] == "foundation"]) :
+        ]
+    )
 
 
 def test_125b_curriculum_is_no_replay_and_matches_the_corpus() -> None:

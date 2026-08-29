@@ -54,8 +54,9 @@ commit that config change before launching production.
 
 ## 3. Source-curated direct architecture
 
-The production launcher uses one 112-thread Rayon tokenizer fed by three
-concurrent source streams. Documents are encoded in batches of 4,096 and
+The production launcher uses one 112-thread Rayon tokenizer fed by six
+concurrent source streams: three agentic and three foundation whenever both
+buckets still have pending sources. Documents are encoded in batches of 4,096 and
 written into one-billion-token shards. Each shard is uploaded, remotely
 verified by size and SHA-256, committed to SQLite restart state, and locally
 evicted before the next shard accumulates.
@@ -76,6 +77,7 @@ export TR_HASH_125B_TOKENIZER=/workspace/tokenizers/tr-hash-agentic-32k-<REVISIO
 export TR_HASH_125B_WORK_DIR=/workspace/builds/tr-hash-pretraining-125b-direct
 export TR_HASH_125B_HF_REPO=AETHORIA-AI/TR-HASH-Pretraining-125B-Agentic-32K
 export RAYON_NUM_THREADS=112
+export TR_HASH_SOURCE_PARALLELISM=6
 
 scripts/run_tr_hash_pretraining_125b_direct.sh
 ```

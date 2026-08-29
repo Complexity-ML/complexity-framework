@@ -1363,6 +1363,30 @@ def _parallel_source_groups(
     return groups
 
 
+def _direct_parallel_source_groups(
+    sources: Sequence[Mapping[str, Any]], width: int
+) -> list[list[Mapping[str, Any]]]:
+    """Interleave buckets for direct builds where global dedup order is irrelevant."""
+
+    if width < 1:
+        raise ValueError("parallel source width must be positive")
+    bucket_order: list[str] = []
+    queues: dict[str, list[Mapping[str, Any]]] = {}
+    for source in sources:
+        bucket = str(source["bucket"])
+        if bucket not in queues:
+            bucket_order.append(bucket)
+            queues[bucket] = []
+        queues[bucket].append(source)
+
+    ordered: list[Mapping[str, Any]] = []
+    while any(queues.values()):
+        for bucket in bucket_order:
+            if queues[bucket]:
+                ordered.append(queues[bucket].pop(0))
+    return [ordered[start : start + width] for start in range(0, len(ordered), width)]
+
+
 def build(
     *,
     config: Mapping[str, Any],
@@ -1432,14 +1456,22 @@ def build(
     def publish_state() -> None:
         publisher.publish_json(current_state(), "_state/state.json", work_dir)
 
-    parallel_sources = max(1, int(config.get("parallel_sources", 1)))
+    configured_parallel_sources = int(config.get("parallel_sources", 1))
+    parallel_sources = max(
+        1,
+        int(os.environ.get("TR_HASH_SOURCE_PARALLELISM", configured_parallel_sources)),
+    )
     queue_depth = max(1, int(config.get("producer_queue_depth", 2)))
     LOGGER.info(
         "source pipeline: parallel=%d deterministic_merge=round_robin queue_depth=%d",
         parallel_sources,
         queue_depth,
     )
-    source_groups = _parallel_source_groups(sources, parallel_sources)
+    source_groups = (
+        _direct_parallel_source_groups(sources, parallel_sources)
+        if config.get("direct_materialization", False)
+        else _parallel_source_groups(sources, parallel_sources)
+    )
     for group_index, group in enumerate(source_groups):
         LOGGER.info(
             "source group %d/%d: %s",
