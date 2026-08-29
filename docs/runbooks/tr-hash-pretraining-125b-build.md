@@ -65,6 +65,9 @@ Direct mode preserves each pinned upstream's native deterministic order
 (`shuffle_buffer=1`) so tokenization starts without a large in-memory shuffle.
 Its ready-first scheduler consumes whichever source queue is available instead
 of allowing one slow upstream or resume scan to block the other five streams.
+The launcher raises the soft open-file limit to 65,536 and caps each concurrent
+Stack-Edu resolver at 64 workers. This prevents three Stack sources from
+exhausting the default 1,024-descriptor process limit.
 
 This fast path deliberately skips per-document filters, benchmark
 decontamination, and global exact deduplication. Dataset metadata records
@@ -80,6 +83,8 @@ export TR_HASH_125B_WORK_DIR=/workspace/builds/tr-hash-pretraining-125b-direct
 export TR_HASH_125B_HF_REPO=AETHORIA-AI/TR-HASH-Pretraining-125B-Agentic-32K
 export RAYON_NUM_THREADS=112
 export TR_HASH_SOURCE_PARALLELISM=6
+export TR_HASH_STACK_DOWNLOAD_WORKERS=64
+export TR_HASH_NOFILE_LIMIT=65536
 
 scripts/run_tr_hash_pretraining_125b_direct.sh
 ```

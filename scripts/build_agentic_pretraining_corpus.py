@@ -309,7 +309,7 @@ def _software_heritage_stack_edu(
     except ImportError as error:
         raise ImportError("direct Stack-Edu resolution requires datasets and boto3") from error
 
-    workers = int(source.get("download_workers", 32))
+    workers = _stack_download_workers(source)
     client = boto3.client(
         "s3",
         config=Config(
@@ -361,6 +361,16 @@ def _software_heritage_stack_edu(
                         "Stack-Edu Software Heritage resolution failure rate exceeded 75%"
                     )
                 yield from (row for row in resolved if row is not None)
+
+
+def _stack_download_workers(source: Mapping[str, Any]) -> int:
+    """Resolve a runtime-safe Stack-Edu worker count without changing corpus state."""
+
+    configured = int(source.get("download_workers", 32))
+    workers = int(os.environ.get("TR_HASH_STACK_DOWNLOAD_WORKERS", configured))
+    if workers < 1:
+        raise ValueError("Stack-Edu download worker count must be positive")
+    return workers
 
 
 def iter_source(source: Mapping[str, Any], *, seed: int) -> Iterator[Mapping[str, Any]]:

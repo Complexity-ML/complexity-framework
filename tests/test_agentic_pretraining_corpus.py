@@ -8,6 +8,7 @@ import pytest
 
 from scripts.build_agentic_pretraining_corpus import (
     BenchmarkContaminationIndex,
+    _stack_download_workers,
     agentic_signals,
     benchmark_match,
     build_corpus,
@@ -18,6 +19,16 @@ from scripts.build_agentic_pretraining_corpus import (
     quality_rejection,
     validate_config,
 )
+
+
+def test_stack_download_workers_supports_a_bounded_runtime_override(monkeypatch) -> None:
+    source = {"download_workers": 256}
+    assert _stack_download_workers(source) == 256
+    monkeypatch.setenv("TR_HASH_STACK_DOWNLOAD_WORKERS", "64")
+    assert _stack_download_workers(source) == 64
+    monkeypatch.setenv("TR_HASH_STACK_DOWNLOAD_WORKERS", "0")
+    with pytest.raises(ValueError, match="must be positive"):
+        _stack_download_workers(source)
 
 
 def _fixed_text(prefix: str, length: int = 400) -> str:
