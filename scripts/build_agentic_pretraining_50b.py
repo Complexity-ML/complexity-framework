@@ -879,7 +879,15 @@ def _prepare_source_batches(
         iterator = iter(iter_source(source, seed=int(config.get("seed", 1729)) + source_index))
         if restored_scanned:
             _skip(iterator, restored_scanned)
-        candidate_limit = max(1, int(config.get("tokenization_batch_size", 256)))
+        candidate_limit = max(
+            1,
+            int(
+                config.get(
+                    "producer_candidate_batch_size",
+                    config.get("tokenization_batch_size", 256),
+                )
+            ),
+        )
         scan_limit = max(
             candidate_limit, int(config.get("producer_scan_batch_size", candidate_limit * 4))
         )

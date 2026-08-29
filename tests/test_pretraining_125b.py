@@ -35,7 +35,8 @@ def test_125b_manifest_has_exact_bucket_and_source_budgets() -> None:
     validate_config(config)
     assert config["target_tokens"] == 125_000_000_000
     assert config["parallel_sources"] == 3
-    assert config["producer_queue_depth"] == 2
+    assert config["producer_queue_depth"] == 4
+    assert config["producer_candidate_batch_size"] == 256
     by_bucket = Counter()
     for source in config["sources"]:
         by_bucket[source["bucket"]] += source["target_tokens"]

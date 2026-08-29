@@ -17,8 +17,9 @@
   "agentic_min_signal_classes": 2,
   "tokenization_batch_size": 2048,
   "parallel_sources": 3,
-  "producer_queue_depth": 2,
-  "producer_scan_batch_size": 8192,
+  "producer_queue_depth": 4,
+  "producer_candidate_batch_size": 256,
+  "producer_scan_batch_size": 1024,
   "progress_log_tokens": 25000000,
   "tokenizer_contract": {
     "repo_id": "AETHORIA-AI/TR-HASH-Tokenizer-32K-Agentic",
