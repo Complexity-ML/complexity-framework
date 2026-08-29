@@ -170,11 +170,13 @@ def test_pilot_config_is_explicitly_bounded_and_self_consistent() -> None:
         config,
         only_sources=("a", "b"),
         target_tokens_per_source=10,
+        shuffle_buffer=1,
     )
     assert pilot["pilot"] is True
     assert pilot["target_tokens"] == 20
     assert pilot["bucket_targets"] == {"agentic": 10, "foundation": 10}
     assert [source["weight"] for source in pilot["sources"]] == [0.5, 0.5]
+    assert [source["shuffle_buffer"] for source in pilot["sources"]] == [1, 1]
     assert config["target_tokens"] == 300
 
 

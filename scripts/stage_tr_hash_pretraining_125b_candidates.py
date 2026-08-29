@@ -46,6 +46,7 @@ def effective_stage_config(
     *,
     only_sources: Sequence[str] = (),
     target_tokens_per_source: int | None = None,
+    shuffle_buffer: int | None = None,
 ) -> dict[str, Any]:
     """Return a self-consistent full or explicitly bounded pilot config."""
 
@@ -64,7 +65,13 @@ def effective_stage_config(
             raise ValueError("pilot target tokens per source must be positive")
         for source in result["sources"]:
             source["target_tokens"] = target_tokens_per_source
-    if requested or target_tokens_per_source is not None:
+    if shuffle_buffer is not None:
+        if shuffle_buffer < 1:
+            raise ValueError("shuffle buffer must be positive")
+        for source in result["sources"]:
+            if source.get("source_type") != "software_heritage_stack_edu":
+                source["shuffle_buffer"] = shuffle_buffer
+    if requested or target_tokens_per_source is not None or shuffle_buffer is not None:
         total = sum(int(source["target_tokens"]) for source in result["sources"])
         result["target_tokens"] = total
         buckets: Counter[str] = Counter()
@@ -535,6 +542,7 @@ def main() -> None:
     parser.add_argument("--rayon-threads-per-source", type=int, default=8)
     parser.add_argument("--only-source", action="append", default=[])
     parser.add_argument("--target-tokens-per-source", type=int)
+    parser.add_argument("--shuffle-buffer", type=int)
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.INFO,
@@ -544,6 +552,7 @@ def main() -> None:
         json.loads(Path(args.config).read_text(encoding="utf-8")),
         only_sources=args.only_source,
         target_tokens_per_source=args.target_tokens_per_source,
+        shuffle_buffer=args.shuffle_buffer,
     )
     stage_all_sources(
         config=config,
