@@ -14,6 +14,7 @@ import sqlite3
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,41 @@ from scripts.build_agentic_pretraining_corpus import (
 
 LOGGER = logging.getLogger("tr_hash_125b_candidates")
 SCHEMA = "tr-hash-125b-candidates-v1"
+
+
+def effective_stage_config(
+    config: Mapping[str, Any],
+    *,
+    only_sources: Sequence[str] = (),
+    target_tokens_per_source: int | None = None,
+) -> dict[str, Any]:
+    """Return a self-consistent full or explicitly bounded pilot config."""
+
+    result = deepcopy(dict(config))
+    requested = set(only_sources)
+    if requested:
+        available = {str(source["name"]) for source in result["sources"]}
+        missing = requested - available
+        if missing:
+            raise ValueError(f"unknown pilot sources: {sorted(missing)}")
+        result["sources"] = [
+            source for source in result["sources"] if str(source["name"]) in requested
+        ]
+    if target_tokens_per_source is not None:
+        if target_tokens_per_source < 1:
+            raise ValueError("pilot target tokens per source must be positive")
+        for source in result["sources"]:
+            source["target_tokens"] = target_tokens_per_source
+    if requested or target_tokens_per_source is not None:
+        total = sum(int(source["target_tokens"]) for source in result["sources"])
+        result["target_tokens"] = total
+        buckets: Counter[str] = Counter()
+        for source in result["sources"]:
+            buckets[str(source["bucket"])] += int(source["target_tokens"])
+            source["weight"] = int(source["target_tokens"]) / total
+        result["bucket_targets"] = dict(buckets)
+        result["pilot"] = True
+    return result
 
 
 class CandidateState:
@@ -497,12 +533,18 @@ def main() -> None:
     parser.add_argument("--hf-repo", default="AETHORIA-AI/TR-HASH-Pretraining-125B-Agentic-32K")
     parser.add_argument("--source-workers", type=int, default=12)
     parser.add_argument("--rayon-threads-per-source", type=int, default=8)
+    parser.add_argument("--only-source", action="append", default=[])
+    parser.add_argument("--target-tokens-per-source", type=int)
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
-    config = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    config = effective_stage_config(
+        json.loads(Path(args.config).read_text(encoding="utf-8")),
+        only_sources=args.only_source,
+        target_tokens_per_source=args.target_tokens_per_source,
+    )
     stage_all_sources(
         config=config,
         tokenizer_path=Path(args.tokenizer),

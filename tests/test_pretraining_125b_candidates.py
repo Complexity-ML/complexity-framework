@@ -14,7 +14,10 @@ from scripts.build_agentic_pretraining_corpus import (
     normalize_text,
 )
 from scripts.pack_tr_hash_pretraining_125b_candidates import pack_candidates
-from scripts.stage_tr_hash_pretraining_125b_candidates import stage_source
+from scripts.stage_tr_hash_pretraining_125b_candidates import (
+    effective_stage_config,
+    stage_source,
+)
 
 
 class MemoryPublisher:
@@ -152,6 +155,27 @@ def test_candidate_gzip_is_byte_reproducible(tmp_path: Path) -> None:
         )
     path = "_candidates/fixture/candidate-00000.jsonl.gz"
     assert first.files[path] == second.files[path]
+
+
+def test_pilot_config_is_explicitly_bounded_and_self_consistent() -> None:
+    config = {
+        "target_tokens": 300,
+        "bucket_targets": {"agentic": 100, "foundation": 200},
+        "sources": [
+            {"name": "a", "bucket": "agentic", "target_tokens": 100, "weight": 1 / 3},
+            {"name": "b", "bucket": "foundation", "target_tokens": 200, "weight": 2 / 3},
+        ],
+    }
+    pilot = effective_stage_config(
+        config,
+        only_sources=("a", "b"),
+        target_tokens_per_source=10,
+    )
+    assert pilot["pilot"] is True
+    assert pilot["target_tokens"] == 20
+    assert pilot["bucket_targets"] == {"agentic": 10, "foundation": 10}
+    assert [source["weight"] for source in pilot["sources"]] == [0.5, 0.5]
+    assert config["target_tokens"] == 300
 
 
 class FilePublisher:
