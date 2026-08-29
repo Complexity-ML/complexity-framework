@@ -1,6 +1,8 @@
 import hashlib
 import json
+import queue
 import shutil
+import threading
 from collections import Counter
 from pathlib import Path
 
@@ -13,9 +15,11 @@ from scripts.build_agentic_pretraining_50b import (
     _mixture_manifest,
     _parallel_source_groups,
     _phase_boundaries,
+    _prepare_source_batches,
     _replay_plan,
     allocate_rows,
     build,
+    make_direct_source_curated_config,
     row_text,
     validate_config,
     validate_curriculum,
@@ -46,6 +50,64 @@ def test_125b_manifest_has_exact_bucket_and_source_budgets() -> None:
         by_bucket[source["bucket"]] += source["target_tokens"]
     assert by_bucket == {"foundation": 75_000_000_000, "agentic": 50_000_000_000}
     assert sum(source["weight"] for source in config["sources"]) == pytest.approx(1.0)
+
+
+def test_direct_125b_config_preserves_budgets_and_discloses_fast_path() -> None:
+    config = make_direct_source_curated_config(_config())
+    validate_config(config)
+    by_bucket = Counter()
+    for source in config["sources"]:
+        by_bucket[source["bucket"]] += source["target_tokens"]
+    assert by_bucket == {"foundation": 75_000_000_000, "agentic": 50_000_000_000}
+    assert config["target_tokens"] == 125_000_000_000
+    assert config["tokenization_batch_size"] == 4096
+    assert config["producer_candidate_batch_size"] == 4096
+    assert config["producer_scan_batch_size"] == 4096
+    assert config["parallel_sources"] == 3
+    assert config["protected_benchmarks"] == []
+    assert config["protected_benchmark_sources"] == []
+    assert all(source["selection"] == "direct" for source in config["sources"])
+
+
+def test_direct_selection_requires_explicit_unfiltered_contract() -> None:
+    config = make_direct_source_curated_config(_config())
+    config["direct_materialization"] = False
+    with pytest.raises(ValueError, match="requires direct_materialization=true"):
+        validate_config(config)
+
+    config = make_direct_source_curated_config(_config())
+    config["protected_benchmarks"] = ["arc_easy"]
+    with pytest.raises(ValueError, match="cannot claim benchmark decontamination"):
+        validate_config(config)
+
+
+def test_direct_source_preparation_keeps_raw_duplicates_without_hashing() -> None:
+    packets: queue.Queue = queue.Queue()
+    stop = threading.Event()
+    source = {
+        "name": "fixture",
+        "bucket": "foundation",
+        "selection": "direct",
+        "text_field": "text",
+        "license_audit": "fixture",
+    }
+
+    _prepare_source_batches(
+        source=source,
+        source_index=0,
+        restored_scanned=0,
+        config={"producer_candidate_batch_size": 8, "producer_scan_batch_size": 8},
+        protected=(),
+        benchmark_index=None,
+        destination=packets,
+        stop=stop,
+        source_iterator_factory=lambda _source, _seed: iter(({"text": "same"}, {"text": "same"})),
+    )
+
+    packet = packets.get_nowait()
+    assert packet.exhausted is True
+    assert packet.scanned == 2
+    assert packet.candidates == (("same", (), ""), ("same", (), ""))
 
 
 def test_125b_sources_are_pinned_and_use_the_quality_variants() -> None:
@@ -253,6 +315,18 @@ def test_mixture_manifest_matches_runtime_loader_contract() -> None:
         source["manifest"] == f"corpora/{source['name']}/manifest.json"
         for source in manifest["sources"]
     )
+
+    direct = make_direct_source_curated_config(config)
+    direct_manifest = _mixture_manifest(
+        config=direct,
+        rows_by_source=rows,
+        actual_tokens=actual_tokens,
+        tokenizer_sha256="cd" * 32,
+    )
+    assert direct_manifest["materialization_mode"] == "direct_source_curated"
+    assert direct_manifest["exact_document_deduplication"] is False
+    assert direct_manifest["benchmark_decontamination"] is False
+    assert direct_manifest["agentic_signal_filtering"] is False
 
 
 def test_small_curriculum_build_loads_in_the_runtime_without_replay(tmp_path: Path) -> None:

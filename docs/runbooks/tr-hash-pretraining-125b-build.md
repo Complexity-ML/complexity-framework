@@ -4,6 +4,10 @@ This runbook prepares the production corpus build on the 120-core CPU host.
 It deliberately does **not** permit final tokenization with an unvalidated or
 mutable tokenizer.
 
+The canonical production path is now the source-curated direct materializer.
+It preserves the exact 75B foundation + 50B agentic source budgets while
+matching the high-throughput architecture used for the earlier 200B corpus.
+
 ## 1. Static preflight (safe before tokenizer completion)
 
 ```bash
@@ -48,7 +52,34 @@ This command validates the vocabulary and marker IDs, then records the
 revision, manifest SHA-256 and `tokenizer.json` SHA-256 atomically. Review and
 commit that config change before launching production.
 
-## 3. Two-stage architecture and capacity pilot
+## 3. Source-curated direct architecture
+
+The production launcher uses one 112-thread Rayon tokenizer fed by three
+concurrent source streams. Documents are encoded in batches of 4,096 and
+written into one-billion-token shards. Each shard is uploaded, remotely
+verified by size and SHA-256, committed to SQLite restart state, and locally
+evicted before the next shard accumulates.
+
+This fast path deliberately skips per-document filters, benchmark
+decontamination, and global exact deduplication. Dataset metadata records
+`materialization_mode=direct_source_curated` and disables those three claims.
+Source-level curation, immutable upstream revisions, explicit token quotas, and
+license audit notes remain enforced.
+
+Launch or resume it with:
+
+```bash
+export TR_HASH_125B_TOKENIZER=/workspace/tokenizers/tr-hash-agentic-32k-<REVISION>
+export TR_HASH_125B_WORK_DIR=/workspace/builds/tr-hash-pretraining-125b-direct
+export TR_HASH_125B_HF_REPO=AETHORIA-AI/TR-HASH-Pretraining-125B-Agentic-32K
+export RAYON_NUM_THREADS=112
+
+scripts/run_tr_hash_pretraining_125b_direct.sh
+```
+
+The same command and work directory resume committed progress.
+
+## 4. Optional filtered two-stage pipeline
 
 The production launcher no longer filters, globally merges and packs raw
 network streams in one round-robin loop. That design measured only about
@@ -85,7 +116,7 @@ the remote candidate hashes. Do not start the canonical 125B build unless its
 extrapolated extraction time is acceptable and every source can supply its
 quota plus the configured 5% candidate margin.
 
-## 4. Production launch
+## 5. Filtered-pipeline launch
 
 Store `HF_TOKEN` in a root-readable environment file rather than the command
 line or repository. The build uploads each shard, checks the remote size and
@@ -112,10 +143,16 @@ launcher as `ExecStart`. The same command and work directory are the resume
 operation: committed shards are not regenerated, while missing manifests are
 republished.
 
-## 5. Live monitoring
+## 6. Live monitoring
 
 ```bash
 journalctl -u tr-hash-pretraining-125b.service -f -o cat
+```
+
+For the direct production unit:
+
+```bash
+journalctl -u tr-hash-pretraining-125b-direct.service -f -o cat
 ```
 
 During extraction, inspect the independent durable states without modifying
@@ -134,7 +171,7 @@ sqlite3 /workspace/builds/tr-hash-pretraining-125b/final/state.sqlite3 \
   'SELECT source, rows_done, scanned, source_tokens FROM progress ORDER BY source;'
 ```
 
-## 6. Release acceptance
+## 7. Release acceptance
 
 Keep the Hugging Face dataset private until all of the following exist and
 agree:
@@ -145,7 +182,9 @@ agree:
 - remote size and SHA-256 for every shard;
 - `unique_tokens == trained_tokens`, each shard referenced exactly once and
   `source_passes == 1` in the runtime plan;
-- non-zero protected-prompt count and a stable protected-index SHA-256;
+- direct builds must declare all filtering/decontamination/deduplication flags
+  false; filtered builds instead require a non-zero protected-prompt count and
+  a stable protected-index SHA-256;
 - audited source and row-level redistribution rights.
 
 Only after this audit should the dataset visibility be changed from private.

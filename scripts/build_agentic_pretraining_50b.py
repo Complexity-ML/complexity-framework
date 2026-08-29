@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Build, publish, verify, and locally evict a restart-safe token corpus.
 
-The same implementation builds both the 50B agentic-only corpus and the
-125B foundation/agentic corpus.  Config validation, one global exact-dedupe
-database and benchmark decontamination apply before token packing.
+The same implementation builds both the filtered corpora and explicitly
+source-curated direct corpora.  Direct mode keeps the source-level curation and
+fixed token budgets but intentionally skips per-document filtering, benchmark
+decontamination, and global exact deduplication for high-throughput builds.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import logging
@@ -41,7 +43,33 @@ from scripts.build_agentic_pretraining_corpus import (
 
 LOGGER = logging.getLogger("tr_hash_agentic_50b")
 SCHEMA = "tr-hash-token-production-v2"
-ALLOWED_SELECTIONS = {"quality", "agentic", "agentic_trajectory", "staged"}
+ALLOWED_SELECTIONS = {"quality", "agentic", "agentic_trajectory", "staged", "direct"}
+
+
+def make_direct_source_curated_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return an explicit high-throughput source-curated production config."""
+
+    direct = copy.deepcopy(dict(config))
+    direct["schema"] = "tr-hash-pretraining-125b-source-curated-v1"
+    direct["description"] = (
+        "Production 125B source-curated pretraining corpus for TR-HASH Agentic 32K. "
+        "Documents are tokenized directly from pinned, curated upstream sources."
+    )
+    direct["direct_materialization"] = True
+    direct["tokenization_batch_size"] = 4096
+    direct["producer_candidate_batch_size"] = 4096
+    direct["producer_scan_batch_size"] = 4096
+    direct["parallel_sources"] = 3
+    direct["producer_queue_depth"] = 4
+    direct["protected_benchmarks"] = []
+    direct["protected_benchmark_sources"] = []
+    direct["release_gate"] = (
+        "Keep private until source licenses, shard hashes, token budgets, and the "
+        "source-curated direct-materialization disclosure have been audited."
+    )
+    for source in direct["sources"]:
+        source["selection"] = "direct"
+    return direct
 
 
 def sha256_file(path: Path) -> str:
@@ -192,6 +220,19 @@ def validate_config(config: Mapping[str, Any]) -> None:
             )
         if not source.get("license_audit"):
             raise ValueError(f"source has no license audit note: {source['name']}")
+    direct_materialization = bool(config.get("direct_materialization", False))
+    direct_sources = [
+        str(source["name"])
+        for source in sources
+        if str(source.get("selection", "agentic")) == "direct"
+    ]
+    if direct_sources and not direct_materialization:
+        raise ValueError("direct source selection requires direct_materialization=true")
+    if direct_materialization:
+        if len(direct_sources) != len(sources):
+            raise ValueError("direct materialization requires every source selection to be direct")
+        if config.get("protected_benchmarks") or config.get("protected_benchmark_sources"):
+            raise ValueError("direct materialization cannot claim benchmark decontamination")
     for benchmark in config.get("protected_benchmark_sources", ()):
         if (
             "dataset_id" in benchmark
@@ -648,6 +689,7 @@ def _state_payload(
     protected_prompt_count: int,
     protected_index_digest: str,
 ) -> dict[str, Any]:
+    direct_materialization = bool(config.get("direct_materialization", False))
     sources = []
     for source in config["sources"]:
         name = str(source["name"])
@@ -681,7 +723,12 @@ def _state_payload(
         "requested_tokens": int(config["target_tokens"]),
         "actual_tokens": actual_tokens,
         "seq_len": int(config["seq_len"]),
-        "exact_document_deduplication": True,
+        "materialization_mode": (
+            "direct_source_curated" if direct_materialization else "filtered_deduplicated"
+        ),
+        "exact_document_deduplication": not direct_materialization,
+        "benchmark_decontamination": not direct_materialization,
+        "agentic_signal_filtering": not direct_materialization,
         "protected_prompt_count": protected_prompt_count,
         "protected_index_sha256": protected_index_digest,
         "sources": sources,
@@ -736,6 +783,7 @@ def _mixture_manifest(
     tokenizer_sha256: str,
 ) -> dict[str, Any]:
     seq_len = int(config["seq_len"])
+    direct_materialization = bool(config.get("direct_materialization", False))
     return {
         "format": "tr-hash-token-mixture-v1",
         "schema": config.get("schema", SCHEMA),
@@ -747,6 +795,12 @@ def _mixture_manifest(
         "bucket_targets": config.get("bucket_targets"),
         "config_sha256": config_sha256(config),
         "tokenizer_sha256": tokenizer_sha256,
+        "materialization_mode": (
+            "direct_source_curated" if direct_materialization else "filtered_deduplicated"
+        ),
+        "exact_document_deduplication": not direct_materialization,
+        "benchmark_decontamination": not direct_materialization,
+        "agentic_signal_filtering": not direct_materialization,
         "sources": [
             {
                 "name": source["name"],
@@ -937,6 +991,9 @@ def _prepare_source_batches(
                     counters["missing_text"] += 1
                     continue
                 selection = str(source.get("selection", "agentic"))
+                if selection == "direct":
+                    candidates.append((text, (), ""))
+                    continue
                 if selection == "staged":
                     digest = str(row.get("content_sha256", ""))
                     if not digest or digest != content_sha256(text):
@@ -1208,7 +1265,7 @@ class _SourcePacker:
             texts: list[str] = []
             signal_sets: list[tuple[str, ...]] = []
             for text, signals, digest in batch.candidates:
-                if not self.store.reserve_digest(digest):
+                if digest and not self.store.reserve_digest(digest):
                     self.progress["counters"]["exact_duplicate"] += 1
                     continue
                 texts.append(text)
@@ -1546,10 +1603,20 @@ def main(
     parser.add_argument("--max-shards", type=int)
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--create-private-repo", action="store_true")
+    parser.add_argument(
+        "--direct-source-curated",
+        action="store_true",
+        help=(
+            "tokenize pinned curated sources directly without per-document filtering, "
+            "benchmark decontamination, or global exact deduplication"
+        ),
+    )
     parser.add_argument("--dataset-card", default=default_dataset_card)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     config = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    if args.direct_source_curated:
+        config = make_direct_source_curated_config(config)
     if args.target_tokens is not None:
         config["target_tokens"] = args.target_tokens
     if args.shard_trained_tokens is not None:
