@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "schema": "tr-hash-pretraining-125b-curriculum-v1",
+  "description": "Two-phase no-replay curriculum over the immutable 125B corpus.",
+  "total_tokens": 125000000000,
+  "phases": [
+    {
+      "name": "foundation-first",
+      "order": 1,
+      "target_tokens": 75000000000,
+      "bucket_tokens": {
+        "foundation": 60000000000,
+        "agentic": 15000000000
+      },
+      "bucket_shares": {
+        "foundation": 0.8,
+        "agentic": 0.2
+      }
+    },
+    {
+      "name": "agentic-intensification",
+      "order": 2,
+      "target_tokens": 50000000000,
+      "bucket_tokens": {
+        "foundation": 15000000000,
+        "agentic": 35000000000
+      },
+      "bucket_shares": {
+        "foundation": 0.3,
+        "agentic": 0.7
+      }
+    }
+  ],
+  "invariants": {
+    "replay": false,
+    "each_packed_row_consumed_once": true,
+    "preserve_source_proportions_within_bucket": true,
+    "require_manifest_sha256": true,
+    "require_tokenizer_sha256": true
+  }
+}

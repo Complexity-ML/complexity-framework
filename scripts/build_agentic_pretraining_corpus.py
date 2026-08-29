@@ -17,6 +17,7 @@ import hashlib
 import io
 import itertools
 import json
+import logging
 import os
 import re
 import unicodedata
@@ -27,6 +28,8 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+
+LOGGER = logging.getLogger("complexity.agentic_corpus")
 
 DEFAULT_PROTECTED_BENCHMARKS = (
     "arc_easy",
@@ -162,9 +165,16 @@ def build_benchmark_index(sources: Sequence[Mapping[str, Any]]) -> BenchmarkCont
     index = BenchmarkContaminationIndex()
     for source in sources:
         for row in _protected_rows(source):
-            text = row.get(source.get("text_field", "text"), "")
-            if isinstance(text, str):
-                index.add(str(source["name"]), text)
+            fields = source.get("text_fields", (source.get("text_field", "text"),))
+            parts: list[str] = []
+            for field in fields:
+                value = row.get(field, "")
+                if isinstance(value, str):
+                    parts.append(value)
+                elif value:
+                    parts.append(json.dumps(value, ensure_ascii=False, sort_keys=True))
+            if parts:
+                index.add(str(source["name"]), "\n".join(parts))
     return index
 
 
@@ -277,7 +287,15 @@ def _software_heritage_stack_edu(
         except Exception:
             return None
 
-    for language_index, language in enumerate(source.get("languages", ("Python",))):
+    languages = source.get("languages")
+    if languages is None:
+        languages = (source.get("config_name", "Python"),)
+    allowed_license_types = {
+        str(value) for value in source.get("allowed_license_types", ())
+    }
+    min_int_score = int(source.get("min_int_score", 0))
+
+    for language_index, language in enumerate(languages):
         dataset = load_dataset(
             source["dataset_id"],
             language,
@@ -285,7 +303,15 @@ def _software_heritage_stack_edu(
             revision=source["revision"],
             streaming=True,
         ).shuffle(seed=seed + language_index, buffer_size=int(source.get("shuffle_buffer", 10_000)))
-        iterator = iter(dataset)
+        iterator = (
+            row
+            for row in dataset
+            if int(row.get("int_score", 0)) >= min_int_score
+            and (
+                not allowed_license_types
+                or str(row.get("license_type", "")) in allowed_license_types
+            )
+        )
         with ThreadPoolExecutor(max_workers=workers) as executor:
             while batch := list(itertools.islice(iterator, workers * 4)):
                 resolved = list(executor.map(fetch, batch))
@@ -337,8 +363,11 @@ def validate_config(config: Mapping[str, Any]) -> None:
     if int(config.get("version", 0)) != 1:
         raise ValueError("agentic corpus config version must be 1")
     target_bytes = int(config.get("target_bytes", 0))
-    if target_bytes <= 0:
-        raise ValueError("target_bytes must be positive")
+    target_tokens = int(config.get("target_tokens", 0))
+    if target_bytes <= 0 and target_tokens <= 0:
+        raise ValueError("target_bytes or target_tokens must be positive")
+    if target_bytes > 0 and target_tokens > 0:
+        raise ValueError("target_bytes and target_tokens are mutually exclusive")
     sources = config.get("sources")
     if not isinstance(sources, list) or not sources:
         raise ValueError("sources must be a non-empty list")
@@ -355,7 +384,12 @@ def validate_config(config: Mapping[str, Any]) -> None:
             raise ValueError(f"source {source.get('name')!r} must declare license_audit")
 
 
-def build_corpus(config: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
+def build_corpus(
+    config: Mapping[str, Any],
+    output_dir: Path,
+    *,
+    reference_tokenizer: Path | None = None,
+) -> dict[str, Any]:
     validate_config(config)
     output_dir.mkdir(parents=True, exist_ok=True)
     protected = tuple(config.get("protected_benchmarks", DEFAULT_PROTECTED_BENCHMARKS))
@@ -364,23 +398,117 @@ def build_corpus(config: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
     min_score = int(config.get("agentic_min_score", 4))
     min_classes = int(config.get("agentic_min_signal_classes", 2))
     max_scan = int(config.get("max_scan_records_per_source", 1_000_000))
+    tokenizer_batch_size = int(config.get("tokenizer_batch_size", 256))
+    if tokenizer_batch_size <= 0:
+        raise ValueError("tokenizer_batch_size must be positive")
     seed = int(config.get("seed", 1729))
-    target_bytes = int(config["target_bytes"])
+    target_bytes = int(config.get("target_bytes", 0))
+    target_tokens = int(config.get("target_tokens", 0))
+    counter_tokenizer = None
+    reference_tokenizer_sha256 = None
+    if target_tokens:
+        if reference_tokenizer is None:
+            raise ValueError("target_tokens requires a reference_tokenizer")
+        from tokenizers import Tokenizer
+
+        tokenizer_json = (
+            reference_tokenizer / "tokenizer.json"
+            if reference_tokenizer.is_dir()
+            else reference_tokenizer
+        )
+        counter_tokenizer = Tokenizer.from_file(str(tokenizer_json))
+        reference_tokenizer_sha256 = hashlib.sha256(tokenizer_json.read_bytes()).hexdigest()
+    target_units = target_tokens or target_bytes
     benchmark_sources = tuple(config.get("protected_benchmark_sources", ()))
     benchmark_index = build_benchmark_index(benchmark_sources)
     seen_hashes: set[str] = set()
     manifest_sources: list[dict[str, Any]] = []
 
     for source_index, source in enumerate(config["sources"]):
-        source_target = round(target_bytes * float(source["weight"]))
+        source_target = round(target_units * float(source["weight"]))
         counters: Counter[str] = Counter()
         signal_counts: Counter[str] = Counter()
         retained_bytes = 0
+        retained_tokens = 0
         retained_records = 0
+        next_progress_units = max(1_000_000, source_target // 100)
+        progress_interval_units = next_progress_units
         output = output_dir / f"{source_index:02d}-{source['name']}.jsonl"
+        LOGGER.info(
+            "source=%s bucket=%s target=%s %s",
+            source["name"],
+            source["bucket"],
+            f"{source_target:,}",
+            "tokens" if target_tokens else "bytes",
+        )
         with output.open("w", encoding="utf-8") as destination:
+            pending: list[dict[str, Any]] = []
+            pending_hashes: set[str] = set()
+
+            def flush_pending() -> None:
+                nonlocal retained_bytes
+                nonlocal retained_tokens
+                nonlocal retained_records
+                nonlocal next_progress_units
+                if not pending:
+                    return
+                encodings = (
+                    counter_tokenizer.encode_batch(
+                        [item["text"] for item in pending],
+                        add_special_tokens=False,
+                    )
+                    if counter_tokenizer is not None
+                    else [None] * len(pending)
+                )
+                for item, encoding in zip(pending, encodings, strict=True):
+                    encoded_tokens = len(encoding.ids) if encoding is not None else 0
+                    document_units = encoded_tokens if target_tokens else item["encoded_bytes"]
+                    retained_units = retained_tokens if target_tokens else retained_bytes
+                    if retained_units + document_units > source_target:
+                        counters["over_budget"] += 1
+                        continue
+                    seen_hashes.add(item["digest"])
+                    for signal in item["signals"]:
+                        signal_counts[signal] += 1
+                    destination.write(
+                        json.dumps(
+                            {
+                                "text": item["text"],
+                                "source": source["name"],
+                                "bucket": source["bucket"],
+                                "agentic_score": item["score"],
+                                "agentic_signals": item["signals"],
+                                "content_sha256": item["digest"],
+                                "source_record_id": item["source_record_id"],
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+                    retained_bytes += item["encoded_bytes"]
+                    retained_tokens += encoded_tokens
+                    retained_records += 1
+                    counters["retained"] += 1
+                    retained_units = retained_tokens if target_tokens else retained_bytes
+                    if retained_units >= next_progress_units:
+                        LOGGER.info(
+                            "source=%s progress=%.2f%% retained=%s/%s %s "
+                            "scanned=%s records=%s",
+                            source["name"],
+                            100.0 * retained_units / source_target,
+                            f"{retained_units:,}",
+                            f"{source_target:,}",
+                            "tokens" if target_tokens else "bytes",
+                            f"{counters['scanned']:,}",
+                            f"{retained_records:,}",
+                        )
+                        next_progress_units += progress_interval_units
+                pending.clear()
+                pending_hashes.clear()
+
             for scanned, row in enumerate(iter_source(source, seed=seed + source_index), start=1):
-                if scanned > max_scan or retained_bytes >= source_target:
+                retained_units = retained_tokens if target_tokens else retained_bytes
+                if scanned > max_scan or retained_units >= source_target:
                     break
                 counters["scanned"] += 1
                 text = row.get(source.get("text_field", "text"), "")
@@ -397,7 +525,7 @@ def build_corpus(config: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
                     counters[f"benchmark:{contaminated}"] += 1
                     continue
                 digest = content_sha256(text)
-                if digest in seen_hashes:
+                if digest in seen_hashes or digest in pending_hashes:
                     counters["exact_duplicate"] += 1
                     continue
                 candidate, signals, score = is_agentic_candidate(
@@ -408,41 +536,30 @@ def build_corpus(config: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
                 if source["bucket"] == "agentic" and not candidate:
                     counters["weak_agentic_signal"] += 1
                     continue
-                encoded_bytes = len(text.encode("utf-8"))
-                if retained_bytes and retained_bytes + encoded_bytes > source_target:
-                    counters["over_budget"] += 1
-                    continue
-                seen_hashes.add(digest)
-                for signal in signals:
-                    signal_counts[signal] += 1
-                destination.write(
-                    json.dumps(
-                        {
-                            "text": text,
-                            "source": source["name"],
-                            "bucket": source["bucket"],
-                            "agentic_score": score,
-                            "agentic_signals": signals,
-                            "content_sha256": digest,
-                            "source_record_id": next(
-                                (
-                                    row[field]
-                                    for field in source.get(
-                                        "record_id_fields",
-                                        ("_source_record_id", "id", "url", "blob_id"),
-                                    )
-                                    if row.get(field) is not None
-                                ),
-                                None,
+                pending_hashes.add(digest)
+                pending.append(
+                    {
+                        "text": text,
+                        "signals": signals,
+                        "score": score,
+                        "digest": digest,
+                        "encoded_bytes": len(text.encode("utf-8")),
+                        "source_record_id": next(
+                            (
+                                row[field]
+                                for field in source.get(
+                                    "record_id_fields",
+                                    ("_source_record_id", "id", "url", "blob_id"),
+                                )
+                                if row.get(field) is not None
                             ),
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
+                            None,
+                        ),
+                    }
                 )
-                retained_bytes += encoded_bytes
-                retained_records += 1
-                counters["retained"] += 1
+                if len(pending) >= tokenizer_batch_size:
+                    flush_pending()
+            flush_pending()
 
         manifest_sources.append(
             {
@@ -463,8 +580,10 @@ def build_corpus(config: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
                     )
                     if key in source
                 },
-                "target_bytes": source_target,
+                "target_bytes": source_target if target_bytes else None,
+                "target_tokens": source_target if target_tokens else None,
                 "retained_bytes": retained_bytes,
+                "retained_tokens": retained_tokens if target_tokens else None,
                 "retained_records": retained_records,
                 "signal_counts": dict(sorted(signal_counts.items())),
                 "counters": dict(sorted(counters.items())),
@@ -473,10 +592,13 @@ def build_corpus(config: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
             }
         )
 
-    retained_total = sum(source["retained_bytes"] for source in manifest_sources)
-    if retained_total < target_bytes * 0.95:
+    retained_total = sum(
+        source["retained_tokens"] if target_tokens else source["retained_bytes"]
+        for source in manifest_sources
+    )
+    if retained_total < target_units * 0.95:
         raise RuntimeError(
-            f"corpus reached only {retained_total:,}/{target_bytes:,} bytes; "
+            f"corpus reached only {retained_total:,}/{target_units:,} units; "
             "increase max_scan_records_per_source or repair source availability"
         )
     manifest = {
@@ -484,8 +606,11 @@ def build_corpus(config: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
         "config_sha256": hashlib.sha256(
             json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest(),
-        "target_bytes": target_bytes,
-        "retained_bytes": retained_total,
+        "target_bytes": target_bytes or None,
+        "target_tokens": target_tokens or None,
+        "retained_bytes": sum(source["retained_bytes"] for source in manifest_sources),
+        "retained_tokens": retained_total if target_tokens else None,
+        "reference_tokenizer_sha256": reference_tokenizer_sha256,
         "seed": seed,
         "protected_benchmarks": protected,
         "protected_benchmark_sources": benchmark_sources,
@@ -503,14 +628,33 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--reference-tokenizer")
+    parser.add_argument("--target-tokens", type=int)
+    parser.add_argument("--max-scan-records-per-source", type=int)
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+    )
     config = json.loads(Path(args.config).read_text(encoding="utf-8"))
-    manifest = build_corpus(config, Path(args.output_dir))
-    print(f"Agentic corpus: {manifest['retained_bytes']:,} bytes")
+    if args.target_tokens is not None:
+        config.pop("target_bytes", None)
+        config["target_tokens"] = args.target_tokens
+    if args.max_scan_records_per_source is not None:
+        config["max_scan_records_per_source"] = args.max_scan_records_per_source
+    manifest = build_corpus(
+        config,
+        Path(args.output_dir),
+        reference_tokenizer=(Path(args.reference_tokenizer) if args.reference_tokenizer else None),
+    )
+    unit = "tokens" if manifest.get("target_tokens") else "bytes"
+    retained = manifest.get("retained_tokens") or manifest["retained_bytes"]
+    print(f"Agentic corpus: {retained:,} {unit}")
     print(f"Manifest: {Path(args.output_dir) / 'manifest.json'}")
 
 
