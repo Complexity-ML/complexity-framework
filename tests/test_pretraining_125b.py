@@ -67,6 +67,7 @@ def test_direct_125b_config_preserves_budgets_and_discloses_fast_path() -> None:
     assert config["protected_benchmarks"] == []
     assert config["protected_benchmark_sources"] == []
     assert all(source["selection"] == "direct" for source in config["sources"])
+    assert all(source["shuffle_buffer"] == 1 for source in config["sources"])
 
 
 def test_direct_selection_requires_explicit_unfiltered_contract() -> None:

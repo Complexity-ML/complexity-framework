@@ -60,6 +60,9 @@ written into one-billion-token shards. Each shard is uploaded, remotely
 verified by size and SHA-256, committed to SQLite restart state, and locally
 evicted before the next shard accumulates.
 
+Direct mode preserves each pinned upstream's native deterministic order
+(`shuffle_buffer=1`) so tokenization starts without a large in-memory shuffle.
+
 This fast path deliberately skips per-document filters, benchmark
 decontamination, and global exact deduplication. Dataset metadata records
 `materialization_mode=direct_source_curated` and disables those three claims.

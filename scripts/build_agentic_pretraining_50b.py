@@ -69,6 +69,7 @@ def make_direct_source_curated_config(config: Mapping[str, Any]) -> dict[str, An
     )
     for source in direct["sources"]:
         source["selection"] = "direct"
+        source["shuffle_buffer"] = 1
     return direct
 
 
