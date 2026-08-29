@@ -337,7 +337,10 @@
       "target_tokens": 500000000,
       "weight": 0.004,
       "dataset_id": "nvidia/Nemotron-Agentic-v1",
-      "split": "tool_calling",
+      "source_type": "hf_raw_jsonl",
+      "repo_files": [
+        "data/tool_calling.jsonl"
+      ],
       "messages_field": "messages",
       "tools_field": "tools",
       "revision": "650d590978ca35c8f1ecea2faf136e5fac421b62",

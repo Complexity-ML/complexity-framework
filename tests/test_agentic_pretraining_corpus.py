@@ -1,4 +1,7 @@
 import json
+import sys
+import types
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -10,6 +13,7 @@ from scripts.build_agentic_pretraining_corpus import (
     build_corpus,
     content_sha256,
     is_agentic_candidate,
+    iter_source,
     normalize_text,
     quality_rejection,
     validate_config,
@@ -123,3 +127,40 @@ def test_config_rejects_untracked_licenses() -> None:
                 "sources": [{"name": "x", "bucket": "general", "weight": 1.0}],
             }
         )
+
+
+def test_raw_hub_jsonl_preserves_heterogeneous_tool_schemas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        {"messages": [{"role": "user", "content": "first"}], "tools": [{"a": 1}]},
+        {"messages": [{"role": "user", "content": "second"}], "tools": [{"b": []}]},
+    ]
+    payload = "".join(json.dumps(row) + "\n" for row in rows)
+    opened: list[tuple[str, str]] = []
+
+    class FakeHfFileSystem:
+        def open(self, path: str, mode: str) -> StringIO:
+            opened.append((path, mode))
+            return StringIO(payload)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        types.SimpleNamespace(HfFileSystem=FakeHfFileSystem),
+    )
+    source = {
+        "name": "trajectory",
+        "source_type": "hf_raw_jsonl",
+        "dataset_id": "owner/repository",
+        "revision": "a" * 40,
+        "repo_files": ["data/tool_calling.jsonl"],
+    }
+
+    assert list(iter_source(source, seed=17)) == rows
+    assert opened == [
+        (
+            f"datasets/owner/repository@{'a' * 40}/data/tool_calling.jsonl",
+            "rt",
+        )
+    ]

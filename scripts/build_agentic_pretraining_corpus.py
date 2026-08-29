@@ -256,6 +256,48 @@ def _jsonl_rows(path: Path) -> Iterator[Mapping[str, Any]]:
                 yield row
 
 
+def _hf_raw_jsonl_rows(source: Mapping[str, Any]) -> Iterator[Mapping[str, Any]]:
+    """Stream pinned Hub JSONL files without datasets schema coercion.
+
+    Some trajectory datasets contain heterogeneous nested tool schemas.  The
+    datasets JSON loader tries to cast every shard to one inferred Arrow schema
+    and can reject otherwise valid rows.  Reading the pinned JSONL files
+    directly preserves those structures for the canonical trajectory
+    serializer.
+    """
+
+    try:
+        from huggingface_hub import HfFileSystem
+    except ImportError as error:
+        raise ImportError(
+            "raw Hugging Face JSONL sources require `pip install huggingface_hub`"
+        ) from error
+
+    dataset_id = str(source["dataset_id"])
+    revision = str(source["revision"])
+    repo_files = source.get("repo_files")
+    if not isinstance(repo_files, Sequence) or isinstance(repo_files, (str, bytes)):
+        raise ValueError(f"source {source['name']!r} requires a repo_files list")
+    if not repo_files:
+        raise ValueError(f"source {source['name']!r} repo_files must not be empty")
+
+    filesystem = HfFileSystem()
+    for repo_file in repo_files:
+        path = f"datasets/{dataset_id}@{revision}/{repo_file}"
+        with filesystem.open(path, "rt") as stream:
+            for line_number, line in enumerate(stream, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as error:
+                    raise ValueError(
+                        f"invalid Hub JSONL at {path}:{line_number}: {error}"
+                    ) from error
+                if isinstance(row, Mapping):
+                    yield row
+
+
 def _software_heritage_stack_edu(
     source: Mapping[str, Any], *, seed: int
 ) -> Iterator[Mapping[str, Any]]:
@@ -290,9 +332,7 @@ def _software_heritage_stack_edu(
     languages = source.get("languages")
     if languages is None:
         languages = (source.get("config_name", "Python"),)
-    allowed_license_types = {
-        str(value) for value in source.get("allowed_license_types", ())
-    }
+    allowed_license_types = {str(value) for value in source.get("allowed_license_types", ())}
     min_int_score = int(source.get("min_int_score", 0))
 
     for language_index, language in enumerate(languages):
@@ -326,6 +366,9 @@ def _software_heritage_stack_edu(
 def iter_source(source: Mapping[str, Any], *, seed: int) -> Iterator[Mapping[str, Any]]:
     if source.get("source_type") == "software_heritage_stack_edu":
         yield from _software_heritage_stack_edu(source, seed=seed)
+        return
+    if source.get("source_type") == "hf_raw_jsonl":
+        yield from _hf_raw_jsonl_rows(source)
         return
     if "path" in source or "path_env" in source:
         raw_path = source.get("path") or os.environ.get(str(source["path_env"]), "")
@@ -492,8 +535,7 @@ def build_corpus(
                     retained_units = retained_tokens if target_tokens else retained_bytes
                     if retained_units >= next_progress_units:
                         LOGGER.info(
-                            "source=%s progress=%.2f%% retained=%s/%s %s "
-                            "scanned=%s records=%s",
+                            "source=%s progress=%.2f%% retained=%s/%s %s scanned=%s records=%s",
                             source["name"],
                             100.0 * retained_units / source_target,
                             f"{retained_units:,}",

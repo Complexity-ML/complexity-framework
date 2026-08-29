@@ -60,6 +60,8 @@ def test_125b_sources_are_pinned_and_use_the_quality_variants() -> None:
     assert sources["finemath_3plus_foundation"]["config_name"] == "finemath-3plus"
     assert sources["infiwebmath_3plus_foundation"]["config_name"] == "infiwebmath-3plus"
     assert sources["nemotron_tool_calling"]["target_tokens"] == 500_000_000
+    assert sources["nemotron_tool_calling"]["source_type"] == "hf_raw_jsonl"
+    assert sources["nemotron_tool_calling"]["repo_files"] == ["data/tool_calling.jsonl"]
     assert all(
         len(source.get("revision", "")) == 40
         for source in config["sources"]
