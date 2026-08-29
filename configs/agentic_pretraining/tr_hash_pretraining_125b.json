@@ -21,6 +21,9 @@
   "producer_candidate_batch_size": 256,
   "producer_scan_batch_size": 1024,
   "progress_log_tokens": 25000000,
+  "candidate_oversample": 1.05,
+  "candidate_shard_tokens": 250000000,
+  "candidate_tokenization_batch_size": 512,
   "tokenizer_contract": {
     "repo_id": "AETHORIA-AI/TR-HASH-Tokenizer-32K-Agentic",
     "vocab_size": 32000,

@@ -38,6 +38,9 @@ def test_125b_manifest_has_exact_bucket_and_source_budgets() -> None:
     assert config["parallel_sources"] == 3
     assert config["producer_queue_depth"] == 4
     assert config["producer_candidate_batch_size"] == 256
+    assert config["candidate_oversample"] == pytest.approx(1.05)
+    assert config["candidate_shard_tokens"] == 250_000_000
+    assert config["candidate_tokenization_batch_size"] == 512
     by_bucket = Counter()
     for source in config["sources"]:
         by_bucket[source["bucket"]] += source["target_tokens"]

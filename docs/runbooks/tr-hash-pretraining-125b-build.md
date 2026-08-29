@@ -48,26 +48,42 @@ This command validates the vocabulary and marker IDs, then records the
 revision, manifest SHA-256 and `tokenizer.json` SHA-256 atomically. Review and
 commit that config change before launching production.
 
-## 3. Capacity pilots after tokenizer validation
+## 3. Two-stage architecture and capacity pilot
 
-Run one verified shard for every high-risk filtered family before starting the
-full build. Use a private pilot dataset repository, not the production root:
+The production launcher no longer filters, globally merges and packs raw
+network streams in one round-robin loop. That design measured only about
+68,500 reference tokens/s because the slowest upstream repeatedly blocked the
+other sources.
+
+The corrected pipeline has two restart-safe stages:
+
+1. twelve independent source processes fetch, filter, decontaminate, apply
+   within-source exact deduplication, tokenize only for quota accounting, then
+   upload deterministic gzip candidate shards under `_candidates/`; every
+   upload is size/SHA-256 verified before its local file is evicted;
+2. one canonical-order merger downloads one candidate shard at a time,
+   verifies it, performs global exact deduplication, packs final uint16 token
+   shards, uploads/verifies them under `production/`, then evicts both inputs
+   and outputs locally.
+
+Before the full build, use a private pilot repository and temporarily lower
+the source targets in a copied config. Do not edit the canonical 125B budgets:
 
 ```bash
 export TR_HASH_125B_CREATE_PRIVATE_REPO=1
 export TR_HASH_125B_HF_REPO=AETHORIA-AI/TR-HASH-Pretraining-125B-Agentic-32K-Pilot
 export TR_HASH_125B_TOKENIZER=/workspace/tokenizers/tr-hash-agentic-32k-<REVISION>
 export TR_HASH_125B_WORK_DIR=/workspace/builds/tr-hash-pretraining-125b-pilot
+export TR_HASH_125B_STAGE_ONLY=1
+export TR_HASH_125B_SOURCE_WORKERS=12
 
-scripts/run_tr_hash_pretraining_125b_build.sh \
-  --only-source fineweb_edu_agentic --max-shards 1
+scripts/run_tr_hash_pretraining_125b_build.sh
 ```
 
-Repeat in separate work directories for `finemath_4plus_agentic`,
-`infiwebmath_4plus_agentic`, `cosmopedia_v2_agentic`, each Stack-Edu language,
-and `nemotron_tool_calling`. Inspect retained/scanned ratios and license
-counters. Do not start the 125B build if a source cannot supply its quota with
-a reasonable safety margin; revise the frozen mix and rerun the static tests.
+Inspect every per-source retained/scanned ratio, the aggregate throughput and
+the remote candidate hashes. Do not start the canonical 125B build unless its
+extrapolated extraction time is acceptable and every source can supply its
+quota plus the configured 5% candidate margin.
 
 ## 4. Production launch
 
@@ -75,18 +91,18 @@ Store `HF_TOKEN` in a root-readable environment file rather than the command
 line or repository. The build uploads each shard, checks the remote size and
 SHA-256, commits its SQLite state, and only then evicts the local shard.
 
-The production config runs three source producers concurrently. Their filtered
-batches are consumed by one fixed round-robin merger, so global exact-document
-deduplication and byte-for-byte determinism do not depend on network timing.
-Every flushed batch records its source scan position, counters, carry and
-partial-shard position in SQLite; a restart resumes the existing partial shard
-instead of discarding a nearly completed 1B-token artifact.
+The launcher runs candidate extraction first and starts final packing only when
+all source manifests are complete. A restart uses the same command and paths.
+Only verified shards are durable progress; an uncommitted candidate partial is
+discarded and deterministically regenerated. The final merger is independent
+of source completion timing and preserves canonical config order.
 
 ```bash
 export HF_TOKEN='<loaded from protected environment file>'
 export TR_HASH_125B_TOKENIZER=/workspace/tokenizers/tr-hash-agentic-32k-<REVISION>
 export TR_HASH_125B_WORK_DIR=/workspace/builds/tr-hash-pretraining-125b
 export TR_HASH_125B_HF_REPO=AETHORIA-AI/TR-HASH-Pretraining-125B-Agentic-32K
+export TR_HASH_125B_SOURCE_WORKERS=12
 
 scripts/run_tr_hash_pretraining_125b_build.sh
 ```
@@ -102,10 +118,19 @@ republished.
 journalctl -u tr-hash-pretraining-125b.service -f -o cat
 ```
 
-Also inspect the durable state without modifying it:
+During extraction, inspect the independent durable states without modifying
+them:
 
 ```bash
-sqlite3 /workspace/builds/tr-hash-pretraining-125b/state.sqlite3 \
+find /workspace/builds/tr-hash-pretraining-125b/candidates -name state.sqlite3 -print0 | \
+  xargs -0 -n1 sqlite3 \
+  'SELECT source, scanned, retained_tokens, retained_records FROM progress;'
+```
+
+During final packing:
+
+```bash
+sqlite3 /workspace/builds/tr-hash-pretraining-125b/final/state.sqlite3 \
   'SELECT source, rows_done, scanned, source_tokens FROM progress ORDER BY source;'
 ```
 

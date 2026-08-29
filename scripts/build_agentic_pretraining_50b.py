@@ -20,7 +20,7 @@ import sqlite3
 import threading
 import time
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,7 +41,7 @@ from scripts.build_agentic_pretraining_corpus import (
 
 LOGGER = logging.getLogger("tr_hash_agentic_50b")
 SCHEMA = "tr-hash-token-production-v2"
-ALLOWED_SELECTIONS = {"quality", "agentic", "agentic_trajectory"}
+ALLOWED_SELECTIONS = {"quality", "agentic", "agentic_trajectory", "staged"}
 
 
 def sha256_file(path: Path) -> str:
@@ -553,13 +553,33 @@ class HubPublisher:
     def _publish_file_at(self, local_path: Path, repo_path: str) -> dict[str, Any]:
         expected_size = local_path.stat().st_size
         expected_sha = sha256_file(local_path)
-        self.api.upload_file(
-            path_or_fileobj=local_path,
-            path_in_repo=repo_path,
-            repo_id=self.repo_id,
-            repo_type="dataset",
-            commit_message=f"Upload verified corpus artifact {repo_path}",
-        )
+        last_error: BaseException | None = None
+        for attempt in range(6):
+            try:
+                self.api.upload_file(
+                    path_or_fileobj=local_path,
+                    path_in_repo=repo_path,
+                    repo_id=self.repo_id,
+                    repo_type="dataset",
+                    commit_message=f"Upload verified corpus artifact {repo_path}",
+                )
+                last_error = None
+                break
+            except Exception as error:
+                last_error = error
+                if attempt == 5:
+                    break
+                delay = 2**attempt
+                LOGGER.warning(
+                    "upload failed for %s (attempt %d/6); retrying in %ds: %s",
+                    repo_path,
+                    attempt + 1,
+                    delay,
+                    error,
+                )
+                time.sleep(delay)
+        if last_error is not None:
+            raise RuntimeError(f"upload failed after 6 attempts: {repo_path}") from last_error
         info = self.api.get_paths_info(
             repo_id=self.repo_id,
             paths=[repo_path],
@@ -872,11 +892,19 @@ def _prepare_source_batches(
     benchmark_index: Any,
     destination: queue.Queue[PreparedBatch],
     stop: threading.Event,
+    source_iterator_factory: Callable[[Mapping[str, Any], int], Iterator[Mapping[str, Any]]]
+    | None = None,
 ) -> None:
     """Read and filter one source without touching global state or output files."""
 
+    iterator: Iterator[Mapping[str, Any]] | None = None
     try:
-        iterator = iter(iter_source(source, seed=int(config.get("seed", 1729)) + source_index))
+        source_seed = int(config.get("seed", 1729)) + source_index
+        iterator = iter(
+            source_iterator_factory(source, source_seed)
+            if source_iterator_factory is not None
+            else iter_source(source, seed=source_seed)
+        )
         if restored_scanned:
             _skip(iterator, restored_scanned)
         candidate_limit = max(
@@ -908,6 +936,16 @@ def _prepare_source_batches(
                 if not text:
                     counters["missing_text"] += 1
                     continue
+                selection = str(source.get("selection", "agentic"))
+                if selection == "staged":
+                    digest = str(row.get("content_sha256", ""))
+                    if not digest or digest != content_sha256(text):
+                        raise ValueError(
+                            f"staged candidate digest mismatch in source {source['name']}"
+                        )
+                    signals = tuple(str(value) for value in row.get("agentic_signals", ()))
+                    candidates.append((text, signals, digest))
+                    continue
                 text = normalize_text(text)
                 rejected = quality_rejection(
                     text,
@@ -921,7 +959,6 @@ def _prepare_source_batches(
                 if contaminated:
                     counters[f"benchmark:{contaminated}"] += 1
                     continue
-                selection = str(source.get("selection", "agentic"))
                 signals: tuple[str, ...] = ()
                 if selection == "agentic":
                     accepted, signals, _ = is_agentic_candidate(
@@ -954,6 +991,10 @@ def _prepare_source_batches(
             PreparedBatch(scanned=0, counters=Counter(), candidates=(), error=error),
             stop,
         )
+    finally:
+        close = getattr(iterator, "close", None)
+        if close is not None:
+            close()
 
 
 class _SourcePacker:
@@ -1273,6 +1314,8 @@ def build(
     curriculum: Mapping[str, Any] | None = None,
     only_source: str | None = None,
     max_shards: int | None = None,
+    source_iterator_factory: Callable[[Mapping[str, Any], int], Iterator[Mapping[str, Any]]]
+    | None = None,
 ) -> dict[str, Any]:
     sources = list(config["sources"])
     validate_config(config)
@@ -1402,6 +1445,7 @@ def build(
                         "benchmark_index": benchmark_index,
                         "destination": packets,
                         "stop": stop,
+                        "source_iterator_factory": source_iterator_factory,
                     },
                     name=f"source-{name}",
                     daemon=True,
