@@ -1,0 +1,19 @@
+name = "tr-hash-agentic-data-50m"
+command = [
+  "/home/boris/pytorch/bin/python",
+  "-m", "scripts.prepare_tr_hash_agentic_lab",
+  "--config", "/home/boris/complexity-framework/configs/agentic_pretraining/tr_hash_small_agentic_50m.json",
+  "--raw-dir", "/home/boris/complexity-framework/artifacts/tr_hash_small_agentic_raw",
+  "--tokenizer-dir", "/home/boris/complexity-framework/artifacts/tr_hash_agentic_tokenizer_32k",
+  "--token-dir", "/home/boris/complexity-framework/artifacts/tr_hash_small_agentic_50m_tokens",
+  "--target-tokens", "50000000",
+  "--seq-len", "1024",
+  "--global-batch-sequences", "8",
+]
+working_directory = "/home/boris/complexity-framework"
+gpu_devices = []
+
+[environment]
+PYTHONUNBUFFERED = "1"
+HF_HUB_DISABLE_XET = "1"
+HF_HUB_DISABLE_PROGRESS_BARS = "1"

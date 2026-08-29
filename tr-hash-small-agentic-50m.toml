@@ -1,0 +1,42 @@
+name = "tr-hash-small-agentic-50m"
+command = [
+  "/home/boris/pytorch/bin/python",
+  "-m", "scripts.train_tr_hash_text_lineage",
+  "--model-preset", "complexity-small",
+  "--stage", "pretraining",
+  "--tokenizer", "/home/boris/complexity-framework/artifacts/tr_hash_agentic_tokenizer_32k",
+  "--tokenized-data", "/home/boris/complexity-framework/artifacts/tr_hash_small_agentic_50m_tokens",
+  "--tokenized-plan", "/home/boris/complexity-framework/artifacts/tr_hash_small_agentic_50m_tokens/pretrain_plan.json",
+  "--target-tokens", "50003968",
+  "--batch-size", "8",
+  "--seq-len", "1024",
+  "--gradient-accumulation", "1",
+  "--precision", "bf16",
+  "--lr", "3e-4",
+  "--warmup-tokens", "1000000",
+  "--lr-scheduler", "wsd",
+  "--token-packs", "4",
+  "--save-steps", "500",
+  "--log-steps", "10",
+  "--num-workers", "0",
+  "--distributed-mode", "ddp",
+  "--no-gradient-checkpointing",
+  "--use-custom-kernels", "auto",
+  "--checkpoint-dir", "/home/boris/complexity-framework/artifacts/tr_hash_small_agentic_50m",
+]
+working_directory = "/home/boris/complexity-framework"
+gpu_devices = ["1"]
+
+[environment]
+PYTHONUNBUFFERED = "1"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+HF_HUB_DISABLE_XET = "1"
+
+[checkpoint]
+directory = "/home/boris/complexity-framework/artifacts/tr_hash_small_agentic_50m"
+pattern = "step_*"
+resume_arguments = ["--resume", "{checkpoint}"]
+
+[egpu]
+stable_seconds = 15
+poll_seconds = 5

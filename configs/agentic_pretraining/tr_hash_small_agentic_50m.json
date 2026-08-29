@@ -1,0 +1,147 @@
+{
+  "version": 1,
+  "description": "Raw-text mixture for the TR-HASH small agentic tokenizer and 50M-token lab run.",
+  "target_bytes": 225000000,
+  "seed": 1729,
+  "min_chars": 200,
+  "max_chars": 100000,
+  "agentic_min_score": 4,
+  "agentic_min_signal_classes": 2,
+  "max_scan_records_per_source": 1000000,
+  "protected_benchmarks": [
+    "arc_easy",
+    "arc_challenge",
+    "ai2_arc",
+    "piqa",
+    "gsm8k",
+    "hellaswag",
+    "mmlu",
+    "truthfulqa",
+    "winogrande"
+  ],
+  "protected_benchmark_sources": [
+    {
+      "name": "arc_easy",
+      "dataset_id": "allenai/ai2_arc",
+      "config_name": "ARC-Easy",
+      "revision": "210d026faf9955653af8916fad021475a3f00453",
+      "splits": ["train", "validation", "test"],
+      "text_field": "question"
+    },
+    {
+      "name": "arc_challenge",
+      "dataset_id": "allenai/ai2_arc",
+      "config_name": "ARC-Challenge",
+      "revision": "210d026faf9955653af8916fad021475a3f00453",
+      "splits": ["train", "validation", "test"],
+      "text_field": "question"
+    },
+    {
+      "name": "piqa",
+      "archive_url": "https://storage.googleapis.com/ai2-mosaic/public/physicaliqa/physicaliqa-train-dev.zip",
+      "archive_sha256": "54d32a04f59a7e354396f321723c8d7ec35cc6b08506563d8d1ffcc15ce98ddd",
+      "members": [
+        "physicaliqa-train-dev/train.jsonl",
+        "physicaliqa-train-dev/dev.jsonl"
+      ],
+      "text_field": "goal"
+    },
+    {
+      "name": "gsm8k",
+      "dataset_id": "openai/gsm8k",
+      "config_name": "main",
+      "revision": "740312add88f781978c0658806c59bc2815b9866",
+      "splits": ["train", "test"],
+      "text_field": "question"
+    },
+    {
+      "name": "hellaswag",
+      "dataset_id": "Rowan/hellaswag",
+      "config_name": "default",
+      "revision": "218ec52e09a7e7462a5400043bb9a69a41d06b76",
+      "splits": ["train", "validation", "test"],
+      "text_field": "ctx"
+    }
+  ],
+  "release_gate": "Recheck every dataset card and row-level upstream license before publishing a derived corpus.",
+  "sources": [
+    {
+      "name": "dclm_general",
+      "bucket": "general",
+      "weight": 0.2,
+      "dataset_id": "mlfoundations/dclm-baseline-1.0-parquet",
+      "split": "train",
+      "text_field": "text",
+      "revision": "817d6752765f6a41261085171dd546b104f60626",
+      "license_audit": "Dataset card declares CC-BY-4.0; preserve source attribution."
+    },
+    {
+      "name": "fineweb_edu_general",
+      "bucket": "general",
+      "weight": 0.25,
+      "dataset_id": "HuggingFaceTB/smollm-corpus",
+      "config_name": "fineweb-edu-dedup",
+      "split": "train",
+      "text_field": "text",
+      "revision": "3ba9d605774198c5868892d7a8deda78031a781f",
+      "license_audit": "Verify dataset-card and upstream document terms before redistribution."
+    },
+    {
+      "name": "cosmopedia_general",
+      "bucket": "general",
+      "weight": 0.15,
+      "dataset_id": "HuggingFaceTB/smollm-corpus",
+      "config_name": "cosmopedia-v2",
+      "split": "train",
+      "text_field": "text",
+      "revision": "3ba9d605774198c5868892d7a8deda78031a781f",
+      "license_audit": "Verify dataset-card and generator-model terms before redistribution."
+    },
+    {
+      "name": "stack_edu_agentic",
+      "bucket": "agentic",
+      "weight": 0.2,
+      "source_type": "software_heritage_stack_edu",
+      "dataset_id": "HuggingFaceTB/stack-edu",
+      "revision": "eeec5caac5cc3758a18f1d3ba4416837a9ba814c",
+      "split": "train",
+      "languages": ["Python", "JavaScript", "TypeScript", "Shell", "Rust", "Go"],
+      "download_workers": 32,
+      "text_field": "text",
+      "license_audit": "Preserve Software Heritage blob IDs and audit each upstream file license before redistribution."
+    },
+    {
+      "name": "fineweb_edu_agentic",
+      "bucket": "agentic",
+      "weight": 0.1,
+      "dataset_id": "HuggingFaceTB/smollm-corpus",
+      "config_name": "fineweb-edu-dedup",
+      "split": "train",
+      "text_field": "text",
+      "revision": "3ba9d605774198c5868892d7a8deda78031a781f",
+      "license_audit": "Verify dataset-card and upstream document terms before redistribution."
+    },
+    {
+      "name": "finemath_agentic",
+      "bucket": "agentic",
+      "weight": 0.05,
+      "dataset_id": "HuggingFaceTB/finemath",
+      "config_name": "finemath-3plus",
+      "split": "train",
+      "text_field": "text",
+      "revision": "e92b25a616738fe95dc186b64dfb19f9c8525594",
+      "license_audit": "Verify dataset-card and upstream document terms before redistribution."
+    },
+    {
+      "name": "infiwebmath_agentic",
+      "bucket": "agentic",
+      "weight": 0.05,
+      "dataset_id": "HuggingFaceTB/finemath",
+      "config_name": "infiwebmath-3plus",
+      "split": "train",
+      "text_field": "text",
+      "revision": "e92b25a616738fe95dc186b64dfb19f9c8525594",
+      "license_audit": "Verify dataset-card and upstream document terms before redistribution."
+    }
+  ]
+}

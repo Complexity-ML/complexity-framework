@@ -8,6 +8,7 @@ class TestTokenizerConfig:
 
     def test_default_config(self):
         from complexity.tokenizer import TokenizerConfig
+
         config = TokenizerConfig()
         assert config.vocab_size == 32000
         assert config.format == "complexity"
@@ -15,6 +16,7 @@ class TestTokenizerConfig:
 
     def test_custom_config(self):
         from complexity.tokenizer import TokenizerConfig
+
         config = TokenizerConfig(vocab_size=100000, format="llama3")
         assert config.vocab_size == 100000
         assert config.format == "llama3"
@@ -25,22 +27,29 @@ class TestTokenizerPresets:
 
     def test_presets_exist(self):
         from complexity.tokenizer import TOKENIZER_PRESETS
+
         assert "complexity-7b" in TOKENIZER_PRESETS
         assert "llama-7b" in TOKENIZER_PRESETS
         assert "llama3-8b" in TOKENIZER_PRESETS
         assert "mistral-7b" in TOKENIZER_PRESETS
+        assert "tr-hash-agentic-32k" in TOKENIZER_PRESETS
 
     def test_preset_values(self):
         from complexity.tokenizer import TOKENIZER_PRESETS
+
         assert TOKENIZER_PRESETS["llama3-8b"]["vocab_size"] == 128256
         assert TOKENIZER_PRESETS["complexity-7b"]["vocab_size"] == 65536
+        assert TOKENIZER_PRESETS["tr-hash-agentic-32k"] == {
+            "vocab_size": 32000,
+            "format": "tr_hash_agentic_reasoning",
+        }
 
 
 class TestSpecialTokens:
     """Test special tokens configuration."""
 
     def test_format_tokens(self):
-        from complexity.tokenizer import FORMAT_SPECIAL_TOKENS, get_special_tokens
+        from complexity.tokenizer import get_special_tokens
 
         # Complexity format
         tokens = get_special_tokens("complexity")
@@ -65,16 +74,38 @@ class TestSpecialTokens:
         assert bos_eos["bos"] == "<s>"
         assert bos_eos["eos"] == "</s>"
 
+    def test_agentic_reasoning_tokens_are_reserved_and_unique(self):
+        from complexity.tokenizer import get_bos_eos, get_special_tokens
+
+        tokens = get_special_tokens("tr_hash_agentic_reasoning")
+        assert len(tokens) == 20
+        assert len(tokens) == len(set(tokens))
+        assert tokens[:4] == ["<|begin|>", "<|end|>", "<|pad|>", "<|unk|>"]
+        for marker in (
+            "<|tool_call_start|>",
+            "<|tool_result_start|>",
+            "<|think_start|>",
+            "<|final_end|>",
+        ):
+            assert marker in tokens
+        assert get_bos_eos("tr_hash_agentic_reasoning") == {
+            "bos": "<|begin|>",
+            "eos": "<|end|>",
+            "pad": "<|pad|>",
+            "unk": "<|unk|>",
+        }
+
 
 class TestTokenizer:
     """Test Tokenizer class."""
 
     @pytest.mark.skipif(
         not pytest.importorskip("tokenizers", reason="tokenizers not installed"),
-        reason="tokenizers library required"
+        reason="tokenizers library required",
     )
     def test_load_preset(self):
         from complexity.tokenizer import Tokenizer
+
         try:
             tok = Tokenizer.load("complexity-7b")
             assert tok.vocab_size == 65536
@@ -83,7 +114,8 @@ class TestTokenizer:
             pytest.skip("tokenizers library not installed")
 
     def test_tokenizer_repr(self):
-        from complexity.tokenizer import Tokenizer, TokenizerConfig
+        from complexity.tokenizer import TokenizerConfig
+
         # Create minimal tokenizer for repr test
         config = TokenizerConfig(vocab_size=32000, format="complexity")
         # Note: Full tokenizer tests require tokenizers library

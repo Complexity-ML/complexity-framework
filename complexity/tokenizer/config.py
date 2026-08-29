@@ -3,12 +3,13 @@ Tokenizer Configuration - Formats, special tokens, presets.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Any, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
 class TokenizerConfig:
     """Config tokenizer - tous les champs ont des defaults, tout est overridable."""
+
     vocab_size: int = 32000
     format: str = "complexity"
     method: str = "bpe"
@@ -31,6 +32,10 @@ class TokenizerConfig:
 # === Presets ===
 TOKENIZER_PRESETS = {
     "complexity-7b": {"vocab_size": 65536, "format": "complexity"},
+    "tr-hash-agentic-32k": {
+        "vocab_size": 32000,
+        "format": "tr_hash_agentic_reasoning",
+    },
     "llama-7b": {"vocab_size": 32000, "format": "llama3"},
     "llama3-8b": {"vocab_size": 128256, "format": "llama3"},
     "mistral-7b": {"vocab_size": 32768, "format": "mistral"},
@@ -40,39 +45,85 @@ TOKENIZER_PRESETS = {
 
 # === Format-specific special tokens ===
 FORMAT_SPECIAL_TOKENS = {
+    "tr_hash_agentic_reasoning": [
+        # These tokens occupy IDs inside the 32K vocabulary. They are not
+        # appended after training, so TR-Hash routing is stable from step 0.
+        "<|begin|>",
+        "<|end|>",
+        "<|pad|>",
+        "<|unk|>",
+        "<|system|>",
+        "<|user|>",
+        "<|assistant|>",
+        "<|end_of_turn|>",
+        "<|tool_call_start|>",
+        "<|tool_call_end|>",
+        "<|tool_result_start|>",
+        "<|tool_result_end|>",
+        "<|plan_start|>",
+        "<|plan_end|>",
+        "<|memory_start|>",
+        "<|memory_end|>",
+        "<|think_start|>",
+        "<|think_end|>",
+        "<|final_start|>",
+        "<|final_end|>",
+    ],
     "complexity": [
         # Control tokens (0-9)
-        "<|begin|>", "<|end|>", "<|pad|>", "<|unk|>",
+        "<|begin|>",
+        "<|end|>",
+        "<|pad|>",
+        "<|unk|>",
         # Role tokens (10-19)
-        "<|system|>", "<|user|>", "<|assistant|>",
+        "<|system|>",
+        "<|user|>",
+        "<|assistant|>",
         # Reasoning tokens (20-29)
-        "<|reason|>", "<|step|>", "<|conclude|>",
+        "<|reason|>",
+        "<|step|>",
+        "<|conclude|>",
         # Tool tokens (30-39)
-        "<|tool_call|>", "<|tool_result|>",
+        "<|tool_call|>",
+        "<|tool_result|>",
         # Code tokens (40-49)
-        "<|code|>", "<|/code|>",
+        "<|code|>",
+        "<|/code|>",
     ],
     "llama3": [
-        "<|begin_of_text|>", "<|end_of_text|>",
-        "<|start_header_id|>", "<|end_header_id|>",
+        "<|begin_of_text|>",
+        "<|end_of_text|>",
+        "<|start_header_id|>",
+        "<|end_header_id|>",
         "<|eot_id|>",
     ],
     "mistral": [
-        "<s>", "</s>",
-        "[INST]", "[/INST]",
+        "<s>",
+        "</s>",
+        "[INST]",
+        "[/INST]",
     ],
     "chatml": [
-        "<|im_start|>", "<|im_end|>",
+        "<|im_start|>",
+        "<|im_end|>",
     ],
     "gemma": [
-        "<bos>", "<eos>",
-        "<start_of_turn>", "<end_of_turn>",
+        "<bos>",
+        "<eos>",
+        "<start_of_turn>",
+        "<end_of_turn>",
     ],
 }
 
 
 # === BOS/EOS mapping per format ===
 FORMAT_BOS_EOS = {
+    "tr_hash_agentic_reasoning": {
+        "bos": "<|begin|>",
+        "eos": "<|end|>",
+        "pad": "<|pad|>",
+        "unk": "<|unk|>",
+    },
     "complexity": {"bos": "<|begin|>", "eos": "<|end|>", "pad": "<|pad|>", "unk": "<|unk|>"},
     "llama3": {"bos": "<|begin_of_text|>", "eos": "<|end_of_text|>"},
     "mistral": {"bos": "<s>", "eos": "</s>"},
