@@ -1223,6 +1223,47 @@ class _SourcePacker:
             self.mapping = None
 
 
+def _parallel_source_groups(
+    sources: Sequence[Mapping[str, Any]], width: int
+) -> list[list[Mapping[str, Any]]]:
+    """Create deterministic, bucket-local groups across distinct upstreams."""
+
+    if width < 1:
+        raise ValueError("parallel source width must be positive")
+    groups: list[list[Mapping[str, Any]]] = []
+    start = 0
+    while start < len(sources):
+        bucket = str(sources[start]["bucket"])
+        stop = start
+        while stop < len(sources) and str(sources[stop]["bucket"]) == bucket:
+            stop += 1
+        pending = list(sources[start:stop])
+        while pending:
+            group: list[Mapping[str, Any]] = []
+            used_upstreams: set[str] = set()
+            deferred: list[Mapping[str, Any]] = []
+            for source in pending:
+                upstream = str(
+                    source.get("dataset_id")
+                    or source.get("archive_url")
+                    or source.get("path")
+                    or source["name"]
+                )
+                if len(group) < width and upstream not in used_upstreams:
+                    group.append(source)
+                    used_upstreams.add(upstream)
+                else:
+                    deferred.append(source)
+            if len(group) < width:
+                take = min(width - len(group), len(deferred))
+                group.extend(deferred[:take])
+                deferred = deferred[take:]
+            groups.append(group)
+            pending = deferred
+        start = stop
+    return groups
+
+
 def build(
     *,
     config: Mapping[str, Any],
@@ -1297,8 +1338,14 @@ def build(
         parallel_sources,
         queue_depth,
     )
-    for group_start in range(0, len(sources), parallel_sources):
-        group = sources[group_start : group_start + parallel_sources]
+    source_groups = _parallel_source_groups(sources, parallel_sources)
+    for group_index, group in enumerate(source_groups):
+        LOGGER.info(
+            "source group %d/%d: %s",
+            group_index + 1,
+            len(source_groups),
+            ", ".join(str(source["name"]) for source in group),
+        )
         stop = threading.Event()
         contexts: list[
             tuple[Mapping[str, Any], _SourcePacker, queue.Queue[PreparedBatch], threading.Thread]

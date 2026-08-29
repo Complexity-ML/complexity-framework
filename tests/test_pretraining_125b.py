@@ -11,6 +11,7 @@ from complexity.training import PretokenizedCorpusMixtureDataset
 from scripts.audit_tr_hash_pretraining_125b_release import audit_release_documents
 from scripts.build_agentic_pretraining_50b import (
     _mixture_manifest,
+    _parallel_source_groups,
     _phase_boundaries,
     _replay_plan,
     allocate_rows,
@@ -90,6 +91,18 @@ def test_agentic_sources_are_consumed_before_overlapping_foundation_sources() ->
         index for index, source in enumerate(sources) if source["bucket"] == "foundation"
     )
     assert last_agentic < first_foundation
+
+
+def test_parallel_groups_diversify_upstreams_without_crossing_buckets() -> None:
+    groups = _parallel_source_groups(_config()["sources"], 3)
+    assert [source["name"] for source in groups[0]] == [
+        "stack_python_agentic",
+        "fineweb_edu_agentic",
+        "finemath_4plus_agentic",
+    ]
+    assert all(len({source["bucket"] for source in group}) == 1 for group in groups)
+    flattened = [source["name"] for group in groups for source in group]
+    assert sorted(flattened) == sorted(source["name"] for source in _config()["sources"])
 
 
 def test_125b_curriculum_is_no_replay_and_matches_the_corpus() -> None:
