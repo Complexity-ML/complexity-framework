@@ -1469,92 +1469,131 @@ def build(
         scheduler,
         queue_depth,
     )
-    source_groups = (
-        _direct_parallel_source_groups(sources, parallel_sources)
-        if config.get("direct_materialization", False)
-        else _parallel_source_groups(sources, parallel_sources)
-    )
-    for group_index, group in enumerate(source_groups):
+    dynamic_backfill = bool(config.get("direct_materialization", False))
+    if dynamic_backfill:
+        # Direct sources are independent: there is no global deduplication order
+        # to preserve.  Flatten the balanced ordering into one pending queue so a
+        # completed source immediately releases its slot to the next source.
+        source_groups = [
+            [
+                source
+                for group in _direct_parallel_source_groups(sources, parallel_sources)
+                for source in group
+            ]
+        ]
         LOGGER.info(
-            "source group %d/%d: %s",
-            group_index + 1,
-            len(source_groups),
-            ", ".join(str(source["name"]) for source in group),
+            "dynamic source queue: %s",
+            ", ".join(str(source["name"]) for source in source_groups[0]),
         )
-        stop = threading.Event()
+    else:
+        # Filtered builds retain bucket-local barriers because global exact
+        # deduplication makes their merge order part of the reproducibility
+        # contract.
+        source_groups = _parallel_source_groups(sources, parallel_sources)
+    for group_index, group in enumerate(source_groups):
+        if not dynamic_backfill:
+            LOGGER.info(
+                "source group %d/%d: %s",
+                group_index + 1,
+                len(source_groups),
+                ", ".join(str(source["name"]) for source in group),
+            )
         contexts: list[
-            tuple[Mapping[str, Any], _SourcePacker, queue.Queue[PreparedBatch], threading.Thread]
+            tuple[
+                Mapping[str, Any],
+                _SourcePacker,
+                queue.Queue[PreparedBatch],
+                threading.Thread,
+                threading.Event,
+            ]
         ] = []
+        active = []
+        pending = iter(group)
         try:
-            for source in group:
-                name = str(source["name"])
-                packer = _SourcePacker(
-                    source=source,
-                    tokenizer=tokenizer,
-                    eos_token_id=eos_token_id,
-                    store=store,
-                    publisher=publisher,
-                    work_dir=work_dir,
-                    seq_len=seq_len,
-                    target_rows=rows_by_source[name],
-                    rows_per_shard=rows_per_shard,
-                    boundaries=boundaries[name],
-                    progress_log_tokens=int(config.get("progress_log_tokens", 25_000_000)),
-                    publish_state=publish_state,
-                )
-                published_shards += packer.restore()
-                if packer.complete:
-                    publisher.publish_json(
-                        _source_manifest(
-                            store,
-                            source=source,
-                            seq_len=seq_len,
-                            expected_rows=rows_by_source[name],
-                        ),
-                        f"corpora/{name}/manifest.json",
-                        work_dir,
+            while True:
+                while len(active) < parallel_sources:
+                    try:
+                        source = next(pending)
+                    except StopIteration:
+                        break
+                    name = str(source["name"])
+                    packer = _SourcePacker(
+                        source=source,
+                        tokenizer=tokenizer,
+                        eos_token_id=eos_token_id,
+                        store=store,
+                        publisher=publisher,
+                        work_dir=work_dir,
+                        seq_len=seq_len,
+                        target_rows=rows_by_source[name],
+                        rows_per_shard=rows_per_shard,
+                        boundaries=boundaries[name],
+                        progress_log_tokens=int(config.get("progress_log_tokens", 25_000_000)),
+                        publish_state=publish_state,
                     )
-                    packer.close()
-                    continue
-                if max_shards is not None and published_shards >= max_shards:
-                    return current_state()
-                progress = store.progress(name)
-                if progress["scanned"]:
-                    LOGGER.info(
-                        "%s: restoring deterministic scan position %s",
-                        name,
-                        f"{progress['scanned']:,}",
+                    published_shards += packer.restore()
+                    if packer.complete:
+                        publisher.publish_json(
+                            _source_manifest(
+                                store,
+                                source=source,
+                                seq_len=seq_len,
+                                expected_rows=rows_by_source[name],
+                            ),
+                            f"corpora/{name}/manifest.json",
+                            work_dir,
+                        )
+                        packer.close()
+                        continue
+                    if max_shards is not None and published_shards >= max_shards:
+                        return current_state()
+                    progress = store.progress(name)
+                    if progress["scanned"]:
+                        LOGGER.info(
+                            "%s: restoring deterministic scan position %s",
+                            name,
+                            f"{progress['scanned']:,}",
+                        )
+                    packets: queue.Queue[PreparedBatch] = queue.Queue(maxsize=queue_depth)
+                    source_stop = threading.Event()
+                    worker = threading.Thread(
+                        target=_prepare_source_batches,
+                        kwargs={
+                            "source": source,
+                            "source_index": source_indexes[name],
+                            "restored_scanned": progress["scanned"],
+                            "config": config,
+                            "protected": protected,
+                            "benchmark_index": benchmark_index,
+                            "destination": packets,
+                            "stop": source_stop,
+                            "source_iterator_factory": source_iterator_factory,
+                        },
+                        name=f"source-{name}",
+                        daemon=True,
                     )
-                packets: queue.Queue[PreparedBatch] = queue.Queue(maxsize=queue_depth)
-                worker = threading.Thread(
-                    target=_prepare_source_batches,
-                    kwargs={
-                        "source": source,
-                        "source_index": source_indexes[name],
-                        "restored_scanned": progress["scanned"],
-                        "config": config,
-                        "protected": protected,
-                        "benchmark_index": benchmark_index,
-                        "destination": packets,
-                        "stop": stop,
-                        "source_iterator_factory": source_iterator_factory,
-                    },
-                    name=f"source-{name}",
-                    daemon=True,
-                )
-                worker.start()
-                contexts.append((source, packer, packets, worker))
+                    worker.start()
+                    context = (source, packer, packets, worker, source_stop)
+                    contexts.append(context)
+                    active.append(context)
+                    if dynamic_backfill:
+                        LOGGER.info(
+                            "source slot started: %s active=%d/%d",
+                            name,
+                            len(active),
+                            parallel_sources,
+                        )
 
-            active = list(contexts)
-            ready_first = bool(config.get("direct_materialization", False))
-            while active:
+                if not active:
+                    break
+
                 next_active = []
                 consumed_packet = False
-                for source, packer, packets, worker in active:
+                for source, packer, packets, worker, source_stop in active:
                     try:
-                        packet = packets.get(timeout=0.05) if ready_first else packets.get()
+                        packet = packets.get(timeout=0.05) if dynamic_backfill else packets.get()
                     except queue.Empty:
-                        next_active.append((source, packer, packets, worker))
+                        next_active.append((source, packer, packets, worker, source_stop))
                         continue
                     consumed_packet = True
                     if packet.error is not None:
@@ -1563,7 +1602,6 @@ def build(
                         ) from packet.error
                     published_shards += packer.consume(packet)
                     if max_shards is not None and published_shards >= max_shards:
-                        stop.set()
                         return current_state()
                     if packer.complete:
                         publisher.publish_json(
@@ -1577,19 +1615,24 @@ def build(
                             work_dir,
                         )
                         packer.close()
+                        source_stop.set()
+                        worker.join(timeout=1.0)
+                        if dynamic_backfill:
+                            LOGGER.info("source slot completed: %s", packer.name)
                         continue
                     if packet.exhausted:
                         raise RuntimeError(
                             f"source {packer.name} exhausted after "
                             f"{packer.progress['scanned']:,} records"
                         )
-                    next_active.append((source, packer, packets, worker))
+                    next_active.append((source, packer, packets, worker, source_stop))
                 active = next_active
-                if ready_first and active and not consumed_packet:
+                if dynamic_backfill and active and not consumed_packet:
                     time.sleep(0.01)
         finally:
-            stop.set()
-            for _, packer, _, worker in contexts:
+            for _, _, _, _, source_stop in contexts:
+                source_stop.set()
+            for _, packer, _, worker, _ in contexts:
                 packer.close()
                 worker.join(timeout=1.0)
 
