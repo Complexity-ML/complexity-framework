@@ -77,8 +77,10 @@ def test_home_jobs_pin_lineage_and_fit_the_audited_token_budget() -> None:
 
     assert _arg(smoke["command"], "--max-steps") == "20"
     assert _arg(pretrain["command"], "--target-tokens") == "481771520"
+    assert _arg(pretrain["command"], "--save-steps") == "500"
     assert 481_771_520 // (4 * 2 * 2048) == 29_405
     assert _arg(refinement["command"], "--target-tokens") == "249888768"
+    assert _arg(refinement["command"], "--save-steps") == "500"
     assert 249_888_768 // (4 * 2 * 2048) == 15_252
     assert _arg(refinement["command"], "--lr") == "3e-5"
     assert _arg(refinement["command"], "--init-checkpoint").endswith(
