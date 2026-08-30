@@ -250,12 +250,17 @@
       "dataset_id": "HuggingFaceTB/stack-edu",
       "config_name": "Java",
       "revision": "eeec5caac5cc3758a18f1d3ba4416837a9ba814c",
+      "inline_dataset_id": "affjljoo3581/stack-edu",
+      "inline_revision": "b9d29ba29c3a5bc6dd7819588c756cfaa819f9ac",
+      "inline_data_prefix": "Java/",
+      "inline_prefetch_files": 16,
+      "inline_arrow_batch_size": 8192,
       "split": "train",
       "download_workers": 256,
-      "min_int_score": 3,
+      "min_int_score": 2,
       "allowed_license_types": ["permissive"],
       "text_field": "text",
-      "license_audit": "Software Heritage content; retain blob IDs and only accept rows marked permissive by Stack-Edu."
+      "license_audit": "Pinned inline Stack-Edu mirror preserving Software Heritage blob IDs; retain only successful rows marked permissive and use the authors' recommended Java threshold of 2."
     },
     {
       "name": "stack_markdown_agentic",

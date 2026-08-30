@@ -21,11 +21,27 @@ from scripts.build_agentic_pretraining_corpus import (
 )
 
 
+def test_pretraining_java_source_uses_pinned_inline_stack_edu_mirror() -> None:
+    config = json.loads(
+        Path("configs/agentic_pretraining/tr_hash_pretraining_125b.json").read_text()
+    )
+    java = next(source for source in config["sources"] if source["name"] == "stack_java_agentic")
+    assert java["dataset_id"] == "HuggingFaceTB/stack-edu"
+    assert java["config_name"] == "Java"
+    assert java["min_int_score"] == 2
+    assert java["allowed_license_types"] == ["permissive"]
+    assert java["inline_dataset_id"] == "affjljoo3581/stack-edu"
+    assert len(java["inline_revision"]) == 40
+
+
 def test_stack_download_workers_supports_a_bounded_runtime_override(monkeypatch) -> None:
-    source = {"download_workers": 256}
+    source = {"download_workers": 256, "config_name": "Java"}
     assert _stack_download_workers(source) == 256
     monkeypatch.setenv("TR_HASH_STACK_DOWNLOAD_WORKERS", "64")
     assert _stack_download_workers(source) == 64
+    monkeypatch.setenv("TR_HASH_STACK_DOWNLOAD_WORKERS_JAVA", "192")
+    assert _stack_download_workers(source) == 192
+    monkeypatch.delenv("TR_HASH_STACK_DOWNLOAD_WORKERS_JAVA")
     monkeypatch.setenv("TR_HASH_STACK_DOWNLOAD_WORKERS", "0")
     with pytest.raises(ValueError, match="must be positive"):
         _stack_download_workers(source)

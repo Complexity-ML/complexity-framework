@@ -301,6 +301,10 @@ def _hf_raw_jsonl_rows(source: Mapping[str, Any]) -> Iterator[Mapping[str, Any]]
 def _software_heritage_stack_edu(
     source: Mapping[str, Any], *, seed: int
 ) -> Iterator[Mapping[str, Any]]:
+    if source.get("inline_dataset_id"):
+        yield from _inline_stack_edu(source)
+        return
+
     try:
         import boto3
         from botocore import UNSIGNED
@@ -363,11 +367,128 @@ def _software_heritage_stack_edu(
                 yield from (row for row in resolved if row is not None)
 
 
+def _inline_stack_edu(source: Mapping[str, Any]) -> Iterator[Mapping[str, Any]]:
+    """Read a pinned Stack-Edu content mirror with bounded parallel prefetch.
+
+    The canonical Stack-Edu repository contains identifiers only.  A verified
+    content mirror avoids one Software Heritage request per file while keeping
+    the same blob IDs, educational scores, and license metadata.
+    """
+
+    try:
+        import pyarrow.parquet as pq
+        from huggingface_hub import HfApi, hf_hub_download
+    except ImportError as error:
+        raise ImportError(
+            "inline Stack-Edu resolution requires pyarrow and huggingface_hub"
+        ) from error
+
+    repo_id = str(source["inline_dataset_id"])
+    revision = str(source["inline_revision"])
+    language = str(source.get("config_name", "Java"))
+    prefix = str(source.get("inline_data_prefix", f"{language}/"))
+    prefetch = max(1, int(source.get("inline_prefetch_files", 16)))
+    batch_size = max(1, int(source.get("inline_arrow_batch_size", 8192)))
+    allowed_license_types = {
+        str(value) for value in source.get("allowed_license_types", ())
+    }
+    min_int_score = int(source.get("min_int_score", 0))
+
+    info = HfApi().dataset_info(repo_id, revision=revision)
+    files = sorted(
+        sibling.rfilename
+        for sibling in info.siblings
+        if sibling.rfilename.startswith(prefix) and sibling.rfilename.endswith(".parquet")
+    )
+    if not files:
+        raise RuntimeError(
+            f"inline Stack-Edu mirror {repo_id}@{revision} has no files under {prefix}"
+        )
+    LOGGER.info(
+        "Stack-Edu inline mirror: repo=%s revision=%s language=%s files=%d prefetch=%d",
+        repo_id,
+        revision,
+        language,
+        len(files),
+        prefetch,
+    )
+
+    def download(repo_file: str) -> str:
+        return hf_hub_download(
+            repo_id=repo_id,
+            filename=repo_file,
+            repo_type="dataset",
+            revision=revision,
+        )
+
+    executor = ThreadPoolExecutor(max_workers=prefetch)
+    futures: dict[int, Any] = {}
+    next_to_submit = 0
+
+    def fill_window(current_index: int) -> None:
+        nonlocal next_to_submit
+        stop = min(len(files), current_index + prefetch)
+        while next_to_submit < stop:
+            index = next_to_submit
+            futures[index] = executor.submit(download, files[index])
+            next_to_submit += 1
+
+    try:
+        fill_window(0)
+        for file_index, repo_file in enumerate(files):
+            local_file = futures.pop(file_index).result()
+            fill_window(file_index + 1)
+            LOGGER.info(
+                "Stack-Edu inline file %d/%d ready: %s",
+                file_index + 1,
+                len(files),
+                repo_file,
+            )
+            parquet = pq.ParquetFile(local_file)
+            for batch in parquet.iter_batches(
+                batch_size=batch_size,
+                columns=(
+                    "blob_id",
+                    "int_score",
+                    "license_type",
+                    "text",
+                    "download_success",
+                ),
+                use_threads=True,
+            ):
+                columns = batch.to_pydict()
+                for blob_id, score, license_type, text, success in zip(
+                    columns["blob_id"],
+                    columns["int_score"],
+                    columns["license_type"],
+                    columns["text"],
+                    columns["download_success"],
+                    strict=True,
+                ):
+                    if not success or not text or int(score or 0) < min_int_score:
+                        continue
+                    if allowed_license_types and str(license_type or "") not in allowed_license_types:
+                        continue
+                    yield {"text": str(text), "_source_record_id": str(blob_id)}
+    finally:
+        for future in futures.values():
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
 def _stack_download_workers(source: Mapping[str, Any]) -> int:
     """Resolve a runtime-safe Stack-Edu worker count without changing corpus state."""
 
     configured = int(source.get("download_workers", 32))
-    workers = int(os.environ.get("TR_HASH_STACK_DOWNLOAD_WORKERS", configured))
+    language = re.sub(r"[^A-Za-z0-9]+", "_", str(source.get("config_name", ""))).upper()
+    language_override = (
+        os.environ.get(f"TR_HASH_STACK_DOWNLOAD_WORKERS_{language}") if language else None
+    )
+    workers = int(
+        language_override
+        if language_override is not None
+        else os.environ.get("TR_HASH_STACK_DOWNLOAD_WORKERS", configured)
+    )
     if workers < 1:
         raise ValueError("Stack-Edu download worker count must be positive")
     return workers
