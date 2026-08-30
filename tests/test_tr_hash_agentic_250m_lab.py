@@ -76,6 +76,7 @@ def test_home_jobs_pin_lineage_and_fit_the_audited_token_budget() -> None:
         assert job["checkpoint"]["pattern"] == "*_[0-9]*"
         assert job["environment"]["COMPLEXITY_REQUIRE_LIGER"] == "1"
         assert job["egpu"]["stable_seconds"] >= 120
+        assert job["egpu"]["power_limit_w"] == 150
 
     assert _arg(smoke["command"], "--max-steps") == "20"
     assert _arg(pretrain["command"], "--target-tokens") == "481771520"

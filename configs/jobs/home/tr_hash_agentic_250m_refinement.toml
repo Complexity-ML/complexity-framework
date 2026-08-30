@@ -52,3 +52,4 @@ resume_arguments = ["--resume", "{checkpoint}"]
 [egpu]
 stable_seconds = 120
 poll_seconds = 5
+power_limit_w = 150
