@@ -40,6 +40,7 @@ OMP_NUM_THREADS = "1"
 PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
 HF_HOME = "/home/boris/.cache/huggingface"
 TRITON_CACHE_DIR = "/home/boris/.cache/triton-agentic-250m"
+COMPLEXITY_REQUIRE_LIGER = "1"
 
 [checkpoint]
 directory = "/home/boris/complexity-framework-agentic-250m/artifacts/tr_hash_agentic_250m_smoke"
