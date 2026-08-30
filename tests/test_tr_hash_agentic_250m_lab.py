@@ -79,10 +79,19 @@ def test_home_jobs_pin_lineage_and_fit_the_audited_token_budget() -> None:
         assert job["egpu"]["power_limit_w"] == 150
 
     assert _arg(smoke["command"], "--max-steps") == "20"
+    assert smoke["tensorboard_logdir"].endswith(
+        "/tr_hash_agentic_250m_smoke/tensorboard"
+    )
     assert _arg(pretrain["command"], "--target-tokens") == "481771520"
+    assert pretrain["tensorboard_logdir"].endswith(
+        "/tr_hash_agentic_250m_pretrain/tensorboard"
+    )
     assert "--save-steps" not in pretrain["command"]
     assert 481_771_520 // (4 * 2 * 2048) == 29_405
     assert _arg(refinement["command"], "--target-tokens") == "249888768"
+    assert refinement["tensorboard_logdir"].endswith(
+        "/tr_hash_agentic_250m_refinement/tensorboard"
+    )
     assert "--save-steps" not in refinement["command"]
     assert "--save-steps" not in smoke["command"]
     assert 249_888_768 // (4 * 2 * 2048) == 15_252

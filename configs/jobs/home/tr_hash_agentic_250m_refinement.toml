@@ -32,6 +32,7 @@ command = [
   "--checkpoint-dir", "/home/boris/complexity-framework-agentic-250m/artifacts/tr_hash_agentic_250m_refinement",
 ]
 working_directory = "/home/boris/complexity-framework-agentic-250m"
+tensorboard_logdir = "/home/boris/complexity-framework-agentic-250m/artifacts/tr_hash_agentic_250m_refinement/tensorboard"
 gpu_devices = ["1"]
 
 [environment]
