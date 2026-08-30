@@ -73,6 +73,21 @@ from .trainer import Trainer
 logger = logging.getLogger(__name__)
 
 
+def require_cuda_available(required: bool) -> None:
+    """Fail closed when a GPU-only run cannot initialize CUDA.
+
+    ``nvidia-smi`` can report an eGPU shortly before PyTorch is able to create
+    a CUDA context, especially during boot.  GPU jobs must not silently fall
+    back to CPU in that window.
+    """
+
+    if required and not torch.cuda.is_available():
+        raise RuntimeError(
+            "--require-cuda was set, but PyTorch cannot initialize CUDA; "
+            "refusing to fall back to CPU"
+        )
+
+
 def routing_diagnostic(config: ModelConfig) -> dict[str, object]:
     """Describe the effective route family without changing model policy."""
 
@@ -308,6 +323,11 @@ class TrainRunner:
         p.add_argument("--use-custom-kernels", type=str, default="auto",
                        choices=["auto", "true", "false"],
                        help="Custom Triton/CUDA kernels. auto enables NVIDIA CUDA, disables ROCm by default.")
+        p.add_argument(
+            "--require-cuda",
+            action="store_true",
+            help="Abort before loading data or model weights if CUDA is unavailable.",
+        )
         self.add_args(p)
         return p
 
@@ -335,6 +355,8 @@ class TrainRunner:
             )
         for lib in ("httpx", "httpcore", "huggingface_hub", "datasets", "transformers"):
             logging.getLogger(lib).setLevel(logging.WARNING)
+
+        require_cuda_available(args.require_cuda)
 
         distributed = init_distributed()
         rank = get_rank()

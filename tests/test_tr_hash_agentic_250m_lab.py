@@ -72,8 +72,10 @@ def test_home_jobs_pin_lineage_and_fit_the_audited_token_budget() -> None:
         assert _arg(command, "--batch-size") == "4"
         assert _arg(command, "--gradient-accumulation") == "2"
         assert _arg(command, "--num-workers") == "0"
+        assert "--require-cuda" in command
         assert job["checkpoint"]["pattern"] == "*_[0-9]*"
         assert job["environment"]["COMPLEXITY_REQUIRE_LIGER"] == "1"
+        assert job["egpu"]["stable_seconds"] >= 120
 
     assert _arg(smoke["command"], "--max-steps") == "20"
     assert _arg(pretrain["command"], "--target-tokens") == "481771520"
