@@ -20,7 +20,6 @@ command = [
   "--warmup-tokens", "10000000",
   "--lr-scheduler", "wsd",
   "--token-packs", "8",
-  "--save-steps", "500",
   "--log-steps", "10",
   "--num-workers", "0",
   "--distributed-mode", "ddp",

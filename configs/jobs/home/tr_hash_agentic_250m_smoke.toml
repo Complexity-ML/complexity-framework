@@ -21,7 +21,6 @@ command = [
   "--warmup-steps", "2",
   "--lr-scheduler", "wsd",
   "--token-packs", "1",
-  "--save-steps", "0",
   "--log-steps", "1",
   "--num-workers", "0",
   "--distributed-mode", "ddp",
