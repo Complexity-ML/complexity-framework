@@ -72,7 +72,7 @@ def test_home_jobs_pin_lineage_and_fit_the_audited_token_budget() -> None:
         assert _arg(command, "--batch-size") == "4"
         assert _arg(command, "--gradient-accumulation") == "2"
         assert _arg(command, "--num-workers") == "0"
-        assert job["checkpoint"]["pattern"] == "*"
+        assert job["checkpoint"]["pattern"] == "*_[0-9]*"
         assert job["environment"]["COMPLEXITY_REQUIRE_LIGER"] == "1"
 
     assert _arg(smoke["command"], "--max-steps") == "20"

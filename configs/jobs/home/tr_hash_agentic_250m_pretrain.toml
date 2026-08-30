@@ -43,7 +43,7 @@ COMPLEXITY_REQUIRE_LIGER = "1"
 
 [checkpoint]
 directory = "/home/boris/complexity-framework-agentic-250m/artifacts/tr_hash_agentic_250m_pretrain"
-pattern = "*"
+pattern = "*_[0-9]*"
 resume_arguments = ["--resume", "{checkpoint}"]
 
 [egpu]
