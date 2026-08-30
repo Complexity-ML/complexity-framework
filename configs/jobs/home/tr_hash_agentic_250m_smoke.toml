@@ -1,0 +1,51 @@
+name = "tr-hash-agentic-250m-smoke"
+command = [
+  "/home/boris/pytorch/bin/python",
+  "-m", "scripts.train_tr_hash_text_lineage",
+  "--model-preset", "complexity-small",
+  "--stage", "pretraining",
+  "--tokenizer", "/home/boris/.cache/huggingface/hub/models--AETHORIA-AI--TR-HASH-Tokenizer-32K-Agentic/snapshots/11a104ea8352c93920193a928821077cd6409d65",
+  "--tokenized-data", "hf://datasets/AETHORIA-AI/TR-HASH-Pretraining-125B-Agentic-32K",
+  "--tokenized-revision", "fc738b3a10c5c093e3b34b48bcf1cb7066184706",
+  "--tokenized-plan", "/home/boris/complexity-framework-agentic-250m/configs/replay_plans/tr_hash_agentic_250m_quality_replay.json",
+  "--tokenized-cache-dir", "/home/boris/.cache/tr-hash-agentic-250m-tokens",
+  "--tokenized-cache-gb", "64",
+  "--tokenized-prefetch-shards", "1",
+  "--target-tokens", "481771520",
+  "--max-steps", "20",
+  "--batch-size", "4",
+  "--seq-len", "2048",
+  "--gradient-accumulation", "2",
+  "--precision", "bf16",
+  "--lr", "3e-4",
+  "--warmup-steps", "2",
+  "--lr-scheduler", "wsd",
+  "--token-packs", "1",
+  "--save-steps", "0",
+  "--log-steps", "1",
+  "--num-workers", "0",
+  "--distributed-mode", "ddp",
+  "--no-gradient-checkpointing",
+  "--use-custom-kernels", "auto",
+  "--top-k", "2",
+  "--checkpoint-dir", "/home/boris/complexity-framework-agentic-250m/artifacts/tr_hash_agentic_250m_smoke",
+]
+working_directory = "/home/boris/complexity-framework-agentic-250m"
+gpu_devices = ["1"]
+
+[environment]
+PYTHONUNBUFFERED = "1"
+TOKENIZERS_PARALLELISM = "true"
+OMP_NUM_THREADS = "1"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+HF_HOME = "/home/boris/.cache/huggingface"
+TRITON_CACHE_DIR = "/home/boris/.cache/triton-agentic-250m"
+
+[checkpoint]
+directory = "/home/boris/complexity-framework-agentic-250m/artifacts/tr_hash_agentic_250m_smoke"
+pattern = "*"
+resume_arguments = ["--resume", "{checkpoint}"]
+
+[egpu]
+stable_seconds = 30
+poll_seconds = 5
