@@ -67,6 +67,20 @@ def test_cuda_dll_preload_is_limited_to_nvidia_providers() -> None:
     assert not _needs_cuda_dlls(("DmlExecutionProvider",))
 
 
+def test_pipeline_session_factory_forwards_deterministic_thread_settings() -> None:
+    session = OnnxDetectorPipeline.create_session(
+        Path("model.onnx"),
+        providers=("CPUExecutionProvider",),
+        warmup_runs=0,
+        intra_op_num_threads=1,
+        inter_op_num_threads=1,
+    )
+
+    assert session.config.warmup_runs == 0
+    assert session.config.intra_op_num_threads == 1
+    assert session.config.inter_op_num_threads == 1
+
+
 def test_dfl_decode_matches_hand_computed_expectation() -> None:
     metadata = _metadata()
     geometry = generate_grid_geometry(metadata.image_size, metadata.grid_sizes)

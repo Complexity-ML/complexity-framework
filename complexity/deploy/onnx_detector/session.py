@@ -18,6 +18,8 @@ class OrtSessionConfig:
     model_path: Path | str
     providers: tuple[str, ...] = ("CPUExecutionProvider",)
     warmup_runs: int = 1
+    intra_op_num_threads: int | None = None
+    inter_op_num_threads: int | None = None
 
 
 class OnnxDetectorSession:
@@ -36,8 +38,14 @@ class OnnxDetectorSession:
                 # Prefer NVIDIA site-package DLLs over an unrelated PyTorch CUDA build.
                 ort.preload_dlls(directory="")
             self._add_tensorrt_dll_directories()
+            session_options = ort.SessionOptions()
+            if self.config.intra_op_num_threads is not None:
+                session_options.intra_op_num_threads = self.config.intra_op_num_threads
+            if self.config.inter_op_num_threads is not None:
+                session_options.inter_op_num_threads = self.config.inter_op_num_threads
             self._session = ort.InferenceSession(
                 str(self.config.model_path),
+                sess_options=session_options,
                 providers=list(self.config.providers),
             )
         return self

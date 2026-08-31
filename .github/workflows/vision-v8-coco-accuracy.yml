@@ -1,0 +1,179 @@
+name: Vision v8 COCO accuracy
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/vision-v8-coco-accuracy.yml"
+      - "configs/vision_v8_coco_accuracy_gate.json"
+      - "docs/vision-v8-coco-accuracy-gates.md"
+      - "docs/index.md"
+      - "scripts/check_vision_v8_coco_report.py"
+      - "scripts/evaluate_tr_hash_coco.py"
+      - "scripts/evaluate_onnx_coco.py"
+      - "complexity/deploy/onnx_detector/**"
+      - "tests/test_coco_release_evaluation.py"
+      - "tests/test_onnx_detector_core.py"
+      - "tests/test_vision_v8_coco_accuracy_gate.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/vision-v8-coco-accuracy.yml"
+      - "configs/vision_v8_coco_accuracy_gate.json"
+      - "docs/vision-v8-coco-accuracy-gates.md"
+      - "docs/index.md"
+      - "scripts/check_vision_v8_coco_report.py"
+      - "scripts/evaluate_tr_hash_coco.py"
+      - "scripts/evaluate_onnx_coco.py"
+      - "complexity/deploy/onnx_detector/**"
+      - "tests/test_coco_release_evaluation.py"
+      - "tests/test_onnx_detector_core.py"
+      - "tests/test_vision_v8_coco_accuracy_gate.py"
+  workflow_dispatch:
+    inputs:
+      checkpoint:
+        description: "Local path to the Vision v8 checkpoint on the runner"
+        required: false
+      onnx_model:
+        description: "Local path to the Vision v8 ONNX model on the runner"
+        required: false
+      onnx_metadata:
+        description: "Local path to the Vision v8 ONNX metadata sidecar on the runner"
+        required: false
+      annotations:
+        description: "Local path to instances_val2017.json on the runner"
+        required: true
+      images:
+        description: "Local path to COCO val2017 images on the runner"
+        required: true
+      runner:
+        description: "Runner label with dataset/checkpoint access"
+        required: true
+        default: "self-hosted"
+      branch:
+        description: "Detector branch to evaluate"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - both
+          - o2m-nms
+          - nms-free
+      backend:
+        description: "Evaluator backend"
+        required: true
+        default: "pytorch"
+        type: choice
+        options:
+          - pytorch
+          - onnx
+      provider:
+        description: "ONNX Runtime provider alias for backend=onnx"
+        required: true
+        default: "cpu"
+      release_tag:
+        description: "Optional existing GitHub Release tag to receive gated report assets"
+        required: false
+      device:
+        description: "PyTorch device"
+        required: true
+        default: "cuda"
+      precision:
+        description: "Evaluation precision"
+        required: true
+        default: "bf16"
+        type: choice
+        options:
+          - bf16
+          - fp32
+
+permissions:
+  contents: read
+
+jobs:
+  fixture-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install CPU test environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e ".[dev,detection]"
+      - name: Lint COCO accuracy gate
+        run: >-
+          ruff check
+          scripts/check_vision_v8_coco_report.py
+          scripts/evaluate_onnx_coco.py
+          scripts/evaluate_tr_hash_coco.py
+          tests/test_coco_release_evaluation.py
+          tests/test_onnx_detector_core.py
+          tests/test_vision_v8_coco_accuracy_gate.py
+      - name: Test report validation and release metadata helpers
+        run: >-
+          pytest -q
+          tests/test_coco_release_evaluation.py
+          tests/test_onnx_detector_core.py
+          tests/test_vision_v8_coco_accuracy_gate.py
+
+  full-coco-eval:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install evaluation environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[detection,export]"
+      - name: Run deterministic COCO evaluation twice
+        run: |
+          if [ "${{ inputs.backend }}" = "pytorch" ]; then
+            test -n "${{ inputs.checkpoint }}"
+            python scripts/evaluate_tr_hash_coco.py "${{ inputs.checkpoint }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a --branch "${{ inputs.branch }}" --device "${{ inputs.device }}" --precision "${{ inputs.precision }}" --seed 0
+            python scripts/evaluate_tr_hash_coco.py "${{ inputs.checkpoint }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b --branch "${{ inputs.branch }}" --device "${{ inputs.device }}" --precision "${{ inputs.precision }}" --seed 0
+          else
+            test -n "${{ inputs.onnx_model }}"
+            test -n "${{ inputs.onnx_metadata }}"
+            onnx_branch="${{ inputs.branch }}"
+            if [ "$onnx_branch" = "both" ]; then
+              onnx_branch="auto"
+            fi
+            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_model }}" --metadata "${{ inputs.onnx_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a --branch "$onnx_branch" --provider "${{ inputs.provider }}" --seed 0
+            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_model }}" --metadata "${{ inputs.onnx_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b --branch "$onnx_branch" --provider "${{ inputs.provider }}" --seed 0
+          fi
+      - name: Gate full COCO report
+        run: >-
+          python scripts/check_vision_v8_coco_report.py
+          artifacts/vision_v8_coco_eval/run_a/evaluation.json
+          --repeat-report artifacts/vision_v8_coco_eval/run_b/evaluation.json
+          --config configs/vision_v8_coco_accuracy_gate.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vision-v8-coco-accuracy-report
+          path: |
+            artifacts/vision_v8_coco_eval/run_a/evaluation.json
+            artifacts/vision_v8_coco_eval/run_a/evaluation.md
+            artifacts/vision_v8_coco_eval/run_b/evaluation.json
+            artifacts/vision_v8_coco_eval/run_b/evaluation.md
+      - name: Upload gated reports to GitHub Release
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release upload "${{ inputs.release_tag }}"
+          artifacts/vision_v8_coco_eval/run_a/evaluation.json#vision-v8-coco-evaluation.json
+          artifacts/vision_v8_coco_eval/run_a/evaluation.md#vision-v8-coco-evaluation.md
+          artifacts/vision_v8_coco_eval/run_b/evaluation.json#vision-v8-coco-evaluation-repeat.json
+          artifacts/vision_v8_coco_eval/run_b/evaluation.md#vision-v8-coco-evaluation-repeat.md
+          --clobber

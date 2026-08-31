@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "dataset": {
+    "name": "coco-2017",
+    "split": "val2017",
+    "required_image_count": 5000,
+    "annotations_sha256": null,
+    "image_list_sha256": null
+  },
+  "determinism": {
+    "seed": 0,
+    "metric_tolerance": 1e-12,
+    "cpu_metric_tolerance": 1e-12,
+    "cuda_metric_tolerance": 1e-6,
+    "tensorrt_metric_tolerance": 1e-5
+  },
+  "branches": {
+    "o2m-nms": {
+      "baseline_source": "docs/tr-hash-object-detection.md independent reproduction",
+      "baseline_metrics": {
+        "map50_95": 0.200,
+        "map50": 0.325,
+        "ar_100": 0.379
+      },
+      "absolute_floors": {
+        "map50_95": 0.190,
+        "map50": 0.310,
+        "ar_100": 0.360
+      },
+      "max_regressions": {
+        "map50_95": 0.005,
+        "map50": 0.010,
+        "ar_100": 0.010
+      }
+    },
+    "nms-free": {
+      "baseline_source": "docs/tr-hash-object-detection.md independent reproduction",
+      "baseline_metrics": {
+        "map50_95": 0.096,
+        "map50": 0.140
+      },
+      "absolute_floors": {
+        "map50_95": 0.090,
+        "map50": 0.130
+      },
+      "max_regressions": {
+        "map50_95": 0.005,
+        "map50": 0.010
+      }
+    }
+  }
+}
+
