@@ -4,8 +4,8 @@
     "name": "coco-2017",
     "split": "val2017",
     "required_image_count": 5000,
-    "annotations_sha256": null,
-    "image_list_sha256": null
+    "annotations_sha256": "e8c7f7908f1d7278341fae127d0da654f102f11bd7b21d8aeefa635b8c810b6f",
+    "image_list_sha256": "0e508226935f3b7b96afd98661e82d6b53a02a6d4a4a7ed1dec777768b1d3315"
   },
   "determinism": {
     "seed": 0,
@@ -14,6 +14,7 @@
     "cuda_metric_tolerance": 1e-6,
     "tensorrt_metric_tolerance": 1e-5
   },
+  "required_branches": ["o2m-nms", "nms-free"],
   "branches": {
     "o2m-nms": {
       "baseline_source": "docs/tr-hash-object-detection.md independent reproduction",
@@ -50,4 +51,3 @@
     }
   }
 }
-

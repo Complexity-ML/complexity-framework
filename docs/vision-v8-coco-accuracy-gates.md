@@ -10,7 +10,11 @@ reproducible inputs.
 Release reports target COCO 2017 `val2017` with all 5,000 validation images.
 Reports must record both the annotation JSON SHA-256 and a sorted image-list
 manifest SHA-256. The dataset name, split, image count, and hashes are checked
-before any metric threshold is trusted.
+before any metric threshold is trusted. The release gate pins COCO val2017 to
+annotation SHA-256
+`e8c7f7908f1d7278341fae127d0da654f102f11bd7b21d8aeefa635b8c810b6f` and
+image-list SHA-256
+`0e508226935f3b7b96afd98661e82d6b53a02a6d4a4a7ed1dec777768b1d3315`.
 
 Both branches are evaluated:
 
@@ -59,9 +63,12 @@ two separate metric reasons:
 - baseline regression failure: the metric dropped more than the configured
   delta from the known-good baseline.
 
-Reports also fail if required metadata or dataset hashes are missing. Gate
-configuration must be changed explicitly in source review; CI must not relax
-tolerances or thresholds at runtime.
+Reports also fail if required metadata or dataset hashes are missing, mismatched,
+non-canonical, or if any gated metric is non-finite or outside `[0, 1]`. ONNX
+reports must record the requested provider list and the actual provider selected
+by ONNX Runtime; the actual provider must match the first requested provider, so
+provider fallback fails the gate. Gate configuration must be changed explicitly
+in source review; CI must not relax tolerances or thresholds at runtime.
 
 The `Vision v8 COCO accuracy` workflow runs lightweight gate tests on pull
 requests. Its manual full-COCO job runs the selected evaluator twice with the
@@ -98,8 +105,15 @@ python scripts/evaluate_onnx_coco.py \
 ```
 
 Each ONNX sidecar describes one branch. To evaluate both ONNX branches, run the
-command once for the O2M export and once for the NMS-free export, then gate both
-reports.
+command once for the O2M export and once for the NMS-free export, merge the
+per-branch reports, then gate the combined report:
+
+```bash
+python scripts/merge_vision_v8_coco_reports.py \
+  artifacts/vision_v8_coco_eval/onnx_o2m/evaluation.json \
+  artifacts/vision_v8_coco_eval/onnx_nms_free/evaluation.json \
+  --output artifacts/vision_v8_coco_eval/onnx_both
+```
 
 Report gate:
 

@@ -9,6 +9,7 @@ from scripts.evaluate_tr_hash_coco import (
     _timing_summary,
     _write_markdown_report,
 )
+from scripts.merge_vision_v8_coco_reports import merge_reports
 
 
 def test_both_branches_require_end_to_end_head():
@@ -101,3 +102,53 @@ def test_markdown_report_contains_release_metrics(tmp_path):
     text = output.read_text(encoding="utf-8")
     assert "Vision v8 COCO Accuracy Report" in text
     assert "| o2m-nms | 0.200000 | 0.300000" in text
+
+
+def test_merge_onnx_reports_keeps_both_branch_artifact_hashes():
+    report = {
+        "backend": "onnx",
+        "framework_commit": "abc123",
+        "checkpoint": "o2m.onnx",
+        "checkpoint_sha256": "a" * 64,
+        "model": "o2m.onnx",
+        "metadata": "o2m.json",
+        "metadata_sha256": "b" * 64,
+        "dataset": {"name": "coco-2017"},
+        "environment": {},
+        "protocol": {"seed": 0},
+        "branches": {"o2m-nms": {"metrics": {}}},
+    }
+    nms_free = {
+        **report,
+        "checkpoint": "nms_free.onnx",
+        "checkpoint_sha256": "c" * 64,
+        "model": "nms_free.onnx",
+        "metadata": "nms_free.json",
+        "metadata_sha256": "d" * 64,
+        "branches": {"nms-free": {"metrics": {}}},
+    }
+
+    merged = merge_reports([report, nms_free])
+
+    assert set(merged["branches"]) == {"o2m-nms", "nms-free"}
+    assert merged["branches"]["o2m-nms"]["checkpoint_sha256"] == "a" * 64
+    assert merged["branches"]["nms-free"]["checkpoint_sha256"] == "c" * 64
+    assert merged["branches"]["nms-free"]["metadata_sha256"] == "d" * 64
+
+
+def test_merge_onnx_reports_rejects_mismatched_protocol():
+    first = {
+        "backend": "onnx",
+        "framework_commit": "abc123",
+        "dataset": {"name": "coco-2017"},
+        "protocol": {"seed": 0},
+        "branches": {"o2m-nms": {"metrics": {}}},
+    }
+    second = {
+        **first,
+        "protocol": {"seed": 1},
+        "branches": {"nms-free": {"metrics": {}}},
+    }
+
+    with pytest.raises(ValueError, match="protocol"):
+        merge_reports([first, second])
