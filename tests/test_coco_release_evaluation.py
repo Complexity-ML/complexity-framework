@@ -1,9 +1,12 @@
+import hashlib
+
 import pytest
 
 from scripts.evaluate_tr_hash_coco import (
     BRANCHES,
     _branch_contract,
     _branches_to_run,
+    _checkpoint_sha256,
     _image_list_sha256,
     _percentile,
     _timing_summary,
@@ -52,6 +55,23 @@ def test_image_list_hash_uses_sorted_manifest_contract():
 
     assert first == second
     assert first != different_order
+
+
+def test_checkpoint_sha256_hashes_loaded_directory_weights(tmp_path):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    model_weights = checkpoint / "model.safetensors"
+    ema_weights = checkpoint / "ema.safetensors"
+    model_weights.write_bytes(b"model weights")
+    ema_weights.write_bytes(b"ema weights")
+
+    assert _checkpoint_sha256(checkpoint) == hashlib.sha256(b"ema weights").hexdigest()
+
+    ema_weights.unlink()
+
+    assert _checkpoint_sha256(checkpoint) == hashlib.sha256(
+        b"model weights"
+    ).hexdigest()
 
 
 def test_branch_contract_distinguishes_nms_requirements():

@@ -83,7 +83,14 @@ def _sha256_file(path: Path) -> str:
 
 
 def _checkpoint_sha256(path: Path) -> str | None:
-    return _sha256_file(path) if path.is_file() else None
+    if path.is_file():
+        return _sha256_file(path)
+    if path.is_dir():
+        for weights_name in ("ema.safetensors", "model.safetensors"):
+            weights_path = path / weights_name
+            if weights_path.is_file():
+                return _sha256_file(weights_path)
+    return None
 
 
 def _image_list_sha256(coco: Any, image_ids: list[int]) -> str:

@@ -71,10 +71,11 @@ provider fallback fails the gate. Gate configuration must be changed explicitly
 in source review; CI must not relax tolerances or thresholds at runtime.
 
 The `Vision v8 COCO accuracy` workflow runs lightweight gate tests on pull
-requests. Its manual full-COCO job runs the selected evaluator twice with the
-same seed, rejects malformed/regressed/non-deterministic reports, uploads the
-JSON and Markdown reports as workflow artifacts, and can attach those reports to
-an existing GitHub Release when `release_tag` is provided.
+requests. Its manual full-COCO publication job always evaluates both configured
+branches twice with the same seed, rejects malformed/regressed/non-deterministic
+reports, uploads the JSON and Markdown reports as workflow artifacts, and can
+attach those reports to an existing GitHub Release when `release_tag` is
+provided.
 
 ## Reproduction Commands
 
@@ -90,6 +91,10 @@ python scripts/evaluate_tr_hash_coco.py \
   --device cuda \
   --precision bf16
 ```
+
+For directory checkpoints, `checkpoint_sha256` is the SHA-256 of the weights file
+that the native loader uses: `ema.safetensors` when present, otherwise
+`model.safetensors`.
 
 ONNX Runtime full COCO evaluation for one exported branch:
 

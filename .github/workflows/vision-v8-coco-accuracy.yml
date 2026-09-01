@@ -35,12 +35,6 @@ on:
       checkpoint:
         description: "Local path to the Vision v8 checkpoint on the runner"
         required: false
-      onnx_model:
-        description: "Local path to the Vision v8 ONNX model on the runner"
-        required: false
-      onnx_metadata:
-        description: "Local path to the Vision v8 ONNX metadata sidecar on the runner"
-        required: false
       onnx_o2m_model:
         description: "Local path to the O2M Vision v8 ONNX model on the runner"
         required: false
@@ -63,13 +57,6 @@ on:
         description: "Runner label with dataset/checkpoint access"
         required: true
         default: "self-hosted"
-      branch:
-        description: "Detector branch to evaluate"
-        required: true
-        default: "both"
-        type: choice
-        options:
-          - both
           - o2m-nms
           - nms-free
       backend:
@@ -155,27 +142,19 @@ jobs:
         run: |
           if [ "${{ inputs.backend }}" = "pytorch" ]; then
             test -n "${{ inputs.checkpoint }}"
-            python scripts/evaluate_tr_hash_coco.py "${{ inputs.checkpoint }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a --branch "${{ inputs.branch }}" --device "${{ inputs.device }}" --precision "${{ inputs.precision }}" --seed 0
-            python scripts/evaluate_tr_hash_coco.py "${{ inputs.checkpoint }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b --branch "${{ inputs.branch }}" --device "${{ inputs.device }}" --precision "${{ inputs.precision }}" --seed 0
+            python scripts/evaluate_tr_hash_coco.py "${{ inputs.checkpoint }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a --branch both --device "${{ inputs.device }}" --precision "${{ inputs.precision }}" --seed 0
+            python scripts/evaluate_tr_hash_coco.py "${{ inputs.checkpoint }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b --branch both --device "${{ inputs.device }}" --precision "${{ inputs.precision }}" --seed 0
           else
-            onnx_branch="${{ inputs.branch }}"
-            if [ "$onnx_branch" = "both" ]; then
-              test -n "${{ inputs.onnx_o2m_model }}"
-              test -n "${{ inputs.onnx_o2m_metadata }}"
-              test -n "${{ inputs.onnx_nms_free_model }}"
-              test -n "${{ inputs.onnx_nms_free_metadata }}"
-              python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_model }}" --metadata "${{ inputs.onnx_o2m_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a_o2m --branch o2m-nms --provider "${{ inputs.provider }}" --seed 0
-              python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_nms_free_model }}" --metadata "${{ inputs.onnx_nms_free_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a_nms_free --branch nms-free --provider "${{ inputs.provider }}" --seed 0
-              python scripts/merge_vision_v8_coco_reports.py artifacts/vision_v8_coco_eval/run_a_o2m/evaluation.json artifacts/vision_v8_coco_eval/run_a_nms_free/evaluation.json --output artifacts/vision_v8_coco_eval/run_a
-              python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_model }}" --metadata "${{ inputs.onnx_o2m_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b_o2m --branch o2m-nms --provider "${{ inputs.provider }}" --seed 0
-              python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_nms_free_model }}" --metadata "${{ inputs.onnx_nms_free_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b_nms_free --branch nms-free --provider "${{ inputs.provider }}" --seed 0
-              python scripts/merge_vision_v8_coco_reports.py artifacts/vision_v8_coco_eval/run_b_o2m/evaluation.json artifacts/vision_v8_coco_eval/run_b_nms_free/evaluation.json --output artifacts/vision_v8_coco_eval/run_b
-            else
-              test -n "${{ inputs.onnx_model }}"
-              test -n "${{ inputs.onnx_metadata }}"
-              python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_model }}" --metadata "${{ inputs.onnx_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a --branch "$onnx_branch" --provider "${{ inputs.provider }}" --seed 0
-              python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_model }}" --metadata "${{ inputs.onnx_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b --branch "$onnx_branch" --provider "${{ inputs.provider }}" --seed 0
-            fi
+            test -n "${{ inputs.onnx_o2m_model }}"
+            test -n "${{ inputs.onnx_o2m_metadata }}"
+            test -n "${{ inputs.onnx_nms_free_model }}"
+            test -n "${{ inputs.onnx_nms_free_metadata }}"
+            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_model }}" --metadata "${{ inputs.onnx_o2m_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a_o2m --branch o2m-nms --provider "${{ inputs.provider }}" --seed 0
+            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_nms_free_model }}" --metadata "${{ inputs.onnx_nms_free_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a_nms_free --branch nms-free --provider "${{ inputs.provider }}" --seed 0
+            python scripts/merge_vision_v8_coco_reports.py artifacts/vision_v8_coco_eval/run_a_o2m/evaluation.json artifacts/vision_v8_coco_eval/run_a_nms_free/evaluation.json --output artifacts/vision_v8_coco_eval/run_a
+            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_model }}" --metadata "${{ inputs.onnx_o2m_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b_o2m --branch o2m-nms --provider "${{ inputs.provider }}" --seed 0
+            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_nms_free_model }}" --metadata "${{ inputs.onnx_nms_free_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b_nms_free --branch nms-free --provider "${{ inputs.provider }}" --seed 0
+            python scripts/merge_vision_v8_coco_reports.py artifacts/vision_v8_coco_eval/run_b_o2m/evaluation.json artifacts/vision_v8_coco_eval/run_b_nms_free/evaluation.json --output artifacts/vision_v8_coco_eval/run_b
           fi
       - name: Gate full COCO report
         run: >-
