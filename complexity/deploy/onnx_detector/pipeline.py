@@ -100,9 +100,19 @@ class OnnxDetectorPipeline:
     def create_session(
         model_path: str | Path,
         providers: Sequence[str] = ("CPUExecutionProvider",),
+        *,
+        warmup_runs: int = 1,
+        intra_op_num_threads: int | None = None,
+        inter_op_num_threads: int | None = None,
     ) -> OnnxDetectorSession:
         return OnnxDetectorSession(
-            OrtSessionConfig(Path(model_path), providers=tuple(providers))
+            OrtSessionConfig(
+                Path(model_path),
+                providers=tuple(providers),
+                warmup_runs=warmup_runs,
+                intra_op_num_threads=intra_op_num_threads,
+                inter_op_num_threads=inter_op_num_threads,
+            )
         )
 
     def _decode_and_postprocess(

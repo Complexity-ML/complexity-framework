@@ -8,13 +8,19 @@ writes predictions plus a machine-readable protocol and timing report.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import platform
+import random
 import statistics
+import subprocess
+import sys
 import time
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Iterable
 
+import numpy as np
 import torch
 from PIL import Image
 
@@ -45,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--precision", choices=("fp32", "bf16"), default="bf16")
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--warmup", type=int, default=10)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--confidence", type=float, default=0.001)
     parser.add_argument("--nms-iou", type=float, default=0.5)
     parser.add_argument(
@@ -65,6 +72,91 @@ def parse_args() -> argparse.Namespace:
         help="non-release smoke-test limit; zero evaluates all val2017 images",
     )
     return parser.parse_args()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _checkpoint_sha256(path: Path) -> str | None:
+    if path.is_file():
+        return _sha256_file(path)
+    if path.is_dir():
+        for weights_name in ("ema.safetensors", "model.safetensors"):
+            weights_path = path / weights_name
+            if weights_path.is_file():
+                return _sha256_file(weights_path)
+    return None
+
+
+def _image_list_sha256(coco: Any, image_ids: list[int]) -> str:
+    digest = hashlib.sha256()
+    for image_id in image_ids:
+        record = coco.imgs[image_id]
+        line = (
+            f"{int(image_id)}\t{record['file_name']}\t"
+            f"{int(record['width'])}\t{int(record['height'])}\n"
+        )
+        digest.update(line.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _framework_commit() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def _package_version(module_name: str) -> str | None:
+    try:
+        from importlib import metadata
+
+        return metadata.version(module_name)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _environment(device: torch.device) -> dict[str, Any]:
+    cuda_available = torch.cuda.is_available()
+    cuda_device = None
+    cuda_capability = None
+    if cuda_available:
+        current = device.index if device.index is not None else torch.cuda.current_device()
+        cuda_device = torch.cuda.get_device_name(current)
+        cuda_capability = torch.cuda.get_device_capability(current)
+    return {
+        "python": sys.version.split()[0],
+        "os": platform.platform(),
+        "torch": torch.__version__,
+        "onnxruntime": _package_version("onnxruntime"),
+        "cuda_available": cuda_available,
+        "torch_cuda": torch.version.cuda,
+        "cuda_device": cuda_device,
+        "cuda_capability": list(cuda_capability) if cuda_capability is not None else None,
+        "tensorrt": _package_version("tensorrt"),
+    }
+
+
+def _configure_determinism(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = False
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    except TypeError:
+        torch.use_deterministic_algorithms(True)
 
 
 def _synchronize(device: torch.device) -> None:
@@ -112,6 +204,19 @@ def _branches_to_run(requested: str, *, has_nms_free: bool) -> tuple[str, ...]:
     if "nms-free" in branches and not has_nms_free:
         raise ValueError("checkpoint does not contain the NMS-free branch")
     return branches
+
+
+def _branch_contract(branch: str) -> dict[str, Any]:
+    return {
+        "raw_output": "[batch, 34000, 148]",
+        "regression": "68 LTRB/DFL logits",
+        "classification": "80 quality-class logits",
+        "postprocess": (
+            "decode + confidence filtering + class-aware NMS"
+            if branch == "o2m-nms"
+            else "decode + confidence filtering, no NMS"
+        ),
+    }
 
 
 def _run_branch(
@@ -212,10 +317,67 @@ def _run_branch(
     return results, _timing_summary(batch_times, len(image_ids))
 
 
+def _write_markdown_report(report: dict[str, Any], path: Path) -> None:
+    lines = [
+        "# Vision v8 COCO Accuracy Report",
+        "",
+        f"- Backend: `{report['backend']}`",
+        f"- Framework commit: `{report['framework_commit']}`",
+        f"- Checkpoint: `{report['checkpoint']}`",
+        f"- Checkpoint SHA-256: `{report['checkpoint_sha256'] or 'not recorded'}`",
+        (
+            f"- Dataset: `{report['dataset']['name']}` `{report['dataset']['split']}` "
+            f"({report['dataset']['evaluated_images']} images)"
+        ),
+        f"- Annotation SHA-256: `{report['dataset']['annotations_sha256']}`",
+        f"- Image-list SHA-256: `{report['dataset']['image_list_sha256']}`",
+        "",
+        "## Branch Metrics",
+        "",
+        "| Branch | AP | AP50 | AP75 | APs | APm | APl | AR100 |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for branch, branch_report in report["branches"].items():
+        metrics = branch_report["metrics"]
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    branch,
+                    f"{float(metrics['map50_95']):.6f}",
+                    f"{float(metrics['map50']):.6f}",
+                    f"{float(metrics['map75']):.6f}",
+                    f"{float(metrics['ap_small']):.6f}",
+                    f"{float(metrics['ap_medium']):.6f}",
+                    f"{float(metrics['ap_large']):.6f}",
+                    f"{float(metrics['ar_100']):.6f}",
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Runtime",
+            "",
+            f"- Python: `{report['environment']['python']}`",
+            f"- OS: `{report['environment']['os']}`",
+            f"- PyTorch: `{report['environment']['torch']}`",
+            f"- ONNX Runtime: `{report['environment']['onnxruntime'] or 'not installed'}`",
+            f"- CUDA available: `{report['environment']['cuda_available']}`",
+            f"- CUDA runtime: `{report['environment']['torch_cuda'] or 'not available'}`",
+            f"- TensorRT: `{report['environment']['tensorrt'] or 'not installed'}`",
+            "",
+        ]
+    )
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def main() -> None:
     args = parse_args()
     if args.batch_size <= 0 or args.warmup < 0 or args.max_detections <= 0:
         raise ValueError("batch size/max detections must be positive and warmup non-negative")
+    _configure_determinism(args.seed)
     provenance = read_detector_provenance(args.checkpoint)
     validate_native_random_init_provenance(provenance, dataset=NATIVE_COCO_DATASET)
     from pycocotools.coco import COCO
@@ -241,20 +403,29 @@ def main() -> None:
     branches = _branches_to_run(args.branch, has_nms_free=model.one_to_one_head is not None)
     args.output.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {
+        "schema_version": 1,
         "format_version": 1,
+        "backend": "pytorch",
+        "framework_commit": _framework_commit(),
         "checkpoint": str(args.checkpoint),
+        "checkpoint_sha256": _checkpoint_sha256(args.checkpoint),
         "provenance": provenance,
         "dataset": {
             "name": NATIVE_COCO_DATASET,
             "split": "val2017",
             "images": len(image_ids),
+            "evaluated_images": len(image_ids),
             "annotations": str(args.annotations),
+            "annotations_sha256": _sha256_file(args.annotations),
+            "image_list_sha256": _image_list_sha256(coco, image_ids),
         },
+        "environment": _environment(device),
         "protocol": {
             "image_size": model.config.image_size,
             "precision": args.precision,
             "batch_size": args.batch_size,
             "warmup_batches": args.warmup,
+            "seed": args.seed,
             "confidence_prefilter": args.confidence,
             "nms_iou": args.nms_iou,
             "max_detections": args.max_detections,
@@ -289,6 +460,8 @@ def main() -> None:
         prediction_path = args.output / f"predictions_{branch}.json"
         prediction_path.write_text(json.dumps(predictions))
         report["branches"][branch] = {
+            "branch": branch,
+            "contract": _branch_contract(branch),
             "predictions": str(prediction_path),
             "detections": len(predictions),
             "metrics": evaluate_coco_predictions(
@@ -302,6 +475,7 @@ def main() -> None:
             "timing": timing,
         }
         (args.output / "evaluation.json").write_text(json.dumps(report, indent=2) + "\n")
+        _write_markdown_report(report, args.output / "evaluation.md")
     print(json.dumps(report, indent=2))
 
 
