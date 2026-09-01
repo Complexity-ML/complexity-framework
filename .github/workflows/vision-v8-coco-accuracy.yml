@@ -57,8 +57,6 @@ on:
         description: "Runner label with dataset/checkpoint access"
         required: true
         default: "self-hosted"
-          - o2m-nms
-          - nms-free
       backend:
         description: "Evaluator backend"
         required: true
