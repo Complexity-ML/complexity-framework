@@ -75,6 +75,11 @@ The released profile enables P2 and uses O2M + NMS. Disable P2 explicitly for
 the controlled small-object ablation; do not infer the head set from an old
 artifact directory name.
 
+The deterministic 128-pixel CI regression profile (four tower layers, hidden
+size 128, four experts, 48-wide expert branches and a 20-class P2 head) contains
+exactly **927,246 parameters**. It is a structural test fixture, not the 2.53M
+released checkpoint.
+
 ```bash
 # Released P2 profile: approximately 2.53M parameters.
 bash scripts/vast_train_detector_coco_v08_nano.sh

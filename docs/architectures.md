@@ -78,7 +78,7 @@ expert `E`, fixed route table `R`, fixed route weights `a`, and output scales
 
 ```text
 TRMoE_l(x, t) = α S_l(x)
-              + β Σ_j a_j E_l,R[l,j,t](x)
+              + β Σ_j a_j E_l(R[l,j,t], x)
 ```
 
 The released model uses two routes with `a=(0.5, 0.5)`, `α=1`, and `β=2`.
