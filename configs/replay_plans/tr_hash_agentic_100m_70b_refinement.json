@@ -1,0 +1,492 @@
+{
+  "format": "tr-hash-token-replay-plan-v1",
+  "seq_len": 2048,
+  "selection_mode": "balanced_manifest_order",
+  "row_alignment": 512,
+  "requested_unique_tokens": 70000000000,
+  "requested_trained_tokens": 125000000000,
+  "unique_tokens": 69999788032,
+  "source_unique_tokens": {
+    "stack_python_agentic": 1679818752,
+    "stack_javascript_agentic": 839909376,
+    "stack_typescript_agentic": 279969792,
+    "stack_shell_agentic": 279969792,
+    "stack_rust_agentic": 140509184,
+    "stack_go_agentic": 140509184,
+    "stack_sql_agentic": 559939584,
+    "stack_java_agentic": 1119879168,
+    "stack_markdown_agentic": 559939584,
+    "fineweb_edu_agentic": 10079961088,
+    "finemath_4plus_agentic": 3919577088,
+    "infiwebmath_4plus_agentic": 2799697920,
+    "cosmopedia_v2_agentic": 5320474624,
+    "nemotron_tool_calling": 279969792,
+    "dclm_foundation": 14000586752,
+    "fineweb_edu_foundation": 13999538176,
+    "fineweb2_french_foundation": 4480565248,
+    "cosmopedia_v2_foundation": 2799697920,
+    "finemath_3plus_foundation": 3919577088,
+    "infiwebmath_3plus_foundation": 2799697920
+  },
+  "source_replay_tokens": {
+    "stack_python_agentic": 1320157184,
+    "stack_javascript_agentic": 659554304,
+    "stack_typescript_agentic": 220200960,
+    "stack_shell_agentic": 220200960,
+    "stack_rust_agentic": 110100480,
+    "stack_go_agentic": 110100480,
+    "stack_sql_agentic": 439353344,
+    "stack_java_agentic": 879755264,
+    "stack_markdown_agentic": 440401920,
+    "fineweb_edu_agentic": 7919894528,
+    "finemath_4plus_agentic": 3079667712,
+    "infiwebmath_4plus_agentic": 2199912448,
+    "cosmopedia_v2_agentic": 4180672512,
+    "nemotron_tool_calling": 220200960,
+    "dclm_foundation": 11000610816,
+    "fineweb_edu_foundation": 10999562240,
+    "fineweb2_french_foundation": 3520069632,
+    "cosmopedia_v2_foundation": 2199912448,
+    "finemath_3plus_foundation": 3079667712,
+    "infiwebmath_3plus_foundation": 2199912448
+  },
+  "dataset": "hf://datasets/AETHORIA-AI/TR-HASH-Pretraining-125B-Agentic-32K",
+  "revision": "fc738b3a10c5c093e3b34b48bcf1cb7066184706",
+  "recipe": {
+    "model_preset": "complexity-100m",
+    "unique_core": "70B proportional selection from the immutable 125B corpus",
+    "pretraining": "70B unique + 55B proportional replay",
+    "refinement": "one clean pass over the exact 70B unique core"
+  },
+  "trained_tokens": 69999788032,
+  "source_passes": {
+    "cosmopedia_v2_agentic": 1,
+    "cosmopedia_v2_foundation": 1,
+    "dclm_foundation": 1,
+    "finemath_3plus_foundation": 1,
+    "finemath_4plus_agentic": 1,
+    "fineweb2_french_foundation": 1,
+    "fineweb_edu_agentic": 1,
+    "fineweb_edu_foundation": 1,
+    "infiwebmath_3plus_foundation": 1,
+    "infiwebmath_4plus_agentic": 1,
+    "nemotron_tool_calling": 1,
+    "stack_go_agentic": 1,
+    "stack_java_agentic": 1,
+    "stack_javascript_agentic": 1,
+    "stack_markdown_agentic": 1,
+    "stack_python_agentic": 1,
+    "stack_rust_agentic": 1,
+    "stack_shell_agentic": 1,
+    "stack_sql_agentic": 1,
+    "stack_typescript_agentic": 1
+  },
+  "phases": [
+    {
+      "name": "unique_core",
+      "passes": 1,
+      "sources": {
+        "cosmopedia_v2_agentic": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 415054
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00005.bin",
+            "rows": 229710
+          }
+        ],
+        "cosmopedia_v2_foundation": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 390478
+          }
+        ],
+        "dclm_foundation": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00005.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00006.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00007.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00008.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00009.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00010.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00011.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00012.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00013.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00014.bin",
+            "rows": 290
+          }
+        ],
+        "finemath_3plus_foundation": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 449013
+          }
+        ],
+        "finemath_4plus_agentic": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 48846
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 400167
+          }
+        ],
+        "fineweb2_french_foundation": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 234652
+          }
+        ],
+        "fineweb_edu_agentic": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00005.bin",
+            "rows": 195331
+          },
+          {
+            "file": "tokens-00006.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00007.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00008.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00009.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00010.bin",
+            "rows": 331996
+          }
+        ],
+        "fineweb_edu_foundation": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00004.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00005.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00006.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00007.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00008.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00009.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00010.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00011.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00012.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00013.bin",
+            "rows": 488059
+          }
+        ],
+        "infiwebmath_3plus_foundation": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 390478
+          }
+        ],
+        "infiwebmath_4plus_agentic": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 244135
+          },
+          {
+            "file": "tokens-00002.bin",
+            "rows": 488281
+          },
+          {
+            "file": "tokens-00003.bin",
+            "rows": 146343
+          }
+        ],
+        "nemotron_tool_calling": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 73216
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 63488
+          }
+        ],
+        "stack_go_agentic": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 36608
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 32000
+          }
+        ],
+        "stack_java_agentic": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 292992
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 253824
+          }
+        ],
+        "stack_javascript_agentic": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 219712
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 190400
+          }
+        ],
+        "stack_markdown_agentic": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 146496
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 126912
+          }
+        ],
+        "stack_python_agentic": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 439424
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 380800
+          }
+        ],
+        "stack_rust_agentic": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 36608
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 32000
+          }
+        ],
+        "stack_shell_agentic": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 73216
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 63488
+          }
+        ],
+        "stack_sql_agentic": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 146496
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 126912
+          }
+        ],
+        "stack_typescript_agentic": [
+          {
+            "file": "tokens-00000.bin",
+            "rows": 73280
+          },
+          {
+            "file": "tokens-00001.bin",
+            "rows": 63424
+          }
+        ]
+      }
+    }
+  ]
+}

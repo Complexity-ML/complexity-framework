@@ -5,11 +5,12 @@ This is the single source of truth for model architecture configuration.
 Users can define any architecture by setting these parameters.
 """
 
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
 import json
-import yaml
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
+
 import torch
+import yaml
 
 
 @dataclass
@@ -529,6 +530,24 @@ def complexity_small_config() -> ModelConfig:
     )
 
 
+def complexity_100m_config() -> ModelConfig:
+    """Complexity 100M+ (100.4M params) for long-horizon Agentic 32K training."""
+    return ModelConfig(
+        hidden_size=640,
+        num_hidden_layers=10,
+        num_attention_heads=10,
+        num_key_value_heads=2,
+        intermediate_size=1824,
+        vocab_size=32000,
+        max_position_embeddings=2048,
+        attention_type="gqa",
+        mlp_type="tr_hash_engine",
+        num_experts=4,
+        norm_type="rmsnorm",
+        use_qk_norm=True,
+    )
+
+
 def complexity_base_config() -> ModelConfig:
     """Complexity Base (~125M params) - balanced size for training."""
     return ModelConfig(
@@ -588,6 +607,7 @@ PRESET_CONFIGS = {
     # Complexity size ladder
     "complexity-tiny": complexity_tiny_config,
     "complexity-small": complexity_small_config,
+    "complexity-100m": complexity_100m_config,
     "complexity-base": complexity_base_config,
     "complexity-large": complexity_large_config,
     "complexity-xl": complexity_xl_config,
@@ -596,6 +616,7 @@ PRESET_CONFIGS = {
     # Aliases
     "tiny": complexity_tiny_config,
     "small": complexity_small_config,
+    "100m": complexity_100m_config,
     "base": complexity_base_config,
     "large": complexity_large_config,
     "xl": complexity_xl_config,
