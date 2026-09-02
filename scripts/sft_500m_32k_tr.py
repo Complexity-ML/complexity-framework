@@ -17,6 +17,7 @@ import logging
 import math
 import os
 import random
+import sys
 import time
 from collections import Counter
 from pathlib import Path
@@ -1715,6 +1716,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Omit optimizer and scheduler state from checkpoints used for evaluation/inference.",
     )
     parser.add_argument("--run-name", default="sft-500m-32k-tr")
+    parser.add_argument(
+        "--tensorboard-dir",
+        default=None,
+        help=(
+            "TensorBoard event directory. Defaults to "
+            "runs/<run-name>/tensorboard on the main rank."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--empty-cache-every", type=int, default=50)
@@ -2043,8 +2052,21 @@ def main():
     run_dir = Path("runs") / args.run_name
     csv_file = None
     writer = None
+    tb_writer = None
+    tensorboard_dir = Path(args.tensorboard_dir) if args.tensorboard_dir else run_dir / "tensorboard"
     if is_main:
         run_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+
+            tensorboard_dir.mkdir(parents=True, exist_ok=True)
+            tb_writer = SummaryWriter(
+                log_dir=str(tensorboard_dir),
+                purge_step=resume_step if resume_step > 0 else None,
+                flush_secs=10,
+            )
+        except ImportError as exc:
+            logger.warning("TensorBoard unavailable; install tensorboard to emit event files: %s", exc)
         if args.full_parameter:
             mode_summary = (
                 "full-parameter · "
@@ -2143,6 +2165,8 @@ def main():
                     f"{args.eval_jsonl}"
                 )
         startup_lines.append(f"│ template  {chat_template['id']}")
+        if tb_writer is not None:
+            startup_lines.append(f"│ dashboard {tensorboard_dir}")
         if args.reasoning_envelope:
             startup_lines.append(
                 "│ reasoning <think>/<final> · " + ", ".join(sorted(REASONING_ENVELOPE_PLANS))
@@ -2261,17 +2285,29 @@ def main():
                 ]
             )
             csv_file.flush()
+            if tb_writer is not None:
+                tb_writer.add_scalar("Loss/eval", initial_eval_loss, 0)
+                tb_writer.add_scalar("PPL/eval", math.exp(min(initial_eval_loss, 20)), 0)
+                tb_writer.add_scalar("Tokens/eval", initial_eval_tokens, 0)
+                if initial_natural_eval_loss is not None:
+                    tb_writer.add_scalar("Loss/natural_eval", initial_natural_eval_loss, 0)
+                    tb_writer.add_scalar(
+                        "PPL/natural_eval", math.exp(min(initial_natural_eval_loss, 20)), 0
+                    )
+                    tb_writer.add_scalar("Tokens/natural_eval", initial_natural_eval_tokens, 0)
+                tb_writer.flush()
 
     model.train()
+    interactive_progress = is_main and sys.stderr.isatty()
     pbar = (
         tqdm(
             total=args.steps,
             initial=resume_step,
-            desc="TR-HASH MoE 200M · SFT v3",
+            desc=f"TR-HASH MoE {parameter_stats['total'] / 1e6:.1f}M · SFT",
             unit="step",
             dynamic_ncols=True,
         )
-        if is_main
+        if interactive_progress
         else None
     )
     t_log = time.perf_counter()
@@ -2478,7 +2514,44 @@ def main():
                     ]
                 )
                 csv_file.flush()
-                pbar.set_postfix(loss=f"{train_loss:.4f}", tok_s=f"{tok_s:.0f}")
+                if tb_writer is not None:
+                    tb_writer.add_scalar("Loss/train", train_loss, step)
+                    tb_writer.add_scalar("PPL/train", train_ppl, step)
+                    tb_writer.add_scalar("LR", lr_now, step)
+                    if expert_lr_now is not None:
+                        tb_writer.add_scalar("LR/expert", expert_lr_now, step)
+                    tb_writer.add_scalar("Throughput/tokens_per_second", tok_s, step)
+                    tb_writer.add_scalar(
+                        "Tokens/supervised_per_batch", stats["supervised_tokens"], step
+                    )
+                    if eval_loss is not None:
+                        tb_writer.add_scalar("Loss/eval", eval_loss, step)
+                        tb_writer.add_scalar("PPL/eval", math.exp(min(eval_loss, 20)), step)
+                        tb_writer.add_scalar("Tokens/eval", eval_tokens, step)
+                    if natural_eval_loss is not None:
+                        tb_writer.add_scalar("Loss/natural_eval", natural_eval_loss, step)
+                        tb_writer.add_scalar(
+                            "PPL/natural_eval", math.exp(min(natural_eval_loss, 20)), step
+                        )
+                        tb_writer.add_scalar("Tokens/natural_eval", natural_eval_tokens, step)
+                if pbar is not None:
+                    pbar.set_postfix(loss=f"{train_loss:.4f}", tok_s=f"{tok_s:.0f}")
+                else:
+                    epoch_number = (step - 1) // steps_per_epoch + 1
+                    epoch_total = max(args.epochs or 1, epoch_number)
+                    logger.info(
+                        "SFT progress step=%d/%d epoch=%d/%d progress=%.2f%% "
+                        "loss=%.4f ppl=%.2f lr=%.3e tok_s=%.0f",
+                        step,
+                        args.steps,
+                        epoch_number,
+                        epoch_total,
+                        100.0 * step / max(args.steps, 1),
+                        train_loss,
+                        train_ppl,
+                        lr_now,
+                        tok_s,
+                    )
             t_log = now
             tokens_since_log = 0
 
@@ -2536,6 +2609,10 @@ def main():
     if csv_file is not None:
         csv_file.close()
         logger.info(f"Metrics saved: {run_dir / 'metrics.csv'}")
+    if tb_writer is not None:
+        tb_writer.flush()
+        tb_writer.close()
+        logger.info(f"TensorBoard events saved: {tensorboard_dir}")
     if distributed:
         dist.destroy_process_group()
 
