@@ -981,9 +981,13 @@ class PretokenizedCorpusMixtureDataset(IterableDataset):
         shard_index: int,
         shard_count: int,
         selections: Sequence[Mapping[str, Any]] | None = None,
+        skip_local_rows: int = 0,
     ) -> Iterator[dict[str, torch.Tensor]]:
         source_manifest_path = Path(source.data_files)
         global_row = 0
+        remaining_skip = int(skip_local_rows)
+        if remaining_skip < 0:
+            raise ValueError("skip_local_rows must be non-negative")
         if selections is None:
             selections = tuple(
                 {"file": str(shard["file"]), "rows": int(shard["rows"])}
@@ -992,6 +996,18 @@ class PretokenizedCorpusMixtureDataset(IterableDataset):
         for shard_position, selection in enumerate(selections):
             shard = self._shards_by_source[source.name][str(selection["file"])]
             rows = int(selection["rows"])
+            first_local = (shard_index - global_row) % shard_count
+            local_rows = (
+                0
+                if first_local >= rows
+                else 1 + (rows - 1 - first_local) // shard_count
+            )
+            if remaining_skip >= local_rows:
+                remaining_skip -= local_rows
+                global_row += rows
+                continue
+            first_local += remaining_skip * shard_count
+            remaining_skip = 0
             logger.info(
                 f"[rank {shard_index}] opening shard source={source.name!r} "
                 f"shard_position={shard_position} file={selection['file']!r}"
@@ -1042,7 +1058,6 @@ class PretokenizedCorpusMixtureDataset(IterableDataset):
                             ),
                             expected_sha256=next_shard.get("sha256"),
                         )
-                first_local = (shard_index - global_row) % shard_count
                 for local_row in range(first_local, rows, shard_count):
                     offset = local_row * self.seq_len
                     chunk = np.asarray(
@@ -1054,6 +1069,10 @@ class PretokenizedCorpusMixtureDataset(IterableDataset):
                     }
                 del tokens
             global_row += rows
+        if remaining_skip:
+            raise RuntimeError(
+                f"source {source.name!r} cannot skip {skip_local_rows} local rows"
+            )
 
     def _replay_phase_rows(
         self,
@@ -1061,6 +1080,7 @@ class PretokenizedCorpusMixtureDataset(IterableDataset):
         *,
         shard_index: int,
         shard_count: int,
+        skip_rows: int = 0,
     ) -> Iterator[dict[str, torch.Tensor]]:
         rows_by_source = {
             source_name: sum(int(selection["rows"]) for selection in selections)
@@ -1086,6 +1106,14 @@ class PretokenizedCorpusMixtureDataset(IterableDataset):
             )
             for name, rows in local_rows.items()
         )
+        if skip_rows < 0 or skip_rows > local_total:
+            raise ValueError(
+                f"skip_rows={skip_rows} outside replay phase size 0..{local_total}"
+            )
+        counts = {source.name: 0 for source in phase_sources}
+        for _ in range(skip_rows):
+            source = WeightedStreamingTextDataset._next_source(phase_sources, counts)
+            counts[source.name] += 1
         iterators = {
             source.name: iter(
                 self._source_rows(
@@ -1093,12 +1121,12 @@ class PretokenizedCorpusMixtureDataset(IterableDataset):
                     shard_index=shard_index,
                     shard_count=shard_count,
                     selections=phase["sources"][source.name],
+                    skip_local_rows=counts[source.name],
                 )
             )
             for source in phase_sources
         }
-        counts = {source.name: 0 for source in phase_sources}
-        for _ in range(local_total):
+        for _ in range(skip_rows, local_total):
             source = WeightedStreamingTextDataset._next_source(phase_sources, counts)
             try:
                 sample = next(iterators[source.name])
@@ -1120,15 +1148,22 @@ class PretokenizedCorpusMixtureDataset(IterableDataset):
             remaining_skip = self._resume_skip_rows
             for phase in self._replay_phases:
                 for _ in range(int(phase["passes"])):
+                    phase_local_rows = sum(
+                        int(selection["rows"])
+                        for selections in phase["sources"].values()
+                        for selection in selections
+                    ) // shard_count
+                    if remaining_skip >= phase_local_rows:
+                        remaining_skip -= phase_local_rows
+                        continue
                     for sample in self._replay_phase_rows(
                         phase,
                         shard_index=shard_index,
                         shard_count=shard_count,
+                        skip_rows=remaining_skip,
                     ):
-                        if remaining_skip > 0:
-                            remaining_skip -= 1
-                            continue
                         yield sample
+                    remaining_skip = 0
             return
         incompatible = {
             name: rows

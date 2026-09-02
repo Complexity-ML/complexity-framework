@@ -486,6 +486,46 @@ def test_resume_skip_rows_defaults_to_zero_and_changes_nothing(tmp_path) -> None
     assert as_lists(dataset) == as_lists(dataset_explicit_zero)
 
 
+def test_resume_skip_rows_does_not_download_fully_skipped_remote_shards(tmp_path) -> None:
+    _remote, _files, downloads, download, list_files = _remote_token_fixture(tmp_path)
+    plan = {
+        "format": "tr-hash-token-replay-plan-v1",
+        "seq_len": 4,
+        "unique_tokens": 16,
+        "trained_tokens": 16,
+        "phases": [
+            {
+                "name": "already_trained",
+                "passes": 1,
+                "sources": {"tiny": [{"file": "tokens-00000.bin", "rows": 2}]},
+            },
+            {
+                "name": "continuation",
+                "passes": 1,
+                "sources": {"tiny": [{"file": "tokens-00001.bin", "rows": 2}]},
+            },
+        ],
+    }
+    dataset = PretokenizedCorpusMixtureDataset(
+        "hf://datasets/test-owner/test-tokens",
+        cache_dir=tmp_path / "cache",
+        prefetch_shards=0,
+        hub_downloader=download,
+        hub_file_lister=list_files,
+        replay_plan=plan,
+        resume_skip_rows=2,
+    )
+
+    samples = list(dataset)
+
+    assert [sample["input_ids"].tolist() for sample in samples] == [
+        [8, 9, 10, 11],
+        [12, 13, 14, 15],
+    ]
+    assert "corpora/tiny/tokens-00000.bin" not in downloads
+    assert "corpora/tiny/tokens-00001.bin" in downloads
+
+
 def test_resume_skip_rows_rejects_negative_values(tmp_path) -> None:
     remote, _files, _downloads, _download, _list_files = _remote_token_fixture(tmp_path)
     with pytest.raises(ValueError, match="non-negative"):
