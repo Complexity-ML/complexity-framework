@@ -5,38 +5,57 @@ Combines FSDP, mixed precision, gradient accumulation, checkpointing,
 and learning rate scheduling into a single training loop.
 """
 
-import torch
-import torch.nn as nn
-import torch.distributed as dist
-from torch.utils.data import DataLoader
-from typing import Optional, Dict, Any, Callable, List
-from pathlib import Path
 import logging
-import time
 import math
+import time
 import warnings
 from contextlib import nullcontext
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+
+import torch
+import torch.distributed as dist
+import torch.nn as nn
+from torch.utils.data import DataLoader
+
+from ..parallel.data_parallel import (
+    PrecisionMode,
+    ShardingMode,
+    get_rank,
+    get_world_size,
+    init_distributed,
+    is_main_process,
+    simple_ddp,
+    wrap_model_fsdp,
+)
+from ..utils.checkpointing import CheckpointManager, TrainingState
+from ..utils.security import AuditLogger
+from .config import TrainingConfig
+from .metrics import MetricsTracker
+from .scheduler import get_lr_scheduler, resolve_scheduler_name
 
 warnings.filterwarnings("ignore", message=".*epoch parameter in.*scheduler.step.*")
 
-from ..parallel.data_parallel import (
-    wrap_model_fsdp,
-    simple_ddp,
-    ShardingMode,
-    PrecisionMode,
-    init_distributed,
-    get_rank,
-    get_world_size,
-    is_main_process,
-)
-from ..utils.checkpointing import CheckpointManager, TrainingState
-from ..utils.security import AuditLogger, SecureTrainingContext
-
-from .config import TrainingConfig
-from .scheduler import get_lr_scheduler, resolve_scheduler_name
-from .metrics import MetricsTracker
-
 logger = logging.getLogger(__name__)
+
+
+def _format_moe_routing_summary(model_cfg: Any) -> str:
+    """Return the effective deterministic routing weights shown at startup."""
+    top_k = int(getattr(model_cfg, "top_k", 1))
+    if top_k <= 1:
+        return "1  (per-layer routing always on; route weight 1)"
+
+    configured_primary_weight = getattr(model_cfg, "top_k_primary_weight", None)
+    primary_weight = (
+        1.0 / top_k
+        if configured_primary_weight is None
+        else float(configured_primary_weight)
+    )
+    secondary_weight = (1.0 - primary_weight) / (top_k - 1)
+    return (
+        f"{top_k}  (per-layer routing always on; primary weight "
+        f"{primary_weight:g}; secondary weight {secondary_weight:g})"
+    )
 
 
 class Trainer:
@@ -127,8 +146,7 @@ class Trainer:
             logger.info(f"  checkpoint_dir  : {config.checkpoint_dir}")
             model_cfg = getattr(self.model, "config", None) or getattr(getattr(self.model, "module", None), "config", None)
             if model_cfg is not None and getattr(model_cfg, "num_experts", 1) > 1:
-                logger.info(f"  MoE top_k       : {getattr(model_cfg, 'top_k', 1)}  "
-                            f"(per-layer routing always on; primary weight 0.95 when K>1)")
+                logger.info(f"  MoE top_k       : {_format_moe_routing_summary(model_cfg)}")
             logger.info("=" * 70)
 
         # Optimizer
