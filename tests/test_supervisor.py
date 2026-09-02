@@ -30,6 +30,8 @@ def test_program_renders_a_deterministic_shell_escaped_configuration() -> None:
     assert "command=/bin/bash '/workspace/repo/run training.sh'" in rendered
     assert "autostart=true" in rendered
     assert "autorestart=unexpected" in rendered
+    assert "exitcodes=0" in rendered
+    assert "startretries=3" in rendered
     assert "stopasgroup=true" in rendered
     assert "killasgroup=true" in rendered
     assert "stdout_logfile=/workspace/repo/artifacts/training.log" in rendered
@@ -46,6 +48,9 @@ def test_program_renders_a_deterministic_shell_escaped_configuration() -> None:
         ({"stdout_logfile": Path("relative.log")}, "absolute"),
         ({"environment": {"HF_TOKEN": "secret"}}, "secret environment"),
         ({"environment": {"GOOD": "line\nbreak"}}, "NUL/newline"),
+        ({"exitcodes": ()}, "exitcodes"),
+        ({"exitcodes": (256,)}, "exitcodes"),
+        ({"startretries": -1}, "startretries"),
     ],
 )
 def test_program_rejects_unsafe_configuration(overrides: dict[str, object], message: str) -> None:
@@ -54,7 +59,13 @@ def test_program_rejects_unsafe_configuration(overrides: dict[str, object], mess
 
 
 def test_tokenizer_path_is_not_mistaken_for_a_secret() -> None:
-    program = _program(environment={"TOKENIZER": "/workspace/tokenizer"})
+    program = _program(
+        environment={
+            "TOKENIZER": "/workspace/tokenizer",
+            "TOKEN_PACKS": "40",
+            "TOKENIZERS_PARALLELISM": "true",
+        }
+    )
     assert 'environment=TOKENIZER="/workspace/tokenizer"' in program.render()
 
 

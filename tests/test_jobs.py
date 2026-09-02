@@ -6,8 +6,17 @@ from pathlib import Path
 
 import pytest
 
-from complexity.jobs import Job, JobHandle, JobManager, parse_job_status
+from complexity.jobs import (
+    Job,
+    JobHandle,
+    JobManager,
+    load_job_manifest,
+    parse_job_status,
+    wait_for_job_artifacts,
+)
 from complexity.training.supervisor import SupervisorManager
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _job(tmp_path: Path, **overrides: object) -> Job:
@@ -64,6 +73,140 @@ def test_detached_run_installs_private_config_and_returns_handle(
     assert calls == [["supervisorctl", "reread"], ["supervisorctl", "update"]]
 
 
+def test_submit_many_installs_group_and_applies_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    manager = JobManager(SupervisorManager(tmp_path / "supervisor"))
+    first = _job(tmp_path, name="pretraining")
+    second = _job(tmp_path, name="checkpoint_sync")
+
+    handles = manager.submit_many((first, second))
+
+    assert [handle.name for handle in handles] == ["pretraining", "checkpoint_sync"]
+    assert (tmp_path / "supervisor" / "pretraining.conf").is_file()
+    assert (tmp_path / "supervisor" / "checkpoint_sync.conf").is_file()
+    assert calls == [["supervisorctl", "reread"], ["supervisorctl", "update"]]
+
+
+def test_load_job_manifest_resolves_portable_paths_and_required_variables(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "pipeline.toml"
+    manifest.write_text(
+        """\
+version = 1
+required_variables = ["tokenizer"]
+
+[variables]
+log_dir = "{root}/logs"
+
+[[jobs]]
+name = "pretraining"
+command = ["{python}", "-m", "training.worker"]
+directory = "{root}"
+log_path = "{log_dir}/pretraining.log"
+autostart = false
+startretries = 5
+
+[jobs.environment]
+TOKENIZER = "{tokenizer}"
+""",
+        encoding="utf-8",
+    )
+    project_root = tmp_path / "checkout"
+
+    loaded = load_job_manifest(
+        manifest,
+        root=project_root,
+        variables={"tokenizer": "/models/tokenizer"},
+    )
+
+    assert loaded.source == manifest.resolve()
+    assert len(loaded.jobs) == 1
+    job = loaded.jobs[0]
+    assert job.name == "pretraining"
+    assert job.directory == project_root.resolve()
+    assert job.log_path == project_root.resolve() / "logs" / "pretraining.log"
+    assert job.environment == {"TOKENIZER": "/models/tokenizer"}
+    assert job.autostart is False
+    assert job.startretries == 5
+
+    with pytest.raises(ValueError, match="missing required job manifest variables"):
+        load_job_manifest(manifest, root=project_root)
+
+
+def test_load_job_manifest_rejects_unknown_keys(tmp_path: Path) -> None:
+    manifest = tmp_path / "pipeline.toml"
+    manifest.write_text(
+        """\
+version = 1
+[[jobs]]
+name = "training"
+command = ["python", "train.py"]
+log_path = "training.log"
+shell = true
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"unknown jobs\[0\] keys"):
+        load_job_manifest(manifest)
+
+
+def test_load_job_manifest_rejects_variable_cycles(tmp_path: Path) -> None:
+    manifest = tmp_path / "pipeline.toml"
+    manifest.write_text(
+        """\
+version = 1
+[variables]
+loop = "{loop}"
+[[jobs]]
+name = "training"
+command = ["python", "train.py"]
+log_path = "training.log"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="reference cycle"):
+        load_job_manifest(manifest)
+
+
+def test_agentic_100m_pipeline_is_portable_and_uses_native_dependency_gate(
+    tmp_path: Path,
+) -> None:
+    manifest = load_job_manifest(
+        REPO_ROOT / "configs/jobs/tr_hash_agentic_100m_pipeline.toml",
+        root=tmp_path,
+        variables={
+            "tokenizer": "/models/tr-hash-agentic-32k",
+            "hf_token_file": "/run/secrets/huggingface-token",
+        },
+    )
+
+    assert [job.name for job in manifest.jobs] == [
+        "tr_hash_100m_pretraining",
+        "tr_hash_100m_checkpoint_sync",
+        "tr_hash_100m_refinement",
+        "tr_hash_100m_refinement_sync",
+    ]
+    refinement = manifest.jobs[2]
+    assert "run-after" in refinement.command
+    assert "tr_hash_100m_pretraining" in refinement.command
+    assert str(tmp_path / "artifacts/tr_hash_agentic_100m_pretraining/final/model.safetensors") in refinement.command
+    rendered = "\n".join(job.as_supervisor_program().render() for job in manifest.jobs)
+    assert "/home/boris" not in rendered
+    assert "HF_TOKEN=" not in rendered
+    assert "/run/secrets/huggingface-token" in rendered
+
+
 def test_manager_reads_only_the_configured_log_tail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -93,6 +236,51 @@ def test_job_environment_cannot_be_mutated_after_validation(tmp_path: Path) -> N
 
     with pytest.raises(TypeError):
         job.environment["HF_TOKEN"] = "late-secret"  # type: ignore[index]
+
+
+def test_wait_for_job_artifacts_requires_exit_and_non_empty_files(tmp_path: Path) -> None:
+    artifact = tmp_path / "final" / "model.safetensors"
+    artifact.parent.mkdir()
+    statuses = iter(
+        (
+            "pretraining RUNNING pid 42, uptime 0:01:00",
+            "pretraining EXITED Sep 02 12:00 PM",
+        )
+    )
+
+    class Manager:
+        def status(self, name: str) -> str:
+            assert name == "pretraining"
+            status = next(statuses)
+            if "EXITED" in status:
+                artifact.write_bytes(b"weights")
+            return status
+
+    polls: list[str] = []
+    wait_for_job_artifacts(
+        Manager(),  # type: ignore[arg-type]
+        "pretraining",
+        [artifact],
+        poll_seconds=1,
+        sleep=lambda _seconds: None,
+        on_poll=polls.append,
+    )
+
+    assert polls == ["job=pretraining state=RUNNING artifacts_ready=False"]
+
+
+def test_wait_for_job_artifacts_rejects_incomplete_exit(tmp_path: Path) -> None:
+    class Manager:
+        def status(self, _name: str) -> str:
+            return "pretraining EXITED Sep 02 12:00 PM"
+
+    with pytest.raises(RuntimeError, match="exited without required artifacts"):
+        wait_for_job_artifacts(
+            Manager(),  # type: ignore[arg-type]
+            "pretraining",
+            [tmp_path / "missing.safetensors"],
+            poll_seconds=1,
+        )
 
 
 @pytest.mark.parametrize(

@@ -21,7 +21,10 @@ from typing import Literal
 
 _PROGRAM_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_SECRET_NAME = re.compile(r"(?:^|_)(?:TOKEN|PASSWORD|PASSWD|SECRET|API_KEY|PRIVATE_KEY)(?:$|_)")
+_SECRET_NAME = re.compile(
+    r"(?:^|_)(?:PASSWORD|PASSWD|SECRET|API_KEY|PRIVATE_KEY)(?:$|_)"
+    r"|(?:^|_)(?:(?:HF|AUTH|ACCESS|REFRESH|GITHUB|GITLAB|API)_)?TOKEN$"
+)
 _FORBIDDEN_TEXT = ("\x00", "\n", "\r")
 
 AutoRestart = bool | Literal["unexpected"]
@@ -53,7 +56,9 @@ class SupervisorProgram:
     environment: Mapping[str, str] = field(default_factory=dict)
     autostart: bool = True
     autorestart: AutoRestart = "unexpected"
+    exitcodes: tuple[int, ...] = (0,)
     startsecs: int = 5
+    startretries: int = 3
     stopwaitsecs: int = 300
     stopsignal: str = "TERM"
     stopasgroup: bool = True
@@ -78,8 +83,11 @@ class SupervisorProgram:
             raise ValueError("stdout_logfile must be an absolute path")
         if self.autorestart not in (True, False, "unexpected"):
             raise ValueError("autorestart must be true, false, or 'unexpected'")
-        if self.startsecs < 0 or self.stopwaitsecs < 0:
-            raise ValueError("startsecs and stopwaitsecs must be non-negative")
+        normalized_exitcodes = tuple(int(code) for code in self.exitcodes)
+        if not normalized_exitcodes or any(code < 0 or code > 255 for code in normalized_exitcodes):
+            raise ValueError("exitcodes must contain values between 0 and 255")
+        if self.startsecs < 0 or self.startretries < 0 or self.stopwaitsecs < 0:
+            raise ValueError("startsecs, startretries, and stopwaitsecs must be non-negative")
         if self.stdout_logfile_backups < 0 or self.priority < 0:
             raise ValueError("stdout_logfile_backups and priority must be non-negative")
         _require_safe_text(str(self.stdout_logfile_maxbytes), label="stdout_logfile_maxbytes")
@@ -99,6 +107,7 @@ class SupervisorProgram:
         object.__setattr__(self, "stdout_logfile", Path(self.stdout_logfile))
         object.__setattr__(self, "command", normalized_command)
         object.__setattr__(self, "environment", normalized_environment)
+        object.__setattr__(self, "exitcodes", normalized_exitcodes)
 
     def render(self) -> str:
         """Render a deterministic Supervisor INI fragment."""
@@ -114,7 +123,9 @@ class SupervisorProgram:
             f"command={shlex.join(self.command)}",
             f"autostart={_supervisor_bool(self.autostart)}",
             f"autorestart={autorestart}",
+            f"exitcodes={','.join(str(code) for code in self.exitcodes)}",
             f"startsecs={self.startsecs}",
+            f"startretries={self.startretries}",
             f"stopasgroup={_supervisor_bool(self.stopasgroup)}",
             f"killasgroup={_supervisor_bool(self.killasgroup)}",
             f"stopsignal={self.stopsignal}",

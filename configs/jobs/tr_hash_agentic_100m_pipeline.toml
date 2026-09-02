@@ -1,0 +1,147 @@
+version = 1
+required_variables = ["tokenizer", "hf_token_file"]
+
+[variables]
+artifact_root = "{root}/artifacts"
+log_root = "{artifact_root}/logs"
+hf_home = "{root}/.hf_home"
+venv_activate = "{python_dir}/activate"
+pretraining_output = "{artifact_root}/tr_hash_agentic_100m_pretraining"
+refinement_output = "{artifact_root}/tr_hash_agentic_100m_refinement"
+pretraining_repository = "AETHORIA-AI/TR-HASH-MoE-100M-125B-Agentic-Pretraining"
+refinement_repository = "AETHORIA-AI/TR-HASH-MoE-100M-70B-Agentic-Refinement"
+
+[[jobs]]
+name = "tr_hash_100m_pretraining"
+command = ["/usr/bin/env", "bash", "scripts/run_tr_hash_agentic_100m.sh", "pretraining"]
+directory = "{root}"
+log_path = "{log_root}/tr_hash_100m_pretraining.log"
+autostart = true
+autorestart = "unexpected"
+exitcodes = [0]
+startsecs = 10
+startretries = 3
+stopwaitsecs = 120
+stdout_logfile_maxbytes = "100MB"
+stdout_logfile_backups = 3
+priority = 100
+
+[jobs.environment]
+HF_HOME = "{hf_home}"
+TOKENIZER = "{tokenizer}"
+NPROC_PER_NODE = "4"
+BATCH_SIZE_PER_GPU = "28"
+GRADIENT_ACCUMULATION = "1"
+TOKENIZED_CACHE_GB = "48"
+TOKENIZED_PREFETCH_SHARDS = "0"
+OUTPUT_DIR = "{pretraining_output}"
+TOKEN_PACKS = "40"
+LOG_STEPS = "10"
+GRADIENT_CHECKPOINTING = "0"
+RESUME = "auto"
+OMP_NUM_THREADS = "1"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+TORCH_NCCL_ASYNC_ERROR_HANDLING = "1"
+VENV_ACTIVATE = "{venv_activate}"
+
+[[jobs]]
+name = "tr_hash_100m_checkpoint_sync"
+command = [
+  "{python}",
+  "scripts/sync_checkpoints_to_hf.py",
+  "--checkpoint-dir", "{pretraining_output}",
+  "--repo-id", "{pretraining_repository}",
+  "--hf-token-file", "{hf_token_file}",
+  "--keep-local", "2",
+  "--poll-interval", "60",
+  "--no-private",
+  "--pass-timeout", "1800",
+  "--xet-timeout", "300",
+]
+directory = "{root}"
+log_path = "{log_root}/tr_hash_100m_checkpoint_sync.log"
+autostart = true
+autorestart = "unexpected"
+exitcodes = [0]
+startsecs = 5
+startretries = 3
+stopwaitsecs = 30
+stdout_logfile_maxbytes = "50MB"
+stdout_logfile_backups = 3
+priority = 110
+
+[jobs.environment]
+HF_HOME = "{hf_home}"
+
+[[jobs]]
+name = "tr_hash_100m_refinement"
+command = [
+  "{python}",
+  "-m", "complexity.cli.app",
+  "jobs", "run-after", "tr_hash_100m_pretraining",
+  "--artifact", "{pretraining_output}/final/model.safetensors",
+  "--artifact", "{pretraining_output}/final/model_config.yaml",
+  "--poll-seconds", "60",
+  "--delay-seconds", "30",
+  "--",
+  "/usr/bin/env", "bash", "scripts/run_tr_hash_agentic_100m.sh", "refinement",
+]
+directory = "{root}"
+log_path = "{log_root}/tr_hash_100m_refinement.log"
+autostart = true
+autorestart = "unexpected"
+exitcodes = [0]
+startsecs = 10
+startretries = 3
+stopwaitsecs = 120
+stdout_logfile_maxbytes = "100MB"
+stdout_logfile_backups = 3
+priority = 120
+
+[jobs.environment]
+HF_HOME = "{hf_home}"
+TOKENIZER = "{tokenizer}"
+NPROC_PER_NODE = "4"
+BATCH_SIZE_PER_GPU = "28"
+GRADIENT_ACCUMULATION = "1"
+TOKENIZED_CACHE_GB = "48"
+TOKENIZED_PREFETCH_SHARDS = "0"
+OUTPUT_DIR = "{refinement_output}"
+INIT_CHECKPOINT = "{pretraining_output}/final"
+TOKEN_PACKS = "20"
+LOG_STEPS = "10"
+GRADIENT_CHECKPOINTING = "0"
+RESUME = "auto"
+OMP_NUM_THREADS = "1"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+TORCH_NCCL_ASYNC_ERROR_HANDLING = "1"
+VENV_ACTIVATE = "{venv_activate}"
+
+[[jobs]]
+name = "tr_hash_100m_refinement_sync"
+command = [
+  "{python}",
+  "scripts/sync_checkpoints_to_hf.py",
+  "--checkpoint-dir", "{refinement_output}",
+  "--repo-id", "{refinement_repository}",
+  "--hf-token-file", "{hf_token_file}",
+  "--keep-local", "2",
+  "--poll-interval", "60",
+  "--no-private",
+  "--pass-timeout", "1800",
+  "--xet-timeout", "300",
+]
+directory = "{root}"
+log_path = "{log_root}/tr_hash_100m_refinement_sync.log"
+autostart = true
+autorestart = "unexpected"
+exitcodes = [0]
+startsecs = 5
+startretries = 3
+stopwaitsecs = 30
+stdout_logfile_maxbytes = "50MB"
+stdout_logfile_backups = 3
+priority = 130
+
+[jobs.environment]
+HF_HOME = "{hf_home}"

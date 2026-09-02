@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 from complexity.models import ComplexityModel
@@ -71,3 +75,44 @@ def test_agentic_100m_plan_keeps_exact_unique_core_for_refinement(tmp_path) -> N
 def test_agentic_100m_token_count_parser() -> None:
     assert parse_token_count("70B") == 70_000_000_000
     assert parse_token_count("125B") == 125_000_000_000
+
+
+def test_agentic_100m_launcher_bounds_steps_to_audited_plan(tmp_path: Path) -> None:
+    tokenizer = tmp_path / "tokenizer"
+    tokenizer.mkdir()
+    (tokenizer / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (tokenizer / "chat_template.jinja").write_text("template", encoding="utf-8")
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"trained_tokens": 1_000_003}), encoding="utf-8")
+    refinement = tmp_path / "refinement.json"
+    refinement.write_text(json.dumps({"trained_tokens": 500_003}), encoding="utf-8")
+    binary_directory = tmp_path / "bin"
+    binary_directory.mkdir()
+    torchrun = binary_directory / "torchrun"
+    torchrun.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n', encoding="utf-8")
+    torchrun.chmod(0o755)
+    repository = Path(__file__).resolve().parents[1]
+
+    result = subprocess.run(
+        [str(repository / "scripts/run_tr_hash_agentic_100m.sh"), "pretraining"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{binary_directory}:{os.environ['PATH']}",
+            "REPO_ROOT": str(tmp_path),
+            "VENV_ACTIVATE": str(tmp_path / "missing-venv"),
+            "TOKENIZER": str(tokenizer),
+            "PRETRAIN_PLAN": str(plan),
+            "REFINEMENT_PLAN": str(refinement),
+            "NPROC_PER_NODE": "4",
+            "BATCH_SIZE_PER_GPU": "2",
+            "GRADIENT_ACCUMULATION": "1",
+            "SEQ_LEN": "8",
+        },
+    )
+
+    assert "exact bounded schedule=15625 steps" in result.stdout
+    assert "unused_tail=3" in result.stdout
+    assert "--max-steps\n15625\n" in result.stdout

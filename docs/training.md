@@ -53,6 +53,9 @@ Long-running jobs use `complexity.training.SupervisorManager` and a validated
 `SupervisorProgram`. The framework atomically generates the host configuration;
 static instance-specific Supervisor files are not versioned. Never put tokens,
 passwords, API keys, or other credentials in a program environment mapping.
+Portable multi-process pipelines use versioned TOML manifests through
+`complexity jobs render-file` and `complexity jobs submit-file`; see
+[`supervisor-jobs.md`](supervisor-jobs.md).
 
 ## Stage 1: replay-scheduled base pretraining
 

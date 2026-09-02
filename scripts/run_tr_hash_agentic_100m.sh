@@ -86,6 +86,26 @@ TARGET_TOKENS="$(
   python -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["trained_tokens"]))' \
     "$TOKENIZED_PLAN"
 )"
+TOKENS_PER_STEP=$((NPROC_PER_NODE * BATCH_SIZE_PER_GPU * GRADIENT_ACCUMULATION * SEQ_LEN))
+schedule_args=()
+has_max_steps=0
+for argument in "$@"; do
+  if [[ "$argument" == "--max-steps" || "$argument" == --max-steps=* ]]; then
+    has_max_steps=1
+    break
+  fi
+done
+if [[ "$has_max_steps" == "0" ]]; then
+  MAX_STEPS=$((TARGET_TOKENS / TOKENS_PER_STEP))
+  if [[ "$MAX_STEPS" -lt 1 ]]; then
+    echo "[error] plan contains fewer tokens than one global optimizer step" >&2
+    exit 2
+  fi
+  SCHEDULED_TOKENS=$((MAX_STEPS * TOKENS_PER_STEP))
+  UNUSED_TOKENS=$((TARGET_TOKENS - SCHEDULED_TOKENS))
+  schedule_args=(--max-steps "$MAX_STEPS")
+  echo "[agentic-100m] exact bounded schedule=$MAX_STEPS steps trained=$SCHEDULED_TOKENS unused_tail=$UNUSED_TOKENS"
+fi
 
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-true}"
@@ -98,36 +118,44 @@ echo "[agentic-100m] plan=$TOKENIZED_PLAN target_tokens=$TARGET_TOKENS"
 echo "[agentic-100m] nproc=$NPROC_PER_NODE batch/gpu=$BATCH_SIZE_PER_GPU grad_accum=$GRADIENT_ACCUMULATION seq=$SEQ_LEN"
 echo "[agentic-100m] output=$OUTPUT_DIR resume=$RESUME"
 
-torchrun --standalone --nproc_per_node "$NPROC_PER_NODE" \
-  -m scripts.train_tr_hash_text_lineage \
-  --model-preset complexity-100m \
-  --stage "$STAGE" \
-  --tokenizer "$TOKENIZER" \
-  --tokenized-data "$TOKENIZED_DATA" \
-  --tokenized-revision "$TOKENIZED_REVISION" \
-  --tokenized-cache-dir "$TOKENIZED_CACHE_DIR" \
-  --tokenized-cache-gb "$TOKENIZED_CACHE_GB" \
-  --tokenized-prefetch-shards "${TOKENIZED_PREFETCH_SHARDS:-1}" \
-  --tokenized-plan "$TOKENIZED_PLAN" \
-  --target-tokens "$TARGET_TOKENS" \
-  --batch-size "$BATCH_SIZE_PER_GPU" \
-  --seq-len "$SEQ_LEN" \
-  --gradient-accumulation "$GRADIENT_ACCUMULATION" \
-  --precision bf16 \
-  --lr "$LR" \
-  --warmup-tokens "$WARMUP_TOKENS" \
-  --lr-scheduler "${LR_SCHEDULER:-wsd}" \
-  --token-packs "$TOKEN_PACKS" \
-  --save-steps 0 \
-  --log-steps "${LOG_STEPS:-10}" \
-  --num-workers 0 \
-  --distributed-mode ddp \
-  --optimizer "${OPTIMIZER:-adamw}" \
-  --use-custom-kernels auto \
-  --require-cuda \
-  --top-k 2 \
-  --checkpoint-dir "$OUTPUT_DIR" \
-  --resume "$RESUME" \
-  "${checkpointing_args[@]}" \
-  "${INIT_ARGS[@]}" \
-  "$@"
+trainer_command=(
+  torchrun --standalone --nproc_per_node "$NPROC_PER_NODE"
+  -m scripts.train_tr_hash_text_lineage
+  --model-preset complexity-100m
+  --stage "$STAGE"
+  --tokenizer "$TOKENIZER"
+  --tokenized-data "$TOKENIZED_DATA"
+  --tokenized-revision "$TOKENIZED_REVISION"
+  --tokenized-cache-dir "$TOKENIZED_CACHE_DIR"
+  --tokenized-cache-gb "$TOKENIZED_CACHE_GB"
+  --tokenized-prefetch-shards "${TOKENIZED_PREFETCH_SHARDS:-1}"
+  --tokenized-plan "$TOKENIZED_PLAN"
+  --target-tokens "$TARGET_TOKENS"
+  --batch-size "$BATCH_SIZE_PER_GPU"
+  --seq-len "$SEQ_LEN"
+  --gradient-accumulation "$GRADIENT_ACCUMULATION"
+  --precision bf16
+  --lr "$LR"
+  --warmup-tokens "$WARMUP_TOKENS"
+  --lr-scheduler "${LR_SCHEDULER:-wsd}"
+  --token-packs "$TOKEN_PACKS"
+  --save-steps 0
+  --log-steps "${LOG_STEPS:-10}"
+  --num-workers 0
+  --distributed-mode ddp
+  --optimizer "${OPTIMIZER:-adamw}"
+  --use-custom-kernels auto
+  --require-cuda
+  --top-k 2
+  --checkpoint-dir "$OUTPUT_DIR"
+  --resume "$RESUME"
+)
+if [[ "$has_max_steps" == "0" ]]; then
+  trainer_command+=("${schedule_args[@]}")
+fi
+trainer_command+=("${checkpointing_args[@]}")
+if [[ "$STAGE" == "refinement" ]]; then
+  trainer_command+=("${INIT_ARGS[@]}")
+fi
+trainer_command+=("$@")
+exec "${trainer_command[@]}"
