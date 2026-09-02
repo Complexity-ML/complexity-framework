@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
@@ -46,7 +47,68 @@ def _collect_transient_http_errors() -> tuple[type[Exception], ...]:
 
 
 _TRANSIENT_HTTP_ERRORS = _collect_transient_http_errors()
+_HF_HTTP_FALLBACK_LOCK = threading.RLock()
+_HF_XET_COOLDOWN_SECONDS = float(os.environ.get("TR_HASH_HF_XET_COOLDOWN_SECONDS", "900"))
 REPLAY_PLAN_FORMAT = "tr-hash-token-replay-plan-v1"
+
+
+def _is_transient_hub_download_error(error: BaseException) -> bool:
+    """Return whether a Hub failure is safe to retry over plain HTTP."""
+    current: BaseException | None = error
+    messages: list[str] = []
+    while current is not None:
+        messages.append(str(current).lower())
+        if isinstance(current, PermissionError):
+            return False
+        if isinstance(current, (OSError, *_TRANSIENT_HTTP_ERRORS)):
+            return True
+        current = current.__cause__ or current.__context__
+
+    message = " ".join(messages)
+    return any(
+        marker in message
+        for marker in (
+            "cas client error",
+            "file reconstruction error",
+            "request middleware error",
+            "error sending request",
+            "connection reset",
+            "dns",
+            "network",
+            "service unavailable",
+            "temporarily unavailable",
+            "timed out",
+            "timeout",
+            "xet",
+        )
+    )
+
+
+@contextmanager
+def _force_hf_http_transport() -> Iterator[None]:
+    """Temporarily disable Xet, including its import-time cached setting."""
+    with _HF_HTTP_FALLBACK_LOCK:
+        missing = object()
+        previous_env: str | object = os.environ.get("HF_HUB_DISABLE_XET", missing)
+        constants = None
+        previous_constant: bool | object = missing
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+        try:
+            try:
+                from huggingface_hub import constants
+
+                previous_constant = getattr(constants, "HF_HUB_DISABLE_XET", missing)
+                constants.HF_HUB_DISABLE_XET = True
+            except ImportError:
+                pass
+            yield
+        finally:
+            if constants is not None and previous_constant is not missing:
+                constants.HF_HUB_DISABLE_XET = previous_constant
+            if previous_env is missing:
+                os.environ.pop("HF_HUB_DISABLE_XET", None)
+            else:
+                os.environ["HF_HUB_DISABLE_XET"] = str(previous_env)
 
 
 def _sha256_file(path: Path) -> str:
@@ -107,6 +169,35 @@ class _HubShardCache:
         self._file_lister = file_lister
         self._executor: ThreadPoolExecutor | None = None
         self._prefetches: dict[str, Future[Path]] = {}
+
+    @property
+    def _xet_circuit_marker(self) -> Path:
+        return self.root / ".xet-disabled-until"
+
+    def _xet_circuit_is_open(self) -> bool:
+        try:
+            marker = self._xet_circuit_marker
+            recorded = marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+        try:
+            retry_after = float(recorded)
+        except ValueError:
+            # An empty marker can be created operationally before a supervised
+            # restart to bypass a known-bad Xet window immediately.
+            retry_after = marker.stat().st_mtime + max(0.0, _HF_XET_COOLDOWN_SECONDS)
+        if retry_after > time.time():
+            return True
+        self._xet_circuit_marker.unlink(missing_ok=True)
+        return False
+
+    def _open_xet_circuit(self) -> None:
+        retry_after = time.time() + max(0.0, _HF_XET_COOLDOWN_SECONDS)
+        temporary = self._xet_circuit_marker.with_name(
+            f"{self._xet_circuit_marker.name}.partial-{os.getpid()}-{threading.get_ident()}"
+        )
+        temporary.write_text(f"{retry_after}\n", encoding="utf-8")
+        os.replace(temporary, self._xet_circuit_marker)
 
     @staticmethod
     def _lock(path: Path):
@@ -171,16 +262,59 @@ class _HubShardCache:
             from huggingface_hub import hf_hub_download
 
             downloader = hf_hub_download
-        downloaded = Path(
-            downloader(
-                repo_id=self.repo_id,
-                filename=filename,
-                repo_type="dataset",
-                revision=self.revision,
-                token=self.token,
-                local_dir=self.root,
+        kwargs = {
+            "repo_id": self.repo_id,
+            "filename": filename,
+            "repo_type": "dataset",
+            "revision": self.revision,
+            "token": self.token,
+            "local_dir": self.root,
+        }
+        if self._xet_circuit_is_open():
+            # Keep the circuit open while HTTP recovery is actively consuming
+            # new shards; probe Xet only after a quiet cooldown window.
+            self._open_xet_circuit()
+            logger.info("Xet circuit is cooling down; downloading %s over HTTP", filename)
+            return self._download_over_http(downloader, kwargs, filename)
+        try:
+            downloaded = Path(downloader(**kwargs))
+        except Exception as error:
+            if not _is_transient_hub_download_error(error):
+                raise
+            self._open_xet_circuit()
+            logger.warning(
+                "Hub/Xet download failed for %s (%s); retrying over HTTP and "
+                "cooling down Xet for %.0fs",
+                filename,
+                error,
+                _HF_XET_COOLDOWN_SECONDS,
             )
-        )
+            return self._download_over_http(downloader, kwargs, filename)
+        if not downloaded.is_file():
+            raise FileNotFoundError(f"Hub download did not produce {filename}: {downloaded}")
+        return downloaded
+
+    @staticmethod
+    def _download_over_http(
+        downloader: Callable[..., str],
+        kwargs: Mapping[str, Any],
+        filename: str,
+    ) -> Path:
+        with _force_hf_http_transport():
+            for attempt in range(1, 4):
+                try:
+                    downloaded = Path(downloader(**kwargs))
+                    break
+                except Exception as error:
+                    if attempt == 3 or not _is_transient_hub_download_error(error):
+                        raise
+                    logger.warning(
+                        "HTTP fallback failed for %s (attempt %d/3): %s",
+                        filename,
+                        attempt,
+                        error,
+                    )
+                    time.sleep(float(attempt))
         if not downloaded.is_file():
             raise FileNotFoundError(f"Hub download did not produce {filename}: {downloaded}")
         return downloaded

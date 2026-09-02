@@ -232,6 +232,71 @@ def test_list_files_gives_up_after_max_attempts(tmp_path, monkeypatch) -> None:
         cache.list_files(max_attempts=3)
 
 
+def test_hub_download_falls_back_to_http_after_xet_transport_failure(
+    tmp_path, monkeypatch
+) -> None:
+    from complexity.training.corpus_mixture import _HubShardCache
+
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
+    attempts: list[str | None] = []
+
+    def flaky_download(*, filename, local_dir, **_kwargs):
+        attempts.append(os.environ.get("HF_HUB_DISABLE_XET"))
+        if len(attempts) == 1:
+            raise RuntimeError(
+                "File reconstruction error: CAS Client Error: Request middleware error"
+            )
+        destination = Path(local_dir) / filename
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"tokens")
+        return str(destination)
+
+    cache = _HubShardCache(
+        repo_id="owner/repo",
+        cache_dir=tmp_path,
+        revision="main",
+        token=None,
+        max_cache_bytes=10**9,
+        prefetch_shards=0,
+        downloader=flaky_download,
+    )
+
+    downloaded = cache._download("corpora/source/tokens-00000.bin")
+
+    assert downloaded.read_bytes() == b"tokens"
+    assert attempts == [None, "1"]
+    assert "HF_HUB_DISABLE_XET" not in os.environ
+
+    second = cache._download("corpora/source/tokens-00001.bin")
+    assert second.read_bytes() == b"tokens"
+    assert attempts == [None, "1", "1"]
+
+
+def test_hub_download_does_not_hide_non_transient_errors(tmp_path) -> None:
+    from complexity.training.corpus_mixture import _HubShardCache
+
+    attempts = 0
+
+    def rejected_download(**_kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise PermissionError("repository access denied")
+
+    cache = _HubShardCache(
+        repo_id="owner/repo",
+        cache_dir=tmp_path,
+        revision="main",
+        token=None,
+        max_cache_bytes=10**9,
+        prefetch_shards=0,
+        downloader=rejected_download,
+    )
+
+    with pytest.raises(PermissionError, match="access denied"):
+        cache._download("corpora/source/tokens-00000.bin")
+    assert attempts == 1
+
+
 @pytest.mark.skipif(os.name != "posix", reason="shared shard pins use POSIX flock")
 def test_hub_cache_allows_concurrent_readers_but_blocks_eviction(tmp_path) -> None:
     from complexity.training.corpus_mixture import _HubShardCache

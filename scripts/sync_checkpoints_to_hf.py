@@ -15,6 +15,7 @@ resume without waiting on a Hub download.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import logging
 import os
@@ -28,6 +29,7 @@ logger = logging.getLogger("sync_checkpoints_to_hf")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
 STATE_FILENAME = ".synced_checkpoints.json"
+_XET_RETRY_AFTER_MONOTONIC = 0.0
 
 
 def load_hf_token(token_file: Path | None, env_name: str) -> str:
@@ -162,7 +164,12 @@ def sync_once(
         shutil.rmtree(pack_dir, ignore_errors=True)
 
 
-def run_pass_with_timeout(pass_args: list[str], pass_timeout: float) -> bool:
+def run_pass_with_timeout(
+    pass_args: list[str],
+    pass_timeout: float,
+    *,
+    environment: dict[str, str] | None = None,
+) -> bool:
     """Run one sync pass as a subprocess, killing it if it exceeds pass_timeout.
 
     A network drop mid-upload can stall the underlying socket read with no
@@ -171,7 +178,7 @@ def run_pass_with_timeout(pass_args: list[str], pass_timeout: float) -> bool:
     it. Returns True on a clean pass, False if it timed out or failed.
     """
     try:
-        subprocess.run(pass_args, timeout=pass_timeout, check=True)
+        subprocess.run(pass_args, timeout=pass_timeout, check=True, env=environment)
         return True
     except subprocess.TimeoutExpired:
         logger.error(
@@ -181,6 +188,67 @@ def run_pass_with_timeout(pass_args: list[str], pass_timeout: float) -> bool:
     except subprocess.CalledProcessError:
         logger.exception("sync pass failed, will retry")
         return False
+
+
+def _environment_flag_enabled(environment: dict[str, str], name: str) -> bool:
+    return environment.get(name, "").strip().lower() in {"1", "on", "true", "yes"}
+
+
+def xet_is_available(environment: dict[str, str] | None = None) -> bool:
+    """Return whether the preferred Hub Xet transport can be attempted."""
+    current_environment = os.environ if environment is None else environment
+    if _environment_flag_enabled(current_environment, "HF_HUB_DISABLE_XET"):
+        return False
+    if time.monotonic() < _XET_RETRY_AFTER_MONOTONIC:
+        return False
+    try:
+        return importlib.util.find_spec("hf_xet") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def xet_circuit_is_open() -> bool:
+    return time.monotonic() < _XET_RETRY_AFTER_MONOTONIC
+
+
+def run_pass_with_transport_fallback(
+    pass_args: list[str],
+    pass_timeout: float,
+    xet_timeout: float,
+    *,
+    xet_cooldown: float = 900.0,
+    environment: dict[str, str] | None = None,
+) -> bool:
+    """Prefer Xet, then retry the same pass over HTTP if Xet fails or stalls.
+
+    The HTTP override is scoped to child subprocesses. After a transient CAS
+    failure, HTTP remains selected for a bounded cooldown and Xet is then
+    probed again instead of being permanently disabled.
+    """
+    preferred_environment = dict(os.environ if environment is None else environment)
+    if xet_circuit_is_open():
+        preferred_environment["HF_HUB_DISABLE_XET"] = "1"
+    should_try_xet = xet_is_available(preferred_environment)
+    preferred_timeout = min(pass_timeout, xet_timeout) if should_try_xet else pass_timeout
+    if run_pass_with_timeout(
+        pass_args,
+        preferred_timeout,
+        environment=preferred_environment,
+    ):
+        return True
+    if not should_try_xet:
+        return False
+
+    global _XET_RETRY_AFTER_MONOTONIC
+    _XET_RETRY_AFTER_MONOTONIC = time.monotonic() + max(0.0, xet_cooldown)
+    logger.warning("Xet sync pass failed or stalled; retrying this pass over HTTP")
+    http_environment = dict(preferred_environment)
+    http_environment["HF_HUB_DISABLE_XET"] = "1"
+    return run_pass_with_timeout(
+        pass_args,
+        pass_timeout,
+        environment=http_environment,
+    )
 
 
 def main() -> None:
@@ -224,6 +292,19 @@ def main() -> None:
         "raised, so a bare try/except never fires -- each pass runs in a "
         "subprocess that gets killed and retried if it exceeds this budget.",
     )
+    parser.add_argument(
+        "--xet-timeout",
+        type=float,
+        default=300.0,
+        help="maximum seconds to wait for the preferred Xet pass before retrying "
+        "the same pass over HTTP. Xet is probed again on the next polling pass.",
+    )
+    parser.add_argument(
+        "--xet-cooldown",
+        type=float,
+        default=900.0,
+        help="seconds to keep using HTTP after an Xet failure before probing Xet again.",
+    )
     args = parser.parse_args()
 
     token = load_hf_token(args.hf_token_file, args.hf_token_env)
@@ -264,7 +345,12 @@ def main() -> None:
     if args.steps_per_epoch is not None:
         pass_args.extend(["--steps-per-epoch", str(args.steps_per_epoch)])
     while True:
-        run_pass_with_timeout(pass_args, args.pass_timeout)
+        run_pass_with_transport_fallback(
+            pass_args,
+            args.pass_timeout,
+            args.xet_timeout,
+            xet_cooldown=args.xet_cooldown,
+        )
         time.sleep(args.poll_interval)
 
 

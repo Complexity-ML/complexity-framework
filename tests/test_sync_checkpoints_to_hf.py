@@ -382,3 +382,90 @@ def test_run_pass_with_timeout_returns_false_for_a_nonzero_exit(mod, tmp_path) -
     ok = mod.run_pass_with_timeout([sys.executable, str(failing_script)], pass_timeout=10.0)
 
     assert ok is False
+
+
+def test_transport_fallback_retries_failed_xet_pass_over_http(mod, monkeypatch) -> None:
+    calls: list[tuple[float, dict[str, str]]] = []
+
+    def fake_run(_args, timeout, *, environment=None):
+        calls.append((timeout, dict(environment or {})))
+        return len(calls) == 2
+
+    monkeypatch.setattr(mod, "run_pass_with_timeout", fake_run)
+    monkeypatch.setattr(mod, "xet_is_available", lambda _environment: True)
+
+    assert mod.run_pass_with_transport_fallback(
+        ["sync"],
+        pass_timeout=1800.0,
+        xet_timeout=300.0,
+        environment={"HF_TOKEN": "secret"},
+    )
+    assert calls == [
+        (300.0, {"HF_TOKEN": "secret"}),
+        (1800.0, {"HF_TOKEN": "secret", "HF_HUB_DISABLE_XET": "1"}),
+    ]
+
+
+def test_transport_fallback_does_not_duplicate_http_only_pass(mod, monkeypatch) -> None:
+    calls: list[tuple[float, dict[str, str]]] = []
+
+    def fake_run(_args, timeout, *, environment=None):
+        calls.append((timeout, dict(environment or {})))
+        return False
+
+    monkeypatch.setattr(mod, "run_pass_with_timeout", fake_run)
+    monkeypatch.setattr(mod, "xet_is_available", lambda _environment: False)
+
+    assert not mod.run_pass_with_transport_fallback(
+        ["sync"],
+        pass_timeout=1800.0,
+        xet_timeout=300.0,
+        environment={"HF_HUB_DISABLE_XET": "1"},
+    )
+    assert calls == [(1800.0, {"HF_HUB_DISABLE_XET": "1"})]
+
+
+def test_transport_fallback_uses_http_during_bounded_xet_cooldown(
+    mod, monkeypatch
+) -> None:
+    calls: list[tuple[float, dict[str, str]]] = []
+    now = {"value": 100.0}
+    outcomes = iter((False, True, True, True))
+
+    def fake_run(_args, timeout, *, environment=None):
+        calls.append((timeout, dict(environment or {})))
+        return next(outcomes)
+
+    monkeypatch.setattr(mod, "run_pass_with_timeout", fake_run)
+    monkeypatch.setattr(mod.importlib.util, "find_spec", lambda _name: object())
+    monkeypatch.setattr(mod.time, "monotonic", lambda: now["value"])
+
+    assert mod.run_pass_with_transport_fallback(
+        ["sync"],
+        pass_timeout=1800.0,
+        xet_timeout=300.0,
+        xet_cooldown=900.0,
+        environment={},
+    )
+    assert mod.run_pass_with_transport_fallback(
+        ["sync"],
+        pass_timeout=1800.0,
+        xet_timeout=300.0,
+        xet_cooldown=900.0,
+        environment={},
+    )
+    now["value"] = 1001.0
+    assert mod.run_pass_with_transport_fallback(
+        ["sync"],
+        pass_timeout=1800.0,
+        xet_timeout=300.0,
+        xet_cooldown=900.0,
+        environment={},
+    )
+
+    assert calls == [
+        (300.0, {}),
+        (1800.0, {"HF_HUB_DISABLE_XET": "1"}),
+        (1800.0, {"HF_HUB_DISABLE_XET": "1"}),
+        (300.0, {}),
+    ]
