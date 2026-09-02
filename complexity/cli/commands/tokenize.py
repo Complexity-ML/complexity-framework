@@ -2,11 +2,14 @@
 Tokenization commands for the Complexity framework.
 """
 
-import typer
 from pathlib import Path
-from typing import Optional, List
+from typing import List, Optional
 
-from ..utils import console, spinner, print_panel, print_table, success, error, warning, info
+import typer
+
+from complexity.tokenizer import get_special_tokens
+
+from ..utils import console, error, info, print_panel, print_table, spinner, warning
 
 tokenize = typer.Typer(name="tokenize", help="Tokenization commands")
 
@@ -14,6 +17,7 @@ tokenize = typer.Typer(name="tokenize", help="Tokenization commands")
 # =============================================================================
 # Format-specific special tokens
 # =============================================================================
+
 
 def _get_format_special_tokens(format_name: str) -> List[str]:
     """Get special tokens for a specific format."""
@@ -90,37 +94,86 @@ def _get_format_special_tokens(format_name: str) -> List[str]:
     COMPLEXITY_TOKENS = []
     try:
         from complexity.data import ComplexityTokens
+
         ct = ComplexityTokens()
         COMPLEXITY_TOKENS = [
             # Core
-            ct.unk_token, ct.bos_token, ct.eos_token, ct.pad_token,
-            ct.sep_token, ct.mask_token, ct.cls_token, ct.newline_token,
+            ct.unk_token,
+            ct.bos_token,
+            ct.eos_token,
+            ct.pad_token,
+            ct.sep_token,
+            ct.mask_token,
+            ct.cls_token,
+            ct.newline_token,
             # Chat
-            ct.turn_start, ct.turn_end, ct.user_start, ct.user_end,
-            ct.assistant_start, ct.assistant_end, ct.system_start, ct.system_end,
+            ct.turn_start,
+            ct.turn_end,
+            ct.user_start,
+            ct.user_end,
+            ct.assistant_start,
+            ct.assistant_end,
+            ct.system_start,
+            ct.system_end,
             # Tools
-            ct.tools_start, ct.tools_end, ct.tool_call, ct.tool_call_end,
-            ct.tool_args, ct.tool_args_end, ct.tool_result, ct.tool_result_end,
+            ct.tools_start,
+            ct.tools_end,
+            ct.tool_call,
+            ct.tool_call_end,
+            ct.tool_args,
+            ct.tool_args_end,
+            ct.tool_result,
+            ct.tool_result_end,
             # Reasoning
-            ct.reason_start, ct.reason_end, ct.step_start, ct.step_end,
-            ct.conclude, ct.conclude_end, ct.reflect, ct.reflect_end,
-            ct.verify, ct.verify_end, ct.plan, ct.plan_end,
+            ct.reason_start,
+            ct.reason_end,
+            ct.step_start,
+            ct.step_end,
+            ct.conclude,
+            ct.conclude_end,
+            ct.reflect,
+            ct.reflect_end,
+            ct.verify,
+            ct.verify_end,
+            ct.plan,
+            ct.plan_end,
             # Code
-            ct.code_start, ct.code_end, ct.exec_start, ct.exec_end,
-            ct.output_start, ct.output_end, ct.lang_python, ct.lang_bash,
+            ct.code_start,
+            ct.code_end,
+            ct.exec_start,
+            ct.exec_end,
+            ct.output_start,
+            ct.output_end,
+            ct.lang_python,
+            ct.lang_bash,
             # Vision
-            ct.vision_start, ct.vision_end, ct.image, ct.image_end,
-            ct.patch, ct.bbox, ct.segment,
+            ct.vision_start,
+            ct.vision_end,
+            ct.image,
+            ct.image_end,
+            ct.patch,
+            ct.bbox,
+            ct.segment,
             # Audio
-            ct.audio_start, ct.audio_end, ct.speech, ct.transcribe,
+            ct.audio_start,
+            ct.audio_end,
+            ct.speech,
+            ct.transcribe,
             # Memory
-            ct.memory_start, ct.memory_end, ct.retrieve, ct.retrieve_end,
-            ct.store, ct.store_end, ct.cite, ct.cite_end,
+            ct.memory_start,
+            ct.memory_end,
+            ct.retrieve,
+            ct.retrieve_end,
+            ct.store,
+            ct.store_end,
+            ct.cite,
+            ct.cite_end,
         ]
     except ImportError:
         pass
 
     FORMAT_MAP = {
+        "tr_hash_agentic_reasoning": get_special_tokens("tr_hash_agentic_reasoning"),
         "complexity": COMPLEXITY_TOKENS,
         "llama3": LLAMA3_TOKENS,
         "llama2": ["<s>", "</s>", "<unk>"],
@@ -138,25 +191,38 @@ def _get_format_special_tokens(format_name: str) -> List[str]:
 # Training Tokenizers
 # =============================================================================
 
+
 @tokenize.command("train")
 def train_tokenizer(
     data_path: Path = typer.Argument(..., help="Training data (file or directory)"),
     output_path: Path = typer.Argument(..., help="Output tokenizer path"),
     vocab_size: int = typer.Option(32000, "--vocab-size", "-v", help="Vocabulary size"),
     method: str = typer.Option("bpe", "--method", "-m", help="Method: bpe, unigram, wordpiece"),
-    base_format: str = typer.Option("complexity", "--format", "-f", help="Token format: complexity, llama3, mistral, chatml, gemma"),
+    base_format: str = typer.Option(
+        "complexity",
+        "--format",
+        "-f",
+        help="Token format: tr_hash_agentic_reasoning, complexity, llama3, mistral, chatml, gemma",
+    ),
     min_frequency: int = typer.Option(2, "--min-freq", help="Minimum token frequency"),
-    special_tokens: Optional[str] = typer.Option(None, "--special-tokens", "-s", help="Comma-separated special tokens"),
+    special_tokens: Optional[str] = typer.Option(
+        None, "--special-tokens", "-s", help="Comma-separated special tokens"
+    ),
     pattern: str = typer.Option("*.txt", "--pattern", "-p", help="File pattern for directories"),
-    sample_size: Optional[int] = typer.Option(None, "--sample", help="Sample N files (for large datasets)"),
+    sample_size: Optional[int] = typer.Option(
+        None, "--sample", help="Sample N files (for large datasets)"
+    ),
     lowercase: bool = typer.Option(False, "--lowercase", "-l", help="Lowercase all text"),
-    normalize_unicode: bool = typer.Option(True, "--normalize/--no-normalize", help="Unicode normalization"),
+    normalize_unicode: bool = typer.Option(
+        True, "--normalize/--no-normalize", help="Unicode normalization"
+    ),
     num_workers: int = typer.Option(4, "--workers", "-w", help="Number of workers"),
 ):
     """
     Train a new tokenizer from scratch.
 
     Supports multiple token formats:
+    - tr_hash_agentic_reasoning: native 32K roles, tools, memory and reasoning
     - complexity: native framework format
     - llama3: Meta Llama 3 format
     - mistral: Mistral/Mixtral format
@@ -186,6 +252,7 @@ def train_tokenizer(
         files = list(data_path.rglob(pattern))
         if sample_size and len(files) > sample_size:
             import random
+
             files = random.sample(files, sample_size)
 
     if not files:
@@ -202,11 +269,13 @@ def train_tokenizer(
     # Get special tokens based on format
     format_special_tokens = _get_format_special_tokens(base_format)
     base_special_tokens = format_special_tokens + base_special_tokens
-    console.print(info(f"Using {base_format} format with {len(format_special_tokens)} special tokens"))
+    console.print(
+        info(f"Using {base_format} format with {len(format_special_tokens)} special tokens")
+    )
 
     try:
         # Try tokenizers library first (HuggingFace)
-        from tokenizers import Tokenizer, models, trainers, pre_tokenizers, normalizers, decoders
+        from tokenizers import Tokenizer, decoders, models, normalizers, pre_tokenizers, trainers
 
         console.print(info(f"Training {method.upper()} tokenizer with vocab size {vocab_size}..."))
 
@@ -253,10 +322,12 @@ def train_tokenizer(
             tokenizer.normalizer = normalizers.Sequence(normalizer_list)
 
         # Pre-tokenizer (split on whitespace and punctuation)
-        tokenizer.pre_tokenizer = pre_tokenizers.Sequence([
-            pre_tokenizers.WhitespaceSplit(),
-            pre_tokenizers.Punctuation(),
-        ])
+        tokenizer.pre_tokenizer = pre_tokenizers.Sequence(
+            [
+                pre_tokenizers.WhitespaceSplit(),
+                pre_tokenizers.Punctuation(),
+            ]
+        )
 
         # Decoder
         if method == "bpe":
@@ -296,7 +367,7 @@ def train_tokenizer(
             f"Output: {output_path}\n"
             f"Config: {config_path}",
             title="Tokenizer Training Complete",
-            style="green"
+            style="green",
         )
 
     except ImportError:
@@ -310,7 +381,9 @@ def train_sentencepiece(
     data_path: Path = typer.Argument(..., help="Training data file"),
     output_prefix: str = typer.Argument(..., help="Output prefix (creates .model and .vocab)"),
     vocab_size: int = typer.Option(32000, "--vocab-size", "-v"),
-    model_type: str = typer.Option("bpe", "--type", "-t", help="Model type: bpe, unigram, char, word"),
+    model_type: str = typer.Option(
+        "bpe", "--type", "-t", help="Model type: bpe, unigram, char, word"
+    ),
     character_coverage: float = typer.Option(0.9995, "--coverage", "-c", help="Character coverage"),
     num_threads: int = typer.Option(4, "--threads"),
     max_sentence_length: int = typer.Option(4192, "--max-len"),
@@ -333,16 +406,32 @@ def train_sentencepiece(
         user_symbols = []
         if add_complexity_tokens:
             from complexity.data import ComplexityTokens
+
             ct = ComplexityTokens()
             user_symbols = [
-                ct.bos_token, ct.eos_token, ct.pad_token,
-                ct.user_start, ct.assistant_start, ct.system_start,
-                ct.call_start, ct.call_end, ct.args_start, ct.result_start,
-                ct.reason_start, ct.reason_end, ct.step_start, ct.conclude,
-                ct.think_start, ct.think_end,
-                ct.code_start, ct.code_end,
-                ct.image_start, ct.image_end,
-                ct.state_start, ct.action_start, ct.trajectory_start,
+                ct.bos_token,
+                ct.eos_token,
+                ct.pad_token,
+                ct.user_start,
+                ct.assistant_start,
+                ct.system_start,
+                ct.call_start,
+                ct.call_end,
+                ct.args_start,
+                ct.result_start,
+                ct.reason_start,
+                ct.reason_end,
+                ct.step_start,
+                ct.conclude,
+                ct.think_start,
+                ct.think_end,
+                ct.code_start,
+                ct.code_end,
+                ct.image_start,
+                ct.image_end,
+                ct.state_start,
+                ct.action_start,
+                ct.trajectory_start,
             ]
 
         console.print(info(f"Training SentencePiece {model_type} with vocab size {vocab_size}..."))
@@ -368,7 +457,7 @@ def train_sentencepiece(
             f"Vocab size: {vocab_size:,}\n"
             f"Output: {output_prefix}.model, {output_prefix}.vocab",
             title="SentencePiece Training Complete",
-            style="green"
+            style="green",
         )
 
     except ImportError:
@@ -381,9 +470,15 @@ def train_sentencepiece(
 def extend_tokenizer(
     tokenizer_path: Path = typer.Argument(..., help="Existing tokenizer"),
     output_path: Path = typer.Argument(..., help="Output path"),
-    new_tokens: Optional[str] = typer.Option(None, "--tokens", "-t", help="Comma-separated new tokens"),
-    tokens_file: Optional[Path] = typer.Option(None, "--file", "-f", help="File with tokens (one per line)"),
-    add_complexity_tokens: bool = typer.Option(False, "--complexity-tokens", help="Add Complexity special tokens"),
+    new_tokens: Optional[str] = typer.Option(
+        None, "--tokens", "-t", help="Comma-separated new tokens"
+    ),
+    tokens_file: Optional[Path] = typer.Option(
+        None, "--file", "-f", help="File with tokens (one per line)"
+    ),
+    add_complexity_tokens: bool = typer.Option(
+        False, "--complexity-tokens", help="Add Complexity special tokens"
+    ),
 ):
     """
     Extend an existing tokenizer with new tokens.
@@ -399,22 +494,34 @@ def extend_tokenizer(
         tokens_to_add.extend([t.strip() for t in new_tokens.split(",")])
 
     if tokens_file and tokens_file.exists():
-        tokens_to_add.extend([
-            line.strip() for line in tokens_file.read_text().splitlines()
-            if line.strip()
-        ])
+        tokens_to_add.extend(
+            [line.strip() for line in tokens_file.read_text().splitlines() if line.strip()]
+        )
 
     if add_complexity_tokens:
         from complexity.data import ComplexityTokens
+
         ct = ComplexityTokens()
         complexity_specials = [
-            ct.bos_token, ct.eos_token, ct.pad_token,
-            ct.user_start, ct.assistant_start, ct.system_start,
-            ct.call_start, ct.call_end, ct.args_start, ct.result_start,
-            ct.reason_start, ct.step_start, ct.conclude,
-            ct.think_start, ct.think_end,
-            ct.code_start, ct.code_end,
-            ct.state_start, ct.action_start,
+            ct.bos_token,
+            ct.eos_token,
+            ct.pad_token,
+            ct.user_start,
+            ct.assistant_start,
+            ct.system_start,
+            ct.call_start,
+            ct.call_end,
+            ct.args_start,
+            ct.result_start,
+            ct.reason_start,
+            ct.step_start,
+            ct.conclude,
+            ct.think_start,
+            ct.think_end,
+            ct.code_start,
+            ct.code_end,
+            ct.state_start,
+            ct.action_start,
         ]
         tokens_to_add.extend(complexity_specials)
 
@@ -431,6 +538,7 @@ def extend_tokenizer(
         else:
             # Try as a pretrained name
             from tokenizers import Tokenizer
+
             console.print(error(f"Tokenizer not found: {tokenizer_path}"))
             raise typer.Exit(1)
 
@@ -459,7 +567,7 @@ def extend_tokenizer(
             f"New vocab size: {tokenizer.get_vocab_size():,}\n"
             f"Output: {output_path}",
             title="Tokenizer Extended",
-            style="green"
+            style="green",
         )
 
     except ImportError:
@@ -473,7 +581,9 @@ def merge_tokenizers(
     other_tokenizer: Path = typer.Argument(..., help="Tokenizer to merge from"),
     output_path: Path = typer.Argument(..., help="Output path"),
     num_tokens: int = typer.Option(1000, "--num", "-n", help="Number of tokens to add from other"),
-    by_frequency: bool = typer.Option(True, "--by-frequency/--alphabetical", help="Select by frequency"),
+    by_frequency: bool = typer.Option(
+        True, "--by-frequency/--alphabetical", help="Select by frequency"
+    ),
 ):
     """
     Merge tokens from one tokenizer into another.
@@ -514,7 +624,7 @@ def merge_tokenizers(
             f"New vocab size: {base.get_vocab_size():,}\n"
             f"Output: {output_path}",
             title="Tokenizers Merged",
-            style="green"
+            style="green",
         )
 
     except ImportError:
@@ -526,11 +636,14 @@ def merge_tokenizers(
 # Encoding / Decoding
 # =============================================================================
 
+
 @tokenize.command("encode")
 def encode_text(
     text: str = typer.Argument(None, help="Text to encode"),
     file: Optional[Path] = typer.Option(None, "--file", "-f", help="File to encode"),
-    tokenizer: str = typer.Option("tiktoken", "--tokenizer", "-t", help="Tokenizer: tiktoken, sentencepiece, hf, or path"),
+    tokenizer: str = typer.Option(
+        "tiktoken", "--tokenizer", "-t", help="Tokenizer: tiktoken, sentencepiece, hf, or path"
+    ),
     model: str = typer.Option("gpt2", "--model", "-m", help="Tokenizer model name"),
     show_tokens: bool = typer.Option(False, "--show", "-s", help="Show individual tokens"),
 ):
@@ -557,24 +670,28 @@ def encode_text(
         tokenizer_path = Path(tokenizer)
         if tokenizer_path.exists():
             from tokenizers import Tokenizer
+
             tok = Tokenizer.from_file(str(tokenizer_path))
             encoding = tok.encode(text)
             tokens = encoding.ids
-            decode_fn = lambda ids: tok.decode(ids)
-            decode_single = lambda id: tok.decode([id])
+
+            def decode_single(token_id: int) -> str:
+                return tok.decode([token_id])
         else:
             from complexity.data import get_tokenizer
+
             tok = get_tokenizer(tokenizer, model_name=model)
             tokens = tok.encode(text)
-            decode_fn = tok.decode
-            decode_single = lambda id: tok.decode([id])
+
+            def decode_single(token_id: int) -> str:
+                return tok.decode([token_id])
 
         print_panel(
             f"Text length: {len(text)} chars\n"
             f"Token count: {len(tokens)}\n"
-            f"Ratio: {len(tokens)/max(len(text),1):.2f} tokens/char",
+            f"Ratio: {len(tokens) / max(len(text), 1):.2f} tokens/char",
             title="Encoding Result",
-            style="cyan"
+            style="cyan",
         )
 
         if show_tokens:
@@ -615,10 +732,12 @@ def decode_tokens(
         tokenizer_path = Path(tokenizer)
         if tokenizer_path.exists():
             from tokenizers import Tokenizer
+
             tok = Tokenizer.from_file(str(tokenizer_path))
             text = tok.decode(token_ids)
         else:
             from complexity.data import get_tokenizer
+
             tok = get_tokenizer(tokenizer, model_name=model)
             text = tok.decode(token_ids)
 
@@ -648,10 +767,14 @@ def count_tokens(
     tokenizer_path = Path(tokenizer)
     if tokenizer_path.exists():
         from tokenizers import Tokenizer
+
         tok = Tokenizer.from_file(str(tokenizer_path))
-        encode_fn = lambda t: tok.encode(t).ids
+
+        def encode_fn(text: str) -> list[int]:
+            return tok.encode(text).ids
     else:
         from complexity.data import get_tokenizer
+
         tok = get_tokenizer(tokenizer, model_name=model)
         encode_fn = tok.encode
 
@@ -700,7 +823,7 @@ def count_tokens(
                 {"name": "Chars", "style": "yellow"},
                 {"name": "Tokens", "style": "green"},
             ],
-            file_stats[:20]
+            file_stats[:20],
         )
 
         if len(files) > 20:
@@ -710,9 +833,9 @@ def count_tokens(
         f"Total files: {len(files)}\n"
         f"Total characters: {total_chars:,}\n"
         f"Total tokens: {total_tokens:,}\n"
-        f"Average tokens/char: {total_tokens/max(total_chars,1):.3f}",
+        f"Average tokens/char: {total_tokens / max(total_chars, 1):.3f}",
         title="Summary",
-        style="green"
+        style="green",
     )
 
 
@@ -734,20 +857,25 @@ def preprocess_data(
         complexity tokenize preprocess data.jsonl train.bin --seq-length 4096
     """
     import json
+
     import numpy as np
 
     # Load tokenizer
     tokenizer_path = Path(tokenizer)
     if tokenizer_path.exists():
         from tokenizers import Tokenizer
+
         tok = Tokenizer.from_file(str(tokenizer_path))
-        encode_fn = lambda t: tok.encode(t).ids
+
+        def encode_fn(text: str) -> list[int]:
+            return tok.encode(text).ids
         eos_id = tok.token_to_id("<|end|>") or tok.token_to_id("</s>") or 2
     else:
         from complexity.data import get_tokenizer
+
         tok = get_tokenizer(tokenizer, model_name=model)
         encode_fn = tok.encode
-        eos_id = getattr(tok, 'eos_token_id', 2)
+        eos_id = getattr(tok, "eos_token_id", 2)
 
     # Collect files
     if input_path.is_file():
@@ -769,6 +897,7 @@ def preprocess_data(
             texts.append(f.read_text())
         elif format == "parquet":
             import pandas as pd
+
             df = pd.read_parquet(f)
             texts.extend(df[text_key].tolist())
 
@@ -791,7 +920,7 @@ def preprocess_data(
     # Save as numpy
     all_tokens = np.array(all_tokens, dtype=np.uint32)
     n_seqs = len(all_tokens) // seq_length
-    all_tokens = all_tokens[:n_seqs * seq_length]
+    all_tokens = all_tokens[: n_seqs * seq_length]
 
     all_tokens.tofile(output_path)
 
@@ -801,13 +930,14 @@ def preprocess_data(
         f"Sequence length: {seq_length}\n"
         f"File size: {output_path.stat().st_size / 1024 / 1024:.2f} MB",
         title="Preprocessing Complete",
-        style="green"
+        style="green",
     )
 
 
 # =============================================================================
 # Inspection
 # =============================================================================
+
 
 @tokenize.command("info")
 def tokenizer_info(
@@ -827,16 +957,16 @@ def tokenizer_info(
 
     try:
         from tokenizers import Tokenizer
+
         tok = Tokenizer.from_file(str(tokenizer_path))
 
         vocab = tok.get_vocab()
         vocab_size = tok.get_vocab_size()
 
         print_panel(
-            f"Path: {tokenizer_path}\n"
-            f"Vocab size: {vocab_size:,}",
+            f"Path: {tokenizer_path}\nVocab size: {vocab_size:,}",
             title="Tokenizer Info",
-            style="cyan"
+            style="cyan",
         )
 
         if show_special:
@@ -864,7 +994,9 @@ def tokenizer_info(
 
 @tokenize.command("special-tokens")
 def show_special_tokens(
-    format: str = typer.Option("complexity", "--format", "-f", help="Token format: complexity, chatml, llama"),
+    format: str = typer.Option(
+        "complexity", "--format", "-f", help="Token format: complexity, chatml, llama"
+    ),
 ):
     """
     Show special tokens for a format.
@@ -878,12 +1010,53 @@ def show_special_tokens(
         tokens = ComplexityTokens()
 
         categories = {
-            "Core (0-31)": ["unk_token", "bos_token", "eos_token", "pad_token", "sep_token", "mask_token"],
-            "Chat (32-63)": ["turn_start", "turn_end", "user_start", "assistant_start", "system_start"],
-            "Tools (64-127)": ["call_start", "call_end", "args_start", "result_start", "tool_start", "tool_end"],
-            "Reasoning (128-191)": ["reason_start", "reason_end", "step_start", "step_end", "conclude", "think_start", "think_end"],
-            "Code (192-255)": ["code_start", "code_end", "output_start", "exec_start", "func_start", "class_start"],
-            "Vision (256-287)": ["image_start", "image_end", "vision_start", "bbox_start", "caption_start"],
+            "Core (0-31)": [
+                "unk_token",
+                "bos_token",
+                "eos_token",
+                "pad_token",
+                "sep_token",
+                "mask_token",
+            ],
+            "Chat (32-63)": [
+                "turn_start",
+                "turn_end",
+                "user_start",
+                "assistant_start",
+                "system_start",
+            ],
+            "Tools (64-127)": [
+                "call_start",
+                "call_end",
+                "args_start",
+                "result_start",
+                "tool_start",
+                "tool_end",
+            ],
+            "Reasoning (128-191)": [
+                "reason_start",
+                "reason_end",
+                "step_start",
+                "step_end",
+                "conclude",
+                "think_start",
+                "think_end",
+            ],
+            "Code (192-255)": [
+                "code_start",
+                "code_end",
+                "output_start",
+                "exec_start",
+                "func_start",
+                "class_start",
+            ],
+            "Vision (256-287)": [
+                "image_start",
+                "image_end",
+                "vision_start",
+                "bbox_start",
+                "caption_start",
+            ],
         }
 
         for cat_name, attrs in categories.items():
@@ -923,6 +1096,7 @@ def benchmark_tokenizer(
 
     try:
         from tokenizers import Tokenizer
+
         tok = Tokenizer.from_file(str(tokenizer_path))
 
         # Warmup
@@ -948,12 +1122,12 @@ def benchmark_tokenizer(
             f"Text length: {chars_per_iter:,} chars\n"
             f"Tokens: {tokens_per_iter:,}\n"
             f"Iterations: {iterations}\n\n"
-            f"Encode: {encode_time*1000/iterations:.3f} ms/iter\n"
-            f"Decode: {decode_time*1000/iterations:.3f} ms/iter\n"
-            f"Encode throughput: {chars_per_iter*iterations/encode_time/1e6:.2f} M chars/s\n"
-            f"Decode throughput: {tokens_per_iter*iterations/decode_time/1e6:.2f} M tokens/s",
+            f"Encode: {encode_time * 1000 / iterations:.3f} ms/iter\n"
+            f"Decode: {decode_time * 1000 / iterations:.3f} ms/iter\n"
+            f"Encode throughput: {chars_per_iter * iterations / encode_time / 1e6:.2f} M chars/s\n"
+            f"Decode throughput: {tokens_per_iter * iterations / decode_time / 1e6:.2f} M tokens/s",
             title="Tokenizer Benchmark",
-            style="green"
+            style="green",
         )
 
     except Exception as e:
