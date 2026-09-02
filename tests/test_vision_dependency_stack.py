@@ -18,7 +18,10 @@ def _requirement_names(requirements: list[str]) -> set[str]:
 
 def test_detection_extra_tracks_public_vision_runtime() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
-    requirements = project["project"]["optional-dependencies"]["detection"]
+    requirements = [
+        *project["project"]["dependencies"],
+        *project["project"]["optional-dependencies"]["detection"],
+    ]
 
     assert {
         "filelock",
