@@ -4,7 +4,19 @@ import numpy as np
 import pytest
 from tokenizers import Tokenizer, models, pre_tokenizers
 
-from scripts.build_agentic_pretraining_50b import StateStore, allocate_rows, build
+from scripts.build_agentic_pretraining_50b import StateStore, _skip, allocate_rows, build
+
+
+def test_restore_skip_reports_bounded_progress(caplog: pytest.LogCaptureFixture) -> None:
+    iterator = iter({"text": str(index)} for index in range(5))
+
+    with caplog.at_level("INFO"):
+        _skip(iterator, 5, source_name="fixture", log_every=2)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("fixture restore progress: 40.00%" in message for message in messages)
+    assert any("fixture restore progress: 100.00%" in message for message in messages)
+    assert next(iterator, None) is None
 
 
 def test_50b_layout_is_optimizer_aligned_and_exactly_allocated() -> None:

@@ -903,7 +903,14 @@ def _phase_boundaries(
     return result
 
 
-def _skip(iterator: Iterator[Mapping[str, Any]], count: int) -> None:
+def _skip(
+    iterator: Iterator[Mapping[str, Any]],
+    count: int,
+    *,
+    source_name: str,
+    log_every: int = 50_000,
+) -> None:
+    started_at = time.monotonic()
     for skipped in range(count):
         try:
             next(iterator)
@@ -911,6 +918,19 @@ def _skip(iterator: Iterator[Mapping[str, Any]], count: int) -> None:
             raise RuntimeError(
                 f"source exhausted while restoring scan position {skipped}/{count}"
             ) from error
+        completed = skipped + 1
+        if completed % log_every == 0 or completed == count:
+            elapsed = max(time.monotonic() - started_at, 1e-9)
+            rate = completed / elapsed
+            LOGGER.info(
+                "%s restore progress: %.2f%% records=%s/%s rate=%s records/s eta=%.1f min",
+                source_name,
+                100.0 * completed / count,
+                f"{completed:,}",
+                f"{count:,}",
+                f"{rate:,.0f}",
+                (count - completed) / max(rate, 1e-9) / 60.0,
+            )
 
 
 @dataclass(frozen=True)
@@ -961,7 +981,7 @@ def _prepare_source_batches(
             else iter_source(source, seed=source_seed)
         )
         if restored_scanned:
-            _skip(iterator, restored_scanned)
+            _skip(iterator, restored_scanned, source_name=str(source["name"]))
         candidate_limit = max(
             1,
             int(

@@ -148,7 +148,14 @@ def test_stack_edu_is_permissive_only_and_language_balanced() -> None:
         "Markdown",
     }
     assert all(source["allowed_license_types"] == ["permissive"] for source in stack)
-    assert all(source["min_int_score"] >= 3 for source in stack)
+    java = next(source for source in stack if source["config_name"] == "Java")
+    assert java["min_int_score"] == 2
+    assert "recommended Java threshold of 2" in java["license_audit"]
+    assert all(
+        source["min_int_score"] >= 3
+        for source in stack
+        if source["config_name"] != "Java"
+    )
 
 
 def test_agentic_sources_are_consumed_before_overlapping_foundation_sources() -> None:
