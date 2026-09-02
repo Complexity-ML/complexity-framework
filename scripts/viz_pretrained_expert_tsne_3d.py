@@ -162,6 +162,7 @@ def encode_probe(tokenizer: Tokenizer, records: Iterable[dict[str, str]]) -> lis
 @dataclass
 class LayerCapture:
     hidden: list[torch.Tensor]
+    residual: list[torch.Tensor]
     token_ids: list[torch.Tensor]
 
 
@@ -172,18 +173,24 @@ class ContextCollector:
         self.model = model
         self.layer_indices = layer_indices
         self.captures = {
-            layer_idx: LayerCapture(hidden=[], token_ids=[])
+            layer_idx: LayerCapture(hidden=[], residual=[], token_ids=[])
             for layer_idx in layer_indices
         }
         self.handles: list[torch.utils.hooks.RemovableHandle] = []
 
     def __enter__(self) -> "ContextCollector":
         for layer_idx in self.layer_indices:
-            mlp = self.model.layers[layer_idx].mlp
+            layer = self.model.layers[layer_idx]
+            mlp = layer.mlp
             if not isinstance(mlp, TRHashEngineMLP):
                 raise TypeError(
                     f"layer {layer_idx} is {type(mlp).__name__}, expected TRHashEngineMLP"
                 )
+            self.handles.append(
+                layer.post_attention_layernorm.register_forward_pre_hook(
+                    self._residual_hook(layer_idx),
+                )
+            )
             self.handles.append(
                 mlp.register_forward_pre_hook(
                     self._hook(layer_idx),
@@ -195,6 +202,13 @@ class ContextCollector:
     def __exit__(self, *_exc) -> None:
         for handle in self.handles:
             handle.remove()
+
+    def _residual_hook(self, layer_idx: int):
+        def hook(_module, args):
+            residual = args[0].detach().reshape(-1, args[0].shape[-1])
+            self.captures[layer_idx].residual.append(residual.cpu())
+
+        return hook
 
     def _hook(self, layer_idx: int):
         def hook(_module, args, kwargs):
@@ -216,7 +230,10 @@ def collect_contexts(
     sequence_length: int,
     sequences: int,
     device: torch.device,
-) -> dict[int, tuple[torch.Tensor, torch.Tensor, np.ndarray, np.ndarray]]:
+) -> dict[
+    int,
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor, np.ndarray, np.ndarray],
+]:
     needed = sequence_length * sequences
     if len(token_ids) < needed:
         repeats = (needed + len(token_ids) - 1) // len(token_ids)
@@ -238,6 +255,7 @@ def collect_contexts(
     for layer_idx, capture in collector.captures.items():
         result[layer_idx] = (
             torch.cat(capture.hidden, dim=0),
+            torch.cat(capture.residual, dim=0),
             torch.cat(capture.token_ids, dim=0),
             sequence_ids,
             positions,
@@ -325,6 +343,135 @@ def routed_contributions(
         np.concatenate(ranks),
         np.concatenate(source_indices),
     ), norms
+
+
+def _distribution_summary(values: np.ndarray) -> dict[str, float]:
+    values = np.asarray(values, dtype=np.float64)
+    if values.size == 0:
+        raise ValueError("cannot summarize an empty distribution")
+    return {
+        "min": float(values.min()),
+        "p50": float(np.quantile(values, 0.50)),
+        "p95": float(np.quantile(values, 0.95)),
+        "p99": float(np.quantile(values, 0.99)),
+        "max": float(values.max()),
+        "mean": float(values.mean()),
+    }
+
+
+def audit_full_probe_routing(
+    mlp: TRHashEngineMLP,
+    hidden: torch.Tensor,
+    residual: torch.Tensor,
+    token_ids: torch.Tensor,
+    device: torch.device,
+    *,
+    batch_size: int = 512,
+) -> dict:
+    """Audit routing and routed-branch scale on every collected probe token."""
+
+    if not (len(hidden) == len(residual) == len(token_ids)):
+        raise ValueError("hidden, residual, and token_ids must contain the same tokens")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+
+    engine = mlp.engine
+    top_k = int(engine.config.top_k)
+    num_experts = int(engine.config.num_experts)
+    route_counts = np.zeros((top_k, num_experts), dtype=np.int64)
+    pair_counts = np.zeros((num_experts, num_experts), dtype=np.int64)
+    routed_norms: list[np.ndarray] = []
+    residual_norms: list[np.ndarray] = []
+    mlp_input_norms: list[np.ndarray] = []
+    routed_to_residual: list[np.ndarray] = []
+    routed_to_mlp_input: list[np.ndarray] = []
+    all_routes: list[np.ndarray] = []
+    route_table = engine.route_table.to(device)
+    route_weights = torch.tensor(
+        engine.config.route_weights,
+        device=device,
+        dtype=engine.expert_gate.dtype,
+    )
+
+    with torch.inference_mode():
+        for start in range(0, len(token_ids), batch_size):
+            stop = min(start + batch_size, len(token_ids))
+            x = hidden[start:stop].to(device=device, dtype=engine.expert_gate.dtype)
+            residual_batch = residual[start:stop].to(device=device, dtype=x.dtype)
+            ids = token_ids[start:stop].to(device)
+            routes = route_table[:, ids]
+            routed = torch.zeros_like(x)
+
+            for route_rank in range(top_k):
+                expert_ids = routes[route_rank]
+                contribution = torch.empty_like(x)
+                for expert_id in range(num_experts):
+                    mask = expert_ids == expert_id
+                    if not bool(mask.any().item()):
+                        continue
+                    expert_input = x[mask]
+                    intermediate = F.silu(
+                        expert_input @ engine.expert_gate[expert_id]
+                    ) * (expert_input @ engine.expert_up[expert_id])
+                    contribution[mask] = intermediate @ engine.expert_down[expert_id]
+                routed += contribution * (
+                    float(engine.config.routed_output_scale)
+                    * route_weights[route_rank]
+                )
+
+            routes_cpu = routes.cpu().numpy()
+            all_routes.append(routes_cpu)
+            for route_rank in range(top_k):
+                route_counts[route_rank] += np.bincount(
+                    routes_cpu[route_rank], minlength=num_experts
+                )
+            if top_k >= 2:
+                np.add.at(pair_counts, (routes_cpu[0], routes_cpu[1]), 1)
+
+            routed_norm = torch.linalg.vector_norm(routed.float(), dim=-1)
+            residual_norm = torch.linalg.vector_norm(residual_batch.float(), dim=-1)
+            mlp_input_norm = torch.linalg.vector_norm(x.float(), dim=-1)
+            routed_norms.append(routed_norm.cpu().numpy())
+            residual_norms.append(residual_norm.cpu().numpy())
+            mlp_input_norms.append(mlp_input_norm.cpu().numpy())
+            routed_to_residual.append(
+                (routed_norm / residual_norm.clamp_min(1e-12)).cpu().numpy()
+            )
+            routed_to_mlp_input.append(
+                (routed_norm / mlp_input_norm.clamp_min(1e-12)).cpu().numpy()
+            )
+
+    routes = np.concatenate(all_routes, axis=1)
+    combined_counts = route_counts.sum(axis=0)
+    token_count = int(len(token_ids))
+    repeated_route_count = int(
+        sum(
+            len(set(routes[:, token_index].tolist())) < top_k
+            for token_index in range(token_count)
+        )
+    )
+
+    return {
+        "tokens": token_count,
+        "unique_token_ids": int(token_ids.unique().numel()),
+        "sampling": "all_collected_probe_tokens",
+        "route_counts": route_counts.tolist(),
+        "route_fractions": (route_counts / token_count).tolist(),
+        "combined_route_counts": combined_counts.tolist(),
+        "combined_route_fractions": (combined_counts / (token_count * top_k)).tolist(),
+        "primary_secondary_pair_counts": pair_counts.tolist() if top_k >= 2 else None,
+        "tokens_with_repeated_expert_across_routes": repeated_route_count,
+        "all_experts_observed_per_route": bool(np.all(route_counts > 0)),
+        "routed_branch_norm": _distribution_summary(np.concatenate(routed_norms)),
+        "residual_stream_norm": _distribution_summary(np.concatenate(residual_norms)),
+        "mlp_input_norm": _distribution_summary(np.concatenate(mlp_input_norms)),
+        "routed_to_residual_norm_ratio": _distribution_summary(
+            np.concatenate(routed_to_residual)
+        ),
+        "routed_to_mlp_input_norm_ratio": _distribution_summary(
+            np.concatenate(routed_to_mlp_input)
+        ),
+    }
 
 
 def embed_layer(vectors: np.ndarray, perplexity: float, seed: int) -> tuple[np.ndarray, int, float]:
@@ -563,8 +710,15 @@ def main() -> None:
     layer_metrics = {}
 
     for layer_idx in args.layers:
-        hidden, ids, sequence_ids, positions = contexts[layer_idx]
+        hidden, residual, ids, sequence_ids, positions = contexts[layer_idx]
         mlp = model.layers[layer_idx].mlp
+        full_probe_audit = audit_full_probe_routing(
+            mlp,
+            hidden,
+            residual,
+            ids,
+            device,
+        )
         sample_indices = stratified_token_sample(
             mlp.engine.route_table.cpu(),
             ids,
@@ -611,6 +765,7 @@ def main() -> None:
             "pca_dimensions": int(pca_dim),
             "tsne_perplexity": float(min(args.perplexity, len(vectors) - 1)),
             "tsne_kl_divergence": float(kl_divergence),
+            "full_probe_route_audit": full_probe_audit,
         }
         print(
             f"layer={layer_idx} points={len(embedding)} "

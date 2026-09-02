@@ -9,6 +9,7 @@ from complexity.core.mlp.base import MLPConfig
 from complexity.core.mlp.tr_hash_engine import TRHashEngineMLP
 from complexity.models import ComplexityModel
 from scripts.viz_pretrained_expert_tsne_3d import (
+    audit_full_probe_routing,
     load_tr_hash_model,
     parse_layers,
     routed_contributions,
@@ -73,6 +74,44 @@ def test_routed_contributions_follow_both_persisted_routes():
     assert np.array_equal(source_indices, np.tile(selected, 2))
     assert np.all(norms > 0)
     assert np.allclose(np.linalg.norm(vectors, axis=1), 1.0, atol=1e-5)
+
+
+def test_full_probe_audit_uses_unsampled_routes_and_reports_finite_norm_ratios():
+    mlp = _small_mlp()
+    hidden = torch.randn(32, 8, generator=torch.Generator().manual_seed(11))
+    residual = torch.randn(32, 8, generator=torch.Generator().manual_seed(12))
+    token_ids = torch.arange(32)
+
+    audit = audit_full_probe_routing(
+        mlp,
+        hidden,
+        residual,
+        token_ids,
+        torch.device("cpu"),
+        batch_size=7,
+    )
+
+    expected_routes = mlp.engine.route_table[:, token_ids]
+    expected_counts = [
+        torch.bincount(route, minlength=4).tolist() for route in expected_routes
+    ]
+    assert audit["tokens"] == 32
+    assert audit["unique_token_ids"] == 32
+    assert audit["sampling"] == "all_collected_probe_tokens"
+    assert audit["route_counts"] == expected_counts
+    assert sum(audit["combined_route_counts"]) == 64
+    assert audit["tokens_with_repeated_expert_across_routes"] == 0
+    assert audit["all_experts_observed_per_route"]
+    for metric in (
+        "routed_branch_norm",
+        "residual_stream_norm",
+        "mlp_input_norm",
+        "routed_to_residual_norm_ratio",
+        "routed_to_mlp_input_norm_ratio",
+    ):
+        assert all(np.isfinite(value) for value in audit[metric].values())
+        assert audit[metric]["max"] >= audit[metric]["p99"]
+        assert audit[metric]["p99"] >= audit[metric]["p50"]
 
 
 def test_load_tr_hash_model_accepts_current_engine_bundle(tmp_path):
