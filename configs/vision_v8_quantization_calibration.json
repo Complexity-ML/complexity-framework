@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "dataset": {
+    "name": "coco-2017-train-calibration",
+    "split": "train2017-calibration",
+    "image_ids_sha256": "replace-with-calibration-image-id-manifest-sha256",
+    "annotations_sha256": "replace-with-annotations-sha256",
+    "disjoint_from": "coco-2017-val2017"
+  },
+  "quantization": {
+    "calibration_method": "minmax",
+    "per_channel": true,
+    "symmetric_activations": false,
+    "symmetric_weights": true,
+    "activation_type": "quint8",
+    "weight_type": "qint8",
+    "batch_size": 8,
+    "num_threads": 1
+  }
+}

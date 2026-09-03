@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "release_policy": {
+    "required_precisions": ["fp32", "fp16", "int8"],
+    "partial_release": "block",
+    "optional_provider_precisions": []
+  },
+  "precisions": {
+    "fp16": {
+      "max_raw_logit_abs_error": 0.01,
+      "max_decoded_box_px_error": 1.0,
+      "max_score_abs_error": 0.01,
+      "max_map50_95_drop": 0.005,
+      "max_map50_drop": 0.01,
+      "unexpected_fp32_nodes": "fail"
+    },
+    "int8": {
+      "max_raw_logit_abs_error": 0.12,
+      "max_decoded_box_px_error": 4.0,
+      "max_score_abs_error": 0.05,
+      "max_map50_95_drop": 0.02,
+      "max_map50_drop": 0.03,
+      "unexpected_fp32_nodes": "allow"
+    }
+  },
+  "providers": {
+    "CPUExecutionProvider": ["fp32", "int8"],
+    "CUDAExecutionProvider": ["fp32", "fp16"],
+    "TensorrtExecutionProvider": ["fp32", "fp16", "int8"]
+  },
+  "benchmark": {
+    "warmup_iterations": 25,
+    "measured_iterations": 100,
+    "report": [
+      "median_ms",
+      "mean_ms",
+      "stddev_ms",
+      "p95_ms",
+      "throughput_images_per_second",
+      "peak_memory_mb"
+    ]
+  }
+}
