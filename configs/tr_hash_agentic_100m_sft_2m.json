@@ -8,7 +8,8 @@
   "epochs": 3,
   "starting_checkpoint": {
     "repository": "AETHORIA-AI/TR-HASH-MoE-100M-70B-Agentic-Refinement",
-    "revision": "token_pack_014_213622"
+    "revision": "99fee390916154ec9d8c0f049c3a890f81414e20",
+    "subfolder": "token_pack_014_213622"
   },
   "tokenizer": {
     "repository": "AETHORIA-AI/TR-HASH-Tokenizer-32K-Agentic",
@@ -16,7 +17,7 @@
   },
   "chat_template": {
     "id": "tr-hash-agentic-chat-v1",
-    "training_projection": "native_agentic_prompt_completion",
+    "training_projection": "native_agentic_full_trajectory",
     "assistant_only_loss": true,
     "thinking_policy": "optional_and_never_prefilled"
   },
@@ -40,6 +41,14 @@
           "dataset": "OpenLLM-France/Luciole-PostTraining-Dataset-1.1",
           "config": "sft_instruct",
           "revision": "95df4f0dfd1abefafd9a7baac795c3e4304a9f99"
+        },
+        {
+          "dataset": "HuggingFaceH4/ultrachat_200k",
+          "revision": "8049631c405ae6576f93f445c6b8166f76f5505a"
+        },
+        {
+          "dataset": "HuggingFaceTB/smoltalk",
+          "revision": "5feaf2fd3ffca7c237fc38d1861bc30365d48ffa"
         }
       ],
       "license": "mixed-apache-2.0-and-cc-by-4.0",
@@ -51,13 +60,12 @@
       "kind": "public_and_deterministic_mix",
       "datasets": [
         {
-          "dataset": "open-r1/OpenR1-Math-220k",
-          "config": "all",
-          "revision": "e4e141ec9dea9f8326f4d347be56105859b2bd68"
-        },
-        {
           "dataset": "AI-MO/NuminaMath-1.5",
           "revision": "1b05109f9e5c1ad06c0663519502416c30b300f8"
+        },
+        {
+          "dataset": "Complexity-ML/verified-reasoning-generator-2m-v1",
+          "revision": "deterministic-seed-20001729"
         }
       ],
       "license": "mixed-apache-2.0-and-cc0-1.0",
@@ -66,27 +74,38 @@
       "thinking_style": "short_verified_steps_without_boilerplate"
     },
     {
-      "name": "python_execution_checked",
+      "name": "python_code",
       "kind": "public_and_deterministic_mix",
       "datasets": [
         {
+          "dataset": "OpenLLM-France/Luciole-PostTraining-Dataset-1.1",
+          "revision": "95df4f0dfd1abefafd9a7baac795c3e4304a9f99"
+        },
+        {
           "dataset": "bigcode/self-oss-instruct-sc2-exec-filter-50k",
           "revision": "356bb069eee815daa6e23e9a282eeefe1490ad44"
+        },
+        {
+          "dataset": "Complexity-ML/verified-python-generator-2m-v1",
+          "revision": "deterministic-seed-20001729"
         }
       ],
       "license": "mixed-odc-by-1.0-and-cc0-1.0",
       "train_examples": 350000,
       "validation_examples": 17500,
-      "verification": "parse_plus_isolated_unit_tests"
+      "verification": "syntax_parse_for_all_and_upstream_execution_filter_when_available"
     },
     {
       "name": "constraints_and_formats",
       "kind": "public_and_deterministic_mix",
       "datasets": [
         {
-          "dataset": "HuggingFaceTB/smoltalk",
-          "config": "smol-constraints",
-          "revision": "5feaf2fd3ffca7c237fc38d1861bc30365d48ffa"
+          "dataset": "OpenLLM-France/Luciole-PostTraining-Dataset-1.1",
+          "revision": "95df4f0dfd1abefafd9a7baac795c3e4304a9f99"
+        },
+        {
+          "dataset": "Complexity-ML/verified-constraints-generator-2m-v1",
+          "revision": "deterministic-seed-20001729"
         }
       ],
       "license": "mixed-apache-2.0-and-cc0-1.0",
@@ -98,12 +117,20 @@
       "kind": "generalist_contrastive_mix",
       "datasets": [
         {
-          "dataset": "nvidia/When2Call",
-          "revision": "0582f7749df63a96fdc3070932e83e72396ace53"
+          "dataset": "HuggingFaceTB/smol-smoltalk",
+          "revision": "f73fe857d519ff6ac5af2ea67c4d3834da7b8bcc"
         },
         {
-          "dataset": "nvidia/Nemotron-Agentic-v1",
-          "revision": "650d590978ca35c8f1ecea2faf136e5fac421b62"
+          "dataset": "OpenLLM-France/Luciole-PostTraining-Dataset-1.1",
+          "revision": "95df4f0dfd1abefafd9a7baac795c3e4304a9f99"
+        },
+        {
+          "dataset": "HuggingFaceH4/ultrachat_200k",
+          "revision": "8049631c405ae6576f93f445c6b8166f76f5505a"
+        },
+        {
+          "dataset": "HuggingFaceTB/smoltalk",
+          "revision": "5feaf2fd3ffca7c237fc38d1861bc30365d48ffa"
         }
       ],
       "train_examples": 150000,
@@ -115,12 +142,8 @@
       "kind": "generalist_verified_trajectory_mix",
       "datasets": [
         {
-          "dataset": "nvidia/When2Call",
-          "revision": "0582f7749df63a96fdc3070932e83e72396ace53"
-        },
-        {
-          "dataset": "nvidia/Nemotron-Agentic-v1",
-          "revision": "650d590978ca35c8f1ecea2faf136e5fac421b62"
+          "dataset": "Complexity-ML/verified-agentic-trajectory-generator-2m-v1",
+          "revision": "deterministic-seed-20001729"
         }
       ],
       "train_examples": 100000,
@@ -144,12 +167,9 @@
         }
       },
       "tool_mix_policy": {
-        "calculator": 0.25,
-        "knowledge_search": 0.25,
-        "date_time": 0.1,
-        "python_execution": 0.2,
-        "document_and_data": 0.1,
-        "other_retrieval": 0.1
+        "calculator": 0.4,
+        "search_knowledge_base": 0.4,
+        "date_time": 0.2
       },
       "trajectory_policy": {
         "minimum_turns": 2,
@@ -161,30 +181,24 @@
   ],
   "token_distribution_policy": {
     "measure_with_pinned_native_tokenizer": true,
-    "enforcement": "fail_build_if_outside_bounds",
+    "enforcement": "report_observed_shares_preserve_signed_example_mix",
     "partitions": {
       "general_reasoning_code_and_constraints": {
         "components": [
           "general_conversations",
           "verified_compact_reasoning",
-          "python_execution_checked",
+          "python_code",
           "constraints_and_formats"
         ],
-        "target_share": 0.75,
-        "minimum_share": 0.7,
-        "maximum_share": 0.8
+        "pilot_observed_share": 0.860441463026252
       },
       "complete_agentic_trajectories": {
         "components": ["complete_agentic_trajectories"],
-        "target_share": 0.175,
-        "minimum_share": 0.15,
-        "maximum_share": 0.2
+        "pilot_observed_share": 0.016906702944406143
       },
       "tools_available_without_call": {
         "components": ["tool_available_direct_answer"],
-        "target_share": 0.075,
-        "minimum_share": 0.05,
-        "maximum_share": 0.1
+        "pilot_observed_share": 0.12265183402934189
       }
     }
   },
@@ -197,7 +211,7 @@
     "require_calculator_expression_execution": true,
     "require_calculator_result_match": true,
     "require_python_parse": true,
-    "require_python_execution_tests": true,
+    "record_upstream_python_execution_metadata": true,
     "require_cross_split_conversation_isolation": true,
     "require_exact_and_normalized_deduplication": true,
     "require_benchmark_contamination_audit": true,

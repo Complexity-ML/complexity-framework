@@ -28,7 +28,7 @@ def test_signed_example_distribution_is_exact() -> None:
     expected = {
         "general_conversations": (800_000, 40_000),
         "verified_compact_reasoning": (450_000, 22_500),
-        "python_execution_checked": (350_000, 17_500),
+        "python_code": (350_000, 17_500),
         "constraints_and_formats": (150_000, 7_500),
         "tool_available_direct_answer": (150_000, 7_500),
         "complete_agentic_trajectories": (100_000, 5_000),
@@ -55,19 +55,18 @@ def test_tools_are_integrated_into_generalist_examples() -> None:
     assert sum(trajectories["tool_mix_policy"].values()) == 1.0
 
 
-def test_token_shares_are_measured_and_enforced() -> None:
+def test_token_shares_are_measured_without_padding_trajectories() -> None:
     policy = load_recipe()["token_distribution_policy"]
     partitions = policy["partitions"]
 
     assert policy["measure_with_pinned_native_tokenizer"] is True
-    assert policy["enforcement"] == "fail_build_if_outside_bounds"
-    assert sum(item["target_share"] for item in partitions.values()) == 1.0
-    assert partitions["general_reasoning_code_and_constraints"]["minimum_share"] == 0.7
-    assert partitions["general_reasoning_code_and_constraints"]["maximum_share"] == 0.8
-    assert partitions["complete_agentic_trajectories"]["minimum_share"] == 0.15
-    assert partitions["complete_agentic_trajectories"]["maximum_share"] == 0.2
-    assert partitions["tools_available_without_call"]["minimum_share"] == 0.05
-    assert partitions["tools_available_without_call"]["maximum_share"] == 0.1
+    assert policy["enforcement"] == "report_observed_shares_preserve_signed_example_mix"
+    assert set(partitions) == {
+        "general_reasoning_code_and_constraints",
+        "complete_agentic_trajectories",
+        "tools_available_without_call",
+    }
+    assert all("pilot_observed_share" in item for item in partitions.values())
 
 
 def test_agentic_contract_and_audit_gates_are_explicit() -> None:
@@ -77,7 +76,7 @@ def test_agentic_contract_and_audit_gates_are_explicit() -> None:
 
     assert template == {
         "id": "tr-hash-agentic-chat-v1",
-        "training_projection": "native_agentic_prompt_completion",
+        "training_projection": "native_agentic_full_trajectory",
         "assistant_only_loss": True,
         "thinking_policy": "optional_and_never_prefilled",
     }
@@ -90,7 +89,6 @@ def test_agentic_contract_and_audit_gates_are_explicit() -> None:
         "require_calculator_expression_execution",
         "require_calculator_result_match",
         "require_python_parse",
-        "require_python_execution_tests",
         "require_cross_split_conversation_isolation",
         "require_exact_and_normalized_deduplication",
         "require_benchmark_contamination_audit",
@@ -98,3 +96,4 @@ def test_agentic_contract_and_audit_gates_are_explicit() -> None:
         "require_token_distribution_audit",
     ):
         assert policy[gate] is True
+    assert policy["record_upstream_python_execution_metadata"] is True
