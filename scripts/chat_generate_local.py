@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from complexity.inference.chat_template import (  # noqa: E402
     default_chat_template,
+    load_chat_template,
     render_inference_prompt,
     render_thinking_inference_prompt,
     validate_chat_template,
@@ -44,7 +45,7 @@ def load_model(
     device: torch.device,
 ) -> tuple[ComplexityModel, Tokenizer, dict]:
     configure_torch_acceleration(kernel_policy=False, log=False)
-    _, state = load_checkpoint_state(checkpoint, map_location="cpu")
+    checkpoint_dir, state = load_checkpoint_state(checkpoint, map_location="cpu")
     config = checkpoint_config(state)
     config.use_custom_kernels = False
     model = ComplexityModel(config).to(device)
@@ -52,7 +53,19 @@ def load_model(
     if missing or unexpected:
         raise RuntimeError(f"Checkpoint mismatch: missing={missing}, unexpected={unexpected}")
     model.eval()
-    chat_template = validate_chat_template(state.get("chat_template", default_chat_template()))
+    template_locations = (
+        checkpoint_dir / "chat_template.json",
+        tokenizer_path / "chat_template.json" if tokenizer_path.is_dir() else None,
+    )
+    template_path = next(
+        (path for path in template_locations if path is not None and path.is_file()),
+        None,
+    )
+    chat_template = (
+        load_chat_template(template_path)
+        if template_path is not None
+        else validate_chat_template(state.get("chat_template", default_chat_template()))
+    )
     return model, Tokenizer.load(str(tokenizer_path)), chat_template
 
 

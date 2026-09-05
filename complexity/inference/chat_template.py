@@ -10,15 +10,18 @@ from jinja2 import Environment, StrictUndefined
 
 CHAT_TEMPLATE_ID = "complexity-chat-v2"
 LEGACY_CHAT_TEMPLATE_ID = "complexity-chat-v1"
+AGENTIC_CHAT_TEMPLATE_ID = "tr-hash-agentic-chat-v1"
 SUPPORTED_CHAT_TEMPLATE_IDS = {
     LEGACY_CHAT_TEMPLATE_ID,
     CHAT_TEMPLATE_ID,
+    AGENTIC_CHAT_TEMPLATE_ID,
 }
 SUPPORTED_TRAINING_PROJECTIONS = {
     "naturalize_card_hand_preserve_assistant_turns",
     "naturalize_card_hand_target_final_assistant",
     "naturalize_card_hand_supervise_all_assistant_turns",
     "card_corpus_v2_direct",
+    "native_agentic_prompt_completion",
 }
 DEFAULT_SYSTEM_PROMPT = ""
 THINK_FINAL_ENVELOPE = {
@@ -27,6 +30,14 @@ THINK_FINAL_ENVELOPE = {
     "think_end": "\n</think>",
     "final_start": "\n<final>\n",
     "final_end": "\n</final>",
+    "scope": "reasoning_tasks",
+}
+AGENTIC_THINK_FINAL_ENVELOPE = {
+    "type": "optional_think_final",
+    "think_start": "<|think_start|>",
+    "think_end": "<|think_end|>",
+    "final_start": "<|final_start|>",
+    "final_end": "<|final_end|>",
     "scope": "reasoning_tasks",
 }
 REQUIRED_FIELDS = (
@@ -59,6 +70,25 @@ def default_chat_template() -> dict[str, Any]:
     }
 
 
+def agentic_chat_template(*, eos_token: str = "<|end|>") -> dict[str, Any]:
+    """Return the native contract used by the 32K Agentic tokenizer."""
+
+    return {
+        "id": AGENTIC_CHAT_TEMPLATE_ID,
+        "version": 1,
+        "system_prompt": DEFAULT_SYSTEM_PROMPT,
+        "system_format": "<|system|>{content}<|end_of_turn|>",
+        "user_format": "<|user|>{content}<|end_of_turn|>",
+        "assistant_prefix": "<|assistant|>",
+        "turn_separator": "",
+        "eos_token": eos_token,
+        "end_of_turn_token": "<|end_of_turn|>",
+        "assistant_only_loss": True,
+        "training_projection": "native_agentic_prompt_completion",
+        "assistant_envelope": dict(AGENTIC_THINK_FINAL_ENVELOPE),
+    }
+
+
 def validate_chat_template(template: dict[str, Any]) -> dict[str, Any]:
     missing = [field for field in REQUIRED_FIELDS if field not in template]
     if missing:
@@ -69,6 +99,12 @@ def validate_chat_template(template: dict[str, Any]) -> dict[str, Any]:
         envelope = template.get("assistant_envelope")
         if envelope != THINK_FINAL_ENVELOPE:
             raise ValueError("complexity-chat-v2 requires the canonical think/final protocol")
+    if template["id"] == AGENTIC_CHAT_TEMPLATE_ID:
+        envelope = template.get("assistant_envelope")
+        if envelope != AGENTIC_THINK_FINAL_ENVELOPE:
+            raise ValueError("TR-HASH Agentic chat requires native think/final tokens")
+        if template.get("end_of_turn_token") != "<|end_of_turn|>":
+            raise ValueError("TR-HASH Agentic chat requires the native end-of-turn token")
     if not template["assistant_only_loss"]:
         raise ValueError("Complexity SFT requires assistant_only_loss=true")
     if template["training_projection"] not in SUPPORTED_TRAINING_PROJECTIONS:
@@ -227,13 +263,14 @@ def render_messages_before_assistant(
         if not content:
             continue
         if role == "system":
-            if template["id"] == CHAT_TEMPLATE_ID:
+            if template["id"] in {CHAT_TEMPLATE_ID, AGENTIC_CHAT_TEMPLATE_ID}:
                 parts.append(render_system_turn(content, template))
             continue
         if role == "user":
             parts.append(render_user_turn(content, template))
         elif role == "assistant":
-            parts.append(template["assistant_prefix"] + content + template["eos_token"])
+            assistant_end = template.get("end_of_turn_token", template["eos_token"])
+            parts.append(template["assistant_prefix"] + content + assistant_end)
         else:
             raise ValueError(f"Unsupported chat role: {role}")
     parts.append(template["assistant_prefix"])
@@ -279,6 +316,7 @@ def huggingface_chat_template(template: dict[str, Any], *, force_thinking: bool 
         "user_prefix": json.dumps(user_prefix),
         "user_suffix": json.dumps(user_suffix),
         "assistant": json.dumps(template["assistant_prefix"]),
+        "assistant_end": json.dumps(template.get("end_of_turn_token", "")),
         "thinking_generation": json.dumps(
             template["assistant_prefix"]
             + (
@@ -288,7 +326,10 @@ def huggingface_chat_template(template: dict[str, Any], *, force_thinking: bool 
             )
         ),
     }
-    if template["id"] == CHAT_TEMPLATE_ID:
+    assistant_suffix = (
+        literals["assistant_end"] if template.get("end_of_turn_token") else "eos_token"
+    )
+    if template["id"] in {CHAT_TEMPLATE_ID, AGENTIC_CHAT_TEMPLATE_ID}:
         role_branches = (
             "{%- if message['role'] == 'system' -%}"
             f"{{{{- {literals['system_prefix']} + (message['content'] | trim) + "
@@ -297,7 +338,7 @@ def huggingface_chat_template(template: dict[str, Any], *, force_thinking: bool 
             f"{{{{- {literals['user_prefix']} + (message['content'] | trim) + "
             f"{literals['user_suffix']} -}}}}"
             "{%- elif message['role'] == 'assistant' -%}"
-            f"{{{{- {literals['assistant']} + (message['content'] | trim) + eos_token -}}}}"
+            f"{{{{- {literals['assistant']} + (message['content'] | trim) + {assistant_suffix} -}}}}"
             "{%- endif -%}"
         )
     else:
@@ -306,7 +347,7 @@ def huggingface_chat_template(template: dict[str, Any], *, force_thinking: bool 
             f"{{{{- {literals['user_prefix']} + (message['content'] | trim) + "
             f"{literals['user_suffix']} -}}}}"
             "{%- elif message['role'] == 'assistant' -%}"
-            f"{{{{- {literals['assistant']} + (message['content'] | trim) + eos_token -}}}}"
+            f"{{{{- {literals['assistant']} + (message['content'] | trim) + {assistant_suffix} -}}}}"
             "{%- endif -%}"
         )
     return (

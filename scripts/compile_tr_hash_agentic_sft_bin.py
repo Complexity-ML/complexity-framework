@@ -13,8 +13,7 @@ from typing import Any
 import numpy as np
 
 from complexity.inference.chat_template import (
-    align_chat_template_eos,
-    default_chat_template,
+    agentic_chat_template,
 )
 from complexity.tokenizer import Tokenizer
 from scripts.sft_500m_32k_tr import SFTBinDataset, encode_sft_example
@@ -99,8 +98,7 @@ def compile_partition(
             counts["supervised_tokens"] += supervised
             if counts["examples"] % 10_000 == 0:
                 print(
-                    f"{source.name}: {counts['examples']:,} examples, "
-                    f"{offset:,} tokens",
+                    f"{source.name}: {counts['examples']:,} examples, {offset:,} tokens",
                     flush=True,
                 )
 
@@ -153,7 +151,7 @@ def main() -> None:
     if tokenizer.vocab_size != 32_000:
         raise ValueError(f"expected vocab 32000, got {tokenizer.vocab_size}")
     eos_token = tokenizer._tokenizer.id_to_token(tokenizer.eos_token_id)
-    chat_template = align_chat_template_eos(default_chat_template(), eos_token=eos_token)
+    chat_template = agentic_chat_template(eos_token=eos_token)
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "chat_template.json").write_text(
         json.dumps(chat_template, indent=2, sort_keys=True) + "\n", encoding="utf-8"
