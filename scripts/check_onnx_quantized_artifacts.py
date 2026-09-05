@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import shutil
 import string
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -73,7 +74,41 @@ def load_calibration_manifest(path: Path) -> dict[str, Any]:
         raise ValueError("calibration manifest images must be a sequence")
     if not images:
         raise ValueError("calibration manifest images must not be empty")
+    manifest["images"] = [
+        str(_resolve_manifest_path(path.parent, Path(str(image)))) for image in images
+    ]
     return manifest
+
+
+def materialize_calibration_manifest_images(
+    manifest_path: Path,
+    *,
+    artifact_root: Path,
+    output_manifest_path: Path | None = None,
+    image_directory_name: str = "calibration_images",
+) -> None:
+    """Copy calibration images beside an evidence manifest and rewrite paths."""
+
+    manifest = _load_json(manifest_path)
+    images = manifest.get("images")
+    if not isinstance(images, Sequence) or isinstance(images, (str, bytes)):
+        raise ValueError("calibration manifest images must be a sequence")
+
+    destination_dir = artifact_root / image_directory_name
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    rewritten: list[str] = []
+    for index, image in enumerate(images):
+        source = _resolve_manifest_path(manifest_path.parent, Path(str(image)))
+        if not source.is_file():
+            raise ValueError(f"calibration image does not exist: {source}")
+        destination = destination_dir / f"{index:06d}_{source.name}"
+        shutil.copyfile(source, destination)
+        rewritten.append(destination.relative_to(artifact_root).as_posix())
+
+    manifest["images"] = rewritten
+    output_path = output_manifest_path or manifest_path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
 def image_id_manifest_sha256(image_ids: Sequence[int]) -> str:
@@ -83,6 +118,10 @@ def image_id_manifest_sha256(image_ids: Sequence[int]) -> str:
     for image_id in sorted(map(int, image_ids)):
         digest.update(f"{image_id}\n".encode("utf-8"))
     return digest.hexdigest()
+
+
+def _resolve_manifest_path(base: Path, path: Path) -> Path:
+    return path if path.is_absolute() else base / path
 
 
 def assert_disjoint_image_ids(

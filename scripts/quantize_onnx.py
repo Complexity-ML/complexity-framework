@@ -36,10 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--detector-metadata-output",
         type=Path,
-        help=(
-            "Detector metadata sidecar copied from --metadata. "
-            "Defaults to <output>.json."
-        ),
+        help=("Detector metadata sidecar copied from --metadata. Defaults to <output>.json."),
     )
     parser.add_argument("--calibration-manifest", type=Path)
     parser.add_argument("--checkpoint-revision", default="unknown")
@@ -191,8 +188,7 @@ class _CalibrationReader:
             raise ValueError("calibration batch_size must be positive")
         self._batch_size = batch_size
         self._items = [
-            preprocess_image(path, metadata.image_size).pixel_values
-            for path in image_paths
+            preprocess_image(path, metadata.image_size).pixel_values for path in image_paths
         ]
         self._index = 0
 
@@ -246,8 +242,7 @@ def quantize_int8(
         from onnxruntime.quantization import QuantFormat, quantize_static
     except ImportError as error:  # pragma: no cover - dependency guard
         raise RuntimeError(
-            "INT8 quantization requires onnxruntime.quantization "
-            "and a calibration manifest."
+            "INT8 quantization requires onnxruntime.quantization and a calibration manifest."
         ) from error
 
     settings = calibration_manifest["quantization"]
@@ -358,8 +353,8 @@ def main() -> None:
         if args.require_identical_hash:
             assert_identical_artifact_hashes(output_sha256, repeat_sha256)
 
-    detector_metadata_output = (
-        args.detector_metadata_output or default_detector_metadata_output(args.output)
+    detector_metadata_output = args.detector_metadata_output or default_detector_metadata_output(
+        args.output
     )
     copy_detector_metadata(args.metadata, detector_metadata_output)
 

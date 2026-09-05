@@ -25,7 +25,7 @@
         }
     },
     "providers": {
-        "CPUExecutionProvider": ["fp32", "fp16", "int8"],
+        "CPUExecutionProvider": ["fp32", "int8"],
         "CUDAExecutionProvider": ["fp32", "fp16"],
         "TensorrtExecutionProvider": ["fp32", "fp16", "int8"]
     },

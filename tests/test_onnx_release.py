@@ -117,7 +117,7 @@ def test_committed_release_config_is_valid_and_pins_both_branches() -> None:
     )
     assert config.quantization.provider_gates == (
         ("CPUExecutionProvider", "fp32"),
-        ("CPUExecutionProvider", "fp16"),
+        ("CUDAExecutionProvider", "fp16"),
         ("CPUExecutionProvider", "int8"),
     )
     # Five seeds underestimate the observed maxima (see the validation report),
@@ -132,8 +132,11 @@ def test_release_workflows_share_quantized_evidence_artifact_contract() -> None:
     )
 
     assert "--name vision-v8-quantized-release-inputs" in release_workflow
+    assert "onnxruntime-gpu" in release_workflow
+    assert "runs-on: ${{ inputs.runner || 'self-hosted' }}" in release_workflow
     assert "name: vision-v8-quantized-release-inputs" in coco_workflow
     assert "calibration.json" in coco_workflow
+    assert "calibration_images/**" in coco_workflow
     assert "accuracy.json" in coco_workflow
     assert "accuracy.md" in coco_workflow
 

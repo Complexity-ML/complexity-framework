@@ -44,9 +44,7 @@ def decoded_parity_metrics(
         return {
             "reference_detection_count": len(reference_detections),
             "candidate_detection_count": len(candidate_detections),
-            "class_mismatch_count": int(
-                len(reference_detections) != len(candidate_detections)
-            ),
+            "class_mismatch_count": int(len(reference_detections) != len(candidate_detections)),
             "max_decoded_box_px_error": 0.0,
             "max_score_abs_error": 0.0,
         }

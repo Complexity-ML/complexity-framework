@@ -16,6 +16,11 @@ on:
         description: "Workflow run ID containing vision-v8-quantized-release-inputs"
         required: false
         type: string
+      runner:
+        description: "Runner label with CUDA support for FP16 ONNX gates"
+        required: false
+        default: "self-hosted"
+        type: string
   push:
     tags:
       - "onnx-v8-*"
@@ -30,7 +35,7 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'self-hosted' }}
     # Two 640px exports plus 50-seed parity gates on both branches.
     timeout-minutes: 60
     steps:
@@ -60,7 +65,7 @@ jobs:
             --index-url https://download.pytorch.org/whl/cpu
           python -m pip install \
             "onnx==${{ steps.pins.outputs.onnx }}" \
-            "onnxruntime==${{ steps.pins.outputs.onnxruntime }}" \
+            "onnxruntime-gpu==${{ steps.pins.outputs.onnxruntime }}" \
             psutil
 
       - name: Download quantized release evidence
@@ -74,6 +79,7 @@ jobs:
             --name vision-v8-quantized-release-inputs \
             --dir artifacts/vision_v8_quantized_eval
           test -f artifacts/vision_v8_quantized_eval/calibration.json
+          test -d artifacts/vision_v8_quantized_eval/calibration_images
           test -f artifacts/vision_v8_quantized_eval/accuracy.json
           test -f artifacts/vision_v8_quantized_eval/accuracy.md
 

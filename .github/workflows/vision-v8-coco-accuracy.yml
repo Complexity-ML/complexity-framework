@@ -189,6 +189,8 @@ jobs:
           --config configs/vision_v8_coco_accuracy_gate.json
       - name: Build quantized release evidence artifact
         if: inputs.backend == 'onnx' && inputs.calibration_manifest != ''
+        env:
+          CALIBRATION_MANIFEST: ${{ inputs.calibration_manifest }}
         run: |
           test -n "${{ inputs.onnx_o2m_fp16_model }}"
           test -n "${{ inputs.onnx_o2m_fp16_metadata }}"
@@ -199,7 +201,7 @@ jobs:
           test -n "${{ inputs.onnx_nms_free_int8_model }}"
           test -n "${{ inputs.onnx_nms_free_int8_metadata }}"
           mkdir -p artifacts/vision_v8_quantized_eval
-          cp "${{ inputs.calibration_manifest }}" artifacts/vision_v8_quantized_eval/calibration.json
+          python -c "import os; from pathlib import Path; from scripts.check_onnx_quantized_artifacts import materialize_calibration_manifest_images; materialize_calibration_manifest_images(Path(os.environ['CALIBRATION_MANIFEST']), artifact_root=Path('artifacts/vision_v8_quantized_eval'), output_manifest_path=Path('artifacts/vision_v8_quantized_eval/calibration.json'))"
           python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_fp16_model }}" --metadata "${{ inputs.onnx_o2m_fp16_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_quantized_eval/o2m_fp16 --branch o2m-nms --provider "${{ inputs.provider }}" --precision fp16 --seed 0
           python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_nms_free_fp16_model }}" --metadata "${{ inputs.onnx_nms_free_fp16_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_quantized_eval/nms_free_fp16 --branch nms-free --provider "${{ inputs.provider }}" --precision fp16 --seed 0
           python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_int8_model }}" --metadata "${{ inputs.onnx_o2m_int8_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_quantized_eval/o2m_int8 --branch o2m-nms --provider "${{ inputs.provider }}" --precision int8 --seed 0
@@ -228,6 +230,7 @@ jobs:
           name: vision-v8-quantized-release-inputs
           path: |
             artifacts/vision_v8_quantized_eval/calibration.json
+            artifacts/vision_v8_quantized_eval/calibration_images/**
             artifacts/vision_v8_quantized_eval/accuracy.json
             artifacts/vision_v8_quantized_eval/accuracy.md
       - name: Upload gated reports to GitHub Release

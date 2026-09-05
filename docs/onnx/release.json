@@ -12,7 +12,7 @@
     "fp32_op_allowlist": [],
     "provider_gates": [
       {"provider": "CPUExecutionProvider", "precision": "fp32"},
-      {"provider": "CPUExecutionProvider", "precision": "fp16"},
+      {"provider": "CUDAExecutionProvider", "precision": "fp16"},
       {"provider": "CPUExecutionProvider", "precision": "int8"}
     ]
   },

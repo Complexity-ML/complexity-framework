@@ -20,6 +20,8 @@ Unsupported provider and precision pairs fail explicitly using
 `configs/vision_v8_quantization_thresholds.json`. Provider fallback is separate
 from FP16 partial fallback: the release check must verify both that ONNX Runtime
 used the requested provider and that unexpected graph nodes did not remain FP32.
+The default release contract runs FP32 and INT8 on CPU, but FP16 on CUDA because
+the CPU ONNX Runtime build does not support executing FP16 detector graphs.
 
 ## Calibration Contract
 
@@ -135,11 +137,15 @@ The GitHub release workflow downloads a prior Actions artifact named
 `vision-v8-quantized-release-inputs`. The manual Vision v8 COCO accuracy
 workflow produces that artifact when `backend=onnx`, `calibration_manifest` is
 set, and FP32/FP16/INT8 model plus metadata paths are provided for both
-branches. The artifact must provide `calibration.json`, `accuracy.json`, and
-`accuracy.md` under `artifacts/vision_v8_quantized_eval/` before
-`build_onnx_release.py` runs. Pass the source run as workflow input
-`evidence_run_id`, or set repository variable `ONNX_RELEASE_EVIDENCE_RUN_ID`
-for tag-triggered releases.
+branches. The artifact must provide `calibration.json`, `calibration_images/`,
+`accuracy.json`, and `accuracy.md` under
+`artifacts/vision_v8_quantized_eval/` before `build_onnx_release.py` runs. The
+COCO workflow copies the pinned calibration images into `calibration_images/`
+and rewrites the manifest paths so the fresh release runner can open them.
+Pass the source run as workflow input `evidence_run_id`, or set repository
+variable `ONNX_RELEASE_EVIDENCE_RUN_ID` for tag-triggered releases.
+Run the ONNX release workflow on a CUDA-capable self-hosted runner so the FP16
+parity and benchmark gates use `onnxruntime-gpu` instead of CPU fallback.
 
 ## Release Policy
 
