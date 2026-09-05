@@ -27,7 +27,7 @@
 ## File Structure
 
 - Create `configs/vision_v8_quantization_thresholds.json` for FP16/INT8 raw-logit, decoded-output, COCO, performance, dtype, and provider thresholds.
-- Create `configs/vision_v8_quantization_calibration.json` for pinned calibration input metadata and quantization settings.
+- Create `configs/vision_v8_quantization_calibration.example.json` for pinned calibration input metadata and quantization settings.
 - Create `scripts/quantize_onnx.py` to generate FP16 and INT8 ONNX files plus JSON sidecars.
 - Create `scripts/check_onnx_quantized_artifacts.py` to validate metadata, checksums, node dtypes, provider support, calibration/eval disjointness, parity reports, COCO reports, and performance reports.
 - Create `scripts/benchmark_onnx_artifacts.py` to measure artifact latency, throughput, and peak memory with stable warm-up and measured iteration counts.
@@ -43,7 +43,7 @@
 
 **Files:**
 - Create: `configs/vision_v8_quantization_thresholds.json`
-- Create: `configs/vision_v8_quantization_calibration.json`
+- Create: `configs/vision_v8_quantization_calibration.example.json`
 - Test: `tests/test_onnx_quantization_config.py`
 
 **Interfaces:**
@@ -146,7 +146,7 @@ Create `configs/vision_v8_quantization_thresholds.json`:
 }
 ```
 
-Create `configs/vision_v8_quantization_calibration.json`:
+Create `configs/vision_v8_quantization_calibration.example.json`:
 
 ```json
 {
@@ -226,7 +226,7 @@ Run: `python -m pytest -q tests/test_onnx_quantization_config.py`
 Commit:
 
 ```bash
-git add configs/vision_v8_quantization_thresholds.json configs/vision_v8_quantization_calibration.json scripts/check_onnx_quantized_artifacts.py tests/test_onnx_quantization_config.py
+git add configs/vision_v8_quantization_thresholds.json configs/vision_v8_quantization_calibration.example.json scripts/check_onnx_quantized_artifacts.py tests/test_onnx_quantization_config.py
 git commit -m "Add Vision v8 quantization gate config"
 ```
 

@@ -24,12 +24,16 @@ used the requested provider and that unexpected graph nodes did not remain FP32.
 ## Calibration Contract
 
 INT8 calibration is pinned by
-`configs/vision_v8_quantization_calibration.json`. The manifest records the
+the release evidence artifact. `configs/vision_v8_quantization_calibration.example.json`
+documents the expected shape. The manifest records the
 dataset, image-ID manifest hash, annotation hash, calibration method,
 per-channel/per-tensor mode, symmetric/asymmetric choices, activation type,
 weight type, and batch size. The ORT symmetry options and batch size are passed
 into quantization directly; unsupported settings are not recorded in release
 metadata.
+The default release export uses a fixed batch of 1, so the default calibration
+manifest must also use `batch_size: 1`. If the export is changed to dynamic
+batching, the calibration batch size can be raised in the same release contract.
 Placeholder hashes are rejected by `load_calibration_manifest`; before a release
 run, replace them with the approved calibration subset and real SHA-256 values.
 
@@ -64,7 +68,7 @@ python scripts/quantize_onnx.py \
   --fp32-model artifacts/onnx/tr_hash_v8_o2m.onnx \
   --metadata artifacts/onnx/tr_hash_v8_o2m.json \
   --precision int8 \
-  --calibration-manifest configs/vision_v8_quantization_calibration.json \
+  --calibration-manifest artifacts/vision_v8_quantized_eval/calibration.json \
   --output artifacts/onnx/tr_hash_v8_o2m_int8.onnx \
   --repeat-output artifacts/onnx/tr_hash_v8_o2m_int8_repeat.onnx \
   --require-identical-hash \
@@ -88,7 +92,28 @@ Before publishing, merge the FP32 reference and quantized branch reports into
 `artifacts/vision_v8_quantized_eval/accuracy.json` and
 `artifacts/vision_v8_quantized_eval/accuracy.md`. The release builder validates
 that JSON against `configs/vision_v8_quantization_thresholds.json`; missing or
-regressed reports block publication.
+regressed reports block publication. The report must include the evaluated image
+IDs so the release gate can prove the calibration set and evaluation set are
+actually disjoint.
+
+The merge report is precision-nested by branch. For example, each branch must
+contain `fp32`, `fp16`, and `int8` entries so the gate can compare every
+quantized candidate against the FP32 reference:
+
+```bash
+python scripts/merge_vision_v8_coco_reports.py \
+  artifacts/vision_v8_coco_eval/run_a_o2m/evaluation.json \
+  artifacts/vision_v8_coco_eval/run_a_nms_free/evaluation.json \
+  artifacts/vision_v8_quantized_eval/o2m_fp16/evaluation.json \
+  artifacts/vision_v8_quantized_eval/nms_free_fp16/evaluation.json \
+  artifacts/vision_v8_quantized_eval/o2m_int8/evaluation.json \
+  artifacts/vision_v8_quantized_eval/nms_free_int8/evaluation.json \
+  --output artifacts/vision_v8_quantized_eval
+cp artifacts/vision_v8_quantized_eval/evaluation.json \
+  artifacts/vision_v8_quantized_eval/accuracy.json
+cp artifacts/vision_v8_quantized_eval/evaluation.md \
+  artifacts/vision_v8_quantized_eval/accuracy.md
+```
 
 Benchmark an artifact:
 
@@ -101,6 +126,20 @@ python scripts/benchmark_onnx_artifacts.py \
   --warmup-iterations 25 \
   --measured-iterations 100
 ```
+
+The release build also generates `quantized_benchmarks.json` and
+`quantized_benchmarks.md` for every FP32, FP16, and INT8 branch artifact using
+the benchmark methodology from the checked-in threshold config.
+
+The GitHub release workflow downloads a prior Actions artifact named
+`vision-v8-quantized-release-inputs`. The manual Vision v8 COCO accuracy
+workflow produces that artifact when `backend=onnx`, `calibration_manifest` is
+set, and FP32/FP16/INT8 model plus metadata paths are provided for both
+branches. The artifact must provide `calibration.json`, `accuracy.json`, and
+`accuracy.md` under `artifacts/vision_v8_quantized_eval/` before
+`build_onnx_release.py` runs. Pass the source run as workflow input
+`evidence_run_id`, or set repository variable `ONNX_RELEASE_EVIDENCE_RUN_ID`
+for tag-triggered releases.
 
 ## Release Policy
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +45,7 @@ def config_mapping(**overrides: Any) -> dict[str, Any]:
         "checkpoint_revision": "f3b3e659612e543ca9ff91892c0662d38dc1a1d6",
         "opset": 17,
         "parity_num_tests": 5,
-        "toolchain": {"torch": "2.13.0", "onnx": "1.21.0", "onnxruntime": "1.24.4"},
+        "toolchain": {"torch": "2.13.0", "onnx": "1.21.0", "onnxruntime": "1.23.2"},
         "branches": [
             {
                 "branch": "o2m",
@@ -100,14 +102,13 @@ def test_committed_release_config_is_valid_and_pins_both_branches() -> None:
     assert {spec.branch for spec in config.branches} == {"o2m", "nms-free"}
     assert config.opset == 17
     assert set(config.toolchain) == {"torch", "onnx", "onnxruntime"}
+    assert config.toolchain["onnxruntime"] == "1.23.2"
     assert config.quantization is not None
     assert config.quantization.enabled_precisions == ("fp16", "int8")
     assert config.quantization.calibration_manifest == Path(
-        "configs/vision_v8_quantization_calibration.json"
+        "artifacts/vision_v8_quantized_eval/calibration.json"
     )
-    assert config.quantization.thresholds == Path(
-        "configs/vision_v8_quantization_thresholds.json"
-    )
+    assert config.quantization.thresholds == Path("configs/vision_v8_quantization_thresholds.json")
     assert config.quantization.accuracy_report == Path(
         "artifacts/vision_v8_quantized_eval/accuracy.json"
     )
@@ -115,12 +116,62 @@ def test_committed_release_config_is_valid_and_pins_both_branches() -> None:
         "artifacts/vision_v8_quantized_eval/accuracy.md"
     )
     assert config.quantization.provider_gates == (
-        ("CUDAExecutionProvider", "fp16"),
+        ("CPUExecutionProvider", "fp32"),
+        ("CPUExecutionProvider", "fp16"),
         ("CPUExecutionProvider", "int8"),
     )
     # Five seeds underestimate the observed maxima (see the validation report),
     # so a release gate has to be deeper than the development default.
     assert config.parity_num_tests >= 20
+
+
+def test_release_workflows_share_quantized_evidence_artifact_contract() -> None:
+    release_workflow = Path(".github/workflows/onnx-release.yml").read_text(encoding="utf-8")
+    coco_workflow = Path(".github/workflows/vision-v8-coco-accuracy.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--name vision-v8-quantized-release-inputs" in release_workflow
+    assert "name: vision-v8-quantized-release-inputs" in coco_workflow
+    assert "calibration.json" in coco_workflow
+    assert "accuracy.json" in coco_workflow
+    assert "accuracy.md" in coco_workflow
+
+
+def test_release_builder_runs_by_documented_file_path(tmp_path: Path) -> None:
+    config_path = tmp_path / "release.json"
+    config_path.write_text(
+        json.dumps(
+            config_mapping(
+                quantization={
+                    "enabled_precisions": ["int8"],
+                    "calibration_manifest": str(tmp_path / "missing-calibration.json"),
+                    "thresholds": "configs/vision_v8_quantization_thresholds.json",
+                    "accuracy_report": str(tmp_path / "missing-accuracy.json"),
+                    "accuracy_markdown": str(tmp_path / "missing-accuracy.md"),
+                }
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/build_onnx_release.py",
+            "--config",
+            str(config_path),
+            "--output-dir",
+            str(tmp_path / "dist"),
+            "--allow-toolchain-drift",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "No module named 'scripts." not in result.stderr
 
 
 def test_a_moving_checkpoint_ref_is_rejected() -> None:
@@ -179,9 +230,7 @@ def test_manifest_carries_every_field_the_release_must_document(
 ) -> None:
     manifest = written_release(tmp_path)
 
-    assert manifest["checkpoint_revision"] == (
-        "f3b3e659612e543ca9ff91892c0662d38dc1a1d6"
-    )
+    assert manifest["checkpoint_revision"] == ("f3b3e659612e543ca9ff91892c0662d38dc1a1d6")
     assert manifest["framework_commit"] == "0" * 40
     assert manifest["opset"] == 17
     assert manifest["toolchain"]["torch"] == "2.13.0"

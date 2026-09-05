@@ -21,9 +21,14 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 os.environ.setdefault("COMPLEXITY_DISABLE_KERNELS", "1")
 
@@ -92,8 +97,7 @@ def config_from_mapping(values: Mapping[str, Any]) -> ReleaseConfig:
         BranchSpec(
             branch=str(entry["branch"]),
             checkpoint_subdir=(
-                None if entry.get("checkpoint_subdir") is None
-                else str(entry["checkpoint_subdir"])
+                None if entry.get("checkpoint_subdir") is None else str(entry["checkpoint_subdir"])
             ),
             stem=str(entry["stem"]),
             post_processing=str(entry["post_processing"]),
@@ -120,8 +124,7 @@ def config_from_mapping(values: Mapping[str, Any]) -> ReleaseConfig:
     if isinstance(values.get("quantization"), Mapping):
         raw_quantization = values["quantization"]
         enabled_precisions = tuple(
-            str(precision)
-            for precision in raw_quantization.get("enabled_precisions", ())
+            str(precision) for precision in raw_quantization.get("enabled_precisions", ())
         )
         unsupported = sorted(set(enabled_precisions) - {"fp16", "int8"})
         if unsupported:
@@ -137,8 +140,7 @@ def config_from_mapping(values: Mapping[str, Any]) -> ReleaseConfig:
             accuracy_report=Path(str(raw_quantization["accuracy_report"])),
             accuracy_markdown=Path(str(raw_quantization["accuracy_markdown"])),
             fp32_op_allowlist=tuple(
-                str(op_type)
-                for op_type in raw_quantization.get("fp32_op_allowlist", ())
+                str(op_type) for op_type in raw_quantization.get("fp32_op_allowlist", ())
             ),
             provider_gates=provider_gates,
         )
@@ -229,6 +231,10 @@ def provider_chain(provider: str) -> tuple[str, ...]:
     return (provider,)
 
 
+def coco_report_branch(branch: str) -> str:
+    return "o2m-nms" if branch == "o2m" else branch
+
+
 def output_contract(sidecar: Mapping[str, Any]) -> dict[str, Any]:
     """Describe the ONNX input/output contract from an export sidecar."""
 
@@ -285,9 +291,7 @@ def verify_manifest(
     if expect_commit is not None:
         recorded = str(manifest.get("framework_commit", ""))
         if recorded != expect_commit:
-            problems.append(
-                f"framework_commit {recorded or 'missing'}, expected {expect_commit}"
-            )
+            problems.append(f"framework_commit {recorded or 'missing'}, expected {expect_commit}")
     for artifact in manifest["artifacts"]:
         path = Path(directory) / str(artifact["name"])
         if not path.is_file():
@@ -296,14 +300,12 @@ def verify_manifest(
         actual_size = path.stat().st_size
         if actual_size != int(artifact["size_bytes"]):
             problems.append(
-                f"{artifact['name']}: size {actual_size}, "
-                f"manifest {artifact['size_bytes']}"
+                f"{artifact['name']}: size {actual_size}, manifest {artifact['size_bytes']}"
             )
         actual_digest = sha256_file(path)
         if actual_digest != str(artifact["sha256"]):
             problems.append(
-                f"{artifact['name']}: sha256 {actual_digest}, "
-                f"manifest {artifact['sha256']}"
+                f"{artifact['name']}: sha256 {actual_digest}, manifest {artifact['sha256']}"
             )
     return problems
 
@@ -362,6 +364,34 @@ def render_release_notes(manifest: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def render_benchmark_report(report: Mapping[str, Any]) -> str:
+    """Render benchmark evidence into a release-friendly Markdown table."""
+
+    lines = [
+        "# Vision v8 ONNX Quantization Benchmarks",
+        "",
+        "| Branch | Precision | Provider | Median ms | P95 ms | Throughput | Peak MB |",
+        "|---|---|---|---:|---:|---:|---:|",
+    ]
+    for branch, branch_report in _mapping(report.get("branches")).items():
+        for precision, precision_report in _mapping(branch_report).items():
+            data = _mapping(precision_report)
+            latency = _mapping(data.get("latency"))
+            lines.append(
+                f"| {branch} | {precision} | {data.get('actual_provider', '')} | "
+                f"{float(latency.get('median_ms', 0.0)):.3f} | "
+                f"{float(latency.get('p95_ms', 0.0)):.3f} | "
+                f"{float(data.get('throughput_images_per_second', 0.0)):.3f} | "
+                f"{float(data.get('peak_memory_mb', 0.0)):.3f} |"
+            )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _mapping(value: object) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
 def build_release(
     config: ReleaseConfig,
     output_dir: Path,
@@ -372,12 +402,16 @@ def build_release(
 
     from huggingface_hub import snapshot_download
 
+    from scripts.benchmark_onnx_artifacts import benchmark_onnx_artifact
     from scripts.check_onnx_parity import check_parity
     from scripts.check_onnx_quantized_artifacts import (
+        assert_disjoint_image_ids,
         check_provider_precision_supported,
         check_quantized_accuracy_report,
+        check_quantized_benchmark_report,
         check_quantized_parity_report,
         check_unexpected_fp32_nodes,
+        evaluation_image_ids_from_report,
         inspect_onnx_node_dtypes,
         load_calibration_manifest,
         load_quantization_thresholds,
@@ -398,9 +432,8 @@ def build_release(
     installed = installed_toolchain()
     mismatches = toolchain_mismatches(config.toolchain, installed)
     if mismatches:
-        message = (
-            "toolchain does not match the pinned release toolchain:\n  "
-            + "\n  ".join(mismatches)
+        message = "toolchain does not match the pinned release toolchain:\n  " + "\n  ".join(
+            mismatches
         )
         if not allow_toolchain_drift:
             raise ReleaseError(
@@ -416,11 +449,13 @@ def build_release(
 
     quantization_thresholds: Mapping[str, Any] | None = None
     calibration_manifest: Mapping[str, Any] | None = None
+    accuracy_report: Mapping[str, Any] | None = None
     provider_by_precision: dict[str, str] = {}
+    benchmark_report: dict[str, Any] | None = None
+    benchmark_settings: Mapping[str, Any] = {}
+    expected_accuracy_artifacts: dict[str, dict[str, dict[str, str]]] = {}
     if config.quantization is not None:
-        quantization_thresholds = load_quantization_thresholds(
-            config.quantization.thresholds
-        )
+        quantization_thresholds = load_quantization_thresholds(config.quantization.thresholds)
         for provider, precision in config.quantization.provider_gates:
             check_provider_precision_supported(
                 provider,
@@ -432,6 +467,12 @@ def build_release(
             calibration_manifest = load_calibration_manifest(
                 config.quantization.calibration_manifest
             )
+            batch_size = int(calibration_manifest["quantization"]["batch_size"])
+            if batch_size != 1:
+                raise ReleaseError(
+                    "default ONNX release exports fixed batch size 1, "
+                    f"but calibration batch_size is {batch_size}"
+                )
         if config.quantization.enabled_precisions and calibration_manifest is None:
             raise ReleaseError("quantized release parity requires calibration images")
         parity_image = Path(str(calibration_manifest["images"][0]))
@@ -448,39 +489,12 @@ def build_release(
         accuracy_report = json.loads(
             config.quantization.accuracy_report.read_text(encoding="utf-8")
         )
-        accuracy_failures = check_quantized_accuracy_report(
-            accuracy_report,
-            quantization_thresholds,
+        assert_disjoint_image_ids(
+            {int(image_id) for image_id in calibration_manifest["image_ids"]},
+            evaluation_image_ids_from_report(accuracy_report),
         )
-        if accuracy_failures:
-            raise ReleaseError(
-                "quantized COCO accuracy gate failed:\n  "
-                + "\n  ".join(accuracy_failures)
-            )
-        accuracy_report_path = destination / "quantized_accuracy.json"
-        accuracy_markdown_path = destination / "quantized_accuracy.md"
-        accuracy_report_path.write_text(
-            json.dumps(accuracy_report, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        accuracy_markdown_path.write_text(
-            config.quantization.accuracy_markdown.read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
-        artifacts.append(
-            artifact_entry(
-                accuracy_report_path,
-                kind="accuracy_report",
-                precision="mixed",
-            )
-        )
-        artifacts.append(
-            artifact_entry(
-                accuracy_markdown_path,
-                kind="accuracy_report_markdown",
-                precision="mixed",
-            )
-        )
+        benchmark_report = {"schema_version": 1, "branches": {}}
+        benchmark_settings = _mapping(quantization_thresholds.get("benchmark"))
 
     print(f"Downloading {config.checkpoint_repo}@{config.checkpoint_revision}")
     checkpoint_root = Path(
@@ -537,6 +551,27 @@ def build_release(
             )
         )
         if config.quantization is not None and quantization_thresholds is not None:
+            expected_accuracy_artifacts.setdefault(coco_report_branch(spec.branch), {})["fp32"] = {
+                "checkpoint_sha256": sha256_file(model_path),
+                "metadata_sha256": sha256_file(sidecar_path),
+            }
+            fp32_benchmark = benchmark_onnx_artifact(
+                model_path=model_path,
+                metadata_path=sidecar_path,
+                providers=provider_chain(provider_by_precision.get("fp32", "CPUExecutionProvider")),
+                batch_size=1,
+                warmup_iterations=int(benchmark_settings["warmup_iterations"]),
+                measured_iterations=int(benchmark_settings["measured_iterations"]),
+                ort_intra_op_threads=1,
+                ort_inter_op_threads=1,
+            )
+            check_provider_precision_supported(
+                str(fp32_benchmark["actual_provider"]),
+                "fp32",
+                quantization_thresholds,
+            )
+            benchmark_report["branches"].setdefault(spec.branch, {})["fp32"] = fp32_benchmark
+        if config.quantization is not None and quantization_thresholds is not None:
             for precision in config.quantization.enabled_precisions:
                 quantized_model_path = destination / f"{spec.stem}_{precision}.onnx"
                 repeat_model_path = destination / f"{spec.stem}_{precision}_repeat.onnx"
@@ -575,15 +610,12 @@ def build_release(
                     if unexpected:
                         raise ReleaseError(
                             f"{quantized_model_path.name} retained unexpected "
-                            "FP32 nodes: "
-                            + ", ".join(unexpected)
+                            "FP32 nodes: " + ", ".join(unexpected)
                         )
 
                 quantized_metadata_path = quantized_model_path.with_suffix(".json")
                 copy_detector_metadata(sidecar_path, quantized_metadata_path)
-                quantized_sidecar_path = default_quantization_sidecar(
-                    quantized_model_path
-                )
+                quantized_sidecar_path = default_quantization_sidecar(quantized_model_path)
                 write_quantization_sidecar(
                     quantized_sidecar_path,
                     precision=precision,
@@ -624,9 +656,7 @@ def build_release(
                         f"{quantized_model_path.name} failed quantized parity:\n  "
                         + "\n  ".join(parity_failures)
                     )
-                parity_report_path = (
-                    destination / f"{spec.stem}_{precision}_parity.json"
-                )
+                parity_report_path = destination / f"{spec.stem}_{precision}_parity.json"
                 parity_report_path.write_text(
                     json.dumps(parity_report, indent=2) + "\n",
                     encoding="utf-8",
@@ -668,6 +698,107 @@ def build_release(
                         precision=precision,
                     )
                 )
+                expected_accuracy_artifacts.setdefault(
+                    coco_report_branch(spec.branch),
+                    {},
+                )[precision] = {
+                    "checkpoint_sha256": sha256_file(quantized_model_path),
+                    "metadata_sha256": sha256_file(quantized_metadata_path),
+                }
+                quantized_benchmark = benchmark_onnx_artifact(
+                    model_path=quantized_model_path,
+                    metadata_path=quantized_metadata_path,
+                    providers=provider_chain(
+                        provider_by_precision.get(precision, "CPUExecutionProvider")
+                    ),
+                    batch_size=1,
+                    warmup_iterations=int(benchmark_settings["warmup_iterations"]),
+                    measured_iterations=int(benchmark_settings["measured_iterations"]),
+                    ort_intra_op_threads=1,
+                    ort_inter_op_threads=1,
+                )
+                check_provider_precision_supported(
+                    str(quantized_benchmark["actual_provider"]),
+                    precision,
+                    quantization_thresholds,
+                )
+                benchmark_report["branches"].setdefault(spec.branch, {})[precision] = (
+                    quantized_benchmark
+                )
+
+    if (
+        config.quantization is not None
+        and quantization_thresholds is not None
+        and benchmark_report is not None
+    ):
+        benchmark_failures = check_quantized_benchmark_report(
+            benchmark_report,
+            quantization_thresholds,
+            required_branches=[spec.branch for spec in config.branches],
+        )
+        if benchmark_failures:
+            raise ReleaseError(
+                "quantized benchmark gate failed:\n  " + "\n  ".join(benchmark_failures)
+            )
+        assert accuracy_report is not None
+        accuracy_failures = check_quantized_accuracy_report(
+            accuracy_report,
+            quantization_thresholds,
+            required_branches=[coco_report_branch(spec.branch) for spec in config.branches],
+            expected_artifacts=expected_accuracy_artifacts,
+        )
+        if accuracy_failures:
+            raise ReleaseError(
+                "quantized COCO accuracy gate failed:\n  " + "\n  ".join(accuracy_failures)
+            )
+        accuracy_report_path = destination / "quantized_accuracy.json"
+        accuracy_markdown_path = destination / "quantized_accuracy.md"
+        accuracy_report_path.write_text(
+            json.dumps(accuracy_report, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        accuracy_markdown_path.write_text(
+            config.quantization.accuracy_markdown.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        artifacts.append(
+            artifact_entry(
+                accuracy_report_path,
+                kind="accuracy_report",
+                precision="mixed",
+            )
+        )
+        artifacts.append(
+            artifact_entry(
+                accuracy_markdown_path,
+                kind="accuracy_report_markdown",
+                precision="mixed",
+            )
+        )
+        benchmark_json_path = destination / "quantized_benchmarks.json"
+        benchmark_markdown_path = destination / "quantized_benchmarks.md"
+        benchmark_json_path.write_text(
+            json.dumps(benchmark_report, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        benchmark_markdown_path.write_text(
+            render_benchmark_report(benchmark_report),
+            encoding="utf-8",
+        )
+        artifacts.append(
+            artifact_entry(
+                benchmark_json_path,
+                kind="benchmark_report",
+                precision="mixed",
+            )
+        )
+        artifacts.append(
+            artifact_entry(
+                benchmark_markdown_path,
+                kind="benchmark_report_markdown",
+                precision="mixed",
+            )
+        )
 
     manifest = build_manifest(
         config,

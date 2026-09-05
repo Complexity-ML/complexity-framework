@@ -25,11 +25,7 @@ def load_quantization_thresholds(path: Path) -> dict[str, Any]:
     if "release_policy" not in config:
         raise ValueError("threshold config missing release_policy")
     precisions = config.get("precisions")
-    if (
-        not isinstance(precisions, dict)
-        or "fp16" not in precisions
-        or "int8" not in precisions
-    ):
+    if not isinstance(precisions, dict) or "fp16" not in precisions or "int8" not in precisions:
         raise ValueError("threshold config must define fp16 and int8 precisions")
     return config
 
@@ -70,9 +66,7 @@ def load_calibration_manifest(path: Path) -> dict[str, Any]:
     actual_digest = image_id_manifest_sha256([int(image_id) for image_id in image_ids])
     expected_digest = str(dataset["image_ids_sha256"])
     if actual_digest != expected_digest:
-        raise ValueError(
-            "calibration manifest dataset.image_ids_sha256 does not match image_ids"
-        )
+        raise ValueError("calibration manifest dataset.image_ids_sha256 does not match image_ids")
 
     images = manifest.get("images")
     if not isinstance(images, Sequence) or isinstance(images, (str, bytes)):
@@ -103,6 +97,47 @@ def assert_disjoint_image_ids(
         raise ValueError(f"calibration/evaluation image ID overlap: {preview}")
 
 
+def evaluation_image_ids_from_report(report: Mapping[str, Any]) -> set[int]:
+    """Extract the actual evaluated image IDs from an accuracy report."""
+
+    raw_ids = report.get("evaluation_image_ids")
+    if raw_ids is None:
+        raw_ids = _mapping(report.get("dataset")).get("image_ids")
+    if not isinstance(raw_ids, Sequence) or isinstance(raw_ids, (str, bytes)):
+        raise ValueError("accuracy report must include evaluation image IDs")
+    if not raw_ids:
+        raise ValueError("accuracy report evaluation image IDs must not be empty")
+    return {int(image_id) for image_id in raw_ids}
+
+
+def check_accuracy_artifact_bindings(
+    report: Mapping[str, Any],
+    generated_artifacts: Mapping[str, Mapping[str, Mapping[str, str]]],
+) -> list[str]:
+    """Verify accuracy evidence hashes match the artifacts being published."""
+
+    branches = _mapping(report.get("branches"))
+    failures: list[str] = []
+    for branch, precision_hashes in generated_artifacts.items():
+        branch_report = _mapping(branches.get(branch))
+        if not branch_report:
+            failures.append(f"accuracy report missing branch {branch}")
+            continue
+        for precision, expected_hashes in precision_hashes.items():
+            precision_report = _mapping(branch_report.get(precision))
+            if not precision_report:
+                failures.append(f"accuracy report missing {branch} {precision}")
+                continue
+            for field, expected in expected_hashes.items():
+                actual = precision_report.get(field)
+                if actual != expected:
+                    failures.append(
+                        f"{branch} {precision} {field} {actual or 'missing'} "
+                        f"does not match generated {expected}"
+                    )
+    return failures
+
+
 def check_provider_precision_supported(
     provider: str,
     precision: str,
@@ -112,16 +147,12 @@ def check_provider_precision_supported(
 
     providers = thresholds.get("providers", {})
     if not isinstance(providers, Mapping) or provider not in providers:
-        raise ValueError(
-            f"{provider} is not configured in quantization release config"
-        )
+        raise ValueError(f"{provider} is not configured in quantization release config")
     supported = providers[provider]
     if not isinstance(supported, Sequence) or isinstance(supported, (str, bytes)):
         raise ValueError(f"{provider} precision policy must be a sequence")
     if precision not in supported:
-        raise ValueError(
-            f"{provider} does not support {precision} in quantization release config"
-        )
+        raise ValueError(f"{provider} does not support {precision} in quantization release config")
 
 
 def check_unexpected_fp32_nodes(
@@ -157,9 +188,7 @@ def inspect_onnx_node_dtypes(model_path: Path) -> dict[str, Any]:
         import onnx
         from onnx import TensorProto
     except ImportError as error:  # pragma: no cover - dependency guard
-        raise RuntimeError(
-            "ONNX dtype inspection requires the onnx package"
-        ) from error
+        raise RuntimeError("ONNX dtype inspection requires the onnx package") from error
 
     model = onnx.load(str(model_path))
     value_dtypes: dict[str, int] = {}
@@ -183,13 +212,9 @@ def inspect_onnx_node_dtypes(model_path: Path) -> dict[str, Any]:
     fp16_nodes = 0
     int8_nodes = 0
     for node in model.graph.node:
-        output_types = {
-            value_dtypes[name] for name in node.output if name in value_dtypes
-        }
+        output_types = {value_dtypes[name] for name in node.output if name in value_dtypes}
         if TensorProto.FLOAT in output_types:
-            fp32_nodes.append(
-                {"name": node.name or node.output[0], "op_type": node.op_type}
-            )
+            fp32_nodes.append({"name": node.name or node.output[0], "op_type": node.op_type})
         if TensorProto.FLOAT16 in output_types:
             fp16_nodes += 1
         if TensorProto.INT8 in output_types or TensorProto.UINT8 in output_types:
@@ -205,11 +230,25 @@ def inspect_onnx_node_dtypes(model_path: Path) -> dict[str, Any]:
 def check_quantized_accuracy_report(
     report: Mapping[str, Any],
     thresholds: Mapping[str, Any],
+    *,
+    required_branches: Sequence[str] = (),
+    expected_artifacts: Mapping[str, Mapping[str, Mapping[str, str]]] | None = None,
 ) -> list[str]:
     """Compare a quantized candidate COCO report against its FP32 reference."""
 
     if "branches" in report:
-        return _check_branch_accuracy_report(report, thresholds)
+        failures = _check_branch_accuracy_report(
+            report,
+            thresholds,
+            required_branches=required_branches,
+        )
+        release_policy = _mapping(thresholds.get("release_policy"))
+        if release_policy.get("require_artifact_bindings") is True:
+            if expected_artifacts is None:
+                failures.append("generated artifact bindings are required by release policy")
+            else:
+                failures.extend(check_accuracy_artifact_bindings(report, expected_artifacts))
+        return failures
 
     reference = _mapping(report.get("reference"))
     candidate = _mapping(report.get("candidate"))
@@ -224,9 +263,7 @@ def check_quantized_parity_report(
 
     precision = str(report.get("precision", ""))
     branch = str(report.get("branch", ""))
-    precision_thresholds = _mapping(
-        _mapping(thresholds.get("precisions")).get(precision)
-    )
+    precision_thresholds = _mapping(_mapping(thresholds.get("precisions")).get(precision))
     if not precision_thresholds:
         return [f"candidate precision {precision} has no quantization thresholds"]
 
@@ -245,43 +282,119 @@ def check_quantized_parity_report(
             continue
         allowed = float(precision_thresholds[threshold_name])
         if value > allowed:
-            failures.append(
-                f"{precision} {branch} {metric} {value:.6f} exceeds {allowed:.6f}"
-            )
+            failures.append(f"{precision} {branch} {metric} {value:.6f} exceeds {allowed:.6f}")
+    return failures
+
+
+def check_quantized_benchmark_report(
+    report: Mapping[str, Any],
+    thresholds: Mapping[str, Any],
+    *,
+    required_branches: Sequence[str],
+) -> list[str]:
+    """Validate benchmark evidence covers every release branch and precision."""
+
+    branches = _mapping(report.get("branches"))
+    if not branches:
+        return ["benchmark report must contain branches"]
+    required_precisions = _required_precisions(thresholds)
+    required_fields = tuple(_mapping(thresholds.get("benchmark")).get("report", ()))
+    failures: list[str] = []
+    for branch in required_branches:
+        branch_report = _mapping(branches.get(branch))
+        if not branch_report:
+            failures.append(f"benchmark report missing branch {branch}")
+            continue
+        for precision in required_precisions:
+            precision_report = _mapping(branch_report.get(precision))
+            if not precision_report:
+                failures.append(f"benchmark report missing {branch} {precision}")
+                continue
+            for field in required_fields:
+                value = _benchmark_field(precision_report, str(field))
+                if _finite_float(value) is None:
+                    failures.append(f"benchmark report has invalid {branch} {precision} {field}")
     return failures
 
 
 def _check_branch_accuracy_report(
     report: Mapping[str, Any],
     thresholds: Mapping[str, Any],
+    *,
+    required_branches: Sequence[str],
 ) -> list[str]:
     branches = _mapping(report.get("branches"))
     if not branches:
         return ["quantized COCO report must contain branch comparisons"]
     reference_precision = str(report.get("reference_precision", "fp32"))
-    candidate_precision = str(
-        report.get("candidate_precision", report.get("precision", ""))
+    threshold_precisions = set(_mapping(thresholds.get("precisions")))
+    candidate_precisions = _candidate_precisions(report, branches, threshold_precisions)
+    required_candidates = tuple(
+        precision
+        for precision in _required_precisions(thresholds)
+        if precision != reference_precision and precision in threshold_precisions
     )
-    if not candidate_precision:
-        return ["candidate precision missing from quantized COCO report"]
+    if required_candidates:
+        candidate_precisions = required_candidates
 
     failures: list[str] = []
+    if not candidate_precisions:
+        return ["candidate precision missing from quantized COCO report"]
+    for branch in required_branches:
+        if branch not in branches:
+            failures.append(f"quantized COCO report missing branch {branch}")
     for branch, branch_report in branches.items():
         branch_data = _mapping(branch_report)
-        reference = _mapping(
-            branch_data.get(reference_precision, branch_data.get("reference"))
-        )
-        candidate = _mapping(
-            branch_data.get(candidate_precision, branch_data.get("candidate"))
-        )
-        if not reference or not candidate:
-            failures.append(
-                f"{branch} missing {reference_precision} "
-                f"or {candidate_precision} metrics"
-            )
-            continue
-        failures.extend(_check_accuracy_pair(reference, candidate, thresholds))
+        for candidate_precision in candidate_precisions:
+            reference = _mapping(branch_data.get(reference_precision, branch_data.get("reference")))
+            candidate = _mapping(branch_data.get(candidate_precision, branch_data.get("candidate")))
+            if not reference or not candidate:
+                failures.append(
+                    f"{branch} missing {reference_precision} or {candidate_precision} metrics"
+                )
+                continue
+            failures.extend(_check_accuracy_pair(reference, candidate, thresholds))
     return failures
+
+
+def _required_precisions(thresholds: Mapping[str, Any]) -> tuple[str, ...]:
+    release_policy = _mapping(thresholds.get("release_policy"))
+    raw_precisions = release_policy.get("required_precisions", ())
+    if not isinstance(raw_precisions, Sequence) or isinstance(
+        raw_precisions,
+        (str, bytes),
+    ):
+        return ()
+    return tuple(str(precision) for precision in raw_precisions)
+
+
+def _benchmark_field(report: Mapping[str, Any], field: str) -> object:
+    if field in report:
+        return report[field]
+    latency = _mapping(report.get("latency"))
+    return latency.get(field)
+
+
+def _candidate_precisions(
+    report: Mapping[str, Any],
+    branches: Mapping[str, Any],
+    threshold_precisions: set[str],
+) -> tuple[str, ...]:
+    raw_candidate_precisions = report.get("candidate_precisions")
+    if isinstance(raw_candidate_precisions, Sequence) and not isinstance(
+        raw_candidate_precisions,
+        (str, bytes),
+    ):
+        candidates = {str(precision) for precision in raw_candidate_precisions}
+    else:
+        candidates = set()
+    raw_candidate_precision = report.get("candidate_precision", report.get("precision"))
+    if raw_candidate_precision is not None:
+        candidates.add(str(raw_candidate_precision))
+    for branch_report in branches.values():
+        branch_data = _mapping(branch_report)
+        candidates.update(str(key) for key in branch_data if str(key) in threshold_precisions)
+    return tuple(sorted(candidates))
 
 
 def _check_accuracy_pair(
@@ -299,9 +412,7 @@ def _check_accuracy_pair(
         ]
 
     precision = str(candidate.get("precision", ""))
-    precision_thresholds = _mapping(
-        _mapping(thresholds.get("precisions")).get(precision)
-    )
+    precision_thresholds = _mapping(_mapping(thresholds.get("precisions")).get(precision))
     if not precision_thresholds:
         return [f"candidate precision {precision} has no quantization thresholds"]
 

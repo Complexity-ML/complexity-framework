@@ -47,6 +47,33 @@ on:
       onnx_nms_free_metadata:
         description: "Local path to the NMS-free Vision v8 ONNX metadata sidecar on the runner"
         required: false
+      onnx_o2m_fp16_model:
+        description: "Local path to the FP16 O2M Vision v8 ONNX model on the runner"
+        required: false
+      onnx_o2m_fp16_metadata:
+        description: "Local path to the FP16 O2M Vision v8 ONNX metadata sidecar"
+        required: false
+      onnx_nms_free_fp16_model:
+        description: "Local path to the FP16 NMS-free Vision v8 ONNX model"
+        required: false
+      onnx_nms_free_fp16_metadata:
+        description: "Local path to the FP16 NMS-free Vision v8 ONNX metadata sidecar"
+        required: false
+      onnx_o2m_int8_model:
+        description: "Local path to the INT8 O2M Vision v8 ONNX model on the runner"
+        required: false
+      onnx_o2m_int8_metadata:
+        description: "Local path to the INT8 O2M Vision v8 ONNX metadata sidecar"
+        required: false
+      onnx_nms_free_int8_model:
+        description: "Local path to the INT8 NMS-free Vision v8 ONNX model"
+        required: false
+      onnx_nms_free_int8_metadata:
+        description: "Local path to the INT8 NMS-free Vision v8 ONNX metadata sidecar"
+        required: false
+      calibration_manifest:
+        description: "Local path to the quantization calibration manifest"
+        required: false
       annotations:
         description: "Local path to instances_val2017.json on the runner"
         required: true
@@ -147,11 +174,11 @@ jobs:
             test -n "${{ inputs.onnx_o2m_metadata }}"
             test -n "${{ inputs.onnx_nms_free_model }}"
             test -n "${{ inputs.onnx_nms_free_metadata }}"
-            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_model }}" --metadata "${{ inputs.onnx_o2m_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a_o2m --branch o2m-nms --provider "${{ inputs.provider }}" --seed 0
-            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_nms_free_model }}" --metadata "${{ inputs.onnx_nms_free_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a_nms_free --branch nms-free --provider "${{ inputs.provider }}" --seed 0
+            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_model }}" --metadata "${{ inputs.onnx_o2m_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a_o2m --branch o2m-nms --provider "${{ inputs.provider }}" --precision fp32 --seed 0
+            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_nms_free_model }}" --metadata "${{ inputs.onnx_nms_free_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a_nms_free --branch nms-free --provider "${{ inputs.provider }}" --precision fp32 --seed 0
             python scripts/merge_vision_v8_coco_reports.py artifacts/vision_v8_coco_eval/run_a_o2m/evaluation.json artifacts/vision_v8_coco_eval/run_a_nms_free/evaluation.json --output artifacts/vision_v8_coco_eval/run_a
-            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_model }}" --metadata "${{ inputs.onnx_o2m_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b_o2m --branch o2m-nms --provider "${{ inputs.provider }}" --seed 0
-            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_nms_free_model }}" --metadata "${{ inputs.onnx_nms_free_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b_nms_free --branch nms-free --provider "${{ inputs.provider }}" --seed 0
+            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_model }}" --metadata "${{ inputs.onnx_o2m_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b_o2m --branch o2m-nms --provider "${{ inputs.provider }}" --precision fp32 --seed 0
+            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_nms_free_model }}" --metadata "${{ inputs.onnx_nms_free_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b_nms_free --branch nms-free --provider "${{ inputs.provider }}" --precision fp32 --seed 0
             python scripts/merge_vision_v8_coco_reports.py artifacts/vision_v8_coco_eval/run_b_o2m/evaluation.json artifacts/vision_v8_coco_eval/run_b_nms_free/evaluation.json --output artifacts/vision_v8_coco_eval/run_b
           fi
       - name: Gate full COCO report
@@ -160,6 +187,33 @@ jobs:
           artifacts/vision_v8_coco_eval/run_a/evaluation.json
           --repeat-report artifacts/vision_v8_coco_eval/run_b/evaluation.json
           --config configs/vision_v8_coco_accuracy_gate.json
+      - name: Build quantized release evidence artifact
+        if: inputs.backend == 'onnx' && inputs.calibration_manifest != ''
+        run: |
+          test -n "${{ inputs.onnx_o2m_fp16_model }}"
+          test -n "${{ inputs.onnx_o2m_fp16_metadata }}"
+          test -n "${{ inputs.onnx_nms_free_fp16_model }}"
+          test -n "${{ inputs.onnx_nms_free_fp16_metadata }}"
+          test -n "${{ inputs.onnx_o2m_int8_model }}"
+          test -n "${{ inputs.onnx_o2m_int8_metadata }}"
+          test -n "${{ inputs.onnx_nms_free_int8_model }}"
+          test -n "${{ inputs.onnx_nms_free_int8_metadata }}"
+          mkdir -p artifacts/vision_v8_quantized_eval
+          cp "${{ inputs.calibration_manifest }}" artifacts/vision_v8_quantized_eval/calibration.json
+          python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_fp16_model }}" --metadata "${{ inputs.onnx_o2m_fp16_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_quantized_eval/o2m_fp16 --branch o2m-nms --provider "${{ inputs.provider }}" --precision fp16 --seed 0
+          python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_nms_free_fp16_model }}" --metadata "${{ inputs.onnx_nms_free_fp16_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_quantized_eval/nms_free_fp16 --branch nms-free --provider "${{ inputs.provider }}" --precision fp16 --seed 0
+          python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_int8_model }}" --metadata "${{ inputs.onnx_o2m_int8_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_quantized_eval/o2m_int8 --branch o2m-nms --provider "${{ inputs.provider }}" --precision int8 --seed 0
+          python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_nms_free_int8_model }}" --metadata "${{ inputs.onnx_nms_free_int8_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_quantized_eval/nms_free_int8 --branch nms-free --provider "${{ inputs.provider }}" --precision int8 --seed 0
+          python scripts/merge_vision_v8_coco_reports.py \
+            artifacts/vision_v8_coco_eval/run_a_o2m/evaluation.json \
+            artifacts/vision_v8_coco_eval/run_a_nms_free/evaluation.json \
+            artifacts/vision_v8_quantized_eval/o2m_fp16/evaluation.json \
+            artifacts/vision_v8_quantized_eval/nms_free_fp16/evaluation.json \
+            artifacts/vision_v8_quantized_eval/o2m_int8/evaluation.json \
+            artifacts/vision_v8_quantized_eval/nms_free_int8/evaluation.json \
+            --output artifacts/vision_v8_quantized_eval
+          cp artifacts/vision_v8_quantized_eval/evaluation.json artifacts/vision_v8_quantized_eval/accuracy.json
+          cp artifacts/vision_v8_quantized_eval/evaluation.md artifacts/vision_v8_quantized_eval/accuracy.md
       - uses: actions/upload-artifact@v4
         with:
           name: vision-v8-coco-accuracy-report
@@ -168,6 +222,14 @@ jobs:
             artifacts/vision_v8_coco_eval/run_a/evaluation.md
             artifacts/vision_v8_coco_eval/run_b/evaluation.json
             artifacts/vision_v8_coco_eval/run_b/evaluation.md
+      - uses: actions/upload-artifact@v4
+        if: inputs.backend == 'onnx' && inputs.calibration_manifest != ''
+        with:
+          name: vision-v8-quantized-release-inputs
+          path: |
+            artifacts/vision_v8_quantized_eval/calibration.json
+            artifacts/vision_v8_quantized_eval/accuracy.json
+            artifacts/vision_v8_quantized_eval/accuracy.md
       - name: Upload gated reports to GitHub Release
         if: inputs.release_tag != ''
         env:

@@ -12,11 +12,16 @@ on:
         required: false
         default: true
         type: boolean
+      evidence_run_id:
+        description: "Workflow run ID containing vision-v8-quantized-release-inputs"
+        required: false
+        type: string
   push:
     tags:
       - "onnx-v8-*"
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -55,10 +60,25 @@ jobs:
             --index-url https://download.pytorch.org/whl/cpu
           python -m pip install \
             "onnx==${{ steps.pins.outputs.onnx }}" \
-            "onnxruntime==${{ steps.pins.outputs.onnxruntime }}"
+            "onnxruntime==${{ steps.pins.outputs.onnxruntime }}" \
+            psutil
+
+      - name: Download quantized release evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVIDENCE_RUN_ID: ${{ github.event.inputs.evidence_run_id || vars.ONNX_RELEASE_EVIDENCE_RUN_ID }}
+        run: |
+          test -n "$EVIDENCE_RUN_ID"
+          mkdir -p artifacts/vision_v8_quantized_eval
+          gh run download "$EVIDENCE_RUN_ID" \
+            --name vision-v8-quantized-release-inputs \
+            --dir artifacts/vision_v8_quantized_eval
+          test -f artifacts/vision_v8_quantized_eval/calibration.json
+          test -f artifacts/vision_v8_quantized_eval/accuracy.json
+          test -f artifacts/vision_v8_quantized_eval/accuracy.md
 
       - name: Test the release tooling
-        run: pytest -q tests/test_onnx_release.py
+        run: pytest -q tests/test_onnx_release.py tests/test_onnx_quantization_benchmark.py
 
       - name: Build, gate and verify the release
         env:

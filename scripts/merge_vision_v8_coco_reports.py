@@ -35,6 +35,10 @@ def merge_reports(reports: list[Mapping[str, Any]]) -> dict[str, Any]:
     merged["metadata"] = "multiple ONNX branch sidecars"
     merged["branches"] = {}
     shared_keys = ("backend", "framework_commit", "dataset", "protocol")
+    precision_reports = [_report_precision(report) for report in reports]
+    nest_by_precision = any(precision is not None for precision in precision_reports)
+    if nest_by_precision and not all(precision_reports):
+        raise ValueError("cannot merge mixed precision and non-precision reports")
     for report in reports:
         for key in shared_keys:
             if report.get(key) != reports[0].get(key):
@@ -44,8 +48,6 @@ def merge_reports(reports: list[Mapping[str, Any]]) -> dict[str, Any]:
         if not isinstance(branches, Mapping):
             raise ValueError("each report must contain a branches object")
         for branch, branch_report in branches.items():
-            if branch in merged["branches"]:
-                raise ValueError(f"duplicate branch in merged reports: {branch}")
             if not isinstance(branch_report, Mapping):
                 raise ValueError(f"branch report must be an object: {branch}")
             merged_branch = deepcopy(dict(branch_report))
@@ -57,9 +59,39 @@ def merge_reports(reports: list[Mapping[str, Any]]) -> dict[str, Any]:
                 "metadata_sha256",
             ):
                 merged_branch.setdefault(key, report.get(key))
-            merged["branches"][branch] = merged_branch
+            precision = _report_precision(report)
+            if nest_by_precision:
+                assert precision is not None
+                merged_branch.setdefault("precision", precision)
+                branch_precisions = merged["branches"].setdefault(branch, {})
+                if precision in branch_precisions:
+                    raise ValueError(f"duplicate precision in merged reports: {branch} {precision}")
+                branch_precisions[precision] = merged_branch
+            else:
+                if branch in merged["branches"]:
+                    raise ValueError(f"duplicate branch in merged reports: {branch}")
+                merged["branches"][branch] = merged_branch
+
+    if nest_by_precision:
+        precisions = tuple(dict.fromkeys(str(precision) for precision in precision_reports))
+        if "fp32" in precisions:
+            merged["reference_precision"] = "fp32"
+            merged["candidate_precisions"] = [
+                precision for precision in precisions if precision != "fp32"
+            ]
+        else:
+            merged["candidate_precisions"] = list(precisions)
 
     return merged
+
+
+def _report_precision(report: Mapping[str, Any]) -> str | None:
+    precision = report.get("precision")
+    if precision is None:
+        protocol = report.get("protocol")
+        if isinstance(protocol, Mapping):
+            precision = protocol.get("precision")
+    return str(precision) if precision is not None else None
 
 
 def main() -> None:

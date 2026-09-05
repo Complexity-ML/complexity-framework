@@ -63,7 +63,7 @@ def summarize_latency_ms(values: Sequence[float]) -> dict[str, float]:
     }
 
 
-def _peak_memory_mb() -> float | None:
+def _current_memory_mb() -> float | None:
     try:
         import psutil
     except ImportError:
@@ -77,18 +77,34 @@ def _benchmark_session(
     batch_size: int,
     warmup_iterations: int,
     measured_iterations: int,
-) -> list[float]:
-    input_shape = (batch_size, 3, pipeline.metadata.image_size, pipeline.metadata.image_size)
+) -> tuple[list[float], float | None]:
+    input_shape = (
+        batch_size,
+        3,
+        pipeline.metadata.image_size,
+        pipeline.metadata.image_size,
+    )
     dummy = np.zeros(input_shape, dtype=np.float32)
+    peak_memory_mb = _current_memory_mb()
     for _ in range(warmup_iterations):
         pipeline.session.run(dummy)
+        peak_memory_mb = _max_optional(peak_memory_mb, _current_memory_mb())
 
     latencies: list[float] = []
     for _ in range(measured_iterations):
         started = time.perf_counter()
         pipeline.session.run(dummy)
         latencies.append((time.perf_counter() - started) * 1000.0)
-    return latencies
+        peak_memory_mb = _max_optional(peak_memory_mb, _current_memory_mb())
+    return latencies, peak_memory_mb
+
+
+def _max_optional(first: float | None, second: float | None) -> float | None:
+    if first is None:
+        return second
+    if second is None:
+        return first
+    return max(first, second)
 
 
 def benchmark_onnx_artifact(
@@ -114,7 +130,7 @@ def benchmark_onnx_artifact(
         intra_op_num_threads=ort_intra_op_threads,
         inter_op_num_threads=ort_inter_op_threads,
     )
-    latencies = _benchmark_session(
+    latencies, peak_memory_mb = _benchmark_session(
         pipeline,
         batch_size=batch_size,
         warmup_iterations=warmup_iterations,
@@ -136,8 +152,8 @@ def benchmark_onnx_artifact(
         "measured_iterations": measured_iterations,
         "latency": summary,
         "throughput_images_per_second": throughput,
-        "peak_memory_mb": _peak_memory_mb(),
-        "benchmark_methodology": "fixed warmup, fixed measured iterations, latency distribution",
+        "peak_memory_mb": peak_memory_mb,
+        "benchmark_methodology": ("fixed warmup, fixed measured iterations, latency distribution"),
         "environment": {
             "python": sys.version.split()[0],
             "os": platform.platform(),

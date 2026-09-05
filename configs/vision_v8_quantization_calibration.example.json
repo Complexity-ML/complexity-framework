@@ -14,6 +14,6 @@
     "symmetric_weights": true,
     "activation_type": "quint8",
     "weight_type": "qint8",
-    "batch_size": 8
+    "batch_size": 1
   }
 }

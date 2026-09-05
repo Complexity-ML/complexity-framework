@@ -84,13 +84,11 @@ class OnnxDetectorPipeline:
         scores: np.ndarray,
         classes: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        filtered_boxes, filtered_scores, filtered_classes, _ = (
-            postprocess.filter_by_confidence(
-                boxes,
-                scores,
-                classes,
-                self.metadata.confidence_threshold,
-            )
+        filtered_boxes, filtered_scores, filtered_classes, _ = postprocess.filter_by_confidence(
+            boxes,
+            scores,
+            classes,
+            self.metadata.confidence_threshold,
         )
         if self.metadata.branch == "o2m":
             keep = postprocess.class_aware_nms(
