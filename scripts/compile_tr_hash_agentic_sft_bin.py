@@ -191,7 +191,10 @@ def main() -> None:
     # Exercise the exact reader used by the training process before publishing.
     train = SFTBinDataset(args.output, args.seq_len, 1729, 0, 1, repeat=False)
     evaluation = SFTBinDataset(args.output / "eval", args.seq_len, 1729, 0, 1, repeat=False)
-    if len(train.examples) != 100_000 or len(evaluation.examples) != 5_000:
+    if (
+        len(train.examples) != partitions["train"]["examples"]
+        or len(evaluation.examples) != partitions["eval"]["examples"]
+    ):
         raise RuntimeError("compiled shard count mismatch")
     print(json.dumps(manifest, indent=2, sort_keys=True))
 
