@@ -1,0 +1,214 @@
+{
+  "schema_version": 2,
+  "name": "tr-hash-agentic-100m-sft-2m-clean-generalist",
+  "seed": 20001729,
+  "sequence_length": 2048,
+  "train_examples": 2000000,
+  "validation_examples": 100000,
+  "epochs": 3,
+  "starting_checkpoint": {
+    "repository": "AETHORIA-AI/TR-HASH-MoE-100M-70B-Agentic-Refinement",
+    "revision": "token_pack_014_213622"
+  },
+  "tokenizer": {
+    "repository": "AETHORIA-AI/TR-HASH-Tokenizer-32K-Agentic",
+    "revision": "2fcbc2c5359ded0244ca14531f1b3806eebac55e"
+  },
+  "chat_template": {
+    "id": "tr-hash-agentic-chat-v1",
+    "training_projection": "native_agentic_prompt_completion",
+    "assistant_only_loss": true,
+    "thinking_policy": "optional_and_never_prefilled"
+  },
+  "replay": {
+    "enabled": false,
+    "excluded_repositories": [
+      "AETHORIA-AI/TR-HASH-Agentic-SFT-32K-250K",
+      "AETHORIA-AI/TR-HASH-Agentic-SFT-32K-500K"
+    ]
+  },
+  "components": [
+    {
+      "name": "general_conversations",
+      "kind": "public_source_mix",
+      "datasets": [
+        {
+          "dataset": "HuggingFaceTB/smol-smoltalk",
+          "revision": "f73fe857d519ff6ac5af2ea67c4d3834da7b8bcc"
+        },
+        {
+          "dataset": "OpenLLM-France/Luciole-PostTraining-Dataset-1.1",
+          "config": "sft_instruct",
+          "revision": "95df4f0dfd1abefafd9a7baac795c3e4304a9f99"
+        }
+      ],
+      "license": "mixed-apache-2.0-and-cc-by-4.0",
+      "train_examples": 800000,
+      "validation_examples": 40000
+    },
+    {
+      "name": "verified_compact_reasoning",
+      "kind": "public_and_deterministic_mix",
+      "datasets": [
+        {
+          "dataset": "open-r1/OpenR1-Math-220k",
+          "config": "all",
+          "revision": "e4e141ec9dea9f8326f4d347be56105859b2bd68"
+        },
+        {
+          "dataset": "AI-MO/NuminaMath-1.5",
+          "revision": "1b05109f9e5c1ad06c0663519502416c30b300f8"
+        }
+      ],
+      "license": "mixed-apache-2.0-and-cc0-1.0",
+      "train_examples": 450000,
+      "validation_examples": 22500,
+      "thinking_style": "short_verified_steps_without_boilerplate"
+    },
+    {
+      "name": "python_execution_checked",
+      "kind": "public_and_deterministic_mix",
+      "datasets": [
+        {
+          "dataset": "bigcode/self-oss-instruct-sc2-exec-filter-50k",
+          "revision": "356bb069eee815daa6e23e9a282eeefe1490ad44"
+        }
+      ],
+      "license": "mixed-odc-by-1.0-and-cc0-1.0",
+      "train_examples": 350000,
+      "validation_examples": 17500,
+      "verification": "parse_plus_isolated_unit_tests"
+    },
+    {
+      "name": "constraints_and_formats",
+      "kind": "public_and_deterministic_mix",
+      "datasets": [
+        {
+          "dataset": "HuggingFaceTB/smoltalk",
+          "config": "smol-constraints",
+          "revision": "5feaf2fd3ffca7c237fc38d1861bc30365d48ffa"
+        }
+      ],
+      "license": "mixed-apache-2.0-and-cc0-1.0",
+      "train_examples": 150000,
+      "validation_examples": 7500
+    },
+    {
+      "name": "tool_available_direct_answer",
+      "kind": "generalist_contrastive_mix",
+      "datasets": [
+        {
+          "dataset": "nvidia/When2Call",
+          "revision": "0582f7749df63a96fdc3070932e83e72396ace53"
+        },
+        {
+          "dataset": "nvidia/Nemotron-Agentic-v1",
+          "revision": "650d590978ca35c8f1ecea2faf136e5fac421b62"
+        }
+      ],
+      "train_examples": 150000,
+      "validation_examples": 7500,
+      "contract": "tools_are_offered_but_the_verified_target_answers_directly"
+    },
+    {
+      "name": "complete_agentic_trajectories",
+      "kind": "generalist_verified_trajectory_mix",
+      "datasets": [
+        {
+          "dataset": "nvidia/When2Call",
+          "revision": "0582f7749df63a96fdc3070932e83e72396ace53"
+        },
+        {
+          "dataset": "nvidia/Nemotron-Agentic-v1",
+          "revision": "650d590978ca35c8f1ecea2faf136e5fac421b62"
+        }
+      ],
+      "train_examples": 100000,
+      "validation_examples": 5000,
+      "submix": {
+        "single_tool_end_to_end": {
+          "train_examples": 55000,
+          "validation_examples": 2750
+        },
+        "multi_tool_end_to_end": {
+          "train_examples": 20000,
+          "validation_examples": 1000
+        },
+        "tool_failure_and_recovery": {
+          "train_examples": 10000,
+          "validation_examples": 500
+        },
+        "reasoning_code_and_tools": {
+          "train_examples": 15000,
+          "validation_examples": 750
+        }
+      },
+      "tool_mix_policy": {
+        "calculator": 0.25,
+        "knowledge_search": 0.25,
+        "date_time": 0.1,
+        "python_execution": 0.2,
+        "document_and_data": 0.1,
+        "other_retrieval": 0.1
+      },
+      "trajectory_policy": {
+        "minimum_turns": 2,
+        "preferred_maximum_turns": 6,
+        "require_tool_result_before_grounded_final": true,
+        "reject_planning_boilerplate": true
+      }
+    }
+  ],
+  "token_distribution_policy": {
+    "measure_with_pinned_native_tokenizer": true,
+    "enforcement": "fail_build_if_outside_bounds",
+    "partitions": {
+      "general_reasoning_code_and_constraints": {
+        "components": [
+          "general_conversations",
+          "verified_compact_reasoning",
+          "python_execution_checked",
+          "constraints_and_formats"
+        ],
+        "target_share": 0.75,
+        "minimum_share": 0.7,
+        "maximum_share": 0.8
+      },
+      "complete_agentic_trajectories": {
+        "components": ["complete_agentic_trajectories"],
+        "target_share": 0.175,
+        "minimum_share": 0.15,
+        "maximum_share": 0.2
+      },
+      "tools_available_without_call": {
+        "components": ["tool_available_direct_answer"],
+        "target_share": 0.075,
+        "minimum_share": 0.05,
+        "maximum_share": 0.1
+      }
+    }
+  },
+  "quality_policy": {
+    "reject_any_token_truncation": true,
+    "reject_legacy_markers": true,
+    "require_native_marker_balance": true,
+    "require_valid_tool_json": true,
+    "require_tool_name_in_offered_schema": true,
+    "require_calculator_expression_execution": true,
+    "require_calculator_result_match": true,
+    "require_python_parse": true,
+    "require_python_execution_tests": true,
+    "require_cross_split_conversation_isolation": true,
+    "require_exact_and_normalized_deduplication": true,
+    "require_benchmark_contamination_audit": true,
+    "require_compiled_label_audit": true,
+    "require_token_distribution_audit": true
+  },
+  "protected_benchmarks": [
+    "piqa",
+    "arc_easy",
+    "arc_challenge",
+    "hellaswag",
+    "gsm8k"
+  ]
+}
