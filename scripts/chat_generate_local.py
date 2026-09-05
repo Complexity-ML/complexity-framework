@@ -160,11 +160,16 @@ def generate_thinking_chat(
     top_k: int,
     repetition_penalty: float,
     repetition_context_size: int,
+    envelope: dict[str, str],
 ) -> str:
-    """Decode reasoning and final answer separately under a valid envelope."""
+    """Decode reasoning and final answer under the selected native envelope."""
 
     think_budget = max(1, max_new_tokens // 2)
     final_budget = max(1, max_new_tokens - think_budget)
+    think_start = envelope["think_start"]
+    think_end = envelope["think_end"]
+    final_start = envelope["final_start"]
+    final_end = envelope["final_end"]
     reasoning = generate_chat(
         model,
         tokenizer,
@@ -176,10 +181,11 @@ def generate_thinking_chat(
         top_k,
         repetition_penalty,
         repetition_context_size,
-        stop_strings=("<think>", "</think>", "<final>", "</final>"),
+        stop_strings=(think_end, final_start, final_end),
+        skip_special_tokens=False,
     )
-    reasoning = before_first(reasoning, ("<think>", "</think>", "<final>", "</final>"))
-    final_prompt = prompt + reasoning + "\n</think>\n<final>\n"
+    reasoning = before_first(reasoning, (think_end, final_start, final_end))
+    final_prompt = prompt + reasoning + think_end + final_start
     final = generate_chat(
         model,
         tokenizer,
@@ -191,10 +197,14 @@ def generate_thinking_chat(
         top_k,
         repetition_penalty,
         repetition_context_size,
-        stop_strings=("<think>", "</think>", "<final>", "</final>"),
+        stop_strings=(think_start, think_end, final_start, final_end, "<|end_of_turn|>"),
+        skip_special_tokens=False,
     )
-    final = before_first(final, ("<think>", "</think>", "<final>", "</final>"))
-    return f"<think>\n{reasoning}\n</think>\n<final>\n{final}\n</final>"
+    final = before_first(
+        final,
+        (think_start, think_end, final_start, final_end, "<|end_of_turn|>"),
+    )
+    return think_start + reasoning + think_end + final_start + final + final_end
 
 
 def build_prompt(
@@ -228,7 +238,7 @@ def main() -> None:
     parser.add_argument(
         "--thinking",
         action="store_true",
-        help="Prefill <think> after the assistant prefix and return the full envelope.",
+        help="Prefill the template's thinking token and return its full native envelope.",
     )
     parser.add_argument("--show-prompt", action="store_true")
     args = parser.parse_args()
@@ -246,8 +256,7 @@ def main() -> None:
         print("=== prompt ===")
         print(prompt)
         print("=== completion ===")
-    generator = generate_thinking_chat if args.thinking else generate_chat
-    completion = generator(
+    generation_args = (
         model,
         tokenizer,
         prompt,
@@ -259,6 +268,13 @@ def main() -> None:
         args.repetition_penalty,
         args.repetition_context_size,
     )
+    if args.thinking:
+        completion = generate_thinking_chat(
+            *generation_args,
+            envelope=chat_template["assistant_envelope"],
+        )
+    else:
+        completion = generate_chat(*generation_args)
     print(completion)
 
 
