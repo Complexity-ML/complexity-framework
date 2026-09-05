@@ -63,3 +63,29 @@ def test_native_eight_shot_prompt_uses_short_system_and_all_demos() -> None:
     assert GSM8K_COT_FEWSHOT[-1][0] in prompt
     assert prompt.endswith("<|user|>Target?<|end_of_turn|><|assistant|>")
     assert "<|think_start|>" not in prompt
+
+
+def test_zero_shot_training_projection_can_omit_system() -> None:
+    template = {
+        "id": "tr-hash-agentic-chat-v1",
+        "version": 1,
+        "system_prompt": "",
+        "system_format": "<|system|>{content}<|end_of_turn|>",
+        "user_format": "<|user|>{content}<|end_of_turn|>",
+        "assistant_prefix": "<|assistant|>",
+        "turn_separator": "",
+        "eos_token": "<|end|>",
+        "end_of_turn_token": "<|end_of_turn|>",
+        "assistant_only_loss": True,
+        "training_projection": "native_agentic_prompt_completion",
+        "assistant_envelope": {
+            "type": "optional_think_final",
+            "think_start": "<|think_start|>",
+            "think_end": "<|think_end|>",
+            "final_start": "<|final_start|>",
+            "final_end": "<|final_end|>",
+            "scope": "reasoning_tasks",
+        },
+    }
+    prompt = build_gsm8k_prompt("Target?", template, num_fewshot=0, system_prompt="")
+    assert prompt == "<|user|>Target?<|end_of_turn|><|assistant|>"

@@ -95,6 +95,8 @@ def test_launchers_keep_training_and_test_paths_separate() -> None:
     assert "--sft-bin" in training
     assert "--epochs 3" in training
     assert "--save-every-epoch" in training
+    assert 'expected = "tr-hash-agentic-chat-v1"' in training
+    assert "Tokenizer and GSM8K dataset chat-template contracts differ" in training
     assert "--experiment-label supervised_gsm8k_sft" in evaluation
     assert "--split test" in evaluation
 

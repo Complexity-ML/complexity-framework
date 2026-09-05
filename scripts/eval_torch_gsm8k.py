@@ -132,10 +132,13 @@ def build_gsm8k_prompt(
     chat_template: dict,
     *,
     num_fewshot: int,
+    system_prompt: str = GSM8K_SYSTEM_PROMPT,
 ) -> str:
     if not 0 <= num_fewshot <= len(GSM8K_COT_FEWSHOT):
         raise ValueError(f"num_fewshot must be between 0 and {len(GSM8K_COT_FEWSHOT)}")
-    messages = [{"role": "system", "content": GSM8K_SYSTEM_PROMPT}]
+    messages = []
+    if system_prompt.strip():
+        messages.append({"role": "system", "content": system_prompt.strip()})
     for demo_question, demo_answer in GSM8K_COT_FEWSHOT[:num_fewshot]:
         messages.extend(
             (
@@ -203,6 +206,7 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--repetition-penalty", type=float, default=1.0)
     parser.add_argument("--num-fewshot", type=int, choices=range(9), default=8)
+    parser.add_argument("--system-prompt", default=GSM8K_SYSTEM_PROMPT)
     parser.add_argument(
         "--experiment-label",
         default="supervised_gsm8k_sft",
@@ -237,6 +241,7 @@ def main() -> None:
             example["question"],
             chat_template,
             num_fewshot=args.num_fewshot,
+            system_prompt=args.system_prompt,
         )
         torch.manual_seed(0)
         response = generate_chat(
@@ -288,7 +293,7 @@ def main() -> None:
         "chat_template_id": chat_template["id"],
         "fresh_context_per_test_example": True,
         "generation_stops": ["tokenizer_eos", "<|end_of_turn|>"],
-        "system_prompt": GSM8K_SYSTEM_PROMPT,
+        "system_prompt": args.system_prompt,
         "fewshot": {
             "count": args.num_fewshot,
             "sampler": "canonical_fixed_samples",
