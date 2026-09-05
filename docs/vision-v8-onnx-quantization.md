@@ -27,7 +27,9 @@ INT8 calibration is pinned by
 `configs/vision_v8_quantization_calibration.json`. The manifest records the
 dataset, image-ID manifest hash, annotation hash, calibration method,
 per-channel/per-tensor mode, symmetric/asymmetric choices, activation type,
-weight type, batch size, and calibration thread count.
+weight type, and batch size. The ORT symmetry options and batch size are passed
+into quantization directly; unsupported settings are not recorded in release
+metadata.
 Placeholder hashes are rejected by `load_calibration_manifest`; before a release
 run, replace them with the approved calibration subset and real SHA-256 values.
 
@@ -49,6 +51,11 @@ python scripts/quantize_onnx.py \
   --require-identical-hash \
   --checkpoint-revision AETHORIA-AI/TR-HASH-Vision-v8-2M-COCO-SFT@REVISION
 ```
+
+By default the CLI writes two JSON files for a quantized artifact:
+`tr_hash_v8_o2m_fp16.json` is a detector metadata copy used by the inference
+pipeline, while `tr_hash_v8_o2m_fp16.quantization.json` is the quantization
+provenance sidecar used by release verification.
 
 Create an INT8 artifact:
 
@@ -77,6 +84,12 @@ python scripts/evaluate_onnx_coco.py \
   --provider cuda
 ```
 
+Before publishing, merge the FP32 reference and quantized branch reports into
+`artifacts/vision_v8_quantized_eval/accuracy.json` and
+`artifacts/vision_v8_quantized_eval/accuracy.md`. The release builder validates
+that JSON against `configs/vision_v8_quantization_thresholds.json`; missing or
+regressed reports block publication.
+
 Benchmark an artifact:
 
 ```bash
@@ -99,7 +112,9 @@ optional.
 Release assets must include:
 
 - FP32, FP16, and INT8 ONNX files for both O2M and NMS-free branches.
-- JSON sidecars for each artifact.
+- Detector metadata JSON sidecars and quantization provenance JSON sidecars.
+- FP32-vs-quantized parity reports for raw logits, decoded boxes, scores, and
+  class/count stability.
 - Accuracy reports in JSON and Markdown.
 - Benchmark reports in JSON and Markdown.
 - A manifest binding every artifact to framework commit, checkpoint revision,

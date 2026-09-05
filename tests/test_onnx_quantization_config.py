@@ -61,8 +61,7 @@ def test_calibration_manifest_pins_int8_settings(tmp_path: Path) -> None:
             "symmetric_weights": true,
             "activation_type": "quint8",
             "weight_type": "qint8",
-            "batch_size": 8,
-            "num_threads": 1
+            "batch_size": 8
           }
         }
         """
@@ -73,7 +72,7 @@ def test_calibration_manifest_pins_int8_settings(tmp_path: Path) -> None:
     manifest = load_calibration_manifest(path)
 
     assert manifest["quantization"]["calibration_method"] == "minmax"
-    assert manifest["quantization"]["num_threads"] == 1
+    assert manifest["quantization"]["batch_size"] == 8
 
 
 def test_calibration_manifest_rejects_missing_quantization_setting(
@@ -102,8 +101,7 @@ def test_calibration_manifest_rejects_missing_quantization_setting(
             "symmetric_activations": false,
             "symmetric_weights": true,
             "activation_type": "quint8",
-            "weight_type": "qint8",
-            "batch_size": 8
+            "weight_type": "qint8"
           }
         }
         """
@@ -111,7 +109,7 @@ def test_calibration_manifest_rejects_missing_quantization_setting(
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="num_threads"):
+    with pytest.raises(ValueError, match="batch_size"):
         load_calibration_manifest(path)
 
 
@@ -140,8 +138,7 @@ def test_calibration_manifest_rejects_placeholder_dataset_hash(tmp_path: Path) -
             "symmetric_weights": true,
             "activation_type": "quint8",
             "weight_type": "qint8",
-            "batch_size": 8,
-            "num_threads": 1
+            "batch_size": 8
           }
         }
         """
@@ -172,8 +169,7 @@ def test_calibration_manifest_requires_pinned_image_identity(tmp_path: Path) -> 
             "symmetric_weights": true,
             "activation_type": "quint8",
             "weight_type": "qint8",
-            "batch_size": 8,
-            "num_threads": 1
+            "batch_size": 8
           }
         }
         """
@@ -205,8 +201,7 @@ def test_calibration_manifest_requires_calibration_image_paths(tmp_path: Path) -
             "symmetric_weights": true,
             "activation_type": "quint8",
             "weight_type": "qint8",
-            "batch_size": 8,
-            "num_threads": 1
+            "batch_size": 8
           }
         }
         """

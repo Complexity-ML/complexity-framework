@@ -104,9 +104,5 @@ jobs:
                  --notes-file dist/onnx/RELEASE_NOTES.md \
                  $DRAFT
           gh release upload "$TAG" \
-            dist/onnx/manifest.json \
-            dist/onnx/tr_hash_v8_o2m.onnx \
-            dist/onnx/tr_hash_v8_o2m.json \
-            dist/onnx/tr_hash_v8_nms_free.onnx \
-            dist/onnx/tr_hash_v8_nms_free.json \
+            dist/onnx/* \
             --clobber

@@ -28,7 +28,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--metadata", type=Path, required=True)
     parser.add_argument("--precision", choices=("fp16", "int8"), required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--sidecar", type=Path)
+    parser.add_argument(
+        "--sidecar",
+        type=Path,
+        help="Quantization provenance sidecar. Defaults to <output>.quantization.json.",
+    )
+    parser.add_argument(
+        "--detector-metadata-output",
+        type=Path,
+        help=(
+            "Detector metadata sidecar copied from --metadata. "
+            "Defaults to <output>.json."
+        ),
+    )
     parser.add_argument("--calibration-manifest", type=Path)
     parser.add_argument("--checkpoint-revision", default="unknown")
     parser.add_argument(
@@ -116,6 +128,19 @@ def write_quantization_sidecar(
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def default_quantization_sidecar(output_model: Path) -> Path:
+    return output_model.with_name(f"{output_model.stem}.quantization.json")
+
+
+def default_detector_metadata_output(output_model: Path) -> Path:
+    return output_model.with_suffix(".json")
+
+
+def copy_detector_metadata(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+
+
 def quantize_fp32(input_model: Path, output_model: Path) -> None:
     output_model.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(input_model, output_model)
@@ -154,6 +179,7 @@ class _CalibrationReader:
         *,
         image_paths: Sequence[Path],
         metadata_path: Path,
+        batch_size: int = 1,
         input_name: str = "pixel_values",
     ) -> None:
         from complexity.deploy.onnx_detector.metadata import load_metadata
@@ -161,8 +187,11 @@ class _CalibrationReader:
 
         metadata = load_metadata(metadata_path)
         self._input_name = input_name
+        if batch_size <= 0:
+            raise ValueError("calibration batch_size must be positive")
+        self._batch_size = batch_size
         self._items = [
-            {input_name: preprocess_image(path, metadata.image_size).pixel_values}
+            preprocess_image(path, metadata.image_size).pixel_values
             for path in image_paths
         ]
         self._index = 0
@@ -170,9 +199,9 @@ class _CalibrationReader:
     def get_next(self) -> dict[str, np.ndarray] | None:
         if self._index >= len(self._items):
             return None
-        item = self._items[self._index]
-        self._index += 1
-        return item
+        batch = self._items[self._index : self._index + self._batch_size]
+        self._index += self._batch_size
+        return {self._input_name: np.concatenate(batch, axis=0)}
 
 
 def _calibration_method(name: str) -> Any:
@@ -217,14 +246,19 @@ def quantize_int8(
         from onnxruntime.quantization import QuantFormat, quantize_static
     except ImportError as error:  # pragma: no cover - dependency guard
         raise RuntimeError(
-            "INT8 quantization requires onnxruntime.quantization and a calibration manifest."
+            "INT8 quantization requires onnxruntime.quantization "
+            "and a calibration manifest."
         ) from error
 
     settings = calibration_manifest["quantization"]
     image_paths = _calibration_paths(calibration_manifest)
     if not image_paths:
         raise ValueError("INT8 quantization requires calibration manifest images")
-    reader = _CalibrationReader(image_paths=image_paths, metadata_path=metadata_path)
+    reader = _CalibrationReader(
+        image_paths=image_paths,
+        metadata_path=metadata_path,
+        batch_size=int(settings["batch_size"]),
+    )
     output_model.parent.mkdir(parents=True, exist_ok=True)
     quantize_static(
         str(input_model),
@@ -235,6 +269,10 @@ def quantize_int8(
         per_channel=bool(settings["per_channel"]),
         activation_type=_quant_type(str(settings["activation_type"])),
         weight_type=_quant_type(str(settings["weight_type"])),
+        extra_options={
+            "ActivationSymmetric": bool(settings["symmetric_activations"]),
+            "WeightSymmetric": bool(settings["symmetric_weights"]),
+        },
     )
 
 
@@ -266,6 +304,18 @@ def quantize_once(
         if calibration_manifest is None:
             raise ValueError("INT8 quantization requires --calibration-manifest")
         settings = dict(calibration_manifest["quantization"])
+        settings = {
+            key: settings[key]
+            for key in (
+                "calibration_method",
+                "per_channel",
+                "symmetric_activations",
+                "symmetric_weights",
+                "activation_type",
+                "weight_type",
+                "batch_size",
+            )
+        }
         quantize_int8(
             fp32_model,
             output_model,
@@ -308,7 +358,12 @@ def main() -> None:
         if args.require_identical_hash:
             assert_identical_artifact_hashes(output_sha256, repeat_sha256)
 
-    sidecar = args.sidecar or args.output.with_suffix(".json")
+    detector_metadata_output = (
+        args.detector_metadata_output or default_detector_metadata_output(args.output)
+    )
+    copy_detector_metadata(args.metadata, detector_metadata_output)
+
+    sidecar = args.sidecar or default_quantization_sidecar(args.output)
     write_quantization_sidecar(
         sidecar,
         precision=args.precision,

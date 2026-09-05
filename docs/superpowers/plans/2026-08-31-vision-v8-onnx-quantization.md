@@ -16,7 +16,7 @@
 - Calibration inputs must be pinned and disjoint from the COCO evaluation inputs used by the accuracy gate.
 - Unsupported provider/precision combinations must fail clearly instead of falling back silently.
 - FP16 conversion must report remaining FP32 nodes and fail unless every remaining FP32 node is covered by a checked-in allowlist.
-- INT8 settings must pin calibration method, per-channel/per-tensor mode, symmetric/asymmetric mode, activation type, weight type, calibration batch size, and calibration thread count.
+- INT8 settings must pin calibration method, per-channel/per-tensor mode, symmetric/asymmetric mode, activation type, weight type, and calibration batch size.
 - FP32, FP16, and INT8 reports must compare artifact size, latency, throughput, peak memory, raw-logit parity, decoded-output parity, and COCO metrics.
 - Tolerances and floors must live in checked-in config, not inside scripts.
 - If any required quantized artifact fails its gate, the release blocks; do not publish a partial FP32+FP16-only release unless the release config explicitly marks INT8 optional for that provider.
@@ -85,8 +85,7 @@ def test_calibration_manifest_pins_int8_settings(tmp_path: Path) -> None:
             "symmetric_weights": true,
             "activation_type": "quint8",
             "weight_type": "qint8",
-            "batch_size": 8,
-            "num_threads": 1
+            "batch_size": 8
           }
         }
         """
@@ -95,7 +94,7 @@ def test_calibration_manifest_pins_int8_settings(tmp_path: Path) -> None:
     manifest = load_calibration_manifest(path)
 
     assert manifest["quantization"]["calibration_method"] == "minmax"
-    assert manifest["quantization"]["num_threads"] == 1
+    assert manifest["quantization"]["batch_size"] == 8
 ```
 
 - [ ] **Step 2: Run tests and verify they fail**
@@ -166,8 +165,7 @@ Create `configs/vision_v8_quantization_calibration.json`:
     "symmetric_weights": true,
     "activation_type": "quint8",
     "weight_type": "qint8",
-    "batch_size": 8,
-    "num_threads": 1
+    "batch_size": 8
   }
 }
 ```
@@ -214,7 +212,6 @@ def load_calibration_manifest(path: Path) -> dict[str, Any]:
         "activation_type",
         "weight_type",
         "batch_size",
-        "num_threads",
     }
     missing = sorted(required - set(quantization))
     if missing:
@@ -383,7 +380,6 @@ calibration_method = manifest["quantization"]["calibration_method"]
 per_channel = manifest["quantization"]["per_channel"]
 activation_type = manifest["quantization"]["activation_type"]
 weight_type = manifest["quantization"]["weight_type"]
-num_threads = manifest["quantization"]["num_threads"]
 ```
 
 Set calibration reader iteration order from the sorted calibration manifest.

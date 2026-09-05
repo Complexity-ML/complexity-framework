@@ -100,6 +100,24 @@ def test_committed_release_config_is_valid_and_pins_both_branches() -> None:
     assert {spec.branch for spec in config.branches} == {"o2m", "nms-free"}
     assert config.opset == 17
     assert set(config.toolchain) == {"torch", "onnx", "onnxruntime"}
+    assert config.quantization is not None
+    assert config.quantization.enabled_precisions == ("fp16", "int8")
+    assert config.quantization.calibration_manifest == Path(
+        "configs/vision_v8_quantization_calibration.json"
+    )
+    assert config.quantization.thresholds == Path(
+        "configs/vision_v8_quantization_thresholds.json"
+    )
+    assert config.quantization.accuracy_report == Path(
+        "artifacts/vision_v8_quantized_eval/accuracy.json"
+    )
+    assert config.quantization.accuracy_markdown == Path(
+        "artifacts/vision_v8_quantized_eval/accuracy.md"
+    )
+    assert config.quantization.provider_gates == (
+        ("CUDAExecutionProvider", "fp16"),
+        ("CPUExecutionProvider", "int8"),
+    )
     # Five seeds underestimate the observed maxima (see the validation report),
     # so a release gate has to be deeper than the development default.
     assert config.parity_num_tests >= 20
@@ -119,6 +137,21 @@ def test_a_duplicated_branch_is_rejected() -> None:
 def test_an_unpinned_toolchain_is_rejected() -> None:
     with pytest.raises(ReleaseError, match="pin a toolchain"):
         config_from_mapping(config_mapping(toolchain={}))
+
+
+def test_unsupported_quantized_precision_is_rejected() -> None:
+    with pytest.raises(ReleaseError, match="unsupported quantized precisions"):
+        config_from_mapping(
+            config_mapping(
+                quantization={
+                    "enabled_precisions": ["fp8"],
+                    "calibration_manifest": "calibration.json",
+                    "thresholds": "thresholds.json",
+                    "accuracy_report": "accuracy.json",
+                    "accuracy_markdown": "accuracy.md",
+                }
+            )
+        )
 
 
 def test_toolchain_drift_is_reported_per_package() -> None:
@@ -141,10 +174,14 @@ def test_output_contract_derives_the_prediction_width_from_the_sidecar() -> None
     assert contract["dtype"] == "float32"
 
 
-def test_manifest_carries_every_field_the_release_must_document(tmp_path: Path) -> None:
+def test_manifest_carries_every_field_the_release_must_document(
+    tmp_path: Path,
+) -> None:
     manifest = written_release(tmp_path)
 
-    assert manifest["checkpoint_revision"] == "f3b3e659612e543ca9ff91892c0662d38dc1a1d6"
+    assert manifest["checkpoint_revision"] == (
+        "f3b3e659612e543ca9ff91892c0662d38dc1a1d6"
+    )
     assert manifest["framework_commit"] == "0" * 40
     assert manifest["opset"] == 17
     assert manifest["toolchain"]["torch"] == "2.13.0"
@@ -185,7 +222,9 @@ def test_verification_catches_a_truncated_or_missing_artifact(tmp_path: Path) ->
     assert "missing" in problems
 
 
-def test_verification_binds_the_manifest_to_the_publishing_commit(tmp_path: Path) -> None:
+def test_verification_binds_the_manifest_to_the_publishing_commit(
+    tmp_path: Path,
+) -> None:
     manifest = written_release(tmp_path)
 
     assert verify_manifest(manifest, tmp_path, expect_commit="0" * 40) == []

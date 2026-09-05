@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import string
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -24,7 +25,11 @@ def load_quantization_thresholds(path: Path) -> dict[str, Any]:
     if "release_policy" not in config:
         raise ValueError("threshold config missing release_policy")
     precisions = config.get("precisions")
-    if not isinstance(precisions, dict) or "fp16" not in precisions or "int8" not in precisions:
+    if (
+        not isinstance(precisions, dict)
+        or "fp16" not in precisions
+        or "int8" not in precisions
+    ):
         raise ValueError("threshold config must define fp16 and int8 precisions")
     return config
 
@@ -53,7 +58,6 @@ def load_calibration_manifest(path: Path) -> dict[str, Any]:
         "activation_type",
         "weight_type",
         "batch_size",
-        "num_threads",
     }
     missing = sorted(required - set(quantization))
     if missing:
@@ -108,12 +112,16 @@ def check_provider_precision_supported(
 
     providers = thresholds.get("providers", {})
     if not isinstance(providers, Mapping) or provider not in providers:
-        raise ValueError(f"{provider} is not configured in quantization release config")
+        raise ValueError(
+            f"{provider} is not configured in quantization release config"
+        )
     supported = providers[provider]
     if not isinstance(supported, Sequence) or isinstance(supported, (str, bytes)):
         raise ValueError(f"{provider} precision policy must be a sequence")
     if precision not in supported:
-        raise ValueError(f"{provider} does not support {precision} in quantization release config")
+        raise ValueError(
+            f"{provider} does not support {precision} in quantization release config"
+        )
 
 
 def check_unexpected_fp32_nodes(
@@ -149,7 +157,9 @@ def inspect_onnx_node_dtypes(model_path: Path) -> dict[str, Any]:
         import onnx
         from onnx import TensorProto
     except ImportError as error:  # pragma: no cover - dependency guard
-        raise RuntimeError("ONNX dtype inspection requires the onnx package") from error
+        raise RuntimeError(
+            "ONNX dtype inspection requires the onnx package"
+        ) from error
 
     model = onnx.load(str(model_path))
     value_dtypes: dict[str, int] = {}
@@ -173,9 +183,13 @@ def inspect_onnx_node_dtypes(model_path: Path) -> dict[str, Any]:
     fp16_nodes = 0
     int8_nodes = 0
     for node in model.graph.node:
-        output_types = {value_dtypes[name] for name in node.output if name in value_dtypes}
+        output_types = {
+            value_dtypes[name] for name in node.output if name in value_dtypes
+        }
         if TensorProto.FLOAT in output_types:
-            fp32_nodes.append({"name": node.name or node.output[0], "op_type": node.op_type})
+            fp32_nodes.append(
+                {"name": node.name or node.output[0], "op_type": node.op_type}
+            )
         if TensorProto.FLOAT16 in output_types:
             fp16_nodes += 1
         if TensorProto.INT8 in output_types or TensorProto.UINT8 in output_types:
@@ -194,18 +208,100 @@ def check_quantized_accuracy_report(
 ) -> list[str]:
     """Compare a quantized candidate COCO report against its FP32 reference."""
 
+    if "branches" in report:
+        return _check_branch_accuracy_report(report, thresholds)
+
     reference = _mapping(report.get("reference"))
     candidate = _mapping(report.get("candidate"))
+    return _check_accuracy_pair(reference, candidate, thresholds)
+
+
+def check_quantized_parity_report(
+    report: Mapping[str, Any],
+    thresholds: Mapping[str, Any],
+) -> list[str]:
+    """Gate raw-logit and decoded-output drift against checked-in thresholds."""
+
+    precision = str(report.get("precision", ""))
+    branch = str(report.get("branch", ""))
+    precision_thresholds = _mapping(
+        _mapping(thresholds.get("precisions")).get(precision)
+    )
+    if not precision_thresholds:
+        return [f"candidate precision {precision} has no quantization thresholds"]
+
+    failures: list[str] = []
+    for metric, threshold_name in (
+        ("max_raw_logit_abs_error", "max_raw_logit_abs_error"),
+        ("max_decoded_box_px_error", "max_decoded_box_px_error"),
+        ("max_score_abs_error", "max_score_abs_error"),
+    ):
+        if metric not in report:
+            failures.append(f"missing parity metric {metric}")
+            continue
+        value = _finite_float(report[metric])
+        if value is None:
+            failures.append(f"non-finite parity metric {metric}")
+            continue
+        allowed = float(precision_thresholds[threshold_name])
+        if value > allowed:
+            failures.append(
+                f"{precision} {branch} {metric} {value:.6f} exceeds {allowed:.6f}"
+            )
+    return failures
+
+
+def _check_branch_accuracy_report(
+    report: Mapping[str, Any],
+    thresholds: Mapping[str, Any],
+) -> list[str]:
+    branches = _mapping(report.get("branches"))
+    if not branches:
+        return ["quantized COCO report must contain branch comparisons"]
+    reference_precision = str(report.get("reference_precision", "fp32"))
+    candidate_precision = str(
+        report.get("candidate_precision", report.get("precision", ""))
+    )
+    if not candidate_precision:
+        return ["candidate precision missing from quantized COCO report"]
+
+    failures: list[str] = []
+    for branch, branch_report in branches.items():
+        branch_data = _mapping(branch_report)
+        reference = _mapping(
+            branch_data.get(reference_precision, branch_data.get("reference"))
+        )
+        candidate = _mapping(
+            branch_data.get(candidate_precision, branch_data.get("candidate"))
+        )
+        if not reference or not candidate:
+            failures.append(
+                f"{branch} missing {reference_precision} "
+                f"or {candidate_precision} metrics"
+            )
+            continue
+        failures.extend(_check_accuracy_pair(reference, candidate, thresholds))
+    return failures
+
+
+def _check_accuracy_pair(
+    reference: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    thresholds: Mapping[str, Any],
+) -> list[str]:
     reference_branch = str(reference.get("branch", ""))
     candidate_branch = str(candidate.get("branch", ""))
     if reference_branch != candidate_branch:
         return [
             "candidate branch "
-            f"{candidate_branch} does not match FP32 reference branch {reference_branch}"
+            f"{candidate_branch} does not match FP32 reference branch "
+            f"{reference_branch}"
         ]
 
     precision = str(candidate.get("precision", ""))
-    precision_thresholds = _mapping(_mapping(thresholds.get("precisions")).get(precision))
+    precision_thresholds = _mapping(
+        _mapping(thresholds.get("precisions")).get(precision)
+    )
     if not precision_thresholds:
         return [f"candidate precision {precision} has no quantization thresholds"]
 
@@ -219,8 +315,13 @@ def check_quantized_accuracy_report(
         if metric not in reference_metrics or metric not in candidate_metrics:
             failures.append(f"missing metric {metric} in FP32 or candidate report")
             continue
+        reference_value = _finite_float(reference_metrics[metric])
+        candidate_value = _finite_float(candidate_metrics[metric])
+        if reference_value is None or candidate_value is None:
+            failures.append(f"non-finite metric {metric} in FP32 or candidate report")
+            continue
         allowed_drop = float(precision_thresholds[threshold_name])
-        drop = float(reference_metrics[metric]) - float(candidate_metrics[metric])
+        drop = reference_value - candidate_value
         if drop > allowed_drop:
             failures.append(
                 f"{precision} {candidate_branch} {metric} dropped by {drop:.6f}; "
@@ -231,6 +332,16 @@ def check_quantized_accuracy_report(
 
 def _mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _finite_float(value: object) -> float | None:
+    try:
+        converted = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(converted):
+        return None
+    return converted
 
 
 def _is_sha256(value: object) -> bool:
