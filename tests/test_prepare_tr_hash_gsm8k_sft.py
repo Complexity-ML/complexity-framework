@@ -106,3 +106,4 @@ def test_asset_materializer_pins_commit_and_subfolder() -> None:
     assert "optimizer_rank" not in source
     assert "GSM8K_TRAIN_PARQUET" in source
     assert "GSM8K_TEST_PARQUET" in source
+    assert 'dataset/chat_template.json" "$ASSET_ROOT/tokenizer/chat_template.json' in source

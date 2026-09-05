@@ -214,6 +214,11 @@ def main() -> None:
         parser.error("--limit must be positive and --offset must be non-negative")
     device = pick_device(args.device)
     model, tokenizer, chat_template = load_model(args.checkpoint, args.tokenizer, device)
+    if chat_template.get("id") != "tr-hash-agentic-chat-v1":
+        raise ValueError(
+            "GSM8K Agentic evaluation requires chat template tr-hash-agentic-chat-v1; "
+            f"loaded {chat_template.get('id')!r}"
+        )
     end_of_turn_ids = tokenizer.encode("<|end_of_turn|>", add_special_tokens=False)
     if len(end_of_turn_ids) != 1:
         raise ValueError(f"native end-of-turn marker is not atomic: {end_of_turn_ids}")
@@ -280,6 +285,7 @@ def main() -> None:
         "supervised_on_gsm8k_train": args.experiment_label == "supervised_gsm8k_sft",
         "protocol": "gsm8k_cot_8shot_native_chat_short_system_greedy",
         "chat_template_applied": True,
+        "chat_template_id": chat_template["id"],
         "fresh_context_per_test_example": True,
         "generation_stops": ["tokenizer_eos", "<|end_of_turn|>"],
         "system_prompt": GSM8K_SYSTEM_PROMPT,

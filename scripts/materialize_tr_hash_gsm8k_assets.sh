@@ -53,6 +53,10 @@ python -u -m scripts.prepare_tr_hash_gsm8k_sft \
   --tokenizer "$ASSET_ROOT/tokenizer" \
   --output "$ASSET_ROOT/dataset"
 
+# The tokenizer repository publishes the Jinja template, while native training
+# and evaluation consume the audited JSON contract generated with this shard.
+cp "$ASSET_ROOT/dataset/chat_template.json" "$ASSET_ROOT/tokenizer/chat_template.json"
+
 cat <<EOF
 CHECKPOINT=$ASSET_ROOT/checkpoint
 TOKENIZER=$ASSET_ROOT/tokenizer
