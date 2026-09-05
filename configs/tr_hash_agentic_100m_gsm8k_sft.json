@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "name": "tr-hash-agentic-100m-gsm8k-supervised-probe",
+  "publication": {
+    "enabled": false,
+    "dataset_repository": "AETHORIA-AI/GSM8K-TR-HASH-Agentic-32K",
+    "model_repository": null
+  },
+  "source_checkpoint": {
+    "repository": "AETHORIA-AI/TR-HASH-MoE-100M-70B-Agentic-Refinement",
+    "revision": "99fee390916154ec9d8c0f049c3a890f81414e20",
+    "subfolder": "token_pack_014_213622",
+    "weights": "token_pack_014_213622/model.safetensors",
+    "stage": "refinement"
+  },
+  "tokenizer": {
+    "repository": "AETHORIA-AI/TR-HASH-Tokenizer-32K-Agentic",
+    "revision": "2fcbc2c5359ded0244ca14531f1b3806eebac55e",
+    "vocab_size": 32000,
+    "chat_template": "tr-hash-agentic-chat-v1"
+  },
+  "dataset": {
+    "repository": "openai/gsm8k",
+    "config": "main",
+    "revision": "740312add88f781978c0658806c59bc2815b9866",
+    "training_split": "train",
+    "training_examples": 7473,
+    "evaluation_split": "test",
+    "evaluation_examples": 1319,
+    "test_is_never_tokenized_for_training": true
+  },
+  "training": {
+    "epochs": 3,
+    "sequence_length": 2048,
+    "batch_size_per_rank": 4,
+    "learning_rate": 1e-5,
+    "full_parameter": true,
+    "pack_sequences": true,
+    "reset_lr_each_epoch": false,
+    "save_every_epoch": true,
+    "publish": false
+  },
+  "evaluation": {
+    "checkpoints": ["epoch_1", "epoch_2", "epoch_3"],
+    "split": "test",
+    "protocol": "zero_shot_chat_greedy_final_numeric_answer",
+    "label": "supervised_gsm8k_sft",
+    "publish": false
+  }
+}
