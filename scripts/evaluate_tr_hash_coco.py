@@ -18,7 +18,7 @@ import sys
 import time
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import numpy as np
 import torch
@@ -338,23 +338,23 @@ def _write_markdown_report(report: dict[str, Any], path: Path) -> None:
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for branch, branch_report in report["branches"].items():
-        metrics = branch_report["metrics"]
-        lines.append(
-            "| "
-            + " | ".join(
-                [
-                    branch,
-                    f"{float(metrics['map50_95']):.6f}",
-                    f"{float(metrics['map50']):.6f}",
-                    f"{float(metrics['map75']):.6f}",
-                    f"{float(metrics['ap_small']):.6f}",
-                    f"{float(metrics['ap_medium']):.6f}",
-                    f"{float(metrics['ap_large']):.6f}",
-                    f"{float(metrics['ar_100']):.6f}",
-                ]
+        for label, metrics in _branch_metric_rows(branch, branch_report):
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        label,
+                        f"{float(metrics['map50_95']):.6f}",
+                        f"{float(metrics['map50']):.6f}",
+                        f"{float(metrics['map75']):.6f}",
+                        f"{float(metrics['ap_small']):.6f}",
+                        f"{float(metrics['ap_medium']):.6f}",
+                        f"{float(metrics['ap_large']):.6f}",
+                        f"{float(metrics['ar_100']):.6f}",
+                    ]
+                )
+                + " |"
             )
-            + " |"
-        )
     lines.extend(
         [
             "",
@@ -371,6 +371,21 @@ def _write_markdown_report(report: dict[str, Any], path: Path) -> None:
         ]
     )
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _branch_metric_rows(
+    branch: str,
+    branch_report: Mapping[str, Any],
+) -> list[tuple[str, Mapping[str, Any]]]:
+    if "metrics" in branch_report:
+        return [(branch, branch_report["metrics"])]
+
+    rows: list[tuple[str, Mapping[str, Any]]] = []
+    for precision, precision_report in branch_report.items():
+        if not isinstance(precision_report, Mapping) or "metrics" not in precision_report:
+            continue
+        rows.append((f"{branch} {precision}", precision_report["metrics"]))
+    return rows
 
 
 def main() -> None:
@@ -415,6 +430,7 @@ def main() -> None:
             "split": "val2017",
             "images": len(image_ids),
             "evaluated_images": len(image_ids),
+            "image_ids": image_ids,
             "annotations": str(args.annotations),
             "annotations_sha256": _sha256_file(args.annotations),
             "image_list_sha256": _image_list_sha256(coco, image_ids),

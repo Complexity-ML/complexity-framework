@@ -2,6 +2,7 @@ import hashlib
 
 import pytest
 
+from scripts.check_onnx_quantized_artifacts import check_quantized_accuracy_report
 from scripts.evaluate_tr_hash_coco import (
     BRANCHES,
     _branch_contract,
@@ -69,9 +70,7 @@ def test_checkpoint_sha256_hashes_loaded_directory_weights(tmp_path):
 
     ema_weights.unlink()
 
-    assert _checkpoint_sha256(checkpoint) == hashlib.sha256(
-        b"model weights"
-    ).hexdigest()
+    assert _checkpoint_sha256(checkpoint) == hashlib.sha256(b"model weights").hexdigest()
 
 
 def test_branch_contract_distinguishes_nms_requirements():
@@ -154,6 +153,58 @@ def test_merge_onnx_reports_keeps_both_branch_artifact_hashes():
     assert merged["branches"]["o2m-nms"]["checkpoint_sha256"] == "a" * 64
     assert merged["branches"]["nms-free"]["checkpoint_sha256"] == "c" * 64
     assert merged["branches"]["nms-free"]["metadata_sha256"] == "d" * 64
+
+
+def test_merge_onnx_reports_can_build_precision_nested_quantized_report():
+    fp32 = {
+        "backend": "onnx",
+        "precision": "fp32",
+        "framework_commit": "abc123",
+        "checkpoint": "o2m_fp32.onnx",
+        "checkpoint_sha256": "a" * 64,
+        "model": "o2m_fp32.onnx",
+        "metadata": "o2m.json",
+        "metadata_sha256": "b" * 64,
+        "dataset": {"name": "coco-2017", "image_ids": [1, 2]},
+        "environment": {},
+        "protocol": {"seed": 0},
+        "branches": {
+            "o2m-nms": {
+                "branch": "o2m-nms",
+                "metrics": {"map50_95": 0.2, "map50": 0.3},
+            }
+        },
+    }
+    fp16 = {
+        **fp32,
+        "precision": "fp16",
+        "checkpoint": "o2m_fp16.onnx",
+        "checkpoint_sha256": "c" * 64,
+        "model": "o2m_fp16.onnx",
+        "branches": {
+            "o2m-nms": {
+                "branch": "o2m-nms",
+                "metrics": {"map50_95": 0.198, "map50": 0.295},
+            }
+        },
+    }
+
+    merged = merge_reports([fp32, fp16])
+    thresholds = {
+        "release_policy": {"required_precisions": ["fp32", "fp16"]},
+        "precisions": {"fp16": {"max_map50_95_drop": 0.005, "max_map50_drop": 0.01}},
+    }
+
+    assert set(merged["branches"]["o2m-nms"]) == {"fp32", "fp16"}
+    assert merged["branches"]["o2m-nms"]["fp16"]["checkpoint_sha256"] == "c" * 64
+    assert (
+        check_quantized_accuracy_report(
+            merged,
+            thresholds,
+            required_branches=["o2m-nms"],
+        )
+        == []
+    )
 
 
 def test_merge_onnx_reports_rejects_mismatched_protocol():
