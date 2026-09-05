@@ -816,17 +816,20 @@ tokenizer. It cleans the pinned 250K corpus and adds verified examples for
 verified arithmetic, compact mathematical reasoning, calculator use,
 execution-checked code, constrained instruction following, and general answers.
 
-| Train component | Examples |
-|---|---:|
-| Clean unique replay from the 250K release | 228,184 |
-| Verified compact math reasoning | 60,000 |
-| Programmatically verified arithmetic reasoning | 75,000 |
-| Calculator tool calls | 35,000 |
-| Answers after calculator results | 15,000 |
-| Execution-checked code | 30,000 |
-| Constraint following | 20,000 |
-| General direct answers | 36,816 |
-| **Total** | **500,000** |
+| Training content | Supervised behavior | Examples | Share |
+|---|---|---:|---:|
+| General dialogue and instruction responses | Answer diverse questions and follow ordinary user instructions | 100,000 | 20.00% |
+| General agentic tool calls | Select and invoke an appropriate tool when external action is required | 75,027 | 15.01% |
+| No-tool decisions | Answer directly when calling a tool is unnecessary | 32,041 | 6.41% |
+| General tool-result responses | Use a returned tool result to produce the final answer | 21,116 | 4.22% |
+| Compact mathematical reasoning | Produce concise, verified reasoning for mathematical problems | 60,000 | 12.00% |
+| Programmatically verified arithmetic | Solve generated arithmetic problems with checked answers | 75,000 | 15.00% |
+| Calculator invocation | Emit a structured calculator call with valid arguments | 35,000 | 7.00% |
+| Calculator-result synthesis | Turn calculator output into a clear final response | 15,000 | 3.00% |
+| Execution-checked code | Generate programs whose outputs pass execution checks | 30,000 | 6.00% |
+| Constraint following | Respect explicit format, length, lexical, and structural constraints | 20,000 | 4.00% |
+| Additional short general answers | Provide concise direct answers across general topics | 36,816 | 7.36% |
+| **Total** |  | **500,000** | **100.00%** |
 
 The train split contains 158,072 optional-thinking targets. Thinking is never
 prefilled at inference. All other answers use native final/tool envelopes. The
