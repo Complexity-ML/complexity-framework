@@ -233,7 +233,21 @@ def load_checkpoint_state(
 def checkpoint_config(state: dict[str, Any]) -> ModelConfig:
     if "config" not in state:
         raise KeyError("Checkpoint does not contain a 'config' entry")
-    return ModelConfig.from_dict(state["config"])
+    config = dict(state["config"])
+    # Public Hugging Face exports use the conventional MoE key while the
+    # native training config uses ``top_k``. Preserve the exported routing
+    # topology when loading those weights back into the trainer.
+    if "top_k" not in config and "num_experts_per_tok" in config:
+        config["top_k"] = int(config["num_experts_per_tok"])
+    # Some early TR-HASH exports omitted the routed aggregate width. Infer it
+    # from the stored expert tensor instead of falling back to the dataclass's
+    # rounded automatic width, which can differ from the trained checkpoint.
+    if "intermediate_size" not in config:
+        for name, tensor in state.get("model", {}).items():
+            if name.endswith(".expert_gate") and tensor.ndim == 3:
+                config["intermediate_size"] = int(tensor.shape[0] * tensor.shape[2])
+                break
+    return ModelConfig.from_dict(config)
 
 
 def format_record(
@@ -1720,8 +1734,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--tensorboard-dir",
         default=None,
         help=(
-            "TensorBoard event directory. Defaults to "
-            "runs/<run-name>/tensorboard on the main rank."
+            "TensorBoard event directory. Defaults to runs/<run-name>/tensorboard on the main rank."
         ),
     )
     parser.add_argument("--seed", type=int, default=42)
@@ -2053,7 +2066,9 @@ def main():
     csv_file = None
     writer = None
     tb_writer = None
-    tensorboard_dir = Path(args.tensorboard_dir) if args.tensorboard_dir else run_dir / "tensorboard"
+    tensorboard_dir = (
+        Path(args.tensorboard_dir) if args.tensorboard_dir else run_dir / "tensorboard"
+    )
     if is_main:
         run_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -2066,7 +2081,9 @@ def main():
                 flush_secs=10,
             )
         except ImportError as exc:
-            logger.warning("TensorBoard unavailable; install tensorboard to emit event files: %s", exc)
+            logger.warning(
+                "TensorBoard unavailable; install tensorboard to emit event files: %s", exc
+            )
         if args.full_parameter:
             mode_summary = (
                 "full-parameter · "

@@ -25,6 +25,7 @@ from scripts.sft_500m_32k_tr import (
     SFTJsonlDataset,
     apply_reasoning_envelope,
     build_parser,
+    checkpoint_config,
     configure_sft_parameters,
     early_stopping_is_eligible,
     format_record,
@@ -174,9 +175,7 @@ def test_sft_bin_packing_keeps_examples_labels_and_eos_boundary(
         21,
         -100,
     ]
-    assert packed["loss_weight"].tolist() == pytest.approx(
-        [1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0]
-    )
+    assert packed["loss_weight"].tolist() == pytest.approx([1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0])
 
 
 def test_sft_bin_packing_preserves_per_example_loss_weights(tmp_path: Path) -> None:
@@ -195,9 +194,7 @@ def test_sft_bin_packing_preserves_per_example_loss_weights(tmp_path: Path) -> N
 
     packed = dataset._tensor_pack(dataset.packed_examples[0])
 
-    assert packed["loss_weight"].tolist() == pytest.approx(
-        [0.5, 0.5, 0.5, 0.5, 0.0, 2.0, 2.0, 0.0]
-    )
+    assert packed["loss_weight"].tolist() == pytest.approx([0.5, 0.5, 0.5, 0.5, 0.0, 2.0, 2.0, 0.0])
 
 
 def test_sft_bin_merges_semantic_loss_sidecar_without_changing_tokens(
@@ -289,16 +286,12 @@ stages:
         "long_task": 2,
         "short_task": 1,
     }
-    assert dataset.task_loss_weights == pytest.approx(
-        {"long_task": 0.75, "short_task": 1.5}
-    )
+    assert dataset.task_loss_weights == pytest.approx({"long_task": 0.75, "short_task": 1.5})
     rendered_weights = {
         example["task"]: dataset._tensor_example(example)["loss_weight"].item()
         for example in dataset.examples
     }
-    assert rendered_weights == pytest.approx(
-        {"long_task": 0.75, "short_task": 1.5}
-    )
+    assert rendered_weights == pytest.approx({"long_task": 0.75, "short_task": 1.5})
 
 
 def test_weighted_sft_loss_applies_one_weight_to_each_examples_tokens() -> None:
@@ -320,9 +313,7 @@ def test_weighted_sft_loss_applies_one_weight_to_each_examples_tokens() -> None:
         example_weights=example_weights,
     )
 
-    assert loss.item() == pytest.approx(
-        ((per_example[0] * 0.5 + per_example[1] * 1.5) / 2).item()
-    )
+    assert loss.item() == pytest.approx(((per_example[0] * 0.5 + per_example[1] * 1.5) / 2).item())
 
 
 def test_weighted_sft_loss_normalizes_by_visible_weight_mass() -> None:
@@ -344,9 +335,7 @@ def test_weighted_sft_loss_normalizes_by_visible_weight_mass() -> None:
         example_weights=example_weights,
     )
 
-    assert loss.item() == pytest.approx(
-        ((per_example[0] + per_example[1] * 3.0) / 4.0).item()
-    )
+    assert loss.item() == pytest.approx(((per_example[0] + per_example[1] * 3.0) / 4.0).item())
 
 
 def test_weighted_sft_loss_accepts_packed_token_weights() -> None:
@@ -368,9 +357,7 @@ def test_weighted_sft_loss_accepts_packed_token_weights() -> None:
         example_weights=token_weights,
     )
 
-    assert loss.item() == pytest.approx(
-        ((per_token[0] * 0.5 + per_token[1] * 2.0) / 2.5).item()
-    )
+    assert loss.item() == pytest.approx(((per_token[0] * 0.5 + per_token[1] * 2.0) / 2.5).item())
 
 
 def test_sft_bin_accepts_final_assistant_only_multi_turn_shards(
@@ -432,9 +419,7 @@ def test_release_ready_gate_rejects_failed_or_double_wrapped_reasoning_release(
         },
     }
     (tmp_path / "manifest.json").write_text(json.dumps(passed))
-    assert validate_sft_release_manifest(
-        tmp_path, reasoning_envelope=False
-    ) == passed
+    assert validate_sft_release_manifest(tmp_path, reasoning_envelope=False) == passed
     with pytest.raises(ValueError, match="already contain reasoning envelopes"):
         validate_sft_release_manifest(tmp_path, reasoning_envelope=True)
 
@@ -807,6 +792,30 @@ def test_sft_loads_huggingface_safetensors_export(tmp_path: Path) -> None:
     assert state["model"]["weight"].tolist() == [0.0, 1.0, 2.0, 3.0]
 
 
+def test_checkpoint_config_restores_huggingface_tr_hash_aliases() -> None:
+    config = checkpoint_config(
+        {
+            "config": {
+                "hidden_size": 640,
+                "num_hidden_layers": 10,
+                "num_attention_heads": 10,
+                "num_key_value_heads": 2,
+                "vocab_size": 32_000,
+                "mlp_type": "tr_hash_engine",
+                "num_experts": 4,
+                "num_experts_per_tok": 2,
+                "shared_intermediate_size": 1_824,
+            },
+            "model": {
+                "layers.0.mlp.engine.expert_gate": torch.empty(4, 640, 456),
+            },
+        }
+    )
+
+    assert config.top_k == 2
+    assert config.intermediate_size == 1_824
+
+
 def test_sft_canonicalizes_legacy_token_routed_hf_export(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -927,9 +936,7 @@ def test_sft_parser_exposes_conservative_training_controls() -> None:
 @pytest.mark.parametrize("rank", ["0", "-1"])
 def test_sft_parser_rejects_nonpositive_lora_rank(rank: str) -> None:
     with pytest.raises(SystemExit):
-        build_parser().parse_args(
-            ["--checkpoint", "checkpoint", "--lora-rank", rank]
-        )
+        build_parser().parse_args(["--checkpoint", "checkpoint", "--lora-rank", rank])
 
 
 def test_every_500m_shell_launcher_selects_adaptation_mode_explicitly() -> None:
@@ -976,9 +983,7 @@ def test_sft_runtime_requires_checkpoint_stage_provenance() -> None:
 
 def test_sft_parser_rejects_direct_pretraining_source() -> None:
     with pytest.raises(SystemExit):
-        build_parser().parse_args(
-            ["--checkpoint", "checkpoint", "--source-stage", "pretraining"]
-        )
+        build_parser().parse_args(["--checkpoint", "checkpoint", "--source-stage", "pretraining"])
 
 
 def test_sft_parser_supports_a_finite_epoch_budget() -> None:
