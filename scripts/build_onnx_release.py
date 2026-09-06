@@ -746,6 +746,7 @@ def build_release(
             quantization_thresholds,
             required_branches=[coco_report_branch(spec.branch) for spec in config.branches],
             expected_artifacts=expected_accuracy_artifacts,
+            expected_framework_commit=commit,
         )
         if accuracy_failures:
             raise ReleaseError(

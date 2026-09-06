@@ -378,3 +378,96 @@ def test_release_accuracy_gate_rejects_bogus_hashes_against_generated_artifacts(
     )
 
     assert any("o2m-nms fp16 checkpoint_sha256" in failure for failure in failures)
+
+
+def test_release_accuracy_gate_validates_provider_per_precision() -> None:
+    report = {
+        "reference_precision": "fp32",
+        "candidate_precisions": ["fp16", "int8"],
+        "branches": {
+            "o2m-nms": {
+                "fp32": {
+                    "precision": "fp32",
+                    "branch": "o2m-nms",
+                    "environment": {
+                        "requested_provider": ["CPUExecutionProvider"],
+                        "actual_provider": "CPUExecutionProvider",
+                    },
+                    "metrics": {"map50_95": 0.2, "map50": 0.32},
+                },
+                "fp16": {
+                    "precision": "fp16",
+                    "branch": "o2m-nms",
+                    "environment": {
+                        "requested_provider": ["WrongExecutionProvider"],
+                        "actual_provider": "WrongExecutionProvider",
+                    },
+                    "metrics": {"map50_95": 0.199, "map50": 0.319},
+                },
+                "int8": {
+                    "precision": "int8",
+                    "branch": "o2m-nms",
+                    "environment": {
+                        "requested_provider": ["CPUExecutionProvider"],
+                        "actual_provider": "CPUExecutionProvider",
+                    },
+                    "metrics": {"map50_95": 0.19, "map50": 0.31},
+                },
+            }
+        },
+    }
+    thresholds = {
+        "release_policy": {
+            "required_precisions": ["fp32", "fp16", "int8"],
+            "provider_by_precision": {
+                "fp32": "CPUExecutionProvider",
+                "fp16": "CUDAExecutionProvider",
+                "int8": "CPUExecutionProvider",
+            },
+        },
+        "precisions": {
+            "fp16": {"max_map50_95_drop": 0.005, "max_map50_drop": 0.01},
+            "int8": {"max_map50_95_drop": 0.02, "max_map50_drop": 0.03},
+        },
+    }
+
+    failures = check_quantized_accuracy_report(report, thresholds)
+
+    assert failures == [
+        "o2m-nms fp16 requested_provider WrongExecutionProvider, expected CUDAExecutionProvider",
+        "o2m-nms fp16 actual_provider WrongExecutionProvider, expected CUDAExecutionProvider",
+    ]
+
+
+def test_release_accuracy_gate_binds_evidence_to_framework_commit() -> None:
+    report = {
+        "framework_commit": "old",
+        "reference_precision": "fp32",
+        "candidate_precisions": ["fp16"],
+        "branches": {
+            "o2m-nms": {
+                "fp32": {
+                    "precision": "fp32",
+                    "branch": "o2m-nms",
+                    "metrics": {"map50_95": 0.2, "map50": 0.32},
+                },
+                "fp16": {
+                    "precision": "fp16",
+                    "branch": "o2m-nms",
+                    "metrics": {"map50_95": 0.199, "map50": 0.319},
+                },
+            }
+        },
+    }
+    thresholds = {
+        "release_policy": {"required_precisions": ["fp32", "fp16"]},
+        "precisions": {"fp16": {"max_map50_95_drop": 0.005, "max_map50_drop": 0.01}},
+    }
+
+    failures = check_quantized_accuracy_report(
+        report,
+        thresholds,
+        expected_framework_commit="new",
+    )
+
+    assert failures == ["accuracy report framework_commit old, expected new"]

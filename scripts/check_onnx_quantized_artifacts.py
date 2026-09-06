@@ -272,15 +272,20 @@ def check_quantized_accuracy_report(
     *,
     required_branches: Sequence[str] = (),
     expected_artifacts: Mapping[str, Mapping[str, Mapping[str, str]]] | None = None,
+    expected_framework_commit: str | None = None,
 ) -> list[str]:
     """Compare a quantized candidate COCO report against its FP32 reference."""
 
     if "branches" in report:
-        failures = _check_branch_accuracy_report(
-            report,
-            thresholds,
-            required_branches=required_branches,
+        failures = _check_framework_commit(report, expected_framework_commit)
+        failures.extend(
+            _check_branch_accuracy_report(
+                report,
+                thresholds,
+                required_branches=required_branches,
+            )
         )
+        failures.extend(_check_provider_contract(report, thresholds))
         release_policy = _mapping(thresholds.get("release_policy"))
         if release_policy.get("require_artifact_bindings") is True:
             if expected_artifacts is None:
@@ -291,7 +296,9 @@ def check_quantized_accuracy_report(
 
     reference = _mapping(report.get("reference"))
     candidate = _mapping(report.get("candidate"))
-    return _check_accuracy_pair(reference, candidate, thresholds)
+    failures = _check_framework_commit(report, expected_framework_commit)
+    failures.extend(_check_accuracy_pair(reference, candidate, thresholds))
+    return failures
 
 
 def check_quantized_parity_report(
@@ -396,6 +403,61 @@ def _check_branch_accuracy_report(
     return failures
 
 
+def _check_framework_commit(
+    report: Mapping[str, Any],
+    expected_framework_commit: str | None,
+) -> list[str]:
+    if expected_framework_commit is None:
+        return []
+    actual = str(report.get("framework_commit", ""))
+    if actual != expected_framework_commit:
+        return [
+            f"accuracy report framework_commit {actual or 'missing'}, "
+            f"expected {expected_framework_commit}"
+        ]
+    return []
+
+
+def _check_provider_contract(
+    report: Mapping[str, Any],
+    thresholds: Mapping[str, Any],
+) -> list[str]:
+    release_policy = _mapping(thresholds.get("release_policy"))
+    provider_by_precision = _mapping(release_policy.get("provider_by_precision"))
+    if not provider_by_precision:
+        return []
+
+    branches = _mapping(report.get("branches"))
+    failures: list[str] = []
+    for branch, branch_report in branches.items():
+        branch_data = _mapping(branch_report)
+        for precision, expected_provider_value in provider_by_precision.items():
+            expected_provider = str(expected_provider_value)
+            precision_report = _mapping(branch_data.get(str(precision)))
+            if not precision_report:
+                continue
+            environment = _mapping(precision_report.get("environment"))
+            if not environment:
+                failures.append(f"{branch} {precision} missing environment provider metadata")
+                continue
+
+            requested = _provider_values(environment.get("requested_provider"))
+            actual = str(environment.get("actual_provider", ""))
+            if not requested:
+                failures.append(f"{branch} {precision} missing requested_provider")
+            elif requested[0] != expected_provider:
+                failures.append(
+                    f"{branch} {precision} requested_provider {requested[0]}, "
+                    f"expected {expected_provider}"
+                )
+            if actual != expected_provider:
+                failures.append(
+                    f"{branch} {precision} actual_provider {actual or 'missing'}, "
+                    f"expected {expected_provider}"
+                )
+    return failures
+
+
 def _required_precisions(thresholds: Mapping[str, Any]) -> tuple[str, ...]:
     release_policy = _mapping(thresholds.get("release_policy"))
     raw_precisions = release_policy.get("required_precisions", ())
@@ -434,6 +496,14 @@ def _candidate_precisions(
         branch_data = _mapping(branch_report)
         candidates.update(str(key) for key in branch_data if str(key) in threshold_precisions)
     return tuple(sorted(candidates))
+
+
+def _provider_values(value: object) -> tuple[str, ...]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return tuple(str(provider) for provider in value)
+    if value is None:
+        return ()
+    return (str(value),)
 
 
 def _check_accuracy_pair(

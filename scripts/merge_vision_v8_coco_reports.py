@@ -54,6 +54,7 @@ def merge_reports(reports: list[Mapping[str, Any]]) -> dict[str, Any]:
             for key in (
                 "checkpoint",
                 "checkpoint_sha256",
+                "environment",
                 "model",
                 "metadata",
                 "metadata_sha256",

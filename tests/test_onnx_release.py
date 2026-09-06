@@ -135,6 +135,13 @@ def test_release_workflows_share_quantized_evidence_artifact_contract() -> None:
     assert "onnxruntime-gpu" in release_workflow
     assert "runs-on: ${{ inputs.runner || 'self-hosted' }}" in release_workflow
     assert "name: vision-v8-quantized-release-inputs" in coco_workflow
+    assert "fp32_provider:" in coco_workflow
+    assert "fp16_provider:" in coco_workflow
+    assert "int8_provider:" in coco_workflow
+    assert '--provider "${{ inputs.fp32_provider }}"' in coco_workflow
+    assert '--provider "${{ inputs.fp16_provider }}"' in coco_workflow
+    assert '--provider "${{ inputs.int8_provider }}"' in coco_workflow
+    assert "onnxruntime-gpu" in coco_workflow
     assert "calibration.json" in coco_workflow
     assert "calibration_images/**" in coco_workflow
     assert "accuracy.json" in coco_workflow

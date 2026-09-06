@@ -137,7 +137,12 @@ The GitHub release workflow downloads a prior Actions artifact named
 `vision-v8-quantized-release-inputs`. The manual Vision v8 COCO accuracy
 workflow produces that artifact when `backend=onnx`, `calibration_manifest` is
 set, and FP32/FP16/INT8 model plus metadata paths are provided for both
-branches. The artifact must provide `calibration.json`, `calibration_images/`,
+branches. Dispatch it with `fp32_provider=cpu`, `fp16_provider=cuda`, and
+`int8_provider=cpu` so the evidence matches the checked-in release provider
+policy. The merged accuracy report preserves `requested_provider` and
+`actual_provider` inside each precision entry, and the release gate rejects
+provider fallback or stale evidence generated from a different framework
+commit. The artifact must provide `calibration.json`, `calibration_images/`,
 `accuracy.json`, and `accuracy.md` under
 `artifacts/vision_v8_quantized_eval/` before `build_onnx_release.py` runs. The
 COCO workflow copies the pinned calibration images into `calibration_images/`

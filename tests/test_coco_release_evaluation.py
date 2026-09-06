@@ -207,6 +207,52 @@ def test_merge_onnx_reports_can_build_precision_nested_quantized_report():
     )
 
 
+def test_merge_onnx_reports_preserves_environment_per_precision():
+    fp32 = {
+        "backend": "onnx",
+        "precision": "fp32",
+        "framework_commit": "abc123",
+        "checkpoint": "o2m_fp32.onnx",
+        "checkpoint_sha256": "a" * 64,
+        "model": "o2m_fp32.onnx",
+        "metadata": "o2m.json",
+        "metadata_sha256": "b" * 64,
+        "dataset": {"name": "coco-2017", "image_ids": [1, 2]},
+        "environment": {
+            "requested_provider": ["CPUExecutionProvider"],
+            "actual_provider": "CPUExecutionProvider",
+        },
+        "protocol": {"seed": 0},
+        "branches": {
+            "o2m-nms": {
+                "branch": "o2m-nms",
+                "metrics": {"map50_95": 0.2, "map50": 0.3},
+            }
+        },
+    }
+    fp16 = {
+        **fp32,
+        "precision": "fp16",
+        "checkpoint": "o2m_fp16.onnx",
+        "checkpoint_sha256": "c" * 64,
+        "environment": {
+            "requested_provider": ["CUDAExecutionProvider"],
+            "actual_provider": "CUDAExecutionProvider",
+        },
+        "branches": {
+            "o2m-nms": {
+                "branch": "o2m-nms",
+                "metrics": {"map50_95": 0.198, "map50": 0.295},
+            }
+        },
+    }
+
+    merged = merge_reports([fp32, fp16])
+
+    assert merged["branches"]["o2m-nms"]["fp32"]["environment"] == fp32["environment"]
+    assert merged["branches"]["o2m-nms"]["fp16"]["environment"] == fp16["environment"]
+
+
 def test_merge_onnx_reports_rejects_mismatched_protocol():
     first = {
         "backend": "onnx",
