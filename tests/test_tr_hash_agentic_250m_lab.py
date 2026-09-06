@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
-import tomllib
 from pathlib import Path
 
 from complexity.training.finetuning import validate_refinement_plan
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
+    import tomli as tomllib
 
 
 PROJECT_ROOT = Path(__file__).parents[1]

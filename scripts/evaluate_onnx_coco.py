@@ -56,6 +56,12 @@ def parse_args() -> argparse.Namespace:
         help="Provider alias or ORT provider name. May be repeated or comma-separated.",
     )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--precision",
+        choices=("fp32", "fp16", "int8"),
+        default="fp32",
+        help="artifact precision label recorded for quantized release gates",
+    )
     parser.add_argument("--confidence", type=float, default=None)
     parser.add_argument("--nms-iou", type=float, default=None)
     parser.add_argument("--max-detections", type=int, default=None)
@@ -198,6 +204,7 @@ def main() -> None:
         "schema_version": 1,
         "format_version": 1,
         "backend": "onnx",
+        "precision": args.precision,
         "framework_commit": _framework_commit(),
         "checkpoint": str(args.model),
         "checkpoint_sha256": _checkpoint_sha256(args.model),
@@ -209,6 +216,7 @@ def main() -> None:
             "split": "val2017",
             "images": len(image_ids),
             "evaluated_images": len(image_ids),
+            "image_ids": image_ids,
             "annotations": str(args.annotations),
             "annotations_sha256": _sha256_file(args.annotations),
             "image_list_sha256": _image_list_sha256(coco, image_ids),
@@ -225,6 +233,7 @@ def main() -> None:
         "branches": {
             branch: {
                 "branch": branch,
+                "precision": args.precision,
                 "contract": _branch_contract(branch),
                 "predictions": str(prediction_path),
                 "detections": len(predictions),
