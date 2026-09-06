@@ -50,8 +50,6 @@ if [[ ! -f "$PRETRAIN_PLAN" || ! -f "$REFINEMENT_PLAN" ]]; then
 fi
 
 NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
-BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-4}"
-GRADIENT_ACCUMULATION="${GRADIENT_ACCUMULATION:-4}"
 SEQ_LEN="${SEQ_LEN:-2048}"
 TOKENIZED_CACHE_GB="${TOKENIZED_CACHE_GB:-64}"
 OUTPUT_DIR="${OUTPUT_DIR:-artifacts/tr_hash_agentic_100m_${STAGE}}"
@@ -64,15 +62,36 @@ else
 fi
 
 if [[ "$STAGE" == "pretraining" ]]; then
+  BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-4}"
+  GRADIENT_ACCUMULATION="${GRADIENT_ACCUMULATION:-4}"
   TOKENIZED_PLAN="$PRETRAIN_PLAN"
   LR="${LR:-3e-4}"
   WARMUP_TOKENS="${WARMUP_TOKENS:-1000000000}"
+  LR_SCHEDULER="${LR_SCHEDULER:-wsd}"
+  WEIGHT_DECAY="${WEIGHT_DECAY:-0.1}"
   TOKEN_PACKS="${TOKEN_PACKS:-40}"
   INIT_ARGS=()
 else
+  # The released 200M refinement used 3,932,160 tokens per optimizer update.
+  # Preserve that unit of optimization here so AdamW decay and gradient
+  # updates are comparable per source token instead of running ~17x as many
+  # optimizer steps on the 100M lineage.
+  REFINEMENT_TOKENS_PER_STEP="${REFINEMENT_TOKENS_PER_STEP:-3932160}"
+  BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-16}"
+  tokens_per_micro_step=$((NPROC_PER_NODE * BATCH_SIZE_PER_GPU * SEQ_LEN))
+  if [[ -z "${GRADIENT_ACCUMULATION:-}" ]]; then
+    if (( REFINEMENT_TOKENS_PER_STEP % tokens_per_micro_step != 0 )); then
+      echo "[error] reference refinement tokens/update=$REFINEMENT_TOKENS_PER_STEP is not divisible by nproc*batch*seq=$tokens_per_micro_step" >&2
+      echo "[error] choose a compatible BATCH_SIZE_PER_GPU or set GRADIENT_ACCUMULATION explicitly for an intentional ablation" >&2
+      exit 2
+    fi
+    GRADIENT_ACCUMULATION=$((REFINEMENT_TOKENS_PER_STEP / tokens_per_micro_step))
+  fi
   TOKENIZED_PLAN="$REFINEMENT_PLAN"
-  LR="${LR:-3e-5}"
+  LR="${LR:-1e-4}"
   WARMUP_TOKENS="${WARMUP_TOKENS:-500000000}"
+  LR_SCHEDULER="${LR_SCHEDULER:-cosine}"
+  WEIGHT_DECAY="${WEIGHT_DECAY:-0.1}"
   TOKEN_PACKS="${TOKEN_PACKS:-20}"
   INIT_CHECKPOINT="${INIT_CHECKPOINT:-artifacts/tr_hash_agentic_100m_pretraining/final}"
   if [[ ! -d "$INIT_CHECKPOINT" && ! -f "$INIT_CHECKPOINT" ]]; then
@@ -87,12 +106,27 @@ TARGET_TOKENS="$(
     "$TOKENIZED_PLAN"
 )"
 TOKENS_PER_STEP=$((NPROC_PER_NODE * BATCH_SIZE_PER_GPU * GRADIENT_ACCUMULATION * SEQ_LEN))
+
+# Validate the complete effective recipe before allocating GPUs, including
+# trailing trainer arguments (the last occurrence wins in argparse).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python "$SCRIPT_DIR/tr_hash_agentic_recipe.py" \
+  "$STAGE" "$NPROC_PER_NODE" "$BATCH_SIZE_PER_GPU" \
+  "$GRADIENT_ACCUMULATION" "$SEQ_LEN" "$LR" "$LR_SCHEDULER" \
+  "$WARMUP_TOKENS" "$WEIGHT_DECAY" "$@"
 schedule_args=()
 has_max_steps=0
-for argument in "$@"; do
+explicit_max_steps=""
+trainer_arguments=("$@")
+for ((argument_index = 0; argument_index < ${#trainer_arguments[@]}; argument_index++)); do
+  argument="${trainer_arguments[$argument_index]}"
   if [[ "$argument" == "--max-steps" || "$argument" == --max-steps=* ]]; then
     has_max_steps=1
-    break
+    if [[ "$argument" == "--max-steps" ]]; then
+      explicit_max_steps="${trainer_arguments[$((argument_index + 1))]:-missing}"
+    else
+      explicit_max_steps="${argument#--max-steps=}"
+    fi
   fi
 done
 if [[ "$has_max_steps" == "0" ]]; then
@@ -116,6 +150,12 @@ echo "[agentic-100m] stage=$STAGE preset=complexity-100m"
 echo "[agentic-100m] dataset=$TOKENIZED_DATA revision=$TOKENIZED_REVISION"
 echo "[agentic-100m] plan=$TOKENIZED_PLAN target_tokens=$TARGET_TOKENS"
 echo "[agentic-100m] nproc=$NPROC_PER_NODE batch/gpu=$BATCH_SIZE_PER_GPU grad_accum=$GRADIENT_ACCUMULATION seq=$SEQ_LEN"
+if [[ "$has_max_steps" == "0" ]]; then
+  echo "[agentic-100m] optimizer_updates=$MAX_STEPS tokens/update=$TOKENS_PER_STEP"
+else
+  echo "[agentic-100m] optimizer_updates=$explicit_max_steps tokens/update=$TOKENS_PER_STEP"
+fi
+echo "[agentic-100m] optimizer=${OPTIMIZER:-adamw} lr=$LR scheduler=$LR_SCHEDULER warmup_tokens=$WARMUP_TOKENS weight_decay=$WEIGHT_DECAY"
 echo "[agentic-100m] output=$OUTPUT_DIR resume=$RESUME"
 
 trainer_command=(
@@ -137,7 +177,8 @@ trainer_command=(
   --precision bf16
   --lr "$LR"
   --warmup-tokens "$WARMUP_TOKENS"
-  --lr-scheduler "${LR_SCHEDULER:-wsd}"
+  --lr-scheduler "$LR_SCHEDULER"
+  --weight-decay "$WEIGHT_DECAY"
   --token-packs "$TOKEN_PACKS"
   --save-steps 0
   --log-steps "${LOG_STEPS:-10}"
