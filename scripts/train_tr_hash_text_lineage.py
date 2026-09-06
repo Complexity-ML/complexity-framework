@@ -24,6 +24,7 @@ from complexity.training import (
     validate_refinement_plan,
 )
 from complexity.utils.checkpointing import peek_latest_checkpoint_step
+from scripts.tr_hash_agentic_recipe import validate_refinement_recipe
 
 
 def make_tr_hash_config(preset: str) -> ModelConfig:
@@ -111,6 +112,21 @@ class TRHashTextLineageRunner(TrainRunner):
 
     def build_dataset(self, tokenizer, args, rank: int, world_size: int):
         del tokenizer
+        validate_refinement_recipe(
+            stage=args.stage,
+            model_preset=args.model_preset,
+            learning_rate=args.lr,
+            lr_scheduler=args.lr_scheduler,
+            warmup_tokens=args.warmup_tokens,
+            warmup_steps=args.warmup_steps,
+            weight_decay=args.weight_decay,
+            tokens_per_step=(
+                args.batch_size
+                * world_size
+                * args.gradient_accumulation
+                * args.seq_len
+            ),
+        )
         if str(args.tokenized_data).startswith("hf://") and args.num_workers != 0:
             raise ValueError("remote pretokenized mixtures require --num-workers 0")
         if args.stage == "pretraining" and args.init_checkpoint:

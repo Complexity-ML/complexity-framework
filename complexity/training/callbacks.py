@@ -4,8 +4,6 @@ import logging
 import math
 from typing import Optional
 
-import torch
-
 from ..parallel.data_parallel import is_main_process
 
 logger = logging.getLogger(__name__)
@@ -73,7 +71,7 @@ class TqdmCallback:
         self.pbar = tqdm(
             total=total_steps,
             desc=desc,
-            unit="step",
+            unit="update",
             dynamic_ncols=True,
             mininterval=0,
             miniters=1,

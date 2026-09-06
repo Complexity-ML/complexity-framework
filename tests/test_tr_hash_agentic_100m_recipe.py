@@ -6,9 +6,15 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from complexity.models import ComplexityModel
 from scripts.build_tr_hash_agentic_100m_plans import build_plans, parse_token_count
-from scripts.train_tr_hash_text_lineage import make_tr_hash_config, validate_lineage_plans
+from scripts.train_tr_hash_text_lineage import (
+    TRHashTextLineageRunner,
+    make_tr_hash_config,
+    validate_lineage_plans,
+)
 
 
 def _fake_dataset():
@@ -75,6 +81,24 @@ def test_agentic_100m_plan_keeps_exact_unique_core_for_refinement(tmp_path) -> N
 def test_agentic_100m_token_count_parser() -> None:
     assert parse_token_count("70B") == 70_000_000_000
     assert parse_token_count("125B") == 125_000_000_000
+
+
+def test_direct_refinement_entrypoint_rejects_low_peak_before_loading_data() -> None:
+    runner = object.__new__(TRHashTextLineageRunner)
+    args = SimpleNamespace(
+        stage="refinement",
+        model_preset="complexity-100m",
+        lr=3e-5,
+        lr_scheduler="cosine",
+        warmup_tokens=500_000_000,
+        warmup_steps=None,
+        weight_decay=0.1,
+        batch_size=16,
+        gradient_accumulation=30,
+        seq_len=2048,
+    )
+    with pytest.raises(ValueError, match="lr=3e-05"):
+        runner.build_dataset(None, args, rank=0, world_size=4)
 
 
 def test_agentic_100m_launcher_bounds_steps_to_audited_plan(tmp_path: Path) -> None:

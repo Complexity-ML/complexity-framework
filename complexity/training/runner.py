@@ -73,6 +73,53 @@ from .trainer import Trainer
 logger = logging.getLogger(__name__)
 
 
+def build_training_metric_record(
+    *,
+    step: int,
+    max_steps: int,
+    loss: float,
+    ppl: float,
+    lr: float,
+    tokens_per_step: int,
+    expert_shares: list[float],
+    expert_dead_count: int | None,
+    elapsed_s: float,
+) -> dict[str, Any]:
+    """Build a backward-compatible record with explicit optimizer-update names."""
+    return {
+        "step": step,
+        "optimizer_update": step,
+        "max_steps": max_steps,
+        "optimizer_updates_planned": max_steps,
+        "loss": round(float(loss), 6),
+        "ppl": round(float(ppl), 2),
+        "lr": float(lr),
+        "tokens_trained": step * tokens_per_step,
+        "tokens_per_step": tokens_per_step,
+        "tokens_per_optimizer_update": tokens_per_step,
+        "expert_shares": [round(float(share), 4) for share in expert_shares],
+        "expert_dead_count": expert_dead_count,
+        "elapsed_s": round(elapsed_s, 1),
+    }
+
+
+def format_optimizer_update_contract(
+    *, phase: str, max_updates: int, tokens_per_update: int
+) -> list[str]:
+    """Render the startup contract prominently and consistently for every run."""
+    scheduled_tokens = max_updates * tokens_per_update
+    return [
+        "=" * 72,
+        "OPTIMIZER UPDATE CONTRACT",
+        f"  phase: {phase}",
+        f"  planned optimizer updates: {max_updates:,}",
+        f"  tokens per optimizer update: {tokens_per_update:,}",
+        f"  scheduled token exposure: {scheduled_tokens:,} "
+        f"(~{scheduled_tokens / 1e9:.3f}B)",
+        "=" * 72,
+    ]
+
+
 def require_cuda_available(required: bool) -> None:
     """Fail closed when a GPU-only run cannot initialize CUDA.
 
@@ -265,6 +312,7 @@ class TrainRunner:
         p.add_argument("--gradient-accumulation", type=int,
                        default=self.default_gradient_accumulation)
         p.add_argument("--lr", type=float, default=self.default_lr)
+        p.add_argument("--weight-decay", type=float, default=0.1)
         p.add_argument("--warmup-steps", type=int, default=None,
                        help="Optimizer-step warmup. Mutually exclusive with --warmup-tokens.")
         p.add_argument("--warmup-tokens", type=int, default=None,
@@ -427,15 +475,17 @@ class TrainRunner:
         # saver and let the boundary callback below write every token pack.
         save_steps = max_steps + 1 if automatic_token_pack_saves else args.save_steps
         if is_main:
-            logger.info(
-                f"Training: {max_steps:,} steps "
-                f"(~{max_steps * tokens_per_step / 1e9:.1f}B trained tokens)"
-            )
-            logger.info(f"  tokens/step: {tokens_per_step:,}")
+            phase = getattr(args, "stage", "training")
+            for contract_line in format_optimizer_update_contract(
+                phase=phase,
+                max_updates=max_steps,
+                tokens_per_update=tokens_per_step,
+            ):
+                logger.info(contract_line)
             logger.info(
                 f"  token packs: {args.token_packs}   "
-                f"max steps/token pack: {token_pack_steps:,}   "
-                f"warmup: {warmup_steps}"
+                f"max updates/token pack: {token_pack_steps:,}   "
+                f"warmup updates: {warmup_steps:,}"
             )
 
         # Dataset + loader
@@ -454,6 +504,7 @@ class TrainRunner:
             gradient_accumulation_steps=args.gradient_accumulation,
             optimizer_type=args.optimizer,
             learning_rate=args.lr,
+            weight_decay=args.weight_decay,
             warmup_steps=warmup_steps,
             lr_scheduler=args.lr_scheduler,
             precision=args.precision,
@@ -532,18 +583,17 @@ class TrainRunner:
             ])
             if step == 1 or step % args.log_steps == 0 or step == max_steps:
                 csv_file.flush()
-                record = {
-                    "step": step,
-                    "max_steps": max_steps,
-                    "loss": round(float(loss_val), 6),
-                    "ppl": round(float(ppl), 2),
-                    "lr": float(lr),
-                    "tokens_trained": step * tokens_per_step,
-                    "tokens_per_step": tokens_per_step,
-                    "expert_shares": [round(float(share), 4) for share in shares],
-                    "expert_dead_count": dead,
-                    "elapsed_s": round(time.time() - t_start, 1),
-                }
+                record = build_training_metric_record(
+                    step=step,
+                    max_steps=max_steps,
+                    loss=loss_val,
+                    ppl=ppl,
+                    lr=lr,
+                    tokens_per_step=tokens_per_step,
+                    expert_shares=shares,
+                    expert_dead_count=dead,
+                    elapsed_s=time.time() - t_start,
+                )
                 with open(metrics_path, "a", encoding="utf-8") as metrics_file:
                     metrics_file.write(json.dumps(record, sort_keys=True) + "\n")
         trainer.callbacks.append(csv_callback)
