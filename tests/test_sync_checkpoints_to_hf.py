@@ -10,6 +10,13 @@ import pytest
 SCRIPT = Path("scripts/sync_checkpoints_to_hf.py")
 
 
+def test_hidden_transaction_staging_is_not_complete(mod, tmp_path):
+    pending = tmp_path / '.pending-step_100.writing'
+    pending.mkdir()
+    (pending / 'checkpoint.pt').write_bytes(b'partial')
+    assert not mod.is_complete_checkpoint(pending)
+
+
 def _load_module():
     spec = importlib.util.spec_from_file_location("sync_checkpoints_to_hf", SCRIPT)
     assert spec is not None and spec.loader is not None
