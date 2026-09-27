@@ -1,0 +1,27 @@
+{
+  "model_repo": "Pacific-i64/TR-HASH-MoE-1B-70B-Agentic-Pretraining",
+  "world_size": 4,
+  "microbatch": 2,
+  "context": 16384,
+  "seed": 42,
+  "max_updates": 534057,
+  "lr": 0.0003,
+  "min_lr_ratio": 0.1,
+  "warmup_updates": 2000,
+  "weight_decay": 0.1,
+  "betas": [
+    0.9,
+    0.95
+  ],
+  "grad_clip": 1.0,
+  "save_every": 1000,
+  "eval_every": 1000,
+  "first_checkpoint": 10,
+  "cache_gib": 64,
+  "keep_checkpoints": 3,
+  "model_sha256": "a614a990ddd587dcda3a4ec0cf0b998c3de18ea0806892fe5e9c29f9300c3a8d",
+  "data_plan_sha256": "b16c633b8f17e66db37a04858dd1995216b0ef827e8a5f36e0ce9590689c5c85",
+  "precision": "FP32 sharded master weights and AdamW state; BF16 compute",
+  "attention": "full causal SDPA Flash Attention",
+  "kernels": "TR-HASH fused_cuda and Liger"
+}

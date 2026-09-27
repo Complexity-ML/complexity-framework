@@ -1,0 +1,6 @@
+{
+  "regular_checkpoints": 3,
+  "interruption_checkpoints": 1,
+  "purge_history_after_eviction": true,
+  "quota_reclamation_may_take_hours": 36
+}
