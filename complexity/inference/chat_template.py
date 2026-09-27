@@ -11,6 +11,7 @@ from jinja2 import Environment, StrictUndefined
 CHAT_TEMPLATE_ID = "complexity-chat-v2"
 LEGACY_CHAT_TEMPLATE_ID = "complexity-chat-v1"
 AGENTIC_CHAT_TEMPLATE_ID = "tr-hash-agentic-chat-v1"
+NATIVE_AGENTIC_FULL_TRAJECTORY_PROJECTION = "native_agentic_full_trajectory"
 SUPPORTED_CHAT_TEMPLATE_IDS = {
     LEGACY_CHAT_TEMPLATE_ID,
     CHAT_TEMPLATE_ID,
@@ -22,6 +23,7 @@ SUPPORTED_TRAINING_PROJECTIONS = {
     "naturalize_card_hand_supervise_all_assistant_turns",
     "card_corpus_v2_direct",
     "native_agentic_prompt_completion",
+    NATIVE_AGENTIC_FULL_TRAJECTORY_PROJECTION,
 }
 DEFAULT_SYSTEM_PROMPT = ""
 THINK_FINAL_ENVELOPE = {

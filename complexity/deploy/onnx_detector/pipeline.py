@@ -39,9 +39,19 @@ class OnnxDetectorPipeline:
         model_path: str | Path,
         metadata_path: str | Path,
         providers: Sequence[str] = ("CPUExecutionProvider",),
+        *,
+        warmup_runs: int = 1,
+        intra_op_num_threads: int | None = None,
+        inter_op_num_threads: int | None = None,
     ) -> "OnnxDetectorPipeline":
         metadata = load_metadata(metadata_path)
-        session = cls.create_session(model_path, providers).open()
+        session = cls.create_session(
+            model_path,
+            providers,
+            warmup_runs=warmup_runs,
+            intra_op_num_threads=intra_op_num_threads,
+            inter_op_num_threads=inter_op_num_threads,
+        ).open()
         validate_output_shape(metadata, session._require_session().get_outputs()[0].shape)
         if session.config.warmup_runs:
             session.warmup((1, 3, metadata.image_size, metadata.image_size))
@@ -74,13 +84,11 @@ class OnnxDetectorPipeline:
         scores: np.ndarray,
         classes: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        filtered_boxes, filtered_scores, filtered_classes, _ = (
-            postprocess.filter_by_confidence(
-                boxes,
-                scores,
-                classes,
-                self.metadata.confidence_threshold,
-            )
+        filtered_boxes, filtered_scores, filtered_classes, _ = postprocess.filter_by_confidence(
+            boxes,
+            scores,
+            classes,
+            self.metadata.confidence_threshold,
         )
         if self.metadata.branch == "o2m":
             keep = postprocess.class_aware_nms(

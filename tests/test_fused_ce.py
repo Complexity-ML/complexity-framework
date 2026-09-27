@@ -73,6 +73,21 @@ def test_cuda_status_can_validate_without_repeating_rank_logs(
     assert "Liger fused linear CE: enabled" not in caplog.messages
 
 
+def test_cuda_production_mode_accepts_liger_on_quiet_worker_rank(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Quiet DDP ranks must validate Liger without falling into the error branch."""
+
+    monkeypatch.setenv("COMPLEXITY_REQUIRE_LIGER", "1")
+    monkeypatch.setattr(fused_ce, "_liger_available", lambda: True)
+
+    with caplog.at_level(logging.INFO, logger=fused_ce.__name__):
+        assert fused_ce.log_liger_fused_linear_ce_status("cuda", log=False) is True
+
+    assert "Liger fused linear CE: enabled" not in caplog.messages
+
+
 @pytest.mark.skipif(
     not torch.cuda.is_available() or not fused_ce.has_liger_fused_linear_ce(),
     reason="requires CUDA and liger-kernel",

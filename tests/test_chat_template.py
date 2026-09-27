@@ -6,9 +6,12 @@ from pathlib import Path
 import pytest
 
 from complexity.inference.chat_template import (
+    AGENTIC_CHAT_TEMPLATE_ID,
+    AGENTIC_THINK_FINAL_ENVELOPE,
     CHAT_TEMPLATE_ID,
     LEGACY_CHAT_TEMPLATE_ID,
     THINK_FINAL_ENVELOPE,
+    agentic_chat_template,
     default_chat_template,
     huggingface_chat_template,
     load_chat_template_jinja,
@@ -27,6 +30,44 @@ from scripts.export_tr_hash_vllm import (
     copy_tokenizer_files,
     strip_tokenizer_chat_template,
 )
+
+
+def test_agentic_template_uses_only_native_markers() -> None:
+    template = agentic_chat_template()
+
+    assert template["id"] == AGENTIC_CHAT_TEMPLATE_ID
+    assert template["training_projection"] == "native_agentic_prompt_completion"
+    assert template["assistant_envelope"] == AGENTIC_THINK_FINAL_ENVELOPE
+    assert render_messages_before_assistant(
+        [
+            {"role": "system", "content": "Use tools when useful."},
+            {"role": "user", "content": "Hello"},
+        ],
+        template,
+    ) == (
+        "<|system|>Use tools when useful.<|end_of_turn|><|user|>Hello<|end_of_turn|><|assistant|>"
+    )
+
+
+def test_agentic_json_and_generated_jinja_render_identically() -> None:
+    template = agentic_chat_template()
+    messages = [
+        {"role": "system", "content": "Use tools when useful."},
+        {"role": "user", "content": "Hello"},
+    ]
+
+    assert render_jinja_messages(
+        messages,
+        huggingface_chat_template(template),
+        eos_token=template["eos_token"],
+        add_generation_prompt=True,
+    ) == render_messages_before_assistant(messages, template)
+
+
+def test_agentic_thinking_prefill_uses_native_token() -> None:
+    assert render_thinking_inference_prompt("Hello", agentic_chat_template()) == (
+        "<|user|>Hello<|end_of_turn|><|assistant|><|think_start|>"
+    )
 
 
 def test_template_renders_single_turn_exactly() -> None:

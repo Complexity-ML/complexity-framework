@@ -68,8 +68,9 @@ def log_liger_fused_linear_ce_status(device_type: str, *, log: bool = True) -> b
 
     available = _liger_available()
     if device_type == "cuda":
-        if available and log:
-            logger.info("Liger fused linear CE: enabled")
+        if available:
+            if log:
+                logger.info("Liger fused linear CE: enabled")
         elif _liger_required():
             raise RuntimeError(
                 "COMPLEXITY_REQUIRE_LIGER=1 but Liger fused linear CE is unavailable "

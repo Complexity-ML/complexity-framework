@@ -95,6 +95,8 @@ def test_launchers_keep_training_and_test_paths_separate() -> None:
     assert "--sft-bin" in training
     assert "--epochs 3" in training
     assert "--save-every-epoch" in training
+    assert 'expected = "tr-hash-agentic-chat-v1"' in training
+    assert "Tokenizer and GSM8K dataset chat-template contracts differ" in training
     assert "--experiment-label supervised_gsm8k_sft" in evaluation
     assert "--split test" in evaluation
 
@@ -106,3 +108,4 @@ def test_asset_materializer_pins_commit_and_subfolder() -> None:
     assert "optimizer_rank" not in source
     assert "GSM8K_TRAIN_PARQUET" in source
     assert "GSM8K_TEST_PARQUET" in source
+    assert 'dataset/chat_template.json" "$ASSET_ROOT/tokenizer/chat_template.json' in source
