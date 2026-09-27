@@ -467,6 +467,9 @@ class Trainer:
                         for callback in self.callbacks:
                             callback(self, self.global_step, loss_value)
 
+                        if getattr(self, 'stop_requested', False):
+                            raise KeyboardInterrupt
+
                         if self.global_step >= self.config.max_steps:
                             break
 

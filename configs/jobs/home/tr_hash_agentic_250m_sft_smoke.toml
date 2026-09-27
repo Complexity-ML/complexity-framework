@@ -1,0 +1,48 @@
+name = "tr-hash-agentic-250m-sft-smoke"
+command = [
+  "/home/boris/pytorch/bin/python",
+  "-m", "scripts.sft_500m_32k_tr",
+  "--checkpoint", "/home/boris/complexity-framework-agentic-250m/artifacts/tr_hash_agentic_250m_refinement/final",
+  "--source-stage", "refinement",
+  "--tokenizer", "/home/boris/.cache/huggingface/hub/models--AETHORIA-AI--TR-HASH-Tokenizer-32K-Agentic/snapshots/11a104ea8352c93920193a928821077cd6409d65",
+  "--jsonl", "/home/boris/complexity-framework-agentic-250m/data/sft/tr_hash_agentic_nemotron_21k/train.jsonl",
+  "--eval-jsonl", "/home/boris/complexity-framework-agentic-250m/data/sft/tr_hash_agentic_nemotron_21k/eval.jsonl",
+  "--seq-len", "2048",
+  "--steps", "20",
+  "--batch-size", "4",
+  "--lr", "1e-5",
+  "--full-parameter",
+  "--bf16",
+  "--pack-sequences",
+  "--sft-liger-loss",
+  "--no-sft-fp32-loss",
+  "--eval-at-start",
+  "--eval-steps", "0",
+  "--eval-batches", "4",
+  "--save-steps", "0",
+  "--save-model-only",
+  "--save-dir", "/home/boris/complexity-framework-agentic-250m/artifacts/tr_hash_agentic_250m_sft_smoke",
+  "--run-name", "tr-hash-agentic-250m-sft-smoke",
+  "--tensorboard-dir", "/home/boris/complexity-framework-agentic-250m/runs/tr-hash-agentic-250m-sft-smoke/tensorboard",
+  "--log-steps", "1",
+  "--empty-cache-every", "0",
+  "--num-workers", "0",
+  "--use-custom-kernels", "auto",
+]
+working_directory = "/home/boris/complexity-framework-agentic-250m"
+tensorboard_logdir = "/home/boris/complexity-framework-agentic-250m/runs/tr-hash-agentic-250m-sft-smoke/tensorboard"
+gpu_devices = ["1"]
+
+[environment]
+PYTHONUNBUFFERED = "1"
+TOKENIZERS_PARALLELISM = "true"
+OMP_NUM_THREADS = "1"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+HF_HOME = "/home/boris/.cache/huggingface"
+TRITON_CACHE_DIR = "/home/boris/.cache/triton-agentic-250m"
+COMPLEXITY_REQUIRE_LIGER = "1"
+
+[egpu]
+stable_seconds = 120
+poll_seconds = 5
+power_limit_w = 150

@@ -1,0 +1,52 @@
+{
+  "id": "tr-hash-agentic-250m-free-generation-v1",
+  "generation": {
+    "max_tokens": 192,
+    "temperature": 0.3,
+    "top_p": 0.9,
+    "top_k": 30,
+    "repetition_penalty": 1.05,
+    "repetition_context_size": 128
+  },
+  "prompts": [
+    {
+      "id": "greeting",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are TR-HASH Agentic, a careful assistant. Follow the user's request. No external tools are available in this conversation. Think through the task, then provide a concise final answer."
+        },
+        {
+          "role": "user",
+          "content": "Hello! Introduce yourself in two sentences."
+        }
+      ]
+    },
+    {
+      "id": "arithmetic",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are TR-HASH Agentic, a careful assistant. Follow the user's request. No external tools are available in this conversation. Think through the task, then provide a concise final answer."
+        },
+        {
+          "role": "user",
+          "content": "A workshop makes 17 components per hour for 23 hours and discards 14 defective components. How many usable components remain?"
+        }
+      ]
+    },
+    {
+      "id": "code",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are TR-HASH Agentic, a careful assistant. Follow the user's request. No external tools are available in this conversation. Think through the task, then provide a concise final answer."
+        },
+        {
+          "role": "user",
+          "content": "Write a short Python function that returns the unique values of a list while preserving their original order."
+        }
+      ]
+    }
+  ]
+}

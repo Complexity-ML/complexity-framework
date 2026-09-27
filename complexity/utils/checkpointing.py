@@ -32,8 +32,29 @@ from pathlib import Path
 import json
 from dataclasses import dataclass, asdict
 import logging
+import hashlib
+import random
+import numpy as np
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _checkpoint_stage():
+    """Propagate a rank-local filesystem failure before the next collective."""
+    error = None
+    try:
+        yield
+    except Exception as exc:
+        error = exc
+    if dist.is_initialized():
+        errors = [None] * dist.get_world_size()
+        dist.all_gather_object(errors, repr(error) if error else None)
+        if any(errors):
+            raise RuntimeError(f'Checkpoint failed on a rank: {errors}') from error
+    elif error:
+        raise error
 
 
 def _atomic_torch_save(obj, path: Path) -> None:
@@ -223,6 +244,9 @@ class CheckpointManager:
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.max_checkpoints = max_checkpoints
+        # Opt-in exact DDP continuation. Existing legacy checkpoints keep their contract.
+        self.resume_contract = None
+        self.defer_rotation = False
 
         self.is_fsdp = isinstance(model, FSDP)
         self.is_main = not dist.is_initialized() or dist.get_rank() == 0
@@ -244,6 +268,8 @@ class CheckpointManager:
         Returns:
             Path to saved checkpoint
         """
+        if self.resume_contract is not None:
+            return self._save_transaction(step, training_state, tag)
         checkpoint_name = f"{tag}_{step}"
         checkpoint_path = self.checkpoint_dir / checkpoint_name
 
@@ -264,6 +290,77 @@ class CheckpointManager:
 
         logger.info(f"Saved checkpoint: {checkpoint_path}")
         return str(checkpoint_path)
+
+    @staticmethod
+    def _digest(path):
+        digest = hashlib.sha256()
+        with path.open('rb') as stream:
+            for chunk in iter(lambda: stream.read(8 << 20), b''):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _save_transaction(self, step, training_state, tag):
+        """Commit all DDP rank files before making a checkpoint discoverable."""
+        if self.is_fsdp or any(_is_dtensor(p) for p in self.model.parameters()):
+            raise ValueError('Transactional resume currently supports DDP and single process only')
+        if training_state is None:
+            raise ValueError('Transactional checkpoints require training state')
+        import shutil
+        final = self.checkpoint_dir / f'{tag}_{step}'
+        pending = self.checkpoint_dir / f'.pending-{tag}_{step}.writing'
+        distributed = dist.is_initialized()
+        rank = dist.get_rank() if distributed else 0
+        world = dist.get_world_size() if distributed else 1
+        with _checkpoint_stage():
+            if self.is_main:
+                if final.exists():
+                    raise FileExistsError(final)
+                if pending.exists(): shutil.rmtree(pending)
+                pending.mkdir()
+        if distributed: dist.barrier()
+        rng = dict(torch=torch.get_rng_state(), python=random.getstate(), numpy=np.random.get_state(),
+                   cuda=torch.cuda.get_rng_state() if torch.cuda.is_available() else None)
+        with _checkpoint_stage():
+            self._save_regular(pending)
+            _atomic_torch_save(rng, pending / f'rng_rank{rank}.pt')
+        if distributed: dist.barrier()
+        with _checkpoint_stage():
+            if self.is_main:
+                (pending/'training_state.json').write_text(json.dumps(training_state.to_dict()))
+                files = {p.name: dict(bytes=p.stat().st_size, sha256=self._digest(p)) for p in pending.iterdir()}
+                with (pending/'complete.json').open('w') as stream:
+                    json.dump(dict(contract=self.resume_contract, world_size=world, files=files), stream)
+                    stream.flush(); os.fsync(stream.fileno())
+                # Flush payloads before publishing the directory entry.
+                for path in pending.iterdir():
+                    with path.open('rb') as stream: os.fsync(stream.fileno())
+                pending.rename(final)
+                fd = os.open(self.checkpoint_dir, os.O_RDONLY)
+                try: os.fsync(fd)
+                finally: os.close(fd)
+                if not self.defer_rotation:
+                    candidates = sorted((p for p in self.checkpoint_dir.iterdir() if (p/'complete.json').is_file()),
+                                        key=lambda p: int(p.name.rsplit('_',1)[1]), reverse=True)
+                    for old in candidates[self.max_checkpoints:]: shutil.rmtree(old)
+        if distributed: dist.barrier()
+        return str(final)
+
+    def _validate_transaction(self, path):
+        marker = json.loads((path/'complete.json').read_text())
+        world = dist.get_world_size() if dist.is_initialized() else 1
+        if marker['contract'] != self.resume_contract or marker['world_size'] != world:
+            raise ValueError('Resume contract or world size changed')
+        required = {'checkpoint.pt', 'training_state.json'}
+        required.update(f'optimizer_rank{i}.pt' for i in range(world))
+        required.update(f'rng_rank{i}.pt' for i in range(world))
+        if not required.issubset(marker['files']):
+            raise ValueError('Checkpoint missing required state')
+        for name, info in marker['files'].items():
+            if Path(name).name != name:
+                raise ValueError('Unsafe checkpoint filename')
+            file = path/name
+            if not file.is_file() or file.stat().st_size != info['bytes'] or self._digest(file) != info['sha256']:
+                raise ValueError(f'Checkpoint integrity failure: {name}')
 
     def _save_fsdp(self, checkpoint_path: Path):
         """Save FSDP sharded checkpoint."""
@@ -401,6 +498,12 @@ class CheckpointManager:
 
         checkpoint_path = Path(checkpoint_path)
 
+        if self.resume_contract is not None:
+            if not load_optimizer:
+                raise ValueError('Exact resume requires optimizer state')
+            with _checkpoint_stage():
+                self._validate_transaction(checkpoint_path)
+
         if self.is_fsdp:
             self._load_fsdp(checkpoint_path, load_optimizer)
         else:
@@ -410,7 +513,13 @@ class CheckpointManager:
         state_path = checkpoint_path / "training_state.json"
         if state_path.exists():
             with open(state_path, 'r') as f:
-                return TrainingState.from_dict(json.load(f))
+                state = TrainingState.from_dict(json.load(f))
+            if self.resume_contract is not None:
+                rank = dist.get_rank() if dist.is_initialized() else 0
+                rng = torch.load(checkpoint_path/f'rng_rank{rank}.pt', map_location='cpu', weights_only=False)
+                torch.set_rng_state(rng['torch']); random.setstate(rng['python']); np.random.set_state(rng['numpy'])
+                if rng['cuda'] is not None: torch.cuda.set_rng_state(rng['cuda'])
+            return state
 
         logger.info(f"Loaded checkpoint: {checkpoint_path}")
         return None
@@ -457,6 +566,8 @@ class CheckpointManager:
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_file}")
 
         state_dict = torch.load(checkpoint_file, map_location="cpu", weights_only=False)
+        if self.resume_contract is not None and self.scheduler is not None and 'scheduler' not in state_dict:
+            raise ValueError('Missing scheduler state')
 
         # Model weights
         try:
@@ -491,6 +602,8 @@ class CheckpointManager:
                     )
                     logger.info(f"Loaded optimizer state from {rank_opt_file.name}")
                 except Exception as e:
+                    if self.resume_contract is not None:
+                        raise RuntimeError('Exact optimizer restore failed') from e
                     logger.warning(f"Skipping optimizer state ({rank_opt_file.name}): {e} — moments restart from zero")
 
     def load_latest(self, load_optimizer: bool = True) -> Optional[TrainingState]:

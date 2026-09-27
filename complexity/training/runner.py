@@ -495,6 +495,7 @@ class TrainRunner:
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             pin_memory=True,
+            generator=torch.Generator().manual_seed(0),
         )
 
         # Trainer
@@ -602,7 +603,15 @@ class TrainRunner:
             trainer.callbacks.append(cb)
 
         # SIGTERM → KeyboardInterrupt (torchrun sends SIGTERM on Ctrl+C).
-        signal.signal(signal.SIGTERM, lambda s, f: (_ for _ in ()).throw(KeyboardInterrupt()))
+        def request_stop(signum, frame):
+            if trainer.checkpoint_manager.resume_contract is not None:
+                # Finish the update: its data cursor and optimizer state must agree.
+                trainer.stop_requested = True
+            else:
+                raise KeyboardInterrupt
+        signal.signal(signal.SIGTERM, request_stop)
+        if trainer.checkpoint_manager.resume_contract is not None:
+            signal.signal(signal.SIGINT, request_stop)
 
         summary = None
         try:
@@ -616,10 +625,10 @@ class TrainRunner:
                 csv_file.close()
 
         if is_main and summary is not None:
-            logger.info(f"Training complete: {summary}")
+            logger.info(f"Training stopped at update {trainer.global_step}/{train_config.max_steps}: {summary}")
 
         # save_pretrained must run on ALL ranks (internal full_tensor() collective).
-        if summary is not None:
+        if summary is not None and trainer.global_step >= train_config.max_steps:
             base = model
             while not hasattr(base, "save_pretrained"):
                 nxt = getattr(base, "module", None) or getattr(base, "model", None)
@@ -628,9 +637,14 @@ class TrainRunner:
                 base = nxt
             if hasattr(base, "save_pretrained"):
                 final_dir = os.path.join(args.checkpoint_dir, "final")
-                base.save_pretrained(final_dir)
+                strict = trainer.checkpoint_manager.resume_contract is not None
+                export_dir = os.path.join(args.checkpoint_dir, '.final.pending') if strict else final_dir
+                base.save_pretrained(export_dir)
                 if is_main:
-                    config.save(os.path.join(final_dir, "model_config.yaml"))
+                    config.save(os.path.join(export_dir, "model_config.yaml"))
+                    tokenizer.save_pretrained(export_dir)
+                    if strict:
+                        os.rename(export_dir, final_dir)
                     logger.info(f"Model saved to {final_dir}")
 
         if distributed:

@@ -1,0 +1,56 @@
+name = "tr-hash-agentic-250m-sft-balanced"
+command = [
+  "/home/boris/pytorch/bin/python",
+  "-m", "scripts.sft_500m_32k_tr",
+  "--checkpoint", "/home/boris/complexity-framework-agentic-250m/artifacts/tr_hash_agentic_250m_refinement/final",
+  "--source-stage", "refinement",
+  "--tokenizer", "/home/boris/.cache/huggingface/hub/models--AETHORIA-AI--TR-HASH-Tokenizer-32K-Agentic/snapshots/2fcbc2c5359ded0244ca14531f1b3806eebac55e",
+  "--jsonl", "/home/boris/complexity-framework-agentic-250m/data/sft/tr_hash_agentic_sft_32k/train.jsonl",
+  "--eval-jsonl", "/home/boris/complexity-framework-agentic-250m/data/sft/tr_hash_agentic_sft_32k/eval.jsonl",
+  "--seq-len", "2048",
+  "--steps", "0",
+  "--epochs", "3",
+  "--batch-size", "4",
+  "--lr", "1e-5",
+  "--full-parameter",
+  "--bf16",
+  "--pack-sequences",
+  "--sft-liger-loss",
+  "--no-sft-fp32-loss",
+  "--eval-at-start",
+  "--eval-every-epoch",
+  "--save-every-epoch",
+  "--save-best",
+  "--no-reset-lr-each-epoch",
+  "--min-eval-fraction", "0.05",
+  "--save-total-limit", "4",
+  "--save-dir", "/home/boris/complexity-framework-agentic-250m/artifacts/tr_hash_agentic_250m_sft_balanced",
+  "--run-name", "tr-hash-agentic-250m-sft-balanced",
+  "--tensorboard-dir", "/home/boris/complexity-framework-agentic-250m/runs/tr-hash-agentic-250m-sft-balanced/tensorboard",
+  "--log-steps", "10",
+  "--empty-cache-every", "0",
+  "--num-workers", "0",
+  "--use-custom-kernels", "auto",
+]
+working_directory = "/home/boris/complexity-framework-agentic-250m"
+tensorboard_logdir = "/home/boris/complexity-framework-agentic-250m/runs/tr-hash-agentic-250m-sft-balanced/tensorboard"
+gpu_devices = ["1"]
+
+[environment]
+PYTHONUNBUFFERED = "1"
+TOKENIZERS_PARALLELISM = "true"
+OMP_NUM_THREADS = "1"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+HF_HOME = "/home/boris/.cache/huggingface"
+TRITON_CACHE_DIR = "/home/boris/.cache/triton-agentic-250m"
+COMPLEXITY_REQUIRE_LIGER = "1"
+
+[checkpoint]
+directory = "/home/boris/complexity-framework-agentic-250m/artifacts/tr_hash_agentic_250m_sft_balanced"
+pattern = "step_[0-9]*"
+resume_arguments = ["--resume", "{checkpoint}"]
+
+[egpu]
+stable_seconds = 120
+poll_seconds = 5
+power_limit_w = 150

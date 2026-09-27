@@ -165,6 +165,7 @@ def render_jinja_messages(
     *,
     eos_token: str,
     add_generation_prompt: bool,
+    tools: Iterable[dict[str, Any]] | None = None,
 ) -> str:
     """Render the same standalone Jinja contract used by HF and vLLM."""
 
@@ -177,6 +178,7 @@ def render_jinja_messages(
     )
     return environment.from_string(jinja_source).render(
         messages=list(messages),
+        tools=list(tools or []),
         eos_token=eos_token,
         add_generation_prompt=add_generation_prompt,
     )
