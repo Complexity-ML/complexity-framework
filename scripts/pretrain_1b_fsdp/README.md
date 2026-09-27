@@ -41,7 +41,8 @@ checkpoint local complet. L’uploader doit être configuré avant un long run :
 l’entraînement attend dès que trois checkpoints locaux ne sont pas envoyés.
 
 `upload.py` conserve la politique historique : trois checkpoints réguliers,
-un checkpoint d’interruption, suppression distante et `super_squash_history`.
+un checkpoint d’interruption, suppression des anciens chemins distants. La purge de l’historique HF est
+désactivée par défaut (`purge_history_after_eviction: false`).
 Il utilise `runtime/hf-token`. Son lancement et cette politique restent à
 vérifier avant exploitation ; l’audit n’a modifié aucun dépôt HF.
 Les documents `README.original.md` et `TRAINING.md` décrivent l’ancien serveur.

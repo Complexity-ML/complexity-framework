@@ -48,6 +48,8 @@ for attempt in range(3):
         output=ROOT/'run'/name; output.parent.mkdir(exist_ok=True)
         if output.exists(): raise FileExistsError(f'Refusing to overwrite {output}; verify the existing snapshot first')
         path.rename(output)
+        receipt=ROOT/'runtime'/(name+'.uploaded.json')
+        receipt.write_text(json.dumps(dict(revision=revision,verified=True,step=manifest['step'])))
         print('Verified resume checkpoint:',name,'step:',manifest['step'],'revision:',revision)
         break
     except HfHubHTTPError as error:

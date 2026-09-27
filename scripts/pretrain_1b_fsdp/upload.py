@@ -68,6 +68,7 @@ def verify_all(catalog, revision):
 
 
 def squash_if_pending():
+    if not policy.get('purge_history_after_eviction', False): return
     pending=runtime/'purge-pending.json'
     if not pending.exists(): return
     revision,files,catalog=inventory()
