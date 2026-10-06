@@ -348,9 +348,10 @@ class TestTrainer:
         assert new_milestones[1] == 100 + expected_stable
         assert new_t_max == remaining - expected_stable
 
-    def test_resync_wsd_schedule_bounds_is_a_noop_when_max_steps_is_unchanged(self):
+    @pytest.mark.parametrize("global_step", [200, 820, 900, 1000])
+    def test_resync_wsd_schedule_bounds_is_a_noop_when_max_steps_is_unchanged(self, global_step):
         trainer = self._wsd_trainer_stub(
-            max_steps=1000, warmup_steps=100, wsd_decay_ratio=0.2, global_step=200,
+            max_steps=1000, warmup_steps=100, wsd_decay_ratio=0.2, global_step=global_step,
         )
         before = (list(trainer.scheduler._milestones), trainer.scheduler._schedulers[2].T_max)
 
@@ -358,6 +359,15 @@ class TestTrainer:
 
         after = (list(trainer.scheduler._milestones), trainer.scheduler._schedulers[2].T_max)
         assert before == after
+
+    def test_resync_wsd_rejects_changed_decay_length_with_same_milestone(self):
+        trainer = self._wsd_trainer_stub(
+            max_steps=1000, warmup_steps=100, wsd_decay_ratio=0.2, global_step=900,
+        )
+        trainer.config.max_steps = 1001
+        trainer.config.wsd_decay_ratio = 181 / 901
+        with pytest.raises(RuntimeError, match="decay-start milestone"):
+            trainer._resync_wsd_schedule_bounds()
 
     def test_resync_wsd_schedule_bounds_refuses_once_decay_phase_already_started(self):
         """Once global_step is at/past the (old, loaded) decay-start milestone,

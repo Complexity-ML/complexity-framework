@@ -12,6 +12,7 @@ from complexity.config import ModelConfig
 from model_impl import TrainingModel, has_liger_fused_linear_ce
 from data import Corpus, ROOT, sha
 from checkpoint_json import checkpoint_reader
+from flow_control import CHECKPOINT, STOP, upload_control_state, wait_for_upload_capacity
 
 
 def log(event, **kw):
@@ -111,12 +112,28 @@ def main():
         from torch.utils.tensorboard import SummaryWriter
         writer=SummaryWriter(str(runtime/'tensorboard'))
     initial_step=step
+
+    def synchronize_upload_control(value):
+        control=torch.tensor(value,device=f'cuda:{rank}',dtype=torch.int64)
+        dist.broadcast(control,src=0)
+        return int(control.item())
+
     while step<limit:
+        request=wait_for_upload_capacity(
+            lambda: upload_control_state(args.output,runtime,limited=args.limit is not None),
+            synchronize_upload_control,is_main=rank==0,
+            on_wait=lambda: log('waiting_for_upload',step=step),
+        )
+        if request:
+            save(step,kind="interrupt")
+            if rank==0 and request & CHECKPOINT:
+                (runtime/'request-checkpoint').unlink(missing_ok=True)
+            if request & STOP:
+                log('graceful_stop',step=step); break
+            # Recheck capacity before consuming the next training batch.
+            continue
         if rank==0:
             if step==initial_step or step%32==0: corpus.prefetch(step)
-            # Do not fill disk with checkpoints if uploads cannot keep up.
-            while len([p for p in args.output.glob('step_*') if (p/'complete.json').exists() and not (runtime/(p.name+'.uploaded.json')).exists()])>=3 and not args.limit:
-                log('waiting_for_upload', step=step); time.sleep(30)
         dist.barrier(); started=time.monotonic()
         batch=torch.from_numpy(corpus.batch(step,rank)).to(f'cuda:{rank}')
         x,y=batch[:,:-1].contiguous(),batch[:,1:].contiguous()

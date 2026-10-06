@@ -39,6 +39,11 @@ reprise : `restore.py` télécharge le plan, le schedule et le tokenizer origina
 Après validation, `bash scripts/pretrain_1b_fsdp/run.sh` reprend le dernier
 checkpoint local complet. L’uploader doit être configuré avant un long run :
 l’entraînement attend dès que trois checkpoints locaux ne sont pas envoyés.
+Tous les ranks participent à cette attente et vérifient l’état toutes les
+30 secondes, sans rester bloqués dans une barrière pendant la panne.
+Créer `runtime/request-stop` sauvegarde l’update courant puis arrête le run,
+y compris pendant cette attente. `runtime/request-checkpoint` sauvegarde
+l’update courant puis revérifie la capacité d’upload avant de reprendre.
 
 `upload.py` conserve la politique historique : trois checkpoints réguliers,
 un checkpoint d’interruption, suppression des anciens chemins distants. La purge de l’historique HF est

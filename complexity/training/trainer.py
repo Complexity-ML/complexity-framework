@@ -39,6 +39,31 @@ warnings.filterwarnings("ignore", message=".*epoch parameter in.*scheduler.step.
 logger = logging.getLogger(__name__)
 
 
+def _accumulation_batches(dataloader, accumulation_steps):
+    """Look ahead within an update so an unsized loader's final batch syncs.
+
+    Never consume a batch from the next update before yielding a boundary:
+    checkpoint callbacks must see the data cursor at that exact boundary.
+    """
+    iterator = iter(dataloader)
+    while True:
+        try:
+            batch = next(iterator)
+        except StopIteration:
+            return
+        count = 1
+        while count < accumulation_steps:
+            try:
+                next_batch = next(iterator)
+            except StopIteration:
+                yield batch, count, True
+                return
+            yield batch, count, False
+            batch = next_batch
+            count += 1
+        yield batch, count, True
+
+
 def _format_moe_routing_summary(model_cfg: Any) -> str:
     """Return the effective deterministic routing weights shown at startup."""
     top_k = int(getattr(model_cfg, "top_k", 1))
@@ -425,22 +450,37 @@ class Trainer:
         try:
             while self.global_step < self.config.max_steps:
                 self.epoch += 1
+                had_batches = False
+                update_loss = None
 
-                for batch_idx, batch in enumerate(self.train_dataloader):
-                    step_start = time.time()
+                for batch, microbatch_count, should_sync in _accumulation_batches(
+                    self.train_dataloader, accumulation_steps
+                ):
+                    had_batches = True
+                    if microbatch_count == 1:
+                        step_start = time.time()
+                        update_loss = None
 
-                    should_sync = (batch_idx + 1) % accumulation_steps == 0
                     with self._gradient_sync_context(should_sync=should_sync):
                         loss = self._training_step(batch)
+                    detached_loss = loss.detach()
+                    update_loss = detached_loss if update_loss is None else update_loss + detached_loss
 
                     if should_sync:
+                        # Backward divides by the configured accumulation size.
+                        # A short final group must instead average its actual size.
+                        if microbatch_count != accumulation_steps:
+                            factor = accumulation_steps / microbatch_count
+                            for param in self.model.parameters():
+                                if param.grad is not None:
+                                    param.grad.mul_(factor)
                         self._update_expert_token_counts(batch)
                         self._optimizer_step()
                         self.global_step += 1
 
                         step_time = time.time() - step_start
                         self.metrics.log_step_time(step_time)
-                        loss_value = float(loss.detach().item())
+                        loss_value = float((update_loss / microbatch_count).item())
                         lr = self.scheduler.get_last_lr()[0]
                         self.metrics.update(
                             {
@@ -473,6 +513,8 @@ class Trainer:
                         if self.global_step >= self.config.max_steps:
                             break
 
+                if not had_batches:
+                    raise RuntimeError("Training dataloader yielded no batches; cannot advance updates")
                 if self.config.max_epochs and self.epoch >= self.config.max_epochs:
                     break
 
@@ -727,28 +769,27 @@ class Trainer:
             return
 
         old_decay_start = milestones[1]
-        if self.global_step >= old_decay_start:
-            raise RuntimeError(
-                f"Cannot resync WSD schedule bounds: global_step={self.global_step} "
-                f"is already at/past the loaded decay-start milestone "
-                f"({old_decay_start}). Extending --max-steps this late requires "
-                f"manually replaying the cosine sub-scheduler's trajectory, not "
-                f"just overwriting T_max -- do that by hand instead of relying "
-                f"on this auto-resync."
-            )
-
         warmup_steps = min(self.config.warmup_steps, max(self.config.max_steps - 1, 0))
         remaining = max(self.config.max_steps - warmup_steps, 1)
         decay_ratio = getattr(self.config, "wsd_decay_ratio", 0.2)
         stable_steps = int(remaining * (1 - decay_ratio))
         decay_steps = remaining - stable_steps
         new_decay_start = warmup_steps + stable_steps
+        new_t_max = max(decay_steps, 1)
 
-        if new_decay_start == old_decay_start:
+        if list(milestones) == [warmup_steps, new_decay_start] and schedulers[2].T_max == new_t_max:
             return  # max_steps unchanged (or resolves to the same bounds) -- no-op
 
+        if self.global_step >= old_decay_start:
+            raise RuntimeError(
+                f"Cannot resync WSD schedule bounds: global_step={self.global_step} "
+                f"is already at/past the loaded decay-start milestone "
+                f"({old_decay_start}). Changing the schedule this late requires "
+                f"manually replaying the cosine sub-scheduler's trajectory."
+            )
+
         self.scheduler._milestones = [warmup_steps, new_decay_start]
-        schedulers[2].T_max = max(decay_steps, 1)
+        schedulers[2].T_max = new_t_max
         if self.is_main:
             logger.info(
                 f"Resynced WSD schedule for extended max_steps={self.config.max_steps}: "
