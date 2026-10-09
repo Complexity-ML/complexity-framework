@@ -33,20 +33,19 @@ import logging
 import math
 import os
 import time
-from typing import List, Dict, Optional
-from tqdm import tqdm
-
-logger = logging.getLogger(__name__)
+from typing import Dict, List, Optional
 
 import torch
-import torch.nn.functional as F
 import torch.distributed as dist
+import torch.nn.functional as F
 from datasets import load_dataset
+from tqdm import tqdm
 
-from complexity.config import ModelConfig
 from complexity.models.builder import ComplexityModel
 
-from .rewards import mcq_exact_match_reward, combined_reward, language_quality_reward
+from .rewards import combined_reward, language_quality_reward, mcq_exact_match_reward
+
+logger = logging.getLogger(__name__)
 
 
 # ── Dataset ──────────────────────────────────────────────────────────
@@ -190,7 +189,6 @@ def generate_group(
     """
     model.eval()
     device = next(model.parameters()).device
-    prompt_len = prompt_ids.shape[0]
 
     input_ids = prompt_ids.unsqueeze(0).expand(group_size, -1).to(device)
 
@@ -358,7 +356,6 @@ def train_grpo(
     # ── Distributed setup ──
     is_distributed = dist.is_initialized()
     rank = dist.get_rank() if is_distributed else 0
-    world_size = dist.get_world_size() if is_distributed else 1
     device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
 
     def log(msg):
@@ -371,7 +368,7 @@ def train_grpo(
     if bf16:
         model = model.to(torch.bfloat16)
     log(f"[dapo] {model.num_parameters() / 1e6:.1f}M params")
-    log(f"[dapo] No reference model (DAPO: clipping only, no KL)")
+    log("[dapo] No reference model (DAPO: clipping only, no KL)")
 
     # ── vLLM engine (for fast generation) ──
     vllm_engine = None

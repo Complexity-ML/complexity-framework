@@ -1,0 +1,9 @@
+{
+  "unique_token_budgets": {
+    "local_text": 32768
+  },
+  "replay_passes": {
+    "local_text": 2
+  },
+  "row_alignment": 8
+}

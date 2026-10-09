@@ -22,16 +22,16 @@ Usage:
 """
 
 from .model_config import (
-    ModelConfig,
-    get_preset,
     PRESET_CONFIGS,
-    # Preset functions
-    complexity_tiny_config,
-    complexity_small_config,
+    ModelConfig,
+    complexity_7b_config,
     complexity_base_config,
     complexity_large_config,
+    complexity_small_config,
+    # Preset functions
+    complexity_tiny_config,
     complexity_xl_config,
-    complexity_7b_config,
+    get_preset,
 )
 
 __all__ = [

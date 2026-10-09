@@ -12,14 +12,15 @@ Key concepts:
 Reference: Orca (https://www.usenix.org/conference/osdi22/presentation/yu)
 """
 
-import torch
-import torch.nn as nn
-from typing import Optional, List, Dict, Any, Callable
+import threading
+import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from collections import deque
-import time
-import threading
+from typing import Any, Callable, Dict, List, Optional
+
+import torch
+import torch.nn as nn
 
 
 class RequestStatus(Enum):

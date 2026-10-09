@@ -8,24 +8,31 @@ Provides:
 - Evaluation loops
 """
 
+import math
+from dataclasses import dataclass
+from typing import Any, Dict, Iterator, List, Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, List, Dict, Any, Iterator, Callable
-from dataclasses import dataclass
-import math
 from tqdm import tqdm
 
 
 @dataclass
 class EvalConfig:
-    """Configuration for evaluation."""
+    """Evaluation settings; explicit LM labels are pre-shifted by default.
+
+    Set ``labels_are_shifted=False`` for full labels aligned with input_ids,
+    as supplied by Hugging Face's usual causal-language-model collators.
+    """
+
     batch_size: int = 8
     max_length: int = 2048
     stride: int = 512  # For sliding window perplexity
     num_samples: Optional[int] = None  # Limit evaluation samples
     verbose: bool = True
     dtype: torch.dtype = torch.float16
+    labels_are_shifted: bool = True
 
 
 def compute_perplexity(
@@ -46,57 +53,68 @@ def compute_perplexity(
     Returns:
         Perplexity value
     """
-    model.eval()
-    device = next(model.parameters()).device
-
+    if isinstance(stride, bool) or not isinstance(stride, int) or stride < 1:
+        raise ValueError("stride must be a positive integer")
     if input_ids.dim() == 1:
         input_ids = input_ids.unsqueeze(0)
+        if attention_mask is not None and attention_mask.dim() == 1:
+            attention_mask = attention_mask.unsqueeze(0)
+    if input_ids.dim() != 2:
+        raise ValueError("input_ids must have shape [batch, sequence]")
+    if attention_mask is not None and attention_mask.shape != input_ids.shape:
+        raise ValueError("attention_mask must have the same shape as input_ids")
 
+    model.eval()
+    parameter = next(model.parameters(), None)
+    device = parameter.device if parameter is not None else input_ids.device
     input_ids = input_ids.to(device)
+    if attention_mask is not None:
+        attention_mask = attention_mask.to(device)
     seq_len = input_ids.size(1)
+    if seq_len < 2:
+        return float("inf")
 
-    nlls = []
-    prev_end = 0
-
+    config = getattr(model, "config", None)
+    context = (
+        config.get("max_position_embeddings", seq_len)
+        if isinstance(config, dict)
+        else getattr(config, "max_position_embeddings", seq_len)
+    )
+    if not isinstance(context, int) or isinstance(context, bool) or context < 2:
+        raise ValueError("Model context length must be an integer of at least two")
+    stride = min(stride, context - 1)
+    total_nll, total_tokens = 0.0, 0
+    next_target = 1
     with torch.no_grad():
-        for begin in range(0, seq_len, stride):
-            end = min(begin + stride, seq_len)
-
-            # Get chunk
+        while next_target < seq_len:
+            end = min(next_target + stride, seq_len)
+            begin = max(0, end - context)
             chunk_ids = input_ids[:, begin:end]
-
-            # Compute target positions (only new tokens)
-            target_len = end - prev_end
-            target_ids = input_ids[:, prev_end + 1:end + 1] if end < seq_len else input_ids[:, prev_end + 1:]
-
-            if target_ids.size(1) == 0:
-                continue
-
-            # Forward pass
-            outputs = model(chunk_ids)
-
-            if isinstance(outputs, dict):
-                logits = outputs['logits']
-            else:
-                logits = outputs
-
-            # Get relevant logits
-            shift_logits = logits[:, -target_ids.size(1) - 1:-1, :]
-            shift_logits = shift_logits.reshape(-1, shift_logits.size(-1))
-            shift_labels = target_ids.reshape(-1)
-
-            # Compute loss
-            loss = F.cross_entropy(shift_logits, shift_labels, reduction='mean')
-            nlls.append(loss.item() * target_ids.numel())
-
-            prev_end = end
-
-    # Compute perplexity
-    total_nll = sum(nlls)
-    total_tokens = seq_len - 1
-    ppl = math.exp(total_nll / total_tokens) if total_tokens > 0 else float('inf')
-
-    return ppl
+            kwargs = {}
+            if attention_mask is not None:
+                kwargs["attention_mask"] = attention_mask[:, begin:end]
+            outputs = model(chunk_ids, **kwargs)
+            logits = outputs["logits"] if isinstance(outputs, dict) else outputs
+            if hasattr(logits, "logits"):
+                logits = logits.logits
+            targets = chunk_ids[:, 1:].clone()
+            # Retained context is not scored twice. Every new target has a
+            # preceding input, including targets at window boundaries.
+            targets[:, : max(0, next_target - begin - 1)] = -100
+            if attention_mask is not None:
+                mask = attention_mask[:, begin:end].bool()
+                targets.masked_fill_(~(mask[:, :-1] & mask[:, 1:]), -100)
+            count = int((targets != -100).sum().item())
+            if count:
+                loss = F.cross_entropy(
+                    logits[:, :-1].reshape(-1, logits.size(-1)),
+                    targets.reshape(-1),
+                    reduction="sum",
+                )
+                total_nll += loss.item()
+                total_tokens += count
+            next_target = end
+    return math.exp(total_nll / total_tokens) if total_tokens else float("inf")
 
 
 def compute_accuracy(
@@ -212,6 +230,36 @@ class Evaluator:
         self.device = next(model.parameters()).device
         self.model.eval()
 
+    def _align_lm_targets(self, batch, logits):
+        labels = batch.get("labels")
+        if labels is None:
+            targets = batch["input_ids"].to(self.device)[..., 1:]
+            aligned = logits[..., :-1, :]
+        elif self.config.labels_are_shifted:
+            targets = labels.to(self.device)
+            if targets.shape[:-1] != logits.shape[:-2] or targets.size(-1) not in {
+                logits.size(-2),
+                logits.size(-2) - 1,
+            }:
+                raise ValueError("LM labels must be pre-shifted with sequence length S or S-1")
+            aligned = logits[..., : targets.size(-1), :]
+        else:
+            if labels.shape != batch["input_ids"].shape:
+                raise ValueError("Unshifted LM labels must have the same shape as input_ids")
+            targets = labels.to(self.device)[..., 1:]
+            aligned = logits[..., :-1, :]
+        attention_mask = batch.get("attention_mask")
+        if attention_mask is not None:
+            if attention_mask.shape != batch["input_ids"].shape:
+                raise ValueError("attention_mask must have the same shape as input_ids")
+            mask = attention_mask.to(self.device).bool()
+            if labels is not None and self.config.labels_are_shifted:
+                mask = mask[..., : targets.size(-1)]
+            else:
+                mask = mask[..., :-1] & mask[..., 1:]
+            targets = targets.masked_fill(~mask, -100)
+        return aligned.contiguous(), targets.contiguous()
+
     def perplexity(
         self,
         dataloader: Iterator,
@@ -233,38 +281,36 @@ class Evaluator:
 
         max_samples = max_samples or self.config.num_samples
 
-        iterator = tqdm(dataloader, desc="Computing perplexity") if self.config.verbose else dataloader
+        iterator = (
+            tqdm(dataloader, desc="Computing perplexity") if self.config.verbose else dataloader
+        )
 
         with torch.no_grad():
             for batch in iterator:
                 if max_samples and num_samples >= max_samples:
                     break
 
-                input_ids = batch['input_ids'].to(self.device)
-                attention_mask = batch.get('attention_mask', None)
+                input_ids = batch["input_ids"].to(self.device)
+                attention_mask = batch.get("attention_mask", None)
                 if attention_mask is not None:
                     attention_mask = attention_mask.to(self.device)
-
-                labels = batch.get('labels', input_ids)
-                labels = labels.to(self.device)
 
                 # Forward pass
                 outputs = self.model(input_ids, attention_mask=attention_mask)
 
                 if isinstance(outputs, dict):
-                    logits = outputs['logits']
+                    logits = outputs["logits"]
                 else:
                     logits = outputs
 
                 # Compute loss
-                shift_logits = logits[..., :-1, :].contiguous()
-                shift_labels = labels[..., 1:].contiguous()
+                shift_logits, shift_labels = self._align_lm_targets(batch, logits)
 
                 loss = F.cross_entropy(
                     shift_logits.view(-1, shift_logits.size(-1)),
                     shift_labels.view(-1),
                     ignore_index=-100,
-                    reduction='sum',
+                    reduction="sum",
                 )
 
                 # Count valid tokens
@@ -274,7 +320,7 @@ class Evaluator:
                 total_tokens += valid_tokens.item()
                 num_samples += input_ids.size(0)
 
-        ppl = math.exp(total_loss / total_tokens) if total_tokens > 0 else float('inf')
+        ppl = math.exp(total_loss / total_tokens) if total_tokens > 0 else float("inf")
         return ppl
 
     def accuracy(
@@ -298,27 +344,29 @@ class Evaluator:
 
         max_samples = max_samples or self.config.num_samples
 
-        iterator = tqdm(dataloader, desc="Computing accuracy") if self.config.verbose else dataloader
+        iterator = (
+            tqdm(dataloader, desc="Computing accuracy") if self.config.verbose else dataloader
+        )
 
         with torch.no_grad():
             for batch in iterator:
                 if max_samples and num_samples >= max_samples:
                     break
 
-                input_ids = batch['input_ids'].to(self.device)
-                labels = batch.get('labels', input_ids).to(self.device)
-
+                input_ids = batch["input_ids"].to(self.device)
                 # Forward pass
-                outputs = self.model(input_ids)
+                mask = batch.get("attention_mask")
+                kwargs = {} if mask is None else {"attention_mask": mask.to(self.device)}
+                outputs = self.model(input_ids, **kwargs)
 
                 if isinstance(outputs, dict):
-                    logits = outputs['logits']
+                    logits = outputs["logits"]
                 else:
                     logits = outputs
 
                 # Compute accuracy
-                predictions = logits[..., :-1, :].argmax(dim=-1)
-                targets = labels[..., 1:]
+                aligned_logits, targets = self._align_lm_targets(batch, logits)
+                predictions = aligned_logits.argmax(dim=-1)
 
                 mask = targets != -100
                 correct = (predictions == targets) & mask
@@ -365,8 +413,8 @@ class Evaluator:
                     full_text = context + choice
 
                     if self.tokenizer:
-                        tokens = self.tokenizer.encode(full_text, return_tensors='pt')
-                        context_tokens = self.tokenizer.encode(context, return_tensors='pt')
+                        tokens = self.tokenizer.encode(full_text, return_tensors="pt")
+                        context_tokens = self.tokenizer.encode(context, return_tensors="pt")
                     else:
                         # Assume pre-tokenized
                         tokens = torch.tensor([[ord(c) for c in full_text]])
@@ -379,18 +427,18 @@ class Evaluator:
                     outputs = self.model(tokens)
 
                     if isinstance(outputs, dict):
-                        logits = outputs['logits']
+                        logits = outputs["logits"]
                     else:
                         logits = outputs
 
                     # Compute log prob of choice tokens
-                    choice_logits = logits[0, context_len - 1:-1, :]
+                    choice_logits = logits[0, context_len - 1 : -1, :]
                     choice_tokens = tokens[0, context_len:]
 
                     log_probs_per_token = F.log_softmax(choice_logits, dim=-1)
-                    choice_log_prob = log_probs_per_token.gather(
-                        1, choice_tokens.unsqueeze(1)
-                    ).sum().item()
+                    choice_log_prob = (
+                        log_probs_per_token.gather(1, choice_tokens.unsqueeze(1)).sum().item()
+                    )
 
                     log_probs.append(choice_log_prob)
 
@@ -429,7 +477,7 @@ class Evaluator:
         with torch.no_grad():
             for prompt in iterator:
                 if self.tokenizer:
-                    input_ids = self.tokenizer.encode(prompt, return_tensors='pt')
+                    input_ids = self.tokenizer.encode(prompt, return_tensors="pt")
                 else:
                     input_ids = torch.tensor([[ord(c) for c in prompt]])
 
@@ -442,7 +490,7 @@ class Evaluator:
                     outputs = self.model(generated)
 
                     if isinstance(outputs, dict):
-                        logits = outputs['logits']
+                        logits = outputs["logits"]
                     else:
                         logits = outputs
 
@@ -451,9 +499,9 @@ class Evaluator:
 
                 # Decode
                 if self.tokenizer:
-                    text = self.tokenizer.decode(generated[0, input_ids.size(1):])
+                    text = self.tokenizer.decode(generated[0, input_ids.size(1) :])
                 else:
-                    text = ''.join(chr(t) for t in generated[0, input_ids.size(1):].tolist())
+                    text = "".join(chr(t) for t in generated[0, input_ids.size(1) :].tolist())
 
                 generations.append(text)
 
@@ -466,8 +514,7 @@ class Evaluator:
 
         if "exact_match" in metrics:
             exact_matches = sum(
-                1 for g, r in zip(generations, references)
-                if g.strip().lower() == r.strip().lower()
+                1 for g, r in zip(generations, references) if g.strip().lower() == r.strip().lower()
             )
             results["exact_match"] = exact_matches / len(generations)
 
@@ -495,20 +542,20 @@ class Evaluator:
 
         with torch.no_grad():
             for batch in dataloader:
-                input_ids = batch['input_ids'].to(self.device)
-                labels = batch.get('labels', input_ids).to(self.device)
-
-                outputs = self.model(input_ids)
+                input_ids = batch["input_ids"].to(self.device)
+                mask = batch.get("attention_mask")
+                kwargs = {} if mask is None else {"attention_mask": mask.to(self.device)}
+                outputs = self.model(input_ids, **kwargs)
 
                 if isinstance(outputs, dict):
-                    logits = outputs['logits']
+                    logits = outputs["logits"]
                 else:
                     logits = outputs
 
                 # Get predictions and confidences
-                probs = F.softmax(logits[..., :-1, :], dim=-1)
+                aligned_logits, targets = self._align_lm_targets(batch, logits)
+                probs = F.softmax(aligned_logits, dim=-1)
                 max_probs, preds = probs.max(dim=-1)
-                targets = labels[..., 1:]
 
                 # Flatten
                 mask = targets != -100
@@ -516,6 +563,8 @@ class Evaluator:
                 correct.extend((preds[mask] == targets[mask]).cpu().tolist())
 
         # Compute ECE
+        if not confidences:
+            raise ValueError("Calibration requires at least one supervised target")
         confidences = torch.tensor(confidences)
         correct = torch.tensor(correct, dtype=torch.float)
 

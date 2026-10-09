@@ -4,9 +4,10 @@ GPU memory optimization utilities.
 Complexity-ML — 2026
 """
 
-import torch
 import gc
 import logging
+
+import torch
 
 logger = logging.getLogger(__name__)
 

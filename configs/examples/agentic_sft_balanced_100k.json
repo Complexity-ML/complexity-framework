@@ -1,0 +1,18 @@
+{
+  "format": "complexity-sft-preparation-v1",
+  "recipe_name": "historical-agentic-balanced-100k",
+  "status": "historical-recipe-not-a-new-200k-target",
+  "source_revision": "749c9a2:scripts/prepare_tr_hash_agentic_sft.py",
+  "sequence_length": 2048,
+  "quotas": {
+    "train": {"smol_smoltalk": 90000, "when2call_pref": 7900, "when2call_sft": 1676, "tool_calls_mini": 424},
+    "validation": {"smol_smoltalk": 4500, "when2call_test": 475, "tool_calls_mini": 25}
+  },
+  "sources": {
+    "smol_smoltalk": {"repository": "HuggingFaceTB/smol-smoltalk", "revision": "f73fe857d519ff6ac5af2ea67c4d3834da7b8bcc", "license": "Apache-2.0"},
+    "when2call": {"repository": "nvidia/When2Call", "revision": "0582f7749df63a96fdc3070932e83e72396ace53", "license": "CC-BY-4.0"},
+    "tool_calls_mini": {"repository": "qgallouedec/tool-calls-mini", "revision": "bd4039441db9074ac4e5621c6ebdd77726e878ef", "license": "Apache-2.0"}
+  },
+  "tokenizer": {"repository": "AETHORIA-AI/TR-HASH-Tokenizer-32K-Agentic", "revision": "2fcbc2c5359ded0244ca14531f1b3806eebac55e"},
+  "release_eligible": false
+}

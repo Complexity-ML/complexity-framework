@@ -22,27 +22,24 @@ Usage:
     export_gguf(model, "model.gguf", quantization="Q4_K_M")
 """
 
-from .quantizer import (
-    QuantizationConfig,
-    quantize_model,
-    DynamicQuantizer,
-    StaticQuantizer,
-)
-
-from .gptq import (
-    GPTQQuantizer,
-    GPTQConfig,
-)
-
 from .awq import (
-    AWQQuantizer,
     AWQConfig,
+    AWQQuantizer,
 )
-
 from .gguf_export import (
-    export_gguf,
-    GGUFWriter,
     GGUFQuantType,
+    GGUFWriter,
+    export_gguf,
+)
+from .gptq import (
+    GPTQConfig,
+    GPTQQuantizer,
+)
+from .quantizer import (
+    DynamicQuantizer,
+    QuantizationConfig,
+    StaticQuantizer,
+    quantize_model,
 )
 
 __all__ = [

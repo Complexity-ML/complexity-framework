@@ -1,6 +1,5 @@
-from scripts.chat_generate_local import build_messages_prompt, build_prompt
-from scripts.train_tr_hash_agentic_tokenizer import CHAT_TEMPLATE
-
+from complexity.inference.chat_template import render_jinja_messages
+from complexity.tokenizer.training import CHAT_TEMPLATE
 
 AGENTIC_RUNTIME_TEMPLATE = {
     "id": "tokenizer-jinja",
@@ -10,11 +9,14 @@ AGENTIC_RUNTIME_TEMPLATE = {
 
 
 def test_agentic_prompt_uses_tokenizer_native_generation_contract() -> None:
-    prompt = build_prompt(
-        "What is two plus three?",
-        False,
-        AGENTIC_RUNTIME_TEMPLATE,
-        system_prompt="Answer carefully.",
+    prompt = render_jinja_messages(
+        [
+            {"role": "system", "content": "Answer carefully."},
+            {"role": "user", "content": "What is two plus three?"},
+        ],
+        CHAT_TEMPLATE,
+        eos_token=AGENTIC_RUNTIME_TEMPLATE["eos_token"],
+        add_generation_prompt=True,
     )
     assert prompt == (
         "<|system|>Answer carefully.<|end_of_turn|>"
@@ -24,7 +26,7 @@ def test_agentic_prompt_uses_tokenizer_native_generation_contract() -> None:
 
 
 def test_agentic_messages_render_tool_result_before_next_assistant() -> None:
-    prompt = build_messages_prompt(
+    prompt = render_jinja_messages(
         [
             {"role": "user", "content": "Calculate it."},
             {
@@ -35,7 +37,9 @@ def test_agentic_messages_render_tool_result_before_next_assistant() -> None:
             },
             {"role": "tool", "content": "5"},
         ],
-        AGENTIC_RUNTIME_TEMPLATE,
+        CHAT_TEMPLATE,
+        eos_token=AGENTIC_RUNTIME_TEMPLATE["eos_token"],
+        add_generation_prompt=True,
     )
     assert "<|tool_call_start|>" in prompt
     assert "<|tool_result_start|>5<|tool_result_end|><|end_of_turn|>" in prompt

@@ -5,17 +5,17 @@ Registry API - Pour enregistrer des composants custom.
 from __future__ import annotations
 
 from complexity.core import (
-    Registry,
     ATTENTION_REGISTRY,
     MLP_REGISTRY,
+    MODEL_REGISTRY,
     NORMALIZATION_REGISTRY,
     POSITION_REGISTRY,
-    MODEL_REGISTRY,
+    Registry,
     register_attention,
     register_mlp,
+    register_model,
     register_normalization,
     register_position,
-    register_model,
 )
 
 

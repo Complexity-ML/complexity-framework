@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from scripts.eval_arc_generative import (
+from complexity.evaluation.arc import (
     ARCExample,
     apply_native_recipe,
     build_open_answer_prompt,

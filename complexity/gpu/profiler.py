@@ -4,10 +4,10 @@ GPU profiling utilities for training performance analysis.
 Complexity-ML — 2026
 """
 
-import torch
-import time
 import logging
-from typing import Optional
+import time
+
+import torch
 
 logger = logging.getLogger(__name__)
 

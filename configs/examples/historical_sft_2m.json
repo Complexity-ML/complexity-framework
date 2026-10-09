@@ -1,0 +1,142 @@
+{
+  "format": "complexity-historical-sft-recipe-v1",
+  "historical_reference": true,
+  "release_eligible": false,
+  "sequence_length": 2048,
+  "max_tokens_including_eos": 2049,
+  "name": "historical-agentic-sft-2m",
+  "implementation_revision": "749c9a270b747520184070707859172a16387fe3",
+  "tokenizer": {
+    "repository": "AETHORIA-AI/TR-HASH-Tokenizer-32K-Agentic",
+    "revision": "2fcbc2c5359ded0244ca14531f1b3806eebac55e"
+  },
+  "sources": {
+    "smol": {
+      "repository": "HuggingFaceTB/smol-smoltalk",
+      "revision": "f73fe857d519ff6ac5af2ea67c4d3834da7b8bcc",
+      "patterns": [
+        "data/*.parquet"
+      ]
+    },
+    "luciole": {
+      "repository": "OpenLLM-France/Luciole-PostTraining-Dataset-1.1",
+      "revision": "95df4f0dfd1abefafd9a7baac795c3e4304a9f99",
+      "patterns": [
+        "sft_instruct/nemotron-instruction-following-chat-v1/*.jsonl",
+        "sft_instruct/nemotron-stem/*.jsonl",
+        "sft_instruct/dolci-python-algorithms/*.jsonl",
+        "sft_instruct/nemotron-code/*.jsonl",
+        "sft_instruct/dolci-instruct-precise-if/*.jsonl"
+      ]
+    },
+    "numina": {
+      "repository": "AI-MO/NuminaMath-1.5",
+      "revision": "1b05109f9e5c1ad06c0663519502416c30b300f8",
+      "patterns": [
+        "data/*.parquet"
+      ]
+    },
+    "bigcode": {
+      "repository": "bigcode/self-oss-instruct-sc2-exec-filter-50k",
+      "revision": "356bb069eee815daa6e23e9a282eeefe1490ad44",
+      "patterns": [
+        "data/*.parquet"
+      ]
+    },
+    "smoltalk": {
+      "repository": "HuggingFaceTB/smoltalk",
+      "revision": "5feaf2fd3ffca7c237fc38d1861bc30365d48ffa",
+      "patterns": [
+        "data/everyday-conversations/*.parquet",
+        "data/openhermes-100k/*.parquet",
+        "data/systemchats-30k/*.parquet",
+        "data/smol-magpie-ultra/train-00000-of-00006.parquet",
+        "data/smol-magpie-ultra/train-00001-of-00006.parquet",
+        "data/smol-magpie-ultra/train-00002-of-00006.parquet"
+      ]
+    },
+    "ultrachat": {
+      "repository": "HuggingFaceH4/ultrachat_200k",
+      "revision": "8049631c405ae6576f93f445c6b8166f76f5505a",
+      "patterns": [
+        "data/train_sft-*.parquet",
+        "data/test_sft-*.parquet"
+      ]
+    }
+  },
+  "protected_benchmarks": {
+    "piqa": {
+      "source": "https://storage.googleapis.com/ai2-mosaic/public/physicaliqa/physicaliqa-train-dev.zip",
+      "sha256": "54d32a04f59a7e354396f321723c8d7ec35cc6b08506563d8d1ffcc15ce98ddd"
+    },
+    "arc_easy": {
+      "repository": "allenai/ai2_arc",
+      "config": "ARC-Easy",
+      "revision": "210d026faf9955653af8916fad021475a3f00453",
+      "field": "question"
+    },
+    "arc_challenge": {
+      "repository": "allenai/ai2_arc",
+      "config": "ARC-Challenge",
+      "revision": "210d026faf9955653af8916fad021475a3f00453",
+      "field": "question"
+    },
+    "hellaswag": {
+      "repository": "Rowan/hellaswag",
+      "revision": "218ec52e09a7e7462a5400043bb9a69a41d06b76",
+      "field": "ctx"
+    },
+    "gsm8k": {
+      "repository": "openai/gsm8k",
+      "config": "main",
+      "revision": "740312add88f781978c0658806c59bc2815b9866",
+      "field": "question"
+    }
+  },
+  "train_quotas": {
+    "general_conversations": 800000,
+    "verified_compact_reasoning": 450000,
+    "python_code": 350000,
+    "constraints_and_formats": 150000,
+    "tool_available_direct_answer": 150000,
+    "complete_agentic_trajectories": 100000
+  },
+  "eval_quotas": {
+    "general_conversations": 40000,
+    "verified_compact_reasoning": 22500,
+    "python_code": 17500,
+    "constraints_and_formats": 7500,
+    "tool_available_direct_answer": 7500,
+    "complete_agentic_trajectories": 5000
+  },
+  "agentic_submix": {
+    "single_tool_end_to_end": {
+      "train_examples": 55000,
+      "validation_examples": 2750
+    },
+    "multi_tool_end_to_end": {
+      "train_examples": 20000,
+      "validation_examples": 1000
+    },
+    "tool_failure_and_recovery": {
+      "train_examples": 10000,
+      "validation_examples": 500
+    },
+    "reasoning_code_and_tools": {
+      "train_examples": 15000,
+      "validation_examples": 750
+    }
+  },
+  "generator_seed_bases": {
+    "reasoning": 20000000,
+    "constraints": 30000000,
+    "code": 35000000,
+    "agentic": 40000000
+  },
+  "historical_starting_checkpoint": {
+    "repository": "AETHORIA-AI/TR-HASH-MoE-100M-70B-Agentic-Refinement",
+    "revision": "99fee390916154ec9d8c0f049c3a890f81414e20",
+    "subfolder": "token_pack_014_213622"
+  },
+  "historical_implementation_path": "scripts/prepare_tr_hash_agentic_sft_2m.py"
+}

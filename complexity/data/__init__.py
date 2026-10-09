@@ -46,58 +46,43 @@ Usage:
 
 """
 
-from .dataloader import (
-    DistributedDataLoader,
-    DataConfig,
-    create_dataloader,
-)
+from importlib import import_module as _import_module
 
-from .streaming import (
-    StreamingDataset,
-    ShardedDataset,
-    InterleavedDataset,
-)
-
-from .token_shards import (
-    TokenShardDataset,
-    build_token_shard_from_texts,
-    iter_texts_from_files,
-    load_token_shard,
-    token_shard_frequencies,
-    write_token_shard,
-)
-
-from .tokenization import (
-    # Base tokenizers
-    Tokenizer,
-    BPETokenizer,
-    SentencePieceTokenizer,
-    TiktokenWrapper,
-    HuggingFaceTokenizer,
-    get_tokenizer,
-    # Complexity format (primary)
-    ComplexityTokens,
-    ComplexityTemplate,
-    ComplexityTokenizer,
-    Message,
-    # Format compatibility (Llama, Mistral, GPT, Gemma)
-    TokenFormatMapping,
-    CompatibleTokenizer,
-    # Tool calling
-    ToolDefinition,
-    ToolCall,
-    ToolCallingMixin,
-    # Legacy aliases
-    SpecialTokens,  # -> ComplexityTokens
-    ChatTemplate,   # -> ComplexityTemplate
-    ChatTokenizer,  # -> ComplexityTokenizer
-)
-
-from .preprocessing import (
-    TextPreprocessor,
-    DataPipeline,
-    PackedSequenceCollator,
-)
+_EXPORTS = {
+    'DistributedDataLoader': '.dataloader',
+    'DataConfig': '.dataloader',
+    'create_dataloader': '.dataloader',
+    'StreamingDataset': '.streaming',
+    'ShardedDataset': '.streaming',
+    'InterleavedDataset': '.streaming',
+    'TokenShardDataset': '.token_shards',
+    'build_token_shard_from_texts': '.token_shards',
+    'iter_texts_from_files': '.token_shards',
+    'load_token_shard': '.token_shards',
+    'token_shard_frequencies': '.token_shards',
+    'write_token_shard': '.token_shards',
+    'Tokenizer': '.tokenization',
+    'BPETokenizer': '.tokenization',
+    'SentencePieceTokenizer': '.tokenization',
+    'TiktokenWrapper': '.tokenization',
+    'HuggingFaceTokenizer': '.tokenization',
+    'get_tokenizer': '.tokenization',
+    'ComplexityTokens': '.tokenization',
+    'ComplexityTemplate': '.tokenization',
+    'ComplexityTokenizer': '.tokenization',
+    'Message': '.tokenization',
+    'TokenFormatMapping': '.tokenization',
+    'CompatibleTokenizer': '.tokenization',
+    'ToolDefinition': '.tokenization',
+    'ToolCall': '.tokenization',
+    'ToolCallingMixin': '.tokenization',
+    'SpecialTokens': '.tokenization',
+    'ChatTemplate': '.tokenization',
+    'ChatTokenizer': '.tokenization',
+    'TextPreprocessor': '.preprocessing',
+    'DataPipeline': '.preprocessing',
+    'PackedSequenceCollator': '.preprocessing',
+}
 
 __all__ = [
     # DataLoader
@@ -142,3 +127,15 @@ __all__ = [
     "DataPipeline",
     "PackedSequenceCollator",
 ]
+
+
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(_import_module(_EXPORTS[name], __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

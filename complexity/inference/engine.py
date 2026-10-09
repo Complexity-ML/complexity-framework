@@ -10,16 +10,16 @@ Provides a unified interface for:
 Integrates KV caching, speculative decoding, and continuous batching.
 """
 
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, Iterator, List, Optional
+
 import torch
 import torch.nn as nn
-from typing import Optional, List, Dict, Any, Union, Iterator, Callable
-from dataclasses import dataclass, field
-from enum import Enum
-import time
 
+from .batching import BatchConfig, ContinuousBatcher, Request
 from .kv_cache import KVCache, PagedKVCache, SlidingWindowCache
 from .speculative import SpeculativeDecoder
-from .batching import ContinuousBatcher, BatchConfig, Request, RequestStatus
 
 
 class DecodingStrategy(Enum):

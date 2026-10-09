@@ -1,0 +1,18 @@
+{
+  "scope": "synthetic_full_model_single_microbatch_forward_backward_adamw",
+  "training_dataset_used": false,
+  "training_started": false,
+  "checkpoint_written": false,
+  "source_checkpoint_sha256": "62a98cd7eae04b744089880379e7251d59c944883597aa78b301be10ce11f386",
+  "model_parameters": 201194368,
+  "device": "NVIDIA GeForce RTX 5090",
+  "micro_batch_size": 16,
+  "sequence_length": 2048,
+  "precision": "bf16_autocast_fp32_parameters",
+  "loss": 12.100687026977539,
+  "gradient_norm": 25.60923194885254,
+  "parameters_updated": true,
+  "elapsed_seconds": 1.7672076672315598,
+  "max_allocated_bytes": 6205039616,
+  "max_reserved_bytes": 7337934848
+}

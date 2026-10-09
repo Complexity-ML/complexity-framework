@@ -8,16 +8,15 @@ import torch
 import torch.nn.functional as F
 
 from ...experiments.shared_associative_attention import (
+    CollisionNormalizedDeltaAttention,
+    CollisionNormalizedLexicalForgeDeltaAttention,
+    LexicalForgeDeltaAttention,
+    LexicalValueDeltaAttention,
+    MultiTimescaleDeltaAttention,
+    PositionAwareCollisionForgeDeltaAttention,
     SharedAssociativeAttention,
     SharedContextFusion,
     StableDeltaAssociativeAttention,
-    MultiTimescaleDeltaAttention,
-    CollisionNormalizedDeltaAttention,
-    LexicalValueDeltaAttention,
-    LexicalForgeDeltaAttention,
-    CollisionNormalizedLexicalForgeDeltaAttention,
-    PositionAwareCollisionForgeDeltaAttention,
-
 )
 from ..registry import register_attention
 from .base import AttentionConfig

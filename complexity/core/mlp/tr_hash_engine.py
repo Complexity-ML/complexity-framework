@@ -135,6 +135,12 @@ class TRHashEngineMLP(MLPBase):
             self.engine.config,
             route_weights=_route_weights(self.top_k, self._primary_weight),
         )
+        # PyTorch/CGGR read the derived buffer; fused execution reads config.
+        # Keep both policies synchronized when a training control changes it.
+        self.engine._route_weights.copy_(
+            self.engine._route_weights.new_tensor(self.engine.config.route_weights)
+        )
+        self.engine._graph_pool.clear()
 
     def set_active_experts(self, num_experts: int) -> None:
         """Shrink to a smaller deterministic ID/hash-routed expert pool at runtime."""

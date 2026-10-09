@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from scripts.eval_torch_gsm8k import (
+from complexity.evaluation.gsm8k import (
     GSM8K_COT_FEWSHOT,
     GSM8K_SYSTEM_PROMPT,
     build_gsm8k_prompt,

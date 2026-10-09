@@ -1,204 +1,124 @@
 # Getting started
 
-## Requirements
+Begin with a small CPU model to check the environment. A successful forward
+pass validates the installation; it does not qualify a distributed checkpoint
+restart or model quality.
 
-- Python 3.10 or newer;
-- a PyTorch build matched to CPU, CUDA, ROCm, or Apple MPS;
-- `safetensors` for released checkpoints;
-- enough memory for the selected model, batch, sequence length, and optimizer.
+## Requirements and installation
 
-PyTorch is intentionally not pinned as a package dependency because its wheel
-must match the target backend.
-
-## Install from source
+Use **Python 3.10 or newer** and an isolated environment. PyTorch must match
+CPU, CUDA, ROCm or Apple MPS; it is intentionally installed separately from
+the framework package.
 
 ```bash
 git clone https://github.com/Complexity-ML/complexity-framework.git
 cd complexity-framework
-
 python3 -m venv .venv
 source .venv/bin/activate
-
-# Install the appropriate PyTorch build first.
-pip install torch
-pip install -e ".[dev,tools]"
+make install
 ```
 
-For backend-specific wheels and kernel policy, read
-[GPU and dispatch paths](cuda.md).
+The portable default selects the local backend. Explicit targets include
+`make install-cpu`, `make install-mps`, `make install-cuda` and
+`make install-rocm`. If the correct PyTorch build is already present:
 
-## Build a small TR-GQA model
+```bash
+python -m pip install -e .
+```
 
-This smoke model uses the same multi-hash routing family as the released 200M
-checkpoint while remaining small enough for CPU tests.
+For tests use `python -m pip install -e '.[dev]'`; additional extras are for
+specific tasks, such as `[tools]` for MCP and `[detection]` for vision.
+See [backend notes](cuda.md) and [vision dependencies](vision/vision-dependency-stack.md).
+
+## Validate without allocating a model
+
+```bash
+complexity --version
+complexity train validate configs/examples/tr_gqa_cpu.json --json
+complexity train inspect scripts/pretrain_1b_fsdp/recipe.json --json
+```
+
+The first config is a flat `ModelConfig` example. The second is an existing
+FSDP **recipe**, a distinct contract including token budget and asset hashes.
+Inspection reports missing local assets honestly; it does not download them
+or start training. See [configuration types](run_configs.md).
+
+## Run a small CPU forward pass
 
 ```python
 import torch
-
 from complexity import ComplexityModel, ModelConfig
 
-config = ModelConfig(
-    hidden_size=128,
-    num_hidden_layers=2,
-    num_attention_heads=4,
-    num_key_value_heads=1,
-    attention_type="gqa",
-    vocab_size=1_024,
-    max_position_embeddings=128,
-    mlp_type="tr_hash_engine",
-    num_experts=4,
-    intermediate_size=64,          # total stored routed width: 4 × 16
-    shared_expert=True,
-    shared_intermediate_size=256,
-    routing_strategy="token_id_multi_hash",
-    route_hash_count=2,
-    top_k=2,
-    top_k_primary_weight=0.5,
-    use_custom_kernels=False,
-)
+config = ModelConfig.load("configs/examples/tr_gqa_cpu.json", strict=True)
+model = ComplexityModel(config).eval()
+input_ids = torch.randint(0, config.vocab_size, (2, 16))
 
-model = ComplexityModel(config)
-input_ids = torch.randint(0, config.vocab_size, (2, 32))
-result = model(input_ids)
+with torch.no_grad():
+    result = model(input_ids)
 
-print(result["logits"].shape)
+assert result["logits"].shape == (2, 16, config.vocab_size)
 print(model.num_parameters())
-print(model.layers[0].mlp.capability_summary("cpu"))
 ```
 
-The model passes the original `input_ids` to every TR-MoE layer. Token IDs
-select parameters; the selected experts still transform contextual hidden
-states produced by attention.
+The example uses untrained weights, synthetic IDs and PyTorch kernels. Each
+TR-MoE layer receives the original IDs: identity selects expert parameters;
+attention supplies the contextual hidden states they transform.
+`strict=True` catches misspelled authoring fields; existing checkpoint loaders
+retain their historical metadata tolerance.
 
-## Recreate the released 200M shape
-
-Use the exact configuration from `scripts.train_tr_hash_200m_200b.make_config`
-rather than copying dimensions by hand:
+## Save and reload a native model
 
 ```python
-from complexity import ComplexityModel
-from scripts.train_tr_hash_200m_200b import make_config
-
-config = make_config()
-model = ComplexityModel(config)
-
-assert model.num_parameters() == 201_194_368
-assert model.layers[0].mlp.engine.config.expert_width == 64
-assert model.layers[0].mlp.engine.config.stored_routed_width == 256
-assert model.layers[0].mlp.engine.config.active_routed_width == 128
+model.save_pretrained("artifacts/local-example")
+restored = ComplexityModel.from_pretrained("artifacts/local-example")
+restored.eval()
 ```
 
-Constructing this model allocates the full weights. Use the small smoke model
-when only validating an installation.
+A native export contains `config.json` and `model.safetensors` (or
+`pytorch_model.bin` when explicitly selected). It is suitable for model
+loading and evaluation, and carries the persisted route buffers. It does not
+contain optimizer, scheduler or rank RNG state.
 
-## Load a released checkpoint
-
-Download one complete Hugging Face repository, preserving `config.json`,
-`model.safetensors`, tokenizer files, route metadata, and the chat template:
-
-```bash
-python -m pip install --upgrade huggingface_hub
-```
-
-```bash
-hf download AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT \
-  --local-dir checkpoints/tr-hash-moe-200m-sft
-```
-
-Then load the framework model:
+A complete local 200M release can be loaded through the same API:
 
 ```python
-from complexity import ComplexityModel
-
 model = ComplexityModel.from_pretrained("checkpoints/tr-hash-moe-200m-sft")
-model.eval()
 ```
 
-Do not copy only `model.safetensors`: configuration, tokenizer, persisted
-routes, and `chat_template.jinja` are part of the release contract.
+Use the exact configuration and tokenizer distributed with the weights,
+rather than reconstructing the shape from an archived training script.
+[200M release evidence](tr-hash-200m-release.md) documents that separate
+lineage. Downloading multi-gigabyte weights is unnecessary for an install check.
 
-### Load through Transformers
+## The paused 1B run uses a different checkpoint format
 
-A Transformers bundle additionally contains `configuration_tr_hash_moe.py`,
-`modeling_tr_hash_moe.py`, and the `auto_map` entries that bind them. Load it
-as custom model code:
+The preserved [1B FSDP recipe](../scripts/pretrain_1b_fsdp/README.md) contains
+`recipe.json`, `model.json` and a resume-only four-rank launcher. Its 70B-token
+budget, original schedule, tokenizer and distributed state must remain together.
+FSDP shards cannot be loaded with `ComplexityModel.from_pretrained`.
 
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-model_id = "AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT"
-tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(
-    model_id,
-    trust_remote_code=True,
-)
-generated = model.generate(
-    **tokenizer("Hello", return_tensors="pt"),
-    max_new_tokens=32,
-)
-```
-
-For a local native checkpoint, create the autonomous bundle with
-`scripts/export_tr_hash_transformers.py`. See the adapter
-[README](../integrations/transformers/tr_hash_moe/README.md) for the exact
-command. The exporter retains the persisted expert-route tables and separates
-architectural `num_experts_per_tok` from the sampling parameter `top_k`.
-
-## Save and reload
-
-```python
-model.save_pretrained("checkpoints/example")
-restored = ComplexityModel.from_pretrained("checkpoints/example")
-```
-
-`save_pretrained` writes `config.json` and `model.safetensors` when
-`safetensors` is installed. Distributed DTensor/FSDP saves are collective; all
-ranks must enter the save call.
-
-## Training entry points
-
-The current production language-model path is:
-
-1. replay-scheduled base pretraining;
-2. fresh-optimizer full-parameter refinement;
-3. three-epoch full-parameter instruction SFT on the audited 300K v2 dataset;
-4. PIQA checkpoint selection and SafeTensors export.
-
-The first three steps are also the default contract for other non-Vision model
-families. Refinement means the exact pretraining corpus with fresh optimizer
-and scheduler state; task data belongs only to SFT. Vision is explicitly
-exempt because its existing clean-image phase is integrated refinement.
-
-See [Training](training.md) for commands and preflight requirements. The old
-statement that text training is LoRA-only is no longer true.
-
-## Generate text
-
-`ComplexityModel.generate()` intentionally raises. Production generation for
-the released checkpoint belongs to
-[TR-Hash-i64](https://github.com/Complexity-ML/TR-Hash-i64), which implements
-the custom architecture and exposes OpenAI-compatible endpoints.
+The read-only checkpoint inspector accepts a local complete step directory:
 
 ```bash
-curl http://localhost:7860/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "tr-hash-moe-200m",
-    "messages": [{"role": "user", "content": "Explain deterministic token routing."}],
-    "temperature": 0.4,
-    "top_p": 0.85,
-    "max_tokens": 384
-  }'
+complexity checkpoint inspect /path/to/step_0051000 \
+  --recipe scripts/pretrain_1b_fsdp/recipe.json --verify --json
 ```
 
-The framework also contains eager diagnostic generation scripts used for
-checkpoint tests. They are not a continuous-batching production server.
+Use the actual complete checkpoint name on your machine; `step_0051000` is an
+example, not a claim about the latest checkpoint. File/hash checks do not
+restore tensors. A later real resume still requires the original FSDP runner
+and a bounded save/reload check. See [workflows](workflows.md).
 
-## Next steps
+## Choose the next workflow
 
-- [TR-HASH MoE 200M release](tr-hash-200m-release.md)
-- [Architecture and naming](architectures.md)
-- [TR-Hash engine](tr-hash-engine.md)
-- [Training](training.md)
-- [GPU and dispatch paths](cuda.md)
-- [API reference](api.md)
+| Next task | Guide |
+|---|---|
+| Create a new CPU training experiment with explicit data | [Workflows](workflows.md#new-local-training-experiment) |
+| Prepare a later 1B resume | [Workflows](workflows.md#paused-1b-pretraining) |
+| Evaluate a native checkpoint without changing it | [Workflows](workflows.md#evaluation) |
+| Use a Transformers custom-model bundle or an existing server | [API](api.md#external-inference) |
+| Extend components | [Framework architecture](framework-architecture.md), [custom models](custom-models.md) |
+
+`ComplexityModel.generate()` is intentionally disabled. Generation uses the
+[Transformers adapter](../integrations/transformers/tr_hash_moe/README.md) or
+an external service that implements TR-HASH and its persisted routes.

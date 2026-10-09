@@ -6,10 +6,10 @@ For full dataset functionality, use:
 """
 
 from complexity.dataset import (
-    Dataset,
     DataConfig,
-    StreamingDataset,
     DataPipeline,
+    Dataset,
+    StreamingDataset,
 )
 
 __all__ = [

@@ -7,9 +7,10 @@ Includes:
 - Dynamic NTK-aware scaling
 """
 
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
-from typing import Tuple, Optional
 
 from ..registry import register_position
 
@@ -247,7 +248,9 @@ def _liger_rope_available() -> bool:
     """Cached import check for Liger's fused RoPE."""
     if not hasattr(_liger_rope_available, "_cache"):
         try:
-            from liger_kernel.ops.rope import LigerRopeFunction  # type: ignore[import-not-found] # noqa: F401
+            from liger_kernel.ops.rope import (
+                LigerRopeFunction,  # type: ignore[import-not-found] # noqa: F401
+            )
             _liger_rope_available._cache = True
         except Exception:
             _liger_rope_available._cache = False

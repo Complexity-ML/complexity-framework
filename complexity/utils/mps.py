@@ -16,20 +16,33 @@ from typing import Optional
 import torch
 
 from .device import (
-    autocast,
-    autocast_dtype,
-    empty_cache,
+    autocast as autocast,
+)
+from .device import (
+    autocast_dtype as autocast_dtype,
+)
+from .device import (
+    empty_cache as empty_cache,
+)
+from .device import (
     is_mps_available,
-    is_nvidia_cuda_available as is_cuda_available,
+    is_nvidia_cuda_available,
     is_rocm_available,
-    is_rocm_runtime_present,
-    rocm_unavailable_message,
     seed_all,
     select_device,
-    synchronize,
+)
+from .device import (
+    is_rocm_runtime_present as is_rocm_runtime_present,
+)
+from .device import (
+    rocm_unavailable_message as rocm_unavailable_message,
+)
+from .device import (
+    synchronize as synchronize,
 )
 
 logger = logging.getLogger(__name__)
+is_cuda_available = is_nvidia_cuda_available  # Preserve the legacy public alias.
 
 
 # ---------------------------------------------------------------------------

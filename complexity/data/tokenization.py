@@ -21,13 +21,18 @@ INL Complexity Format Features:
 - Memory/context <|memory|>, <|retrieve|>
 """
 
-import torch
-from typing import List, Optional, Union, Dict, Any, Callable
-from pathlib import Path
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from __future__ import annotations
+
 import json
 import re
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from pathlib import Path as Path
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import Callable as Callable
+
+if TYPE_CHECKING:
+    import torch
 
 
 class Tokenizer(ABC):
@@ -388,9 +393,22 @@ def get_tokenizer(
     Returns:
         Configured tokenizer
     """
+    # Historical CLI callers pass --model through this name. Keep the public
+    # model_path signature while honoring that alias instead of ignoring it.
+    model_path = model_path or kwargs.pop("model_name", None)
+    if tokenizer_type == "hf":
+        tokenizer_type = "huggingface"
     if tokenizer_type == "tiktoken":
+        encoding_name = kwargs.get("encoding_name")
+        if encoding_name is None and model_path is not None:
+            import tiktoken
+
+            if model_path in tiktoken.list_encoding_names():
+                encoding_name = model_path
+            else:
+                encoding_name = tiktoken.encoding_for_model(model_path).name
         return TiktokenWrapper(
-            encoding_name=kwargs.get("encoding_name", "cl100k_base"),
+            encoding_name=encoding_name or "cl100k_base",
         )
     elif tokenizer_type == "sentencepiece":
         if model_path is None:

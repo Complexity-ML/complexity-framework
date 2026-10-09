@@ -7,7 +7,7 @@ from pathlib import Path
 
 from safetensors.torch import load_file
 
-from ..detection.config import TRHashDetectorConfig
+from ...vision.detection.config import TRHashDetectorConfig
 from .model import TRHashSensorFusionClassifier
 
 _VISION_FIELDS = (

@@ -8,14 +8,14 @@ import torch.nn as nn
 
 from complexity.core import (
     POSITION_REGISTRY,
+    ALiBiPositionBias,
+    DynamicNTKRoPE,
+    LearnedPositionEmbedding,
     RotaryEmbedding,
     StandardRoPE,
     YaRNRoPE,
-    DynamicNTKRoPE,
-    ALiBiPositionBias,
-    LearnedPositionEmbedding,
-    rotate_half,
     apply_rotary_pos_emb,
+    rotate_half,
 )
 
 

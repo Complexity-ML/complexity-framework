@@ -7,8 +7,8 @@ import re
 from pathlib import Path
 from urllib.parse import unquote
 
-from complexity.generative.detection import TRHashDetectorConfig, TRHashObjectDetector
 from complexity.tr_hash import TRHashEngineConfig, supports_fused_cuda
+from complexity.vision.detection import TRHashDetectorConfig, TRHashObjectDetector
 
 ROOT = Path(__file__).resolve().parents[1]
 CURRENT_MARKDOWN = (
@@ -17,6 +17,8 @@ CURRENT_MARKDOWN = (
     ROOT / "TR_GQA.md",
     ROOT / "TR_MHA.md",
     *sorted((ROOT / "docs").glob("*.md")),
+    *sorted((ROOT / "docs/vision").glob("*.md")),
+    *sorted((ROOT / "docs/experiments").glob("*.md")),
 )
 
 
@@ -76,10 +78,12 @@ def test_api_guide_lists_every_packaged_console_script() -> None:
 
 
 def test_documented_training_commands_include_required_optimizer() -> None:
-    guide = ROOT / "docs/tr-hash-object-detection.md"
+    guide = ROOT / "docs/vision/tr-hash-object-detection.md"
     blocks = _shell_blocks(guide)
     training_blocks = [
-        block for block in blocks if "cf-vision-pretrain" in block or "cf-detector-train" in block
+        block
+        for block in blocks
+        if "complexity vision pretrain" in block or "complexity vision train detector" in block
     ]
     assert training_blocks
     for block in training_blocks:
@@ -87,7 +91,7 @@ def test_documented_training_commands_include_required_optimizer() -> None:
 
 
 def test_text_to_image_guide_uses_current_generator_flags_and_batch_math() -> None:
-    guide = (ROOT / "docs/tr-hash-text-to-image.md").read_text(encoding="utf-8")
+    guide = (ROOT / "docs/vision/tr-hash-text-to-image.md").read_text(encoding="utf-8")
     assert "--batch-size 2" in guide
     assert "--guidance-scale 4.0" in guide
     assert "--output-dir samples" in guide
@@ -135,7 +139,7 @@ def test_detector_parameter_claim_matches_documented_configuration() -> None:
         end_to_end=True,
     )
     parameters = sum(parameter.numel() for parameter in TRHashObjectDetector(config).parameters())
-    guide = (ROOT / "docs/tr-hash-object-detection.md").read_text(encoding="utf-8")
+    guide = (ROOT / "docs/vision/tr-hash-object-detection.md").read_text(encoding="utf-8")
     assert parameters == 927_246
     assert "927,246 parameters" in guide
 
@@ -151,7 +155,8 @@ def test_supported_python_floor_is_consistent() -> None:
 def test_current_repository_map_and_doc_index_are_complete() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     index = (ROOT / "docs/index.md").read_text(encoding="utf-8")
-    assert "deploy/" in readme
+    assert "complexity/vision/" in readme
+    assert (ROOT / "complexity/vision").is_dir()
     assert "spaces/                      Hugging Face Space wrappers" not in readme
     assert "tr_hash_sensor_fusion.md" in index
     assert "TR_HASH_DETECTOR_SPECIALIZATION.md" in index

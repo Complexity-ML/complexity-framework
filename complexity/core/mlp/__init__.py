@@ -24,12 +24,12 @@ Usage:
 """
 
 from .base import MLPBase, MLPConfig
-from .tr_hash_engine import TRHashEngineMLP
 from .dense_deterministic import DenseDeterministicMLP
-from .lexical_modulated import LexicalModulatedMLP
-from .lexical_channel_modulated import LexicalChannelModulatedMLP
-from .lexical_object_micro_expert import LexicalObjectMicroExpertMLP
 from .deterministic_init import deterministic_gaussian_init_
+from .lexical_channel_modulated import LexicalChannelModulatedMLP
+from .lexical_modulated import LexicalModulatedMLP
+from .lexical_object_micro_expert import LexicalObjectMicroExpertMLP
+from .tr_hash_engine import TRHashEngineMLP
 
 __all__ = [
     "MLPBase",

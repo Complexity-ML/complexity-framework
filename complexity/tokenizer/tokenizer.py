@@ -7,19 +7,23 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import List, Optional, Union, Dict, Any, Iterator, Callable
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Union
 
-import torch
+if TYPE_CHECKING:
+    import torch
 
 from .config import (
-    TokenizerConfig,
-    TOKENIZER_PRESETS,
-    FORMAT_SPECIAL_TOKENS,
-    FORMAT_BOS_EOS,
-    get_special_tokens,
-    get_bos_eos,
+    FORMAT_BOS_EOS as FORMAT_BOS_EOS,
 )
-
+from .config import (
+    FORMAT_SPECIAL_TOKENS as FORMAT_SPECIAL_TOKENS,
+)
+from .config import (
+    TOKENIZER_PRESETS,
+    TokenizerConfig,
+    get_bos_eos,
+    get_special_tokens,
+)
 
 TIKTOKEN_ENCODINGS = {"o200k_base", "cl100k_base", "p50k_base", "r50k_base"}
 
@@ -222,7 +226,7 @@ class Tokenizer:
         else:
             raise ValueError(f"Unknown method: {config.method}")
 
-        print(f"[Tokenizer] Done!")
+        print("[Tokenizer] Done!")
         return cls(tokenizer, config)
 
     @classmethod
@@ -285,7 +289,7 @@ class Tokenizer:
         else:
             raise ValueError(f"Unknown method: {config.method}")
 
-        print(f"[Tokenizer] Done!")
+        print("[Tokenizer] Done!")
         return cls(tokenizer, config)
 
     # ==================== Encode/Decode ====================
@@ -309,7 +313,7 @@ class Tokenizer:
 
     def decode(self, tokens: Union[List[int], torch.Tensor], skip_special_tokens: bool = True) -> str:
         """Decode token IDs to text."""
-        if isinstance(tokens, torch.Tensor):
+        if hasattr(tokens, "tolist"):
             tokens = tokens.tolist()
 
         if hasattr(self._tokenizer, "decode_batch"):
@@ -379,10 +383,10 @@ class Tokenizer:
     @staticmethod
     def _train_bpe(files, vocab_size, special_tokens, min_freq):
         from tokenizers import Tokenizer as HFTok
-        from tokenizers.models import BPE
-        from tokenizers.trainers import BpeTrainer
-        from tokenizers.pre_tokenizers import ByteLevel
         from tokenizers.decoders import ByteLevel as BLD
+        from tokenizers.models import BPE
+        from tokenizers.pre_tokenizers import ByteLevel
+        from tokenizers.trainers import BpeTrainer
         tok = HFTok(BPE(unk_token="<|unk|>"))
         tok.pre_tokenizer = ByteLevel(add_prefix_space=False)
         tok.decoder = BLD()
@@ -399,8 +403,8 @@ class Tokenizer:
     def _train_unigram(files, vocab_size, special_tokens):
         from tokenizers import Tokenizer as HFTok
         from tokenizers.models import Unigram
-        from tokenizers.trainers import UnigramTrainer
         from tokenizers.pre_tokenizers import Metaspace
+        from tokenizers.trainers import UnigramTrainer
         tok = HFTok(Unigram())
         tok.pre_tokenizer = Metaspace()
         trainer = UnigramTrainer(
@@ -416,8 +420,8 @@ class Tokenizer:
     def _train_wordpiece(files, vocab_size, special_tokens, min_freq):
         from tokenizers import Tokenizer as HFTok
         from tokenizers.models import WordPiece
-        from tokenizers.trainers import WordPieceTrainer
         from tokenizers.pre_tokenizers import Whitespace
+        from tokenizers.trainers import WordPieceTrainer
         tok = HFTok(WordPiece(unk_token="<|unk|>"))
         tok.pre_tokenizer = Whitespace()
         trainer = WordPieceTrainer(
@@ -434,10 +438,10 @@ class Tokenizer:
     @staticmethod
     def _train_bpe_from_iterator(iterator, vocab_size, special_tokens, min_freq):
         from tokenizers import Tokenizer as HFTok
-        from tokenizers.models import BPE
-        from tokenizers.trainers import BpeTrainer
-        from tokenizers.pre_tokenizers import ByteLevel
         from tokenizers.decoders import ByteLevel as BLD
+        from tokenizers.models import BPE
+        from tokenizers.pre_tokenizers import ByteLevel
+        from tokenizers.trainers import BpeTrainer
         tok = HFTok(BPE(unk_token="<|unk|>"))
         tok.pre_tokenizer = ByteLevel(add_prefix_space=False)
         tok.decoder = BLD()
@@ -454,8 +458,8 @@ class Tokenizer:
     def _train_unigram_from_iterator(iterator, vocab_size, special_tokens):
         from tokenizers import Tokenizer as HFTok
         from tokenizers.models import Unigram
-        from tokenizers.trainers import UnigramTrainer
         from tokenizers.pre_tokenizers import Metaspace
+        from tokenizers.trainers import UnigramTrainer
         tok = HFTok(Unigram())
         tok.pre_tokenizer = Metaspace()
         trainer = UnigramTrainer(
@@ -471,8 +475,8 @@ class Tokenizer:
     def _train_wordpiece_from_iterator(iterator, vocab_size, special_tokens, min_freq):
         from tokenizers import Tokenizer as HFTok
         from tokenizers.models import WordPiece
-        from tokenizers.trainers import WordPieceTrainer
         from tokenizers.pre_tokenizers import Whitespace
+        from tokenizers.trainers import WordPieceTrainer
         tok = HFTok(WordPiece(unk_token="<|unk|>"))
         tok.pre_tokenizer = Whitespace()
         trainer = WordPieceTrainer(

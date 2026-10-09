@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import torch.nn as nn
 
-from complexity.models import TransformerBlock, ComplexityModel
 from complexity.config import ModelConfig
+from complexity.models import ComplexityModel, TransformerBlock
 
 
 class Block:

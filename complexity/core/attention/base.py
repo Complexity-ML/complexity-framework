@@ -4,11 +4,12 @@ Base attention class for framework-complexity.
 All attention implementations must inherit from this class.
 """
 
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
-from abc import ABC, abstractmethod
-from typing import Optional, Tuple
-from dataclasses import dataclass
 
 
 @dataclass

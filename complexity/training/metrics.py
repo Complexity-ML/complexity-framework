@@ -1,10 +1,9 @@
 """Training metrics tracking."""
 
-import time
 import json
-import math
+import time
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
 
 class MetricsTracker:

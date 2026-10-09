@@ -11,14 +11,15 @@ Supports various quantization types:
 - Q4_K_M, Q5_K_M: K-quant variants (better quality)
 """
 
-import torch
-import torch.nn as nn
-from typing import Optional, Dict, Any, List, BinaryIO
+import logging
+import struct
 from dataclasses import dataclass
 from enum import Enum
-import struct
+from typing import Any, BinaryIO, Dict, List, Optional
+
 import numpy as np
-import logging
+import torch
+import torch.nn as nn
 
 logger = logging.getLogger(__name__)
 

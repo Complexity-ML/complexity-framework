@@ -261,11 +261,11 @@ def _is_dtensor_name(v):
 # ── Convert checkpoint helper (CPU) ───────────────────────────────────────────
 
 class TestConvertCheckpoint:
-    """Test the detensor logic used in convert_checkpoint.py."""
+    """Test the packaged checkpoint tensor-tree conversion helper."""
 
     def test_detensor_nested(self):
         """detensor() handles nested dicts and lists."""
-        from scripts.convert_checkpoint import detensor
+        from complexity.utils.checkpointing import detensor
 
         sd = {
             "a": torch.randn(4, 4),
@@ -276,7 +276,7 @@ class TestConvertCheckpoint:
         assert out["nested"]["b"].shape == (2,)
 
     def test_detensor_list(self):
-        from scripts.convert_checkpoint import detensor
+        from complexity.utils.checkpointing import detensor
 
         lst = [torch.randn(3), torch.ones(5)]
         out = detensor(lst)

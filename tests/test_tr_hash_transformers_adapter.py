@@ -6,7 +6,7 @@ import torch
 from safetensors import safe_open
 
 from complexity import ComplexityModel, ModelConfig
-from scripts.export_tr_hash_transformers import export_bundle
+from complexity.export.transformers import build_transformers_config, export_bundle
 
 ADAPTER = Path("integrations/transformers/tr_hash_moe")
 
@@ -97,7 +97,8 @@ def test_adapter_multi_token_cache_preserves_causality():
     )
 
 
-def test_exported_bundle_loads_through_auto_model(tmp_path, monkeypatch):
+@pytest.mark.parametrize("changed_routing", [False, True])
+def test_exported_bundle_loads_through_auto_model(tmp_path, monkeypatch, changed_routing):
     transformers = pytest.importorskip("transformers")
     monkeypatch.setattr(
         transformers.dynamic_module_utils,
@@ -105,6 +106,9 @@ def test_exported_bundle_loads_through_auto_model(tmp_path, monkeypatch):
         str(tmp_path / "hf-modules"),
     )
     native = ComplexityModel(_tiny_config()).eval()
+    if changed_routing:
+        for layer in native.layers:
+            layer.mlp.set_top_k_primary_weight(0.9)
     source = tmp_path / "native"
     native.save_pretrained(source)
     output = tmp_path / "hub"
@@ -123,10 +127,13 @@ def test_exported_bundle_loads_through_auto_model(tmp_path, monkeypatch):
     assert config.num_experts_per_tok == 2
     assert raw_exported_config["top_k"] == 2
     assert raw_exported_config["num_experts_per_tok"] == 2
+    assert raw_exported_config["top_k_primary_weight"] == (0.9 if changed_routing else 0.5)
     assert "top_k" not in config.to_dict()
     with safe_open(output / "model.safetensors", framework="pt") as checkpoint:
         assert checkpoint.metadata()["format"] == "pt"
     with torch.no_grad():
+        ids = torch.tensor([[1, 5, 9]])
+        torch.testing.assert_close(model(ids).logits, native(ids)["logits"], rtol=1e-5, atol=1e-6)
         output_ids = model.generate(
             torch.tensor([[1, 5, 9]]),
             max_new_tokens=2,
@@ -174,3 +181,57 @@ def test_export_infers_special_token_ids(tmp_path):
     assert config["eos_token_id"] == 0
     assert config["pad_token_id"] == 1
     assert config["unk_token_id"] == 3
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"attention_type": "lexical_gqa"},
+        {"tie_word_embeddings": False},
+        {"top_k": 1},
+        {"learn_hash_pair_gates": True},
+        {"active_expert_width": 2},
+        {"layer_mlp_controls": []},
+        {"rope_type": "yarn"},
+    ],
+)
+def test_export_rejects_unsupported_runtime_behavior(override):
+    config = _tiny_config().to_dict()
+    config.update(override)
+    with pytest.raises(ValueError, match="Unsupported Transformers export"):
+        build_transformers_config(config)
+
+
+def test_export_preserves_source_bytes_and_requires_a_separate_destination(tmp_path):
+    import hashlib
+
+    native = ComplexityModel(_tiny_config()).eval()
+    source = tmp_path / "native"
+    native.save_pretrained(source)
+    config_file = source / "config.json"
+    weights_file = source / "model.safetensors"
+    hashes = [hashlib.sha256(path.read_bytes()).hexdigest() for path in [config_file, weights_file]]
+    with pytest.raises(ValueError, match="separate from source"):
+        export_bundle(config_path=config_file, weights_path=weights_file, output=source)
+    output = tmp_path / "export"
+    export_bundle(config_path=config_file, weights_path=weights_file, output=output)
+    assert [
+        hashlib.sha256(path.read_bytes()).hexdigest() for path in [config_file, weights_file]
+    ] == hashes
+    with (
+        safe_open(weights_file, framework="pt") as original,
+        safe_open(output / "model.safetensors", framework="pt") as exported,
+    ):
+        assert original.keys() == exported.keys()
+        for key in original.keys():
+            assert torch.equal(original.get_tensor(key), exported.get_tensor(key))
+
+
+def test_current_1b_recipe_is_in_export_supported_family():
+    import json
+
+    config = json.loads(Path("scripts/pretrain_1b_fsdp/model.json").read_text())
+    exported = build_transformers_config(config)
+    assert exported["num_experts_per_tok"] == 2
+    assert exported["num_experts"] == 8
+    assert exported["hidden_size"] == 1536

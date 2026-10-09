@@ -1,8 +1,9 @@
 import json
 
+import pytest
 import torch
 
-from scripts.convert_pt_to_mlx import (
+from complexity.export.routed import (
     build_mlx_config,
     copy_tokenizer_files,
     remap_hf_state_dict,
@@ -62,9 +63,7 @@ def test_remap_state_dict_preserves_canonical_engine_routes_and_weights():
     )
     assert (
         converted["model.layers.0.mlp.token_to_expert"].untyped_storage().data_ptr()
-        != converted[
-            "model.layers.0.mlp.topk_token_to_expert"
-        ].untyped_storage().data_ptr()
+        != converted["model.layers.0.mlp.topk_token_to_expert"].untyped_storage().data_ptr()
     )
 
 
@@ -75,12 +74,8 @@ def test_copy_tokenizer_files_does_not_overwrite_mlx_config(tmp_path):
     output.mkdir()
     (source / "tokenizer.json").write_text("{}", encoding="utf-8")
     (source / "tokenizer_config.json").write_text("{}", encoding="utf-8")
-    (source / "config.json").write_text(
-        json.dumps({"model_type": "deep"}), encoding="utf-8"
-    )
-    (output / "config.json").write_text(
-        json.dumps({"model_type": "complexity"}), encoding="utf-8"
-    )
+    (source / "config.json").write_text(json.dumps({"model_type": "deep"}), encoding="utf-8")
+    (output / "config.json").write_text(json.dumps({"model_type": "complexity"}), encoding="utf-8")
 
     copied = copy_tokenizer_files(source, output)
 
@@ -105,7 +100,34 @@ def test_remap_hf_state_dict_adds_mlx_prefix_and_primary_hash_route():
         "model.layers.0.mlp.gate_proj_w",
     }
     assert converted["model.layers.0.mlp.topk_token_to_expert"].dtype == torch.int32
-    assert torch.equal(
-        converted["model.layers.0.mlp.token_to_expert"], routes[0].to(torch.int32)
-    )
+    assert torch.equal(converted["model.layers.0.mlp.token_to_expert"], routes[0].to(torch.int32))
     assert converted["model.layers.0.mlp.gate_proj_w"].dtype == torch.float16
+
+
+def test_float32_conversion_and_tied_weights_serialize_without_aliases(tmp_path):
+    from safetensors.torch import load_file, save_file
+
+    tied = torch.arange(12, dtype=torch.bfloat16).reshape(3, 4)
+    converted = remap_hf_state_dict(
+        {"embed_tokens.weight": tied, "lm_head.weight": tied}, dtype="float32"
+    )
+    path = tmp_path / "converted.safetensors"
+    save_file(converted, path)
+
+    restored = load_file(path)
+    assert restored["model.embed_tokens.weight"].dtype == torch.float32
+    assert torch.equal(restored["model.embed_tokens.weight"], tied.float())
+    assert torch.equal(restored["model.lm_head.weight"], tied.float())
+
+
+def test_conversion_rejects_route_overflow_and_unsupported_dtype():
+    state = {"layers.0.mlp.engine.route_table": torch.tensor([[2**33]], dtype=torch.int64)}
+    with pytest.raises(ValueError, match="int32"):
+        remap_state_dict(state, dtype="float16")
+    with pytest.raises(ValueError, match="float16 or float32"):
+        remap_state_dict({}, dtype="bfloat16")
+
+
+def test_conversion_config_does_not_silently_drop_position_scaling():
+    with pytest.raises(ValueError, match="rope_fraction"):
+        build_mlx_config({"mlp_type": "tr_hash_engine", "rope_fraction": 0.5})

@@ -704,6 +704,8 @@ def test_training_smoke_checkpoint_and_exact_resume(monkeypatch, tmp_path):
     output = tmp_path / "run"
     common = [
         "cf-sensor-fusion-train",
+        "--device",
+        "cpu",
         "--data-root",
         str(tmp_path),
         "--output",

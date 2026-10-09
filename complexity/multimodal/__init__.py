@@ -43,43 +43,40 @@ Usage:
     video_features = video(video_tensor)   # [B, C, T, H, W]
 """
 
-from .vision import (
-    VisionEncoder,
-    VisionConfig,
-    PatchEmbedding,
-    VisionTransformer,
-    VisionTokenRoutedMLP,
-    CLIPVisionEncoder,
-    SigLIPEncoder,
-)
-
 from .audio import (
-    AudioEncoder,
     AudioConfig,
+    AudioConvStack,
+    AudioEncoder,
+    AudioTokenRoutedMLP,
     MelSpectrogramEncoder,
     WhisperEncoder,
-    AudioConvStack,
-    AudioTokenRoutedMLP,
 )
-
-from .video import (
-    VideoEncoder,
-    VideoConfig,
-    TubeletEmbedding,
-    VideoTransformer,
-    VideoTokenRoutedMLP,
-    SpatioTemporalBlock,
-)
-
 from .fusion import (
-    MultimodalFusion,
-    FusionConfig,
-    CrossAttentionFusion,
-    GatedFusion,
     ConcatProjection,
-    PerceiverResampler,
+    CrossAttentionFusion,
+    FusionConfig,
     FusionTokenRoutedMLP,
+    GatedFusion,
+    MultimodalFusion,
+    PerceiverResampler,
     VisionLanguageConnector,
+)
+from .video import (
+    SpatioTemporalBlock,
+    TubeletEmbedding,
+    VideoConfig,
+    VideoEncoder,
+    VideoTokenRoutedMLP,
+    VideoTransformer,
+)
+from .vision import (
+    CLIPVisionEncoder,
+    PatchEmbedding,
+    SigLIPEncoder,
+    VisionConfig,
+    VisionEncoder,
+    VisionTokenRoutedMLP,
+    VisionTransformer,
 )
 
 __all__ = [

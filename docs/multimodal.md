@@ -1,7 +1,11 @@
 # Multimodal prototypes
 
-`complexity.multimodal` contains research prototypes for vision, audio, video,
-fusion, and an omni wrapper.
+For maintained vision families, start with [the grouped vision package and
+command tree](vision/index.md), `complexity.vision`.
+
+`complexity.multimodal` contains earlier research prototypes for vision, audio,
+video, fusion and an omni wrapper. These remain a separate experimental
+surface; the examples below document those prototypes.
 
 For the supported hash-routed sensor-fusion path, use the public **TR-Hash
 Robotics** factory instead of the historical fusion prototypes:

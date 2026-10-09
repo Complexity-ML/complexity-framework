@@ -22,7 +22,7 @@ from tqdm import tqdm
 
 from complexity.training.musgd import MuSGD, build_musgd_parameter_groups, named_learning_rates
 
-from ..detection.distributed import DistributedContext
+from ...vision.detection.distributed import DistributedContext
 from .checkpointing import load_sensor_fusion_checkpoint, save_sensor_fusion_checkpoint
 from .config import SENSOR_MODALITIES, TRHashSensorFusionConfig
 from .cuhkx_records import (

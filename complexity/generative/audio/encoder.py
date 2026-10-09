@@ -1,6 +1,6 @@
 """TR-Hash MoE audio encoder — frames route through deterministic expert IDs.
 
-Same principle as ``complexity.generative.vision_language.vision_tower``:
+Same principle as ``complexity.vision.vision_language.vision_tower``:
 each frame routes through real ``TRHashEngine`` experts keyed on its fixed
 position in the sequence (deterministic, never learned or contextual).
 Unlike image patches, the frame count is not fixed by the config alone (it

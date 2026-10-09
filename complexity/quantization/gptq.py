@@ -8,12 +8,12 @@ compensate for the error.
 Reference: https://arxiv.org/abs/2210.17323
 """
 
+import logging
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Any, List, Callable
-from dataclasses import dataclass
-import math
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +304,7 @@ class GPTQSolver:
         try:
             H_inv = torch.linalg.cholesky(H)
             H_inv = torch.cholesky_inverse(H_inv)
-        except:
+        except torch.linalg.LinAlgError:
             # Fallback if Cholesky fails
             H_inv = torch.linalg.inv(H)
 

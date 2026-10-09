@@ -2,11 +2,12 @@
 Server commands for the Complexity framework.
 """
 
-import typer
 from pathlib import Path
 from typing import Optional
 
-from ..utils import console, spinner, print_panel, success, error, warning, info
+import typer
+
+from ..utils import console, error, print_panel
 
 serve = typer.Typer(name="serve", help="Model serving commands")
 
@@ -17,7 +18,9 @@ def start_server(
     host: str = typer.Option("0.0.0.0", "--host", "-h", help="Host to bind"),
     port: int = typer.Option(8000, "--port", "-p", help="Port to bind"),
     device: str = typer.Option("cuda", "--device", "-d", help="Device"),
-    quantize: Optional[str] = typer.Option(None, "--quantize", "-q", help="Quantization: int8, int4"),
+    quantize: Optional[str] = typer.Option(
+        None, "--quantize", "-q", help="Quantization: int8, int4"
+    ),
     max_batch_size: int = typer.Option(32, "--max-batch", help="Maximum batch size"),
     max_seq_length: int = typer.Option(4096, "--max-seq", help="Maximum sequence length"),
     api_key: Optional[str] = typer.Option(None, "--api-key", help="API key for authentication"),
@@ -26,241 +29,117 @@ def start_server(
     ssl_key: Optional[Path] = typer.Option(None, "--ssl-key", help="SSL key"),
 ):
     """
-    Start an inference server.
-
-    Examples:
-        complexity serve start model.pt
-        complexity serve start model.pt --port 8080 --quantize int8
-        complexity serve start model.pt --api-key secret123
+    Explain how to migrate historical native serving to an external runtime.
     """
-    if not model_path.exists():
-        console.print(error(f"Model not found: {model_path}"))
-        raise typer.Exit(1)
-
-    print_panel(
-        f"Model: {model_path}\n"
-        f"Endpoint: http://{host}:{port}\n"
-        f"Device: {device}\n"
-        f"Max batch: {max_batch_size}\n"
-        f"Max seq length: {max_seq_length}",
-        title="Server Configuration",
-        style="cyan"
+    console.print(
+        error(
+            "Native in-process text serving is not supported. Export the checkpoint "
+            "for a compatible vLLM/SGLang runtime, start that runtime separately, then "
+            "use complexity inference generate/chat/batch with --backend and --base-url. "
+            "Detector HTTP serving is available separately under complexity vision serve detector."
+        )
     )
-
-    try:
-        with spinner("Loading model..."):
-            from complexity.inference import InferenceEngine
-            engine = InferenceEngine.from_checkpoint(model_path, device=device)
-
-        console.print(success("Model loaded"))
-
-        # Create FastAPI app
-        from fastapi import FastAPI, HTTPException, Depends, Header
-        from fastapi.security import HTTPBearer
-        from pydantic import BaseModel
-        from typing import List, Optional as Opt
-        import uvicorn
-
-        app = FastAPI(title="Complexity Inference Server", version="1.0.0")
-
-        class GenerateRequest(BaseModel):
-            prompt: str
-            max_tokens: int = 256
-            temperature: float = 0.7
-            top_p: float = 0.9
-            top_k: int = 50
-            stop: Opt[List[str]] = None
-
-        class ChatMessage(BaseModel):
-            role: str
-            content: str
-
-        class ChatRequest(BaseModel):
-            messages: List[ChatMessage]
-            max_tokens: int = 512
-            temperature: float = 0.7
-            stream: bool = False
-
-        class GenerateResponse(BaseModel):
-            text: str
-            tokens_generated: int
-
-        # Auth dependency
-        async def verify_api_key(authorization: str = Header(None)):
-            if api_key:
-                if not authorization or authorization != f"Bearer {api_key}":
-                    raise HTTPException(status_code=401, detail="Invalid API key")
-            return True
-
-        @app.get("/health")
-        async def health():
-            return {"status": "healthy"}
-
-        @app.get("/v1/models")
-        async def list_models(auth: bool = Depends(verify_api_key)):
-            return {
-                "data": [
-                    {
-                        "id": str(model_path.name),
-                        "object": "model",
-                    }
-                ]
-            }
-
-        @app.post("/v1/completions")
-        async def generate(request: GenerateRequest, auth: bool = Depends(verify_api_key)):
-            from complexity.inference import GenerationConfig
-
-            config = GenerationConfig(
-                max_new_tokens=min(request.max_tokens, max_seq_length),
-                temperature=request.temperature,
-                top_p=request.top_p,
-                top_k=request.top_k,
-                stop_strings=request.stop,
-            )
-
-            output = engine.generate(request.prompt, config)
-
-            return {
-                "id": "gen-1",
-                "object": "text_completion",
-                "choices": [
-                    {
-                        "text": output,
-                        "index": 0,
-                        "finish_reason": "stop",
-                    }
-                ]
-            }
-
-        @app.post("/v1/chat/completions")
-        async def chat(request: ChatRequest, auth: bool = Depends(verify_api_key)):
-            from complexity.inference import GenerationConfig
-            from complexity.data import ComplexityTemplate
-
-            template = ComplexityTemplate(format="complexity")
-            messages = [{"role": m.role, "content": m.content} for m in request.messages]
-            prompt = template.format_messages(messages)
-            prompt += template.format_header("assistant")
-
-            config = GenerationConfig(
-                max_new_tokens=min(request.max_tokens, max_seq_length),
-                temperature=request.temperature,
-                stop_strings=["<|end|>", "<|user|>"],
-            )
-
-            output = engine.generate(prompt, config)
-
-            return {
-                "id": "chat-1",
-                "object": "chat.completion",
-                "choices": [
-                    {
-                        "message": {
-                            "role": "assistant",
-                            "content": output,
-                        },
-                        "index": 0,
-                        "finish_reason": "stop",
-                    }
-                ]
-            }
-
-        console.print(info(f"Starting server on http://{host}:{port}"))
-        console.print(info("API endpoints:"))
-        console.print("  GET  /health")
-        console.print("  GET  /v1/models")
-        console.print("  POST /v1/completions")
-        console.print("  POST /v1/chat/completions")
-
-        ssl_config = {}
-        if ssl_cert and ssl_key:
-            ssl_config = {"ssl_certfile": str(ssl_cert), "ssl_keyfile": str(ssl_key)}
-
-        uvicorn.run(app, host=host, port=port, workers=workers, **ssl_config)
-
-    except ImportError as e:
-        console.print(error(f"Missing dependency: {e}"))
-        console.print(info("Install with: pip install fastapi uvicorn"))
-        raise typer.Exit(1)
+    raise typer.Exit(2)
 
 
 @serve.command("benchmark-server")
 def benchmark_server(
-    url: str = typer.Argument("http://localhost:8000", help="Server URL"),
+    url: str = typer.Argument("http://localhost:8000", help="Existing server URL"),
     prompt: str = typer.Option("Hello, how are you?", "--prompt", "-p"),
-    num_requests: int = typer.Option(100, "--requests", "-n"),
-    concurrency: int = typer.Option(10, "--concurrency", "-c"),
-    max_tokens: int = typer.Option(128, "--max-tokens"),
+    num_requests: int = typer.Option(100, "--requests", "-n", min=1),
+    concurrency: int = typer.Option(10, "--concurrency", "-c", min=1),
+    max_tokens: int = typer.Option(128, "--max-tokens", min=1),
+    model: Optional[str] = typer.Option(
+        None, "--model", help="Required model name/id served by the endpoint"
+    ),
+    backend: str = typer.Option("vllm", "--backend", help="Serving backend: vllm or sglang"),
+    api_key: Optional[str] = typer.Option(
+        None, "--api-key", help="Bearer token for the serving endpoint"
+    ),
+    timeout: float = typer.Option(
+        60.0, "--timeout", min=0.001, help="Per-request timeout in seconds"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable measurements"),
 ):
-    """
-    Benchmark an inference server.
+    """Measure endpoint request latency and successful request throughput.
 
-    Example:
-        complexity serve benchmark-server http://localhost:8000 -n 100 -c 10
+    Sends exactly --requests completions, without hidden warmup requests. It
+    reports no estimated tokens/sec because actual token usage is unavailable.
     """
+    import json
+    import math
+    import statistics
     import time
-    import asyncio
-    import aiohttp
+    from concurrent.futures import ThreadPoolExecutor
 
-    async def make_request(session, url, payload):
-        start = time.perf_counter()
-        async with session.post(f"{url}/v1/completions", json=payload) as resp:
-            result = await resp.json()
-            elapsed = time.perf_counter() - start
-            return elapsed, result
-
-    async def run_benchmark():
-        payload = {
-            "prompt": prompt,
-            "max_tokens": max_tokens,
-        }
-
-        connector = aiohttp.TCPConnector(limit=concurrency)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            # Warmup
-            console.print(info("Warming up..."))
-            for _ in range(min(5, num_requests)):
-                await make_request(session, url, payload)
-
-            # Benchmark
-            console.print(info(f"Running {num_requests} requests with {concurrency} concurrency..."))
-
-            start = time.perf_counter()
-            tasks = [make_request(session, url, payload) for _ in range(num_requests)]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            total_time = time.perf_counter() - start
-
-            # Analyze results
-            latencies = [r[0] for r in results if not isinstance(r, Exception)]
-            errors = sum(1 for r in results if isinstance(r, Exception))
-
-            if latencies:
-                avg_latency = sum(latencies) / len(latencies)
-                p50 = sorted(latencies)[len(latencies) // 2]
-                p99 = sorted(latencies)[int(len(latencies) * 0.99)]
-                throughput = num_requests / total_time
-
-                print_panel(
-                    f"Total requests: {num_requests}\n"
-                    f"Concurrency: {concurrency}\n"
-                    f"Total time: {total_time:.2f}s\n"
-                    f"Throughput: {throughput:.2f} req/s\n"
-                    f"Avg latency: {avg_latency*1000:.2f}ms\n"
-                    f"P50 latency: {p50*1000:.2f}ms\n"
-                    f"P99 latency: {p99*1000:.2f}ms\n"
-                    f"Errors: {errors}",
-                    title="Benchmark Results",
-                    style="green"
-                )
-            else:
-                console.print(error("All requests failed"))
-
-    try:
-        asyncio.run(run_benchmark())
-    except Exception as e:
-        console.print(error(f"Benchmark failed: {e}"))
+    if not model:
+        message = "Specify --model with the model name/id exposed by the serving endpoint."
+        if json_output:
+            typer.echo(json.dumps({"error": message}), err=True)
+        else:
+            console.print(error(message))
         raise typer.Exit(1)
+    try:
+        from complexity.inference import ExternalGenerationConfig, create_external_backend
+
+        client = create_external_backend(
+            backend, base_url=url, model=model, api_key=api_key, timeout=timeout
+        )
+        config = ExternalGenerationConfig(max_tokens=max_tokens)
+
+        def request(_):
+            start = time.perf_counter()
+            try:
+                client.complete(prompt, config)
+            except (RuntimeError, ValueError, OSError):
+                return None
+            return time.perf_counter() - start
+
+        start = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=min(concurrency, num_requests)) as pool:
+            results = list(pool.map(request, range(num_requests)))
+        elapsed = time.perf_counter() - start
+        latencies = sorted(value for value in results if value is not None)
+        successes = len(latencies)
+        report = {
+            "model": model,
+            "backend": backend,
+            "requests": num_requests,
+            "successful_requests": successes,
+            "failed_requests": num_requests - successes,
+            "concurrency": min(concurrency, num_requests),
+            "elapsed_seconds": elapsed,
+            "successful_requests_per_second": successes / elapsed,
+            "mean_latency_seconds": statistics.mean(latencies) if latencies else None,
+            "p50_latency_seconds": statistics.median(latencies) if latencies else None,
+            "p99_latency_seconds": latencies[math.ceil(len(latencies) * 0.99) - 1]
+            if latencies
+            else None,
+            "token_throughput_measured": False,
+        }
+        if json_output:
+            typer.echo(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print_panel(
+                f"Successful requests: {successes}/{num_requests}\n"
+                f"Concurrency: {report['concurrency']}\n"
+                f"Elapsed: {elapsed:.3f}s\n"
+                f"Successful requests/sec: {report['successful_requests_per_second']:.3f}\n"
+                f"Mean latency: {report['mean_latency_seconds']}s\n"
+                f"P50 latency: {report['p50_latency_seconds']}s\n"
+                f"P99 latency: {report['p99_latency_seconds']}s\n"
+                "Token throughput: not measured",
+                title="Endpoint measurements",
+                style="cyan",
+            )
+        if successes != num_requests:
+            raise typer.Exit(1)
+    except (ImportError, ValueError, RuntimeError, OSError) as exc:
+        if json_output:
+            typer.echo(json.dumps({"error": str(exc)}), err=True)
+        else:
+            console.print(error(f"Benchmark failed: {exc}"))
+        raise typer.Exit(1) from exc
 
 
 @serve.command("openai-proxy")
@@ -270,20 +149,8 @@ def openai_proxy(
     model_name: str = typer.Option("complexity", "--model-name", help="Name to expose"),
 ):
     """
-    Start an OpenAI-compatible proxy server.
-
-    This allows using the model with OpenAI SDK:
-        from openai import OpenAI
-        client = OpenAI(base_url="http://localhost:8000/v1", api_key="none")
-
-    Example:
-        complexity serve openai-proxy model.pt --port 8000
+    Explain migration from the historical native proxy to vLLM/SGLang.
     """
-    console.print(info("Starting OpenAI-compatible server..."))
-    console.print(info("Use with OpenAI SDK:"))
-    console.print(f'  client = OpenAI(base_url="http://localhost:{port}/v1", api_key="none")')
-
-    # This reuses the start command with OpenAI-compatible endpoints
     start_server(
         model_path=model_path,
         host="0.0.0.0",

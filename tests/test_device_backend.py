@@ -7,6 +7,7 @@ def test_cpu_backend_info(monkeypatch):
     from complexity.utils.device import get_backend_info, supports_custom_triton
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
     monkeypatch.setattr(torch.version, "hip", None, raising=False)
 
     info = get_backend_info()

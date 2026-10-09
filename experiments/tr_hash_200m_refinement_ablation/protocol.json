@@ -1,0 +1,74 @@
+{
+  "format": "complexity-refinement-ablation-v1",
+  "hypothesis": "Combining lexical routing and semantic computation may enable pretraining with fewer tokens; a distinct refit may then improve benchmarks toward models of the same size available in 2026. This remains an unproven research hypothesis.",
+  "branch_a": {
+    "model": "AETHORIA-AI/TR-HASH-MoE-200M-130B",
+    "revision": "c6bd0f2cab456fdb8beb4465a083992ae231752d",
+    "weights_sha256": "62a98cd7eae04b744089880379e7251d59c944883597aa78b301be10ce11f386",
+    "source_stage": "pretraining",
+    "next_stage": "supervised_finetuning",
+    "skipped_stage": "refinement",
+    "release_eligible": false
+  },
+  "published_reference": {
+    "model": "AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT",
+    "revision": "0c6d56faae27e29eda9b7bd55e20297e2c0d0abe",
+    "path": "same 130B pretraining base -> distinct refit -> same supervised_finetuning",
+    "behavior_gate_passed": false,
+    "interpretation": "The 160B repository name is a historical identifier for the refit-plus-SFT branch, not a different base pretrained on 160B tokens."
+  },
+  "dataset": {
+    "id": "AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-32K-300K",
+    "revision": "084a658ec47e4ee872f6d67fdbad3602f599424b",
+    "subdirectory": "tokenized/tr-hash-32k-v2-2048",
+    "vocab_size": 32000,
+    "tokenizer_sha256": "86784d23456d5013b644b92d80ee161b1303f0570f45d52295580a2c96832bed",
+    "eos_id": 0,
+    "train_examples": 300000,
+    "eval_examples": 3000,
+    "source_tokens_per_epoch": 202948693,
+    "supervised_targets_per_epoch": 96674982,
+    "train_packs": 127554,
+    "eval_packs": 1282,
+    "sequence_length": 2048,
+    "supervision": "final_assistant_only",
+    "labels": "already_next_token",
+    "truncation": "none"
+  },
+  "optimization": {
+    "epochs": 3,
+    "reference_world_size": 4,
+    "reference_batch_per_rank": 16,
+    "effective_batch": 64,
+    "updates_per_epoch": 1994,
+    "total_updates": 5982,
+    "seed": 42,
+    "learning_rate": 2e-05,
+    "expert_lr_multiplier": 1.0,
+    "optimizer": "AdamW",
+    "betas": [
+      0.9,
+      0.95
+    ],
+    "weight_decay_matrices": 0.1,
+    "weight_decay_bias_and_norm": 0.0,
+    "warmup_ratio": 0.03,
+    "cosine_lr_floor_ratio": 0.1,
+    "grad_clip": 1.0
+  },
+  "runtime": {
+    "framework_wheel_sha256": "76b0a4609fd67a7bba1e16b41a09a2ddfcd804aae6780b8e9f34ad86b44bdbc8",
+    "device": "single RTX 5090",
+    "gradient_reduction": "accumulate supervised-token-weighted means inside each reference rank; average the four rank means",
+    "precision": "FP32 parameters and AdamW; BF16 CUDA autocast",
+    "loss_backend": "portable PyTorch chunked CE",
+    "custom_kernels": false
+  },
+  "limits": [
+    "Single-device accumulation is not a four-rank run or a bitwise reconstruction of the historical CUDA/Liger backend.",
+    "The published reference is not retrained here. Runtime differences remain a comparison limitation.",
+    "This comparison measures refit contribution for this 200M model. It does not by itself demonstrate the broader reduced-pretraining-token hypothesis, parity with same-size 2026 models, or universal necessity of refit."
+  ],
+  "launch_status": "partial direct-SFT run observed on the earlier frozen wheel at update 124/5982, with complete checkpoint 100; no completed new benchmark; current server state and shutdown unverified",
+  "experiment_question": "Starting from the same TR-HASH 200M base pretrained on 130B tokens, compare direct SFT with that same base followed by refit and identical SFT, to measure whether refit supplies the benchmark gain sought for this model."
+}

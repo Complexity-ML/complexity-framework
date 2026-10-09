@@ -15,13 +15,14 @@ everywhere, which matches the framework default's training trajectory
 while removing the dependence on global RNG state.
 """
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
 
-from .base import MLPBase, MLPConfig
 from ..registry import register_mlp
+from .base import MLPBase, MLPConfig
 
 
 @register_mlp("dense_deterministic")

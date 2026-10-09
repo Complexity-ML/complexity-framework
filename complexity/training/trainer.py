@@ -72,9 +72,7 @@ def _format_moe_routing_summary(model_cfg: Any) -> str:
 
     configured_primary_weight = getattr(model_cfg, "top_k_primary_weight", None)
     primary_weight = (
-        1.0 / top_k
-        if configured_primary_weight is None
-        else float(configured_primary_weight)
+        1.0 / top_k if configured_primary_weight is None else float(configured_primary_weight)
     )
     secondary_weight = (1.0 - primary_weight) / (top_k - 1)
     return (
@@ -122,11 +120,13 @@ class Trainer:
 
         # Wrap model with FSDP if enabled
         if config.use_fsdp and self.distributed:
-            precision = PrecisionMode.BF16 if config.precision == "bf16" else (
-                PrecisionMode.FP16 if config.precision == "fp16" else PrecisionMode.FP32
+            precision = (
+                PrecisionMode.BF16
+                if config.precision == "bf16"
+                else (PrecisionMode.FP16 if config.precision == "fp16" else PrecisionMode.FP32)
             )
             sharding = ShardingMode(config.sharding_mode)
-            gc_enabled = getattr(model, '_gradient_checkpointing', False)
+            gc_enabled = getattr(model, "_gradient_checkpointing", False)
             self.model = wrap_model_fsdp(
                 model,
                 sharding_mode=sharding,
@@ -146,30 +146,52 @@ class Trainer:
         # multiplied the user's --lr by up to 3× on multi-GPU, causing
         # instability on MoE models. The user now controls the actual LR.
         if self.is_main:
-            effective_batch = config.batch_size * self.world_size * config.gradient_accumulation_steps
+            effective_batch = (
+                config.batch_size * self.world_size * config.gradient_accumulation_steps
+            )
             logger.info("=" * 70)
             logger.info("TRAINING CONFIG")
             logger.info("=" * 70)
             logger.info(f"  optimizer       : {config.optimizer_type}")
-            logger.info(f"  learning_rate   : {config.learning_rate:.2e}  (NO auto-scaling — value is used as-is)")
+            logger.info(
+                f"  learning_rate   : {config.learning_rate:.2e}  (NO auto-scaling — value is used as-is)"
+            )
             if config.optimizer_type in ("muon", "muon_tr"):
                 logger.info(f"  muon_lr         : {config.muon_lr:.2e}")
             if config.optimizer_type in ("muon_tr", "adam_tr") or (
                 config.optimizer_type == "adamw" and config.expert_lr_pack
             ):
-                logger.info(f"  expert_lr_scale : ×{config.expert_lr_scale}  "
-                            f"(effective expert LR: {config.learning_rate * config.expert_lr_scale:.2e})")
+                logger.info(
+                    f"  expert_lr_scale : ×{config.expert_lr_scale}  "
+                    f"(effective expert LR: {config.learning_rate * config.expert_lr_scale:.2e})"
+                )
             logger.info(f"  weight_decay    : {config.weight_decay}")
-            logger.info(f"  warmup_steps    : {config.warmup_steps}   max_steps: {config.max_steps}")
-            logger.info(f"  scheduler       : {config.lr_scheduler}   min_lr_ratio: {config.min_lr_ratio}")
+            logger.info(
+                f"  warmup_steps    : {config.warmup_steps}   max_steps: {config.max_steps}"
+            )
+            logger.info(
+                f"  scheduler       : {config.lr_scheduler}   min_lr_ratio: {config.min_lr_ratio}"
+            )
             logger.info(f"  precision       : {config.precision}    grad_clip: {config.grad_clip}")
-            logger.info(f"  batch (per rank): {config.batch_size}    grad_accum: {config.gradient_accumulation_steps}")
-            logger.info(f"  world_size      : {self.world_size}    effective_batch: {effective_batch}")
-            distributed_mode = "fsdp" if config.use_fsdp else ("ddp" if self.distributed else "single")
-            logger.info(f"  distributed     : {distributed_mode}    sharding: {config.sharding_mode}")
-            logger.info(f"  save_steps      : {config.save_steps}   save_total_limit: {config.save_total_limit}")
+            logger.info(
+                f"  batch (per rank): {config.batch_size}    grad_accum: {config.gradient_accumulation_steps}"
+            )
+            logger.info(
+                f"  world_size      : {self.world_size}    effective_batch: {effective_batch}"
+            )
+            distributed_mode = (
+                "fsdp" if config.use_fsdp else ("ddp" if self.distributed else "single")
+            )
+            logger.info(
+                f"  distributed     : {distributed_mode}    sharding: {config.sharding_mode}"
+            )
+            logger.info(
+                f"  save_steps      : {config.save_steps}   save_total_limit: {config.save_total_limit}"
+            )
             logger.info(f"  checkpoint_dir  : {config.checkpoint_dir}")
-            model_cfg = getattr(self.model, "config", None) or getattr(getattr(self.model, "module", None), "config", None)
+            model_cfg = getattr(self.model, "config", None) or getattr(
+                getattr(self.model, "module", None), "config", None
+            )
             if model_cfg is not None and getattr(model_cfg, "num_experts", 1) > 1:
                 logger.info(f"  MoE top_k       : {_format_moe_routing_summary(model_cfg)}")
             logger.info("=" * 70)
@@ -184,7 +206,10 @@ class Trainer:
         num_training_steps = config.max_steps
         if scheduler is None:
             self.scheduler = get_lr_scheduler(
-                self.optimizer, config, num_training_steps, model=model,
+                self.optimizer,
+                config,
+                num_training_steps,
+                model=model,
             )
             resolved = resolve_scheduler_name(config, model)
             if config.lr_scheduler == "auto":
@@ -210,9 +235,7 @@ class Trainer:
         self.metrics = MetricsTracker(config.log_dir)
 
         # Audit logging
-        self.audit = AuditLogger(
-            log_path=str(Path(config.log_dir) / "audit.log")
-        )
+        self.audit = AuditLogger(log_path=str(Path(config.log_dir) / "audit.log"))
 
         # Training state
         self.state = TrainingState()
@@ -242,6 +265,7 @@ class Trainer:
 
         if config.optimizer_type == "muon":
             from .muon import MuonWithAdamW, split_params_for_muon
+
             muon_groups, adam_groups = split_params_for_muon(self.model)
             optimizer = MuonWithAdamW(
                 muon_params=muon_groups,
@@ -251,14 +275,17 @@ class Trainer:
                 weight_decay=config.weight_decay,
             )
             if self.is_main:
-                muon_p = sum(p.numel() for g in muon_groups for p in g['params'])
-                adam_p = sum(p.numel() for g in adam_groups for p in g['params'])
-                logger.info(f"Muon optimizer: {muon_p/1e6:.0f}M orthogonalized, {adam_p/1e6:.0f}M AdamW")
+                muon_p = sum(p.numel() for g in muon_groups for p in g["params"])
+                adam_p = sum(p.numel() for g in adam_groups for p in g["params"])
+                logger.info(
+                    f"Muon optimizer: {muon_p / 1e6:.0f}M orthogonalized, {adam_p / 1e6:.0f}M AdamW"
+                )
             return optimizer
 
         if config.optimizer_type == "muon_tr":
             from .muon_tr import MuonTRWithAdamW, split_params_for_muon_tr
-            num_experts = getattr(getattr(self.model, 'config', None), 'num_experts', 4)
+
+            num_experts = getattr(getattr(self.model, "config", None), "num_experts", 4)
             muon_groups, adam_groups = split_params_for_muon_tr(self.model, num_experts=num_experts)
             optimizer = MuonTRWithAdamW(
                 muon_params=muon_groups,
@@ -271,19 +298,39 @@ class Trainer:
                 num_experts=num_experts,
             )
             if self.is_main:
-                expert_p = sum(p.numel() for g in muon_groups for p in g['params'] if g.get('param_type') == 'expert')
-                shared_p = sum(p.numel() for g in muon_groups for p in g['params'] if g.get('param_type') == 'shared')
-                dense_p = sum(p.numel() for g in muon_groups for p in g['params'] if g.get('param_type') == 'dense')
-                adam_p = sum(p.numel() for g in adam_groups for p in g['params'])
-                logger.info(f"MuonTR optimizer: {expert_p/1e6:.0f}M expert, {shared_p/1e6:.0f}M shared, "
-                            f"{dense_p/1e6:.0f}M dense (NS), {adam_p/1e6:.0f}M AdamW")
-                logger.info(f"  expert_lr_scale={config.expert_lr_scale}, "
-                            f"expert_wd={config.expert_weight_decay}, adaptive_ns={config.adaptive_ns}")
+                expert_p = sum(
+                    p.numel()
+                    for g in muon_groups
+                    for p in g["params"]
+                    if g.get("param_type") == "expert"
+                )
+                shared_p = sum(
+                    p.numel()
+                    for g in muon_groups
+                    for p in g["params"]
+                    if g.get("param_type") == "shared"
+                )
+                dense_p = sum(
+                    p.numel()
+                    for g in muon_groups
+                    for p in g["params"]
+                    if g.get("param_type") == "dense"
+                )
+                adam_p = sum(p.numel() for g in adam_groups for p in g["params"])
+                logger.info(
+                    f"MuonTR optimizer: {expert_p / 1e6:.0f}M expert, {shared_p / 1e6:.0f}M shared, "
+                    f"{dense_p / 1e6:.0f}M dense (NS), {adam_p / 1e6:.0f}M AdamW"
+                )
+                logger.info(
+                    f"  expert_lr_scale={config.expert_lr_scale}, "
+                    f"expert_wd={config.expert_weight_decay}, adaptive_ns={config.adaptive_ns}"
+                )
             return optimizer
 
         if config.optimizer_type == "adam_tr":
             from .adam_tr import AdamTR, adamtr_param_groups
-            num_experts = getattr(getattr(self.model, 'config', None), 'num_experts', 4)
+
+            num_experts = getattr(getattr(self.model, "config", None), "num_experts", 4)
             param_groups = adamtr_param_groups(
                 self.model,
                 lr=config.learning_rate,
@@ -301,9 +348,11 @@ class Trainer:
                 spectral_conditioning=True,
             )
             if self.is_main:
-                total_p = sum(p.numel() for g in param_groups for p in g['params'])
-                logger.info(f"AdamTR optimizer: {total_p/1e6:.0f}M params, "
-                            f"expert_lr_scale={config.expert_lr_scale}, spectral_conditioning=True")
+                total_p = sum(p.numel() for g in param_groups for p in g["params"])
+                logger.info(
+                    f"AdamTR optimizer: {total_p / 1e6:.0f}M params, "
+                    f"expert_lr_scale={config.expert_lr_scale}, spectral_conditioning=True"
+                )
             return optimizer
 
         # Split params: decay vs no-decay, and optionally muP scaling
@@ -312,9 +361,9 @@ class Trainer:
         no_decay_params = []
         expert_params = []
 
-        base_width = getattr(config, 'mup_base_width', 256)
-        model_width = getattr(self.model, 'config', None)
-        model_width = getattr(model_width, 'hidden_size', base_width) if model_width else base_width
+        base_width = getattr(config, "mup_base_width", 256)
+        model_width = getattr(self.model, "config", None)
+        model_width = getattr(model_width, "hidden_size", base_width) if model_width else base_width
         width_ratio = model_width / base_width
 
         # Plain "adamw" can also get an expert LR pack (like muon_tr/adam_tr):
@@ -323,7 +372,7 @@ class Trainer:
         # dense hidden group's settings. Opt-in only (expert_lr_pack) — it
         # changes the optimizer's param-group count, which breaks resume for
         # a run that already checkpointed under the old (unpacked) grouping.
-        num_experts = getattr(getattr(self.model, 'config', None), 'num_experts', 4)
+        num_experts = getattr(getattr(self.model, "config", None), "num_experts", 4)
         classify_experts = config.optimizer_type == "adamw" and config.expert_lr_pack
         if classify_experts:
             from .adam_tr import _classify_param
@@ -331,9 +380,9 @@ class Trainer:
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
-            if 'bias' in name or 'norm' in name or '.mu' in name:
+            if "bias" in name or "norm" in name or ".mu" in name:
                 no_decay_params.append(param)
-            elif 'embed' in name or 'lm_head' in name:
+            elif "embed" in name or "lm_head" in name:
                 embed_params.append(param)
             elif classify_experts and _classify_param(name, param, num_experts) == "expert":
                 expert_params.append(param)
@@ -344,13 +393,27 @@ class Trainer:
             # muP: scale LR by 1/width_ratio for hidden layers,
             # keep base LR for embeddings. Ref: Yang et al. 2022
             param_groups = [
-                {"params": embed_params, "lr": config.learning_rate, "weight_decay": config.weight_decay},
-                {"params": hidden_params, "lr": config.learning_rate / width_ratio, "weight_decay": config.weight_decay},
-                {"params": no_decay_params, "lr": config.learning_rate / width_ratio, "weight_decay": 0.0},
+                {
+                    "params": embed_params,
+                    "lr": config.learning_rate,
+                    "weight_decay": config.weight_decay,
+                },
+                {
+                    "params": hidden_params,
+                    "lr": config.learning_rate / width_ratio,
+                    "weight_decay": config.weight_decay,
+                },
+                {
+                    "params": no_decay_params,
+                    "lr": config.learning_rate / width_ratio,
+                    "weight_decay": 0.0,
+                },
             ]
             if self.is_main:
-                logger.info(f"muP AdamW: base_width={base_width}, model_width={model_width}, "
-                            f"embed_lr={config.learning_rate:.2e}, hidden_lr={config.learning_rate/width_ratio:.2e}")
+                logger.info(
+                    f"muP AdamW: base_width={base_width}, model_width={model_width}, "
+                    f"embed_lr={config.learning_rate:.2e}, hidden_lr={config.learning_rate / width_ratio:.2e}"
+                )
         else:
             # Standard AdamW
             param_groups = [
@@ -359,15 +422,19 @@ class Trainer:
             ]
             if expert_params:
                 expert_lr = config.learning_rate * config.expert_lr_scale
-                param_groups.append({
-                    "params": expert_params,
-                    "lr": expert_lr,
-                    "weight_decay": config.expert_weight_decay,
-                })
+                param_groups.append(
+                    {
+                        "params": expert_params,
+                        "lr": expert_lr,
+                        "weight_decay": config.expert_weight_decay,
+                    }
+                )
                 if self.is_main:
-                    logger.info(f"AdamW expert LR pack: {sum(p.numel() for p in expert_params)/1e6:.1f}M expert "
-                                f"params @ lr={expert_lr:.2e} (×{config.expert_lr_scale}), "
-                                f"wd={config.expert_weight_decay}")
+                    logger.info(
+                        f"AdamW expert LR pack: {sum(p.numel() for p in expert_params) / 1e6:.1f}M expert "
+                        f"params @ lr={expert_lr:.2e} (×{config.expert_lr_scale}), "
+                        f"wd={config.expert_weight_decay}"
+                    )
 
         return torch.optim.AdamW(
             param_groups,
@@ -377,7 +444,7 @@ class Trainer:
         )
 
     def _default_loss(self, model: nn.Module, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Default loss computation (cross-entropy for LM)."""
+        """Score pre-shifted labels, or derive next-token labels from inputs."""
         input_ids = batch["input_ids"].to(self.device)
         labels = batch.get("labels", input_ids[:, 1:]).to(self.device)
 
@@ -392,8 +459,13 @@ class Trainer:
                 )
 
         if outputs.dim() == 3:
-            shift_logits = outputs[:, :-1, :].contiguous()
-            shift_labels = labels[:, :shift_logits.size(1)].contiguous()
+            if labels.shape[:-1] != outputs.shape[:-2] or labels.size(-1) not in {
+                outputs.size(-2),
+                outputs.size(-2) - 1,
+            }:
+                raise ValueError("LM labels must be pre-shifted with sequence length S or S-1")
+            shift_logits = outputs[:, : labels.size(-1), :].contiguous()
+            shift_labels = labels.contiguous()
         else:
             shift_logits = outputs
             shift_labels = labels
@@ -464,7 +536,9 @@ class Trainer:
                     with self._gradient_sync_context(should_sync=should_sync):
                         loss = self._training_step(batch)
                     detached_loss = loss.detach()
-                    update_loss = detached_loss if update_loss is None else update_loss + detached_loss
+                    update_loss = (
+                        detached_loss if update_loss is None else update_loss + detached_loss
+                    )
 
                     if should_sync:
                         # Backward divides by the configured accumulation size.
@@ -507,14 +581,16 @@ class Trainer:
                         for callback in self.callbacks:
                             callback(self, self.global_step, loss_value)
 
-                        if getattr(self, 'stop_requested', False):
+                        if getattr(self, "stop_requested", False):
                             raise KeyboardInterrupt
 
                         if self.global_step >= self.config.max_steps:
                             break
 
                 if not had_batches:
-                    raise RuntimeError("Training dataloader yielded no batches; cannot advance updates")
+                    raise RuntimeError(
+                        "Training dataloader yielded no batches; cannot advance updates"
+                    )
                 if self.config.max_epochs and self.epoch >= self.config.max_epochs:
                     break
 
@@ -571,18 +647,18 @@ class Trainer:
 
     def _update_expert_token_counts(self, batch):
         """Update per-expert token counts for MuonTR/AdamTR optimizers."""
-        if not hasattr(self.optimizer, 'update_token_counts'):
+        if not hasattr(self.optimizer, "update_token_counts"):
             return
         input_ids = batch.get("input_ids")
         if input_ids is None:
             return
-        num_experts = getattr(getattr(self.model, 'config', None), 'num_experts', 1)
+        num_experts = getattr(getattr(self.model, "config", None), "num_experts", 1)
         if num_experts <= 1:
             return
         # Find the token_to_expert mapping from the model
         token_to_expert = None
         for module in self.model.modules():
-            if hasattr(module, 'token_to_expert'):
+            if hasattr(module, "token_to_expert"):
                 token_to_expert = module.token_to_expert
                 break
         if token_to_expert is None:

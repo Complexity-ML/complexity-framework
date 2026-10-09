@@ -82,9 +82,9 @@ def _power_iteration_batched(
         sigma_max: [E] tensor of largest singular values (same dtype as G).
     """
     E = G.shape[0]
-    I = G.shape[2]
+    intermediate_width = G.shape[2]
     # Random init, stable in fp32
-    v = torch.randn(E, I, device=G.device, dtype=G.dtype)
+    v = torch.randn(E, intermediate_width, device=G.device, dtype=G.dtype)
     v = v / v.norm(dim=-1, keepdim=True).clamp(min=eps)
 
     Gt = G.transpose(1, 2)  # [E, I, H]
@@ -298,10 +298,10 @@ class AdamTR(Optimizer):
                     # --- Feature 5: Spectral conditioning (batched, fp32) ---
                     if do_spectral:
                         G32 = grad.float()
-                        H, I = G32.shape[1], G32.shape[2]
+                        H, intermediate_width = G32.shape[1], G32.shape[2]
                         # σ_rms per expert (Frobenius / sqrt(min(H,I)))
                         frob = G32.flatten(1).norm(dim=-1)                    # [E]
-                        sigma_rms = frob / math.sqrt(min(H, I))               # [E]
+                        sigma_rms = frob / math.sqrt(min(H, intermediate_width))               # [E]
                         sigma_max = _power_iteration_batched(G32, n_iters=3)  # [E]
 
                         # Guard against NaN / zero / tiny grads

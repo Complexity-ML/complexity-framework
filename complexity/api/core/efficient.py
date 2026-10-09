@@ -27,14 +27,13 @@ Usage:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
-from typing import Optional, Tuple, Union, Dict, Any, List
-from dataclasses import dataclass
-from contextlib import contextmanager
-
 
 # =============================================================================
 # Quantization
@@ -643,13 +642,13 @@ class SmallModels:
 
         config = cls.CONFIGS[size]
         h = config["hidden_size"]
-        l = config["num_hidden_layers"]
+        layers = config["num_hidden_layers"]
         v = 32000  # Assume vocab
 
         # Rough estimate: embed + layers + head
         embed = v * h * 2  # Embed + LM head (tied = /2)
         per_layer = 4 * h * h + 3 * h * config["intermediate_size"]  # Attn + MLP
-        total = embed / 2 + l * per_layer
+        total = embed / 2 + layers * per_layer
 
         if total >= 1e9:
             return f"~{total / 1e9:.1f}B"

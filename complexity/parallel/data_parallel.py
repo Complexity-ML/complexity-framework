@@ -16,24 +16,26 @@ References:
 """
 
 import os
+from enum import Enum
+from functools import partial
+from typing import Any, Callable, Optional, Set, Type
+
 import torch
-import torch.nn as nn
 import torch.distributed as dist
+import torch.nn as nn
 from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP,
-    MixedPrecision,
-    ShardingStrategy,
     BackwardPrefetch,
     CPUOffload,
+    MixedPrecision,
+    ShardingStrategy,
+)
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
 )
 from torch.distributed.fsdp.wrap import (
-    transformer_auto_wrap_policy,
     size_based_auto_wrap_policy,
+    transformer_auto_wrap_policy,
 )
-from torch.distributed.fsdp.wrap import _or_policy, lambda_auto_wrap_policy
-from typing import Any, Optional, Type, Set, Callable
-from functools import partial
-from enum import Enum
 
 
 class ShardingMode(Enum):
@@ -97,7 +99,6 @@ def wrap_model_fsdp(
     AdamW is initialized with foreach=False so empty DTensor shards
     ([0, experts, dim] on ranks >= num_experts) don't crash _multi_tensor_adamw.
     """
-    from ..models.block import TransformerBlock
 
     try:
         from torch.distributed._composable.fsdp import fully_shard

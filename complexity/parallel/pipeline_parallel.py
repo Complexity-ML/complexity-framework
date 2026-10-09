@@ -15,12 +15,13 @@ References:
 - PipeDream: https://arxiv.org/abs/1806.03377
 """
 
-import torch
-import torch.nn as nn
-import torch.distributed as dist
-from typing import Optional, List, Tuple, Any, Callable
 from dataclasses import dataclass
 from enum import Enum
+from typing import Callable, List, Optional, Tuple
+
+import torch
+import torch.distributed as dist
+import torch.nn as nn
 
 
 class PipelineSchedule(Enum):
@@ -267,9 +268,8 @@ class PipelineModel(nn.Module):
             num_micro_batches=8,
         )
 
-        # Training
-        loss = pp_model(input_ids, labels=labels)
-        loss.backward()
+        # Prototype stage execution requires explicit hidden states.
+        # Native causal-LM training uses the Trainer's DDP/FSDP path.
     """
 
     def __init__(
@@ -349,34 +349,25 @@ class PipelineModel(nn.Module):
             **kwargs: Additional arguments
 
         Returns:
-            loss if labels provided, else hidden states
+            Hidden states for an explicit stage input. Native causal-LM
+            training integration is not implemented by this prototype.
         """
+        if labels is not None:
+            raise NotImplementedError(
+                "PipelineModel has no causal-LM target/loss integration. "
+                "Use the native Trainer DDP/FSDP or distributed SFT runner."
+            )
         batch_size = input_ids.size(0)
         micro_batch_size = batch_size // self.num_micro_batches
 
         # Split into micro-batches
         micro_batches = input_ids.split(micro_batch_size, dim=0)
 
-        if labels is not None:
-            micro_labels = labels.split(micro_batch_size, dim=0)
-
-            def loss_fn(output):
-                # Placeholder - actual implementation needs proper loss
-                return output.mean()
-
-            total_loss, _ = self.scheduler.forward_backward(
-                list(micro_batches),
-                loss_fn,
-            )
-            return total_loss / self.num_micro_batches
-
-        else:
-            # Inference mode
-            outputs = []
-            for mb in micro_batches:
-                out = self.stage(mb, **kwargs)
-                outputs.append(out)
-            return torch.cat(outputs, dim=0)
+        outputs = []
+        for mb in micro_batches:
+            out = self.stage(mb, **kwargs)
+            outputs.append(out)
+        return torch.cat(outputs, dim=0)
 
 
 def split_model_for_pipeline(

@@ -5,9 +5,9 @@ routed by a learned router. ``AudioEncoder`` itself also routes frames
 through real TR-Hash MoE experts (by fixed frame position, same principle
 as ``TRHashVisionTower``), not a plain dense pass-through. Speech-to-text
 follows the same overall pattern as
-``complexity.generative.vision_language`` (deterministic route IDs for a
+``complexity.vision.vision_language`` (deterministic route IDs for a
 fixed-size modality prefix, fed through the shared decoder). Text-to-speech
-follows the same pattern as ``complexity.generative.image`` (a DiT-style
+follows the same pattern as ``complexity.vision.image`` (a DiT-style
 rectified-flow model whose FFN is a ``TRHashEngine``, route IDs keyed on
 timestep bucket + position).
 

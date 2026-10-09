@@ -4,37 +4,39 @@ from pathlib import Path
 
 import pytest
 
-from complexity.training.sft_curriculum import CurriculumStage
-from scripts.run_sft_curriculum import (
-    build_parser,
+from complexity.training.curriculum_planning import (
+    CurriculumPlanningConfig,
     load_example_index,
+    plan_curriculum,
     selected_checkpoint,
     stage_plan,
 )
+from complexity.training.sft_curriculum import CurriculumStage
 
 
 def test_curriculum_runner_requires_a_release_ready_sft_shard() -> None:
-    source = Path("scripts/run_sft_curriculum.py").read_text()
+    data = _planning_config()
+    config = CurriculumPlanningConfig.from_dict(data)
+    assert config.require_release_ready is True
+    assert config.pack_sequences is True
+    with pytest.raises(ValueError, match="release-ready data and sequence packing"):
+        CurriculumPlanningConfig.from_dict({**data, "require_release_ready": False})
+    with pytest.raises(ValueError, match="release-ready data and sequence packing"):
+        CurriculumPlanningConfig.from_dict({**data, "pack_sequences": False})
 
-    assert '"--require-release-ready"' in source
-    assert '"--pack-sequences"' in source
+
+def _planning_config():
+    return {
+        "checkpoint": "checkpoint",
+        "sft_bin": "dataset",
+        "curriculum_config": "curriculum.yaml",
+        "through_stage": "final",
+        "output_root": "output",
+    }
 
 
 def test_curriculum_defaults_to_preservation_first_lora() -> None:
-    args = build_parser().parse_args(
-        [
-            "--checkpoint",
-            "checkpoint",
-            "--sft-bin",
-            "dataset",
-            "--curriculum-config",
-            "curriculum.yaml",
-            "--through-stage",
-            "final",
-            "--output-root",
-            "output",
-        ]
-    )
+    args = CurriculumPlanningConfig.from_dict(_planning_config())
 
     assert args.lora_rank == 16
     assert args.lora_alpha == 16
@@ -65,25 +67,10 @@ def test_curriculum_planner_merges_semantic_loss_sidecar(tmp_path: Path) -> None
     ]
 
 
-@pytest.mark.parametrize("rank", ["0", "-1"])
-def test_curriculum_rejects_full_parameter_training(rank: str) -> None:
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(
-            [
-                "--checkpoint",
-                "checkpoint",
-                "--sft-bin",
-                "dataset",
-                "--curriculum-config",
-                "curriculum.yaml",
-                "--through-stage",
-                "final",
-                "--output-root",
-                "output",
-                "--lora-rank",
-                rank,
-            ]
-        )
+@pytest.mark.parametrize("rank", [0, -1])
+def test_curriculum_rejects_full_parameter_training(rank: int) -> None:
+    with pytest.raises(ValueError, match="positive LoRA rank"):
+        CurriculumPlanningConfig.from_dict({**_planning_config(), "lora_rank": rank})
 
 
 def test_stage_plan_covers_every_example_before_early_stopping() -> None:
@@ -191,3 +178,51 @@ def test_stage_with_validation_improvement_selects_trained_checkpoint(
         stage_root,
         source_checkpoint=source,
     ) == best
+
+
+def test_curriculum_preflight_validates_release_and_packing_without_writes(tmp_path):
+    import json
+
+    data = tmp_path / "data"
+    train = data / "train"
+    train.mkdir(parents=True)
+    manifest = data / "manifest.json"
+    manifest.write_text(json.dumps({"quality_status": "passed", "release_quality": {"ready": True}}))
+    (train / "examples.jsonl").write_text(
+        "".join(json.dumps({"example_id": str(i), "task": "tiny", "num_tokens": 3}) + "\n" for i in range(4))
+    )
+    curriculum = tmp_path / "curriculum.yaml"
+    curriculum.write_text("version: 1\nseed: 42\nstages:\n  - name: final\n    max_examples: all\n    epochs: 3\n    lr: 0.000001\n    batch_size: 1\n    seq_len: 8\n")
+    config = CurriculumPlanningConfig.from_dict({
+        **_planning_config(), "sft_bin": str(data), "curriculum_config": str(curriculum),
+        "output_root": str(tmp_path / "not_created"),
+    })
+    before = {str(file): file.read_bytes() for file in tmp_path.rglob("*") if file.is_file()}
+    report = plan_curriculum(config)
+    assert report["stages"][0]["training_items"] == 2
+    assert report["stages"][0]["total_steps"] == 6
+    assert report["training_started"] is False
+    assert {str(file): file.read_bytes() for file in tmp_path.rglob("*") if file.is_file()} == before
+    manifest.write_text(json.dumps({"quality_status": "failed"}))
+    with pytest.raises(ValueError, match="quality_status must be passed"):
+        plan_curriculum(config)
+    assert not (tmp_path / "not_created").exists()
+
+
+def test_curriculum_planning_does_not_truncate_oversized_examples():
+    stage = CurriculumStage(name="packed", max_examples=1, epochs=1, lr=1e-6, seq_len=8)
+    with pytest.raises(ValueError, match="without truncation"):
+        stage_plan(stage, examples=1, world_size=1, example_lengths=[9])
+
+
+def test_sidecar_must_match_index_without_duplicate_ids(tmp_path):
+    train = tmp_path / "train"
+    train.mkdir()
+    (train / "examples.jsonl").write_text('{"example_id":"one","num_tokens":3}\n')
+    sidecar = train / "loss_metadata.jsonl"
+    sidecar.write_text('{"example_id":"one"}\n{"example_id":"one"}\n')
+    with pytest.raises(ValueError, match="duplicate example IDs"):
+        load_example_index(tmp_path)
+    sidecar.write_text('{"example_id":"other"}\n')
+    with pytest.raises(ValueError, match="exactly match"):
+        load_example_index(tmp_path)

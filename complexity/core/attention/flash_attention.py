@@ -14,17 +14,15 @@ References:
 - Linear Attention: https://arxiv.org/abs/2006.16236
 """
 
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
-from typing import Optional, Tuple
-from dataclasses import dataclass
 
-from .base import AttentionBase, AttentionConfig
-from ..registry import register_attention
 from ...utils.device import sdpa_kernel_context
-
+from ..registry import register_attention
+from .base import AttentionBase, AttentionConfig
 
 # =============================================================================
 # Flash Attention

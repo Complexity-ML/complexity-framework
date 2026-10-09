@@ -5,16 +5,17 @@ Attention API - Factories pour créer des attention layers.
 from __future__ import annotations
 
 from typing import Type
+
 import torch.nn as nn
 
 from complexity.core import (
     ATTENTION_REGISTRY,
-    register_attention,
     AttentionBase,
     AttentionConfig,
     GroupedQueryAttention,
     MultiHeadAttention,
     MultiQueryAttention,
+    register_attention,
 )
 
 

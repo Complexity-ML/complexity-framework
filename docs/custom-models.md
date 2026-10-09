@@ -4,7 +4,7 @@
 components into `ComplexityModel`.
 
 For the exact released 200M configuration, import
-`scripts.train_tr_hash_200m_200b.make_config`. The compact examples below are
+the checkpoint's own `config.json` loaded with `ModelConfig.load`. The compact examples below are
 construction examples, not released checkpoints.
 
 ## Compose TR-GQA

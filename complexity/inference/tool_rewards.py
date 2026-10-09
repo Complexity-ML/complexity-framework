@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import operator
 import re
 from dataclasses import dataclass
@@ -16,6 +17,36 @@ class CalculatorError(ValueError):
 
 class DatetimeError(ValueError):
     pass
+
+
+class ToolCallParseError(ValueError):
+    pass
+
+
+@dataclass
+class ToolCall:
+    name: str
+    arguments: Dict[str, Any]
+    raw: str
+
+
+def parse_tool_call(text: str) -> Optional[ToolCall]:
+    """Parse the legacy tool envelope without executing or dispatching it."""
+    match = re.search(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", text, re.DOTALL)
+    if match is None:
+        if "<tool_call>" in text or "</tool_call>" in text:
+            raise ToolCallParseError("Malformed tool call block")
+        return None
+    raw = match.group(1)
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ToolCallParseError("Invalid tool JSON") from exc
+    name = payload.get("name")
+    arguments = payload.get("arguments")
+    if not isinstance(name, str) or not name or not isinstance(arguments, dict):
+        raise ToolCallParseError("Tool call requires a name and an arguments object")
+    return ToolCall(name=name, arguments=arguments, raw=raw)
 
 
 @dataclass
@@ -194,13 +225,3 @@ def build_datetime_episode(prompt: str, question: str) -> Optional[VerifiedToolE
 
 def build_verified_tool_episode(prompt: str, question: str) -> Optional[VerifiedToolEpisode]:
     return build_datetime_episode(prompt, question) or build_calculator_episode(prompt, question)
-    tool_call = {"name": "calculator", "arguments": {"expression": expr}}
-    tool_result = {"name": "calculator", "result": result}
-    return VerifiedToolEpisode(
-        prompt=prompt,
-        target_response=target_response,
-        reward=1.0,
-        tool_call=tool_call,
-        tool_result=tool_result,
-        metadata={"verified_tool": "calculator", "expression": expr, "expected": result},
-    )

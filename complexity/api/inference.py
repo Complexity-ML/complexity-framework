@@ -1,35 +1,34 @@
 """
-Inference API - Génération facile.
-==================================
+External text generation and historical compatibility names.
 
-Usage:
-    from complexity.api import Generate, GenerationConfig
+    from complexity.api import create_external_backend, ExternalGenerationConfig
+    backend = create_external_backend("vllm", base_url="http://localhost:8000",
+                                      model="your-served-model")
+    # Requires an already running, compatible serving endpoint:
+    # response = backend.complete("Hello", ExternalGenerationConfig(max_tokens=100))
 
-    # Production generation must use vLLM/SGLang OpenAI-compatible serving.
-
-    # Streaming
-    for token in Generate.stream(model, "Hello", max_tokens=100):
-        print(token, end="")
-
-    # The PyTorch framework layer does not own a native generate loop.
+Generate/GenerationConfig remain importable for compatibility. Native Generate
+methods consistently direct callers to the external serving interface.
 """
 
 from __future__ import annotations
 
-from typing import Optional, List, Dict, Any, Iterator, Union
 from dataclasses import dataclass, field
+from typing import Dict, Iterator, List, Union
 
 import torch
-import torch.nn as nn
 
-# Import depuis inference module
+# Historical native-generation types remain importable.
 from complexity.inference.engine import (
-    InferenceEngine,
-    InferenceConfig,
-    GenerationConfig as _GenerationConfig,
     DecodingStrategy,
+    InferenceConfig,
+    InferenceEngine,
     create_engine,
 )
+from complexity.inference.engine import (
+    GenerationConfig as _GenerationConfig,
+)
+from complexity.inference.external import ExternalGenerationConfig, create_external_backend
 
 
 @dataclass
@@ -43,6 +42,7 @@ class GenerationConfig:
         config = GenerationConfig(strategy="greedy")
         config = GenerationConfig(strategy="beam", num_beams=4)
     """
+
     # Length
     max_tokens: int = 100
     min_tokens: int = 0
@@ -98,88 +98,30 @@ class GenerationConfig:
 
 class Generate:
     """
-    API de génération flexible.
+    Historical compatibility namespace for disabled native generation.
 
-    Usage:
-        # Deprecated compatibility wrapper. Use vLLM/SGLang instead.
+    Calls fail before tokenization or configuration mutation. For generation
+    use create_external_backend against an existing vLLM or SGLang server.
     """
 
     @classmethod
     def text(
-        cls,
-        model,
-        prompt: str,
-        tokenizer=None,
-        config: GenerationConfig = None,
-        **kwargs
+        cls, model, prompt: str, tokenizer=None, config: GenerationConfig = None, **kwargs
     ) -> str:
-        """
-        Génère du texte depuis un prompt.
-
-        Args:
-            model: Model API ou nn.Module
-            prompt: Texte de prompt
-            tokenizer: Tokenizer (auto-détecté si possible)
-            config: GenerationConfig ou None
-            **kwargs: Override (max_tokens, temperature, ...)
-
-        Returns:
-            Texte généré
-        """
-        # Get tokenizer
-        tok = tokenizer or getattr(model, '_tokenizer', None)
-        if tok is None:
-            raise ValueError("Tokenizer required for text generation")
-
-        # Build config
-        if config:
-            for k, v in kwargs.items():
-                if hasattr(config, k):
-                    setattr(config, k, v)
-        else:
-            config = GenerationConfig(**kwargs)
-
-        # Encode
-        input_ids = tok.encode(prompt)
-        if isinstance(input_ids, list):
-            input_ids = torch.tensor([input_ids], dtype=torch.long)
-        elif input_ids.dim() == 1:
-            input_ids = input_ids.unsqueeze(0)
-
-        # Get device
-        device = getattr(model, 'device', None) or getattr(model, '_device', 'cpu')
-        input_ids = input_ids.to(device)
-
-        # Generate
-        output_ids = cls.tokens(model, input_ids, config=config)
-
-        # Decode new tokens only
-        new_tokens = output_ids[0, input_ids.shape[1]:]
-        return tok.decode(new_tokens.tolist())
+        """Compatibility entry point; generation uses an external serving endpoint."""
+        raise RuntimeError(
+            "Generate is disabled for native text generation: use "
+            "complexity.inference.create_external_backend with a vLLM or SGLang endpoint."
+        )
 
     @classmethod
     def tokens(
-        cls,
-        model,
-        input_ids: torch.Tensor,
-        config: GenerationConfig = None,
-        **kwargs
+        cls, model, input_ids: torch.Tensor, config: GenerationConfig = None, **kwargs
     ) -> torch.Tensor:
-        """
-        Génère des tokens depuis input_ids.
-
-        Args:
-            model: Model
-            input_ids: Input token IDs [batch, seq]
-            config: GenerationConfig
-            **kwargs: Override
-
-        Returns:
-            Generated token IDs
-        """
+        """Compatibility entry point; generation uses an external serving endpoint."""
         raise RuntimeError(
-            "Generate.tokens is disabled: generation must run through vLLM or "
-            "SGLang, not Complexity's PyTorch layer."
+            "Generate is disabled for native text generation: use "
+            "complexity.inference.create_external_backend with a vLLM or SGLang endpoint."
         )
 
     @classmethod
@@ -189,57 +131,13 @@ class Generate:
         prompt: Union[str, torch.Tensor],
         tokenizer=None,
         config: GenerationConfig = None,
-        **kwargs
+        **kwargs,
     ) -> Iterator[str]:
-        """
-        Stream génération token par token.
-
-        Args:
-            model: Model
-            prompt: Texte ou token IDs
-            tokenizer: Tokenizer (requis pour texte)
-            config: GenerationConfig
-            **kwargs: Override
-
-        Yields:
-            Texte décodé pour chaque token
-        """
-        # Build config
-        if config:
-            for k, v in kwargs.items():
-                if hasattr(config, k):
-                    setattr(config, k, v)
-        else:
-            config = GenerationConfig(**kwargs)
-
-        # Get tokenizer
-        tok = tokenizer or getattr(model, '_tokenizer', None)
-
-        # Prepare input
-        if isinstance(prompt, str):
-            if tok is None:
-                raise ValueError("Tokenizer required for text input")
-            input_ids = tok.encode(prompt)
-            if isinstance(input_ids, list):
-                input_ids = torch.tensor([input_ids], dtype=torch.long)
-        else:
-            input_ids = prompt
-            if input_ids.dim() == 1:
-                input_ids = input_ids.unsqueeze(0)
-
-        # Get device
-        device = getattr(model, 'device', None) or getattr(model, '_device', 'cpu')
-        input_ids = input_ids.to(device)
-
-        # Create engine and stream
-        engine = cls.engine(model)
-        internal_config = config.to_internal()
-
-        for token in engine.generate_stream(input_ids, internal_config):
-            if tok is not None:
-                yield tok.decode([token.item()])
-            else:
-                yield token
+        """Compatibility entry point; generation uses an external serving endpoint."""
+        raise RuntimeError(
+            "Generate is disabled for native text generation: use "
+            "complexity.inference.create_external_backend with a vLLM or SGLang endpoint."
+        )
 
     @classmethod
     def engine(
@@ -248,24 +146,12 @@ class Generate:
         cache_type: str = "standard",
         use_speculative: bool = False,
         draft_model=None,
-        **kwargs
+        **kwargs,
     ) -> InferenceEngine:
-        """
-        Crée un engine d'inférence.
-
-        Args:
-            model: Model
-            cache_type: "standard", "paged", "sliding"
-            use_speculative: Active speculative decoding
-            draft_model: Draft model pour speculative
-            **kwargs: Override config
-
-        Returns:
-            InferenceEngine configuré
-        """
+        """Compatibility entry point; generation uses an external serving endpoint."""
         raise RuntimeError(
-            "Generate.engine is disabled for native text generation: use vLLM "
-            "or SGLang OpenAI-compatible serving."
+            "Generate is disabled for native text generation: use "
+            "complexity.inference.create_external_backend with a vLLM or SGLang endpoint."
         )
 
     @classmethod
@@ -275,59 +161,13 @@ class Generate:
         messages: List[Dict[str, str]],
         tokenizer=None,
         config: GenerationConfig = None,
-        **kwargs
+        **kwargs,
     ) -> Dict[str, str]:
-        """
-        Génère une réponse chat.
-
-        Args:
-            model: Model
-            messages: Liste de messages [{"role": "user", "content": "..."}]
-            tokenizer: Tokenizer
-            config: GenerationConfig
-            **kwargs: Override
-
-        Returns:
-            Message assistant {"role": "assistant", "content": "..."}
-        """
-        # Get tokenizer
-        tok = tokenizer or getattr(model, '_tokenizer', None)
-        if tok is None:
-            raise ValueError("Tokenizer required for chat")
-
-        # Build config
-        if config:
-            for k, v in kwargs.items():
-                if hasattr(config, k):
-                    setattr(config, k, v)
-        else:
-            config = GenerationConfig(**kwargs)
-
-        # Encode chat
-        if hasattr(tok, 'encode_chat'):
-            input_ids = tok.encode_chat(messages)
-            if isinstance(input_ids, list):
-                input_ids = torch.tensor([input_ids], dtype=torch.long)
-        else:
-            # Fallback: concat messages
-            text = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
-            text += "\nassistant: "
-            input_ids = tok.encode(text)
-            if isinstance(input_ids, list):
-                input_ids = torch.tensor([input_ids], dtype=torch.long)
-
-        # Get device
-        device = getattr(model, 'device', None) or getattr(model, '_device', 'cpu')
-        input_ids = input_ids.to(device)
-
-        # Generate
-        output_ids = cls.tokens(model, input_ids, config=config)
-
-        # Decode
-        new_tokens = output_ids[0, input_ids.shape[1]:]
-        content = tok.decode(new_tokens.tolist())
-
-        return {"role": "assistant", "content": content}
+        """Compatibility entry point; generation uses an external serving endpoint."""
+        raise RuntimeError(
+            "Generate is disabled for native text generation: use "
+            "complexity.inference.create_external_backend with a vLLM or SGLang endpoint."
+        )
 
 
 # =============================================================================
@@ -341,4 +181,6 @@ __all__ = [
     "InferenceConfig",
     "DecodingStrategy",
     "create_engine",
+    "create_external_backend",
+    "ExternalGenerationConfig",
 ]

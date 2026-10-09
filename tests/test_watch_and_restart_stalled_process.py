@@ -1,25 +1,15 @@
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-SCRIPT = Path("scripts/watch_and_restart_stalled_process.py")
-
-
-def _load_module():
-    spec = importlib.util.spec_from_file_location("watch_and_restart_stalled_process", SCRIPT)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from complexity.training import supervisor
 
 
 @pytest.fixture()
 def mod():
-    return _load_module()
+    return supervisor
 
 
 def test_seconds_since_last_write_returns_none_for_missing_file(mod, tmp_path) -> None:
@@ -76,7 +66,9 @@ def test_watch_once_does_not_restart_before_the_log_file_exists(mod, tmp_path, m
 
 def test_restart_program_calls_supervisorctl_and_returns_true_on_success(mod, monkeypatch) -> None:
     run_mock = MagicMock()
-    run_mock.return_value = MagicMock(returncode=0, stdout="some_program: stopped\nsome_program: started\n", stderr="")
+    run_mock.return_value = MagicMock(
+        returncode=0, stdout="some_program: stopped\nsome_program: started\n", stderr=""
+    )
     monkeypatch.setattr(mod.subprocess, "run", run_mock)
 
     ok = mod.restart_program("some_program")

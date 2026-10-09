@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from complexity.models import ComplexityModel
-from scripts.build_tr_hash_agentic_100m_plans import build_plans, parse_token_count
-from scripts.train_tr_hash_text_lineage import (
-    TRHashTextLineageRunner,
+from complexity.training.lineage import (
     make_tr_hash_config,
+    resolve_lineage_schedule,
     validate_lineage_plans,
 )
+from complexity.training.lineage_runner import TRHashTextLineageRunner
+from complexity.training.refinement import build_agentic_plans as build_plans
+from complexity.training.refinement import parse_token_count
 
 
 def _fake_dataset():
@@ -101,42 +101,27 @@ def test_direct_refinement_entrypoint_rejects_low_peak_before_loading_data() -> 
         runner.build_dataset(None, args, rank=0, world_size=4)
 
 
-def test_agentic_100m_launcher_bounds_steps_to_audited_plan(tmp_path: Path) -> None:
-    tokenizer = tmp_path / "tokenizer"
-    tokenizer.mkdir()
-    (tokenizer / "tokenizer.json").write_text("{}", encoding="utf-8")
-    (tokenizer / "chat_template.jinja").write_text("template", encoding="utf-8")
+def test_agentic_100m_schedule_bounds_steps_to_audited_plan(tmp_path: Path) -> None:
     plan = tmp_path / "plan.json"
     plan.write_text(json.dumps({"trained_tokens": 1_000_003}), encoding="utf-8")
-    refinement = tmp_path / "refinement.json"
-    refinement.write_text(json.dumps({"trained_tokens": 500_003}), encoding="utf-8")
-    binary_directory = tmp_path / "bin"
-    binary_directory.mkdir()
-    torchrun = binary_directory / "torchrun"
-    torchrun.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n', encoding="utf-8")
-    torchrun.chmod(0o755)
-    repository = Path(__file__).resolve().parents[1]
-
-    result = subprocess.run(
-        [str(repository / "scripts/run_tr_hash_agentic_100m.sh"), "pretraining"],
-        check=True,
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "PATH": f"{binary_directory}:{os.environ['PATH']}",
-            "REPO_ROOT": str(tmp_path),
-            "VENV_ACTIVATE": str(tmp_path / "missing-venv"),
-            "TOKENIZER": str(tokenizer),
-            "PRETRAIN_PLAN": str(plan),
-            "REFINEMENT_PLAN": str(refinement),
-            "NPROC_PER_NODE": "4",
-            "BATCH_SIZE_PER_GPU": "2",
-            "GRADIENT_ACCUMULATION": "1",
-            "SEQ_LEN": "8",
-        },
+    report = resolve_lineage_schedule(
+        json.loads(plan.read_text()),
+        world_size=4,
+        batch_size=2,
+        gradient_accumulation=1,
+        sequence_length=8,
     )
 
-    assert "exact bounded schedule=15625 steps" in result.stdout
-    assert "unused_tail=3" in result.stdout
-    assert "--max-steps\n15625\n" in result.stdout
+    assert report["max_steps"] == 15625
+    assert report["unused_tail"] == 3
+    assert report["scheduled_tokens"] == 1_000_000
+    assert report["tokens_per_step"] == 64
+    with pytest.raises(ValueError, match="exceeds audited plan"):
+        resolve_lineage_schedule(
+            json.loads(plan.read_text()),
+            world_size=4,
+            batch_size=2,
+            gradient_accumulation=1,
+            sequence_length=8,
+            max_steps=15626,
+        )

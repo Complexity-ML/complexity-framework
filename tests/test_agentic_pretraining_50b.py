@@ -1,17 +1,24 @@
+import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 from tokenizers import Tokenizer, models, pre_tokenizers
 
-from scripts.build_agentic_pretraining_50b import StateStore, _skip, allocate_rows, build
+from complexity.training.agentic_sharding import (
+    StateStore,
+    allocate_rows,
+    build,
+    skip_source_records,
+)
 
 
 def test_restore_skip_reports_bounded_progress(caplog: pytest.LogCaptureFixture) -> None:
     iterator = iter({"text": str(index)} for index in range(5))
 
     with caplog.at_level("INFO"):
-        _skip(iterator, 5, source_name="fixture", log_every=2)
+        skip_source_records(iterator, 5, source_name="fixture", log_every=2)
 
     messages = [record.getMessage() for record in caplog.records]
     assert any("fixture restore progress: 40.00%" in message for message in messages)
@@ -239,3 +246,153 @@ def test_full_partial_shard_resumes_after_upload_failure(tmp_path: Path) -> None
     assert state["sources"][0]["rows_done"] == 2
     assert "corpora/fixture/tokens-00000.bin" in publisher.files
     assert not list((work_dir / "pending").rglob("*.bin*"))
+
+
+class _MemoryPublisher:
+    def __init__(self, *, wrong_hash=False, fail_state=False):
+        self.files = {}
+        self.wrong_hash, self.fail_state = wrong_hash, fail_state
+
+    def publish_file(self, path, relative):
+        payload = path.read_bytes()
+        self.files[relative] = payload
+        return {
+            "repo_path": relative,
+            "bytes": len(payload),
+            "sha256": "00" * 32 if self.wrong_hash else hashlib.sha256(payload).hexdigest(),
+        }
+
+    def publish_json(self, payload, relative, work_dir):
+        if self.fail_state and relative == "_state/state.json":
+            raise RuntimeError("injected state publication failure")
+        self.files[relative] = json.dumps(payload).encode()
+
+
+@pytest.fixture()
+def small_build(tmp_path):
+    words = "first run a command and verify its expected output with assert then finish the procedure now".split()
+    tokenizer = Tokenizer(
+        models.WordLevel(
+            vocab={"<unk>": 0, **{word: i for i, word in enumerate(words, 1)}}, unk_token="<unk>"
+        )
+    )
+    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer_dir = tmp_path / "tokenizer"
+    tokenizer_dir.mkdir()
+    tokenizer.save(str(tokenizer_dir / "tokenizer.json"))
+    source = tmp_path / "source.jsonl"
+    source.write_text(json.dumps({"text": " ".join(words)}) + "\n")
+    config = {
+        "version": 1,
+        "target_tokens": 8,
+        "seq_len": 4,
+        "global_batch_sequences": 1,
+        "shard_trained_tokens": 8,
+        "min_chars": 20,
+        "max_chars": 1000,
+        "protected_benchmarks": [],
+        "sources": [
+            {
+                "name": "fixture",
+                "bucket": "general",
+                "weight": 1.0,
+                "path": str(source),
+                "license_audit": "fixture",
+            }
+        ],
+    }
+    return (
+        {"config": config, "tokenizer_path": tokenizer_dir, "work_dir": tmp_path / "work"},
+        source,
+        tokenizer,
+    )
+
+
+def test_wrong_receipt_preserves_full_partial_and_resume_republishes_exact_bytes(small_build):
+    args, _, _ = small_build
+    with pytest.raises(ValueError, match="publisher receipt"):
+        build(**args, publisher=_MemoryPublisher(wrong_hash=True))
+    store = StateStore(args["work_dir"] / "state.sqlite3")
+    assert store.progress("fixture")["rows_done"] == 0
+    assert store.progress("fixture")["partial_position"] == 9
+    store.close()
+    pending = args["work_dir"] / "pending/fixture/tokens-00000.bin"
+    original = pending.read_bytes()
+    publisher = _MemoryPublisher()
+    state = build(**args, publisher=publisher)
+    assert state["sources"][0]["rows_done"] == 2
+    assert publisher.files["corpora/fixture/tokens-00000.bin"] == original
+    assert not pending.exists()
+
+
+def test_committed_shard_survives_state_failure_and_resume_cleans_retained_file(small_build):
+    args, _, _ = small_build
+    with pytest.raises(RuntimeError, match="state publication"):
+        build(**args, publisher=_MemoryPublisher(fail_state=True))
+    store = StateStore(args["work_dir"] / "state.sqlite3")
+    assert store.progress("fixture")["rows_done"] == 2
+    store.close()
+    assert (args["work_dir"] / "pending/fixture/tokens-00000.bin").exists()
+    publisher = _MemoryPublisher()
+    state = build(**args, publisher=publisher)
+    assert state["sources"][0]["rows_done"] == 2
+    assert "mixture_manifest.json" in publisher.files
+    assert not list((args["work_dir"] / "pending").rglob("*.bin"))
+
+
+def test_resume_rejects_changed_local_input(small_build):
+    args, source, _ = small_build
+    with pytest.raises(ValueError, match="publisher receipt"):
+        build(**args, publisher=_MemoryPublisher(wrong_hash=True))
+    source.write_text(source.read_text() + json.dumps({"text": "different source"}) + "\n")
+    with pytest.raises(ValueError, match="incompatible build"):
+        build(**args, publisher=_MemoryPublisher())
+
+
+def test_shards_keep_one_boundary_token_and_match_native_loader(small_build, tmp_path):
+    from complexity.training.corpus_mixture import PretokenizedCorpusMixtureDataset
+
+    args, _, tokenizer = small_build
+    args["config"]["target_tokens"] = 12
+    publisher = _MemoryPublisher()
+    state = build(**args, publisher=publisher)
+    root = tmp_path / "published"
+    for relative, payload in publisher.files.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    first = np.frombuffer(publisher.files["corpora/fixture/tokens-00000.bin"], dtype="<u2")
+    second = np.frombuffer(publisher.files["corpora/fixture/tokens-00001.bin"], dtype="<u2")
+    assert first[-1] == second[0]
+    assert state["actual_tokens"] == 12
+    dataset = PretokenizedCorpusMixtureDataset(str(root), rank=0, world_size=1)
+    expected = tokenizer.encode(
+        "first run a command and verify its expected output with assert then finish the procedure now"
+    ).ids
+    rows = list(dataset)
+    assert len(rows) == 3
+    for index, row in enumerate(rows):
+        assert row["input_ids"].tolist() == expected[index * 4 : index * 4 + 4]
+        assert row["labels"].tolist() == expected[index * 4 + 1 : index * 4 + 5]
+
+
+def test_layout_rejects_boolean_and_duplicate_sources():
+    with pytest.raises(ValueError, match="positive integer"):
+        allocate_rows(
+            target_tokens=True,
+            seq_len=4,
+            global_batch_sequences=1,
+            sources=[{"name": "x", "weight": 1.0}],
+        )
+    with pytest.raises(ValueError, match="unique"):
+        allocate_rows(
+            target_tokens=8,
+            seq_len=4,
+            global_batch_sequences=1,
+            sources=[{"name": "x", "weight": 0.5}, {"name": "x", "weight": 0.5}],
+        )
+
+
+def test_restore_never_silently_skips_past_source_end():
+    with pytest.raises(RuntimeError, match="exhausted"):
+        skip_source_records(iter([]), 1, source_name="fixture")

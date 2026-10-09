@@ -14,16 +14,16 @@ Usage:
     out, cache = attn(hidden_states, sort_idx=sort_idx)
 """
 
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple
 
-from .base import AttentionBase, AttentionConfig
+from ..position.rotary import PartialRoPE, RotaryEmbedding
 from ..registry import register_attention
-from ..position.rotary import RotaryEmbedding, PartialRoPE, apply_rotary_pos_emb
 from ..triton_kernels import routed_proj as _routed_proj_impl
-
+from .base import AttentionBase, AttentionConfig
 
 HAS_SDPA = hasattr(F, "scaled_dot_product_attention")
 

@@ -13,9 +13,8 @@ Without this, crashed NCCL processes spam "broken pipe" forever.
 Complexity-ML — 2026
 """
 
-import os
-import sys
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 

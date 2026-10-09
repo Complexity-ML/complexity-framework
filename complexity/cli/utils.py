@@ -2,17 +2,16 @@
 CLI Utilities - Console, spinners, formatting.
 """
 
-from typing import Optional
 from contextlib import contextmanager
+from typing import Optional
 
 try:
     from rich.console import Console
+    from rich.markdown import Markdown
     from rich.panel import Panel
-    from rich.table import Table
     from rich.progress import Progress, SpinnerColumn, TextColumn
     from rich.syntax import Syntax
-    from rich.markdown import Markdown
-    from rich import print as rprint
+    from rich.table import Table
     HAS_RICH = True
 except ImportError:
     HAS_RICH = False

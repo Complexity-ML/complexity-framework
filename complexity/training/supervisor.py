@@ -9,11 +9,14 @@ come from protected local state.
 
 from __future__ import annotations
 
+import logging
+import math
 import os
 import re
 import shlex
 import subprocess
 import tempfile
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +31,7 @@ _SECRET_NAME = re.compile(
 _FORBIDDEN_TEXT = ("\x00", "\n", "\r")
 
 AutoRestart = bool | Literal["unexpected"]
+logger = logging.getLogger(__name__)
 
 
 def _require_safe_text(value: str, *, label: str) -> str:
@@ -240,8 +244,70 @@ def _validate_program_name(name: str) -> None:
         raise ValueError(f"invalid Supervisor program name: {name!r}")
 
 
+def seconds_since_last_write(log_file: str | Path, now: float | None = None) -> float | None:
+    """Return a log's age in seconds, or ``None`` while its file is absent.
+
+    File freshness is an observation, not proof that optimizer steps or a
+    distributed job are advancing. This function never controls a process.
+    """
+    try:
+        modified = Path(log_file).stat().st_mtime
+    except FileNotFoundError:
+        return None
+    return (time.time() if now is None else now) - modified
+
+
+def restart_program(program: str) -> bool:
+    """Explicitly request ``supervisorctl restart`` for one validated program.
+
+    Return whether Supervisor accepted the command; this does not verify
+    successful checkpoint restoration or subsequent training progress.
+    """
+    _validate_program_name(program)
+    logger.warning("%s: stale log, requesting Supervisor restart", program)
+    try:
+        result = subprocess.run(
+            ["supervisorctl", "restart", program],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        logger.error("Supervisor restart could not execute: %s", exc)
+        return False
+    if result.returncode != 0:
+        logger.error("restart failed: %s %s", result.stdout.strip(), result.stderr.strip())
+        return False
+    logger.info("restart output: %s", result.stdout.strip())
+    return True
+
+
+def watch_once(
+    log_file: str | Path,
+    program: str,
+    stall_seconds: float,
+    now: float | None = None,
+) -> bool:
+    """Check log freshness and attempt one restart when strictly over threshold.
+
+    ``True`` means a restart was attempted, including a rejected request.
+    Callers own polling, cooldown and recovery policy. Merely importing this
+    module does not start a watcher or change any running program.
+    """
+    _validate_program_name(program)
+    if not math.isfinite(stall_seconds) or stall_seconds <= 0:
+        raise ValueError("stall_seconds must be finite and positive")
+    idle = seconds_since_last_write(log_file, now=now)
+    if idle is None or idle <= stall_seconds:
+        return False
+    restart_program(program)
+    return True
+
+
 __all__ = [
     "AutoRestart",
     "SupervisorManager",
     "SupervisorProgram",
+    "restart_program",
+    "seconds_since_last_write",
+    "watch_once",
 ]

@@ -118,8 +118,9 @@ torchrun --standalone --nproc_per_node=8 \
 group for routed expert parameters, inverse-square-root class weighting,
 distributed non-padding validation, top-1/top-5/macro accuracy, and safetensors
 model weights. It saves optimizer, scheduler, epoch, exact batch cursor, and one
-RNG state per rank. `scripts/vast_train_cuhkx_sensor_fusion.sh` wraps this with
-sensible defaults.
+RNG state per rank. Use the explicit module command above or the packaged
+`cf-sensor-fusion-train` entry point; the former
+`vast_train_cuhkx_sensor_fusion.sh` wrapper is absent from this checkout.
 
 Resume with the same architecture, preprocessing, world size, batch size, and
 total epoch target:

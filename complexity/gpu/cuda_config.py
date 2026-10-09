@@ -4,8 +4,9 @@ CUDA backend configuration for optimal training performance.
 Complexity-ML — 2026
 """
 
-import torch
 import logging
+
+import torch
 
 from complexity.utils.device import configure_torch_acceleration, is_rocm_available
 

@@ -4,13 +4,13 @@ Helpers API - Utilitaires pour les builders de modèles.
 
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
-from typing import Optional, Tuple, Union, List, Dict, Any
-from dataclasses import dataclass
-
 
 # =============================================================================
 # Weight Initialization

@@ -2,22 +2,32 @@
 Complexity Framework CLI.
 
 Provides command-line interface for:
-- Training models
-- Running inference
+- Inspecting model and training configurations
+- Inspecting checkpoints without restoring them
+- Using external vLLM/SGLang text inference
 - Tokenization
 - Profiling
 - Model conversion
-- Serving models via API
+- Vision training, export and serving workflows
 
 Usage:
     complexity --help
-    complexity train run config.yaml
-    complexity inference chat model.pt
-    complexity serve start model.pt
+    complexity train validate config.json
+    complexity inference chat served-model
+    complexity vision list
 """
 
 from .app import app, main
-from .core import ComplexityCLI
+
+
+def __getattr__(name):
+    if name == "ComplexityCLI":
+        from .core import ComplexityCLI
+
+        globals()[name] = ComplexityCLI
+        return ComplexityCLI
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "app",

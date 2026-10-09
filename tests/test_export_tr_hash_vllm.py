@@ -1,4 +1,5 @@
-from scripts.export_tr_hash_vllm import build_config, vllm_tensor_name
+from complexity.export.routed import build_vllm_config as build_config
+from complexity.export.routed import vllm_tensor_name
 
 
 def _engine_config():
@@ -24,16 +25,8 @@ def test_tr_hash_engine_config_uses_compatible_vllm_runtime_contract():
 
 def test_tr_hash_engine_tensors_map_to_token_routed_runtime_names():
     prefix = "layers.0.mlp.engine"
-    assert vllm_tensor_name(f"{prefix}.expert_gate") == (
-        "layers.0.mlp.gate_proj_w"
-    )
+    assert vllm_tensor_name(f"{prefix}.expert_gate") == ("layers.0.mlp.gate_proj_w")
     assert vllm_tensor_name(f"{prefix}.expert_up") == "layers.0.mlp.up_proj_w"
-    assert vllm_tensor_name(f"{prefix}.expert_down") == (
-        "layers.0.mlp.down_proj_w"
-    )
-    assert vllm_tensor_name(f"{prefix}.route_table") == (
-        "layers.0.mlp.topk_token_to_expert"
-    )
-    assert vllm_tensor_name(f"{prefix}.shared_gate.weight") == (
-        "layers.0.mlp.shared_gate.weight"
-    )
+    assert vllm_tensor_name(f"{prefix}.expert_down") == ("layers.0.mlp.down_proj_w")
+    assert vllm_tensor_name(f"{prefix}.route_table") == ("layers.0.mlp.topk_token_to_expert")
+    assert vllm_tensor_name(f"{prefix}.shared_gate.weight") == ("layers.0.mlp.shared_gate.weight")

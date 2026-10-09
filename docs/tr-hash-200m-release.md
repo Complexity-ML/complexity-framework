@@ -53,7 +53,7 @@ load-balancing loss, and no per-token routing network at inference time.
 - [130B base checkpoint](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-130B)
 - [Step-8,156 refinement checkpoint](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-160B-Refinement)
 - [Promoted full-parameter SFT](https://huggingface.co/AETHORIA-AI/TR-HASH-MoE-200M-160B-SFT)
-- [Audited SFT v2 300K dataset](https://huggingface.co/datasets/AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K)
+- [Audited SFT v2 300K dataset](https://huggingface.co/datasets/AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-32K-300K)
 - [Canonical 32K tokenizer](https://huggingface.co/AETHORIA-AI/TR-HASH-Tokenizer-32K)
 - [Release paper](https://www.complexity-ai.fr/papers/tr-hash-200m-multi-hash-routing.pdf)
 - [Live TR-Hash-i64 chat](https://www.complexity-ai.fr/ai-lab)
@@ -77,7 +77,7 @@ recall, or open-ended chat quality. Training minibatch loss, matched SFT
 validation loss, and PIQA are different measurements and must not be compared
 as if they shared one sampling process.
 
-## Reproduction entry points
+## Historical reproduction profiles
 
 | Operation | Entry point |
 |---|---|
@@ -85,9 +85,11 @@ as if they shared one sampling process.
 | Unique-token refinement | `scripts/vast_finetune_tr_hash_200m_70b_unique_phase2.sh` |
 | Three-epoch full SFT v2, 32,000-token vocabulary | released checkpoint and archived run manifests |
 
-The `vast_*` launchers are production profiles for `/workspace` machines and
-expect the environment variables documented in [Training](training.md). Read
-and adapt their paths before using them on another cluster.
+These are historical profile identifiers for the recorded `/workspace` run;
+some executables are absent from this checkout. Reproduction requires the
+matching archived revision and pinned artifact contracts described in
+[Training lineage](training.md). Current local training and inspection use
+[Workflows](workflows.md).
 
 ## Limitations
 

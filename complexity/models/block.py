@@ -7,9 +7,10 @@ A block consists of:
 3. Residual connections
 """
 
+from typing import Any, Optional, Tuple
+
 import torch
 import torch.nn as nn
-from typing import Any, Optional, Tuple
 
 from ..config import ModelConfig
 from ..core.attention import AttentionConfig

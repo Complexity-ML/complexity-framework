@@ -19,17 +19,17 @@ Modules:
 Complexity-ML — 2026
 """
 
-from .patches import apply_gpu_patches, patch_triton_heuristics
-from .cuda_config import configure_cuda_backends
-from .nccl_config import configure_nccl
-from .rccl_config import configure_rccl
-from .memory import clear_gpu_cache, log_memory_usage, estimate_max_batch_size
 from .compile import compile_model, set_compile_env
-from .profiler import StepTimer, profile_model_flops
-from .fused_kernels import FusedRMSNorm, fused_swiglu, fused_residual_rmsnorm
+from .cuda_config import configure_cuda_backends
+from .data_loading import BackgroundTokenizer, CUDAPrefetcher
+from .fused_kernels import FusedRMSNorm, fused_residual_rmsnorm, fused_swiglu
 from .gradient import GradientCompressor, clip_grad_norm_fused
-from .precision import configure_mixed_precision, BF16Autocast, upcast_softmax
-from .data_loading import CUDAPrefetcher, BackgroundTokenizer
+from .memory import clear_gpu_cache, estimate_max_batch_size, log_memory_usage
+from .nccl_config import configure_nccl
+from .patches import apply_gpu_patches, patch_triton_heuristics
+from .precision import BF16Autocast, configure_mixed_precision, upcast_softmax
+from .profiler import StepTimer, profile_model_flops
+from .rccl_config import configure_rccl
 
 
 def setup_gpu(**kwargs) -> None:

@@ -5,13 +5,16 @@ MLP API - Factories pour créer des MLP layers.
 from __future__ import annotations
 
 from typing import Type
+
 import torch.nn as nn
 
 from complexity.core import (
     MLP_REGISTRY,
-    register_mlp,
     MLPBase,
     MLPConfig,
+    register_mlp,
+)
+from complexity.core import (
     TRHashEngineMLP as CoreTRHashEngineMLP,
 )
 

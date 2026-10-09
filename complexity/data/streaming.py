@@ -8,13 +8,13 @@ Handles datasets that don't fit in memory:
 - Resume from checkpoint
 """
 
-import torch
-from torch.utils.data import IterableDataset, Dataset
-from typing import Optional, Dict, Any, Iterator, List, Callable, Union
-from pathlib import Path
 import json
 import random
-import os
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, Union
+
+import torch
+from torch.utils.data import Dataset, IterableDataset
 
 
 class StreamingDataset(IterableDataset):

@@ -3,15 +3,51 @@ Tokenization commands for the Complexity framework.
 """
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Optional
 
 import typer
 
-from complexity.tokenizer import get_special_tokens
-
 from ..utils import console, error, info, print_panel, print_table, spinner, warning
 
 tokenize = typer.Typer(name="tokenize", help="Tokenization commands")
+
+
+def _load_cli_tokenizer(name: str, model: str):
+    """Load local native bundles or the requested historical backend."""
+    path = Path(name)
+    if path.exists() and path.suffix != ".model":
+        from complexity.tokenizer import Tokenizer
+
+        tokenizer = Tokenizer.load(str(path))
+        engine = tokenizer._tokenizer
+
+        def encode(text: str, *, special_tokens: bool = True):
+            encoded = (
+                engine.encode(text, add_special_tokens=special_tokens)
+                if hasattr(engine, "encode_batch")
+                else engine.encode(text)
+            )
+            return encoded.ids if hasattr(encoded, "ids") else list(encoded)
+
+        eos = tokenizer.eos_token_id
+        if eos is None and hasattr(tokenizer._tokenizer, "token_to_id"):
+            for marker in ("<|end|>", "</s>", "<|endoftext|>"):
+                eos = tokenizer._tokenizer.token_to_id(marker)
+                if eos is not None:
+                    break
+        return SimpleNamespace(
+            encode=encode,
+            encode_plain=lambda text: encode(text, special_tokens=False),
+            decode=tokenizer.decode,
+            eos_token_id=eos,
+        )
+
+    from complexity.data import get_tokenizer
+
+    if path.exists() and path.suffix == ".model":
+        return get_tokenizer("sentencepiece", model_path=str(path))
+    return get_tokenizer(name, model_name=model)
 
 
 # =============================================================================
@@ -21,6 +57,7 @@ tokenize = typer.Typer(name="tokenize", help="Tokenization commands")
 
 def _get_format_special_tokens(format_name: str) -> List[str]:
     """Get special tokens for a specific format."""
+    from complexity.tokenizer import get_special_tokens
 
     # Llama 3 special tokens
     LLAMA3_TOKENS = [
@@ -415,19 +452,17 @@ def train_sentencepiece(
                 ct.user_start,
                 ct.assistant_start,
                 ct.system_start,
-                ct.call_start,
-                ct.call_end,
-                ct.args_start,
-                ct.result_start,
+                ct.tool_call,
+                ct.tool_call_end,
+                ct.tool_args,
+                ct.tool_result,
                 ct.reason_start,
                 ct.reason_end,
                 ct.step_start,
                 ct.conclude,
-                ct.think_start,
-                ct.think_end,
                 ct.code_start,
                 ct.code_end,
-                ct.image_start,
+                ct.image,
                 ct.image_end,
                 ct.state_start,
                 ct.action_start,
@@ -509,15 +544,13 @@ def extend_tokenizer(
             ct.user_start,
             ct.assistant_start,
             ct.system_start,
-            ct.call_start,
-            ct.call_end,
-            ct.args_start,
-            ct.result_start,
+            ct.tool_call,
+            ct.tool_call_end,
+            ct.tool_args,
+            ct.tool_result,
             ct.reason_start,
             ct.step_start,
             ct.conclude,
-            ct.think_start,
-            ct.think_end,
             ct.code_start,
             ct.code_end,
             ct.state_start,
@@ -534,7 +567,8 @@ def extend_tokenizer(
         from tokenizers import Tokenizer
 
         if tokenizer_path.exists():
-            tokenizer = Tokenizer.from_file(str(tokenizer_path))
+            native_file = tokenizer_path / "tokenizer.json" if tokenizer_path.is_dir() else tokenizer_path
+            tokenizer = Tokenizer.from_file(str(native_file))
         else:
             # Try as a pretrained name
             from tokenizers import Tokenizer
@@ -666,25 +700,11 @@ def encode_text(
         text = file.read_text()
 
     try:
-        # Check if tokenizer is a path
-        tokenizer_path = Path(tokenizer)
-        if tokenizer_path.exists():
-            from tokenizers import Tokenizer
+        tok = _load_cli_tokenizer(tokenizer, model)
+        tokens = tok.encode(text)
 
-            tok = Tokenizer.from_file(str(tokenizer_path))
-            encoding = tok.encode(text)
-            tokens = encoding.ids
-
-            def decode_single(token_id: int) -> str:
-                return tok.decode([token_id])
-        else:
-            from complexity.data import get_tokenizer
-
-            tok = get_tokenizer(tokenizer, model_name=model)
-            tokens = tok.encode(text)
-
-            def decode_single(token_id: int) -> str:
-                return tok.decode([token_id])
+        def decode_single(token_id: int) -> str:
+            return tok.decode([token_id])
 
         print_panel(
             f"Text length: {len(text)} chars\n"
@@ -729,17 +749,8 @@ def decode_tokens(
         raise typer.Exit(1)
 
     try:
-        tokenizer_path = Path(tokenizer)
-        if tokenizer_path.exists():
-            from tokenizers import Tokenizer
-
-            tok = Tokenizer.from_file(str(tokenizer_path))
-            text = tok.decode(token_ids)
-        else:
-            from complexity.data import get_tokenizer
-
-            tok = get_tokenizer(tokenizer, model_name=model)
-            text = tok.decode(token_ids)
+        tok = _load_cli_tokenizer(tokenizer, model)
+        text = tok.decode(token_ids)
 
         console.print(f"[bold]Decoded text:[/bold]\n{text}")
 
@@ -763,20 +774,12 @@ def count_tokens(
         complexity tokenize count document.txt
         complexity tokenize count ./data/ --pattern "*.jsonl" --recursive
     """
-    # Load tokenizer
-    tokenizer_path = Path(tokenizer)
-    if tokenizer_path.exists():
-        from tokenizers import Tokenizer
-
-        tok = Tokenizer.from_file(str(tokenizer_path))
-
-        def encode_fn(text: str) -> list[int]:
-            return tok.encode(text).ids
-    else:
-        from complexity.data import get_tokenizer
-
-        tok = get_tokenizer(tokenizer, model_name=model)
-        encode_fn = tok.encode
+    try:
+        tok = _load_cli_tokenizer(tokenizer, model)
+    except (OSError, ValueError, ImportError) as exc:
+        console.print(error(f"Failed to load tokenizer: {exc}"))
+        raise typer.Exit(1) from exc
+    encode_fn = tok.encode
 
     files = []
     if path.is_file():
@@ -860,22 +863,18 @@ def preprocess_data(
 
     import numpy as np
 
-    # Load tokenizer
-    tokenizer_path = Path(tokenizer)
-    if tokenizer_path.exists():
-        from tokenizers import Tokenizer
-
-        tok = Tokenizer.from_file(str(tokenizer_path))
-
-        def encode_fn(text: str) -> list[int]:
-            return tok.encode(text).ids
-        eos_id = tok.token_to_id("<|end|>") or tok.token_to_id("</s>") or 2
-    else:
-        from complexity.data import get_tokenizer
-
-        tok = get_tokenizer(tokenizer, model_name=model)
-        encode_fn = tok.encode
-        eos_id = getattr(tok, "eos_token_id", 2)
+    try:
+        tok = _load_cli_tokenizer(tokenizer, model)
+    except (OSError, ValueError, ImportError) as exc:
+        console.print(error(f"Failed to load tokenizer: {exc}"))
+        raise typer.Exit(1) from exc
+    # This writer owns the document EOS. Skip tokenizer post-processing so
+    # an automatic BOS/EOS does not duplicate the separator we append below.
+    encode_fn = getattr(tok, "encode_plain", tok.encode)
+    eos_id = tok.eos_token_id
+    if eos_id is None:
+        console.print(error("Tokenizer has no EOS token; supply a tokenizer with a configured EOS"))
+        raise typer.Exit(1)
 
     # Collect files
     if input_path.is_file():
@@ -958,7 +957,8 @@ def tokenizer_info(
     try:
         from tokenizers import Tokenizer
 
-        tok = Tokenizer.from_file(str(tokenizer_path))
+        native_file = tokenizer_path / "tokenizer.json" if tokenizer_path.is_dir() else tokenizer_path
+        tok = Tokenizer.from_file(str(native_file))
 
         vocab = tok.get_vocab()
         vocab_size = tok.get_vocab_size()
@@ -1026,12 +1026,12 @@ def show_special_tokens(
                 "system_start",
             ],
             "Tools (64-127)": [
-                "call_start",
-                "call_end",
-                "args_start",
-                "result_start",
-                "tool_start",
-                "tool_end",
+                "tool_call",
+                "tool_call_end",
+                "tool_args",
+                "tool_result",
+                "tools_start",
+                "tools_end",
             ],
             "Reasoning (128-191)": [
                 "reason_start",
@@ -1039,8 +1039,6 @@ def show_special_tokens(
                 "step_start",
                 "step_end",
                 "conclude",
-                "think_start",
-                "think_end",
             ],
             "Code (192-255)": [
                 "code_start",
@@ -1051,7 +1049,7 @@ def show_special_tokens(
                 "class_start",
             ],
             "Vision (256-287)": [
-                "image_start",
+                "image",
                 "image_end",
                 "vision_start",
                 "bbox_start",
@@ -1097,7 +1095,8 @@ def benchmark_tokenizer(
     try:
         from tokenizers import Tokenizer
 
-        tok = Tokenizer.from_file(str(tokenizer_path))
+        native_file = tokenizer_path / "tokenizer.json" if tokenizer_path.is_dir() else tokenizer_path
+        tok = Tokenizer.from_file(str(native_file))
 
         # Warmup
         for _ in range(10):

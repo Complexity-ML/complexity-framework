@@ -11,9 +11,10 @@ Typical speedup: 1.3-2x per operation.
 Complexity-ML — 2026
 """
 
+import warnings
+
 import torch
 import torch.nn as nn
-import warnings
 
 from complexity.utils.device import supports_custom_triton
 

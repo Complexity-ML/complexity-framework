@@ -8,11 +8,11 @@ Features:
 - Automatic sequence packing
 """
 
+from dataclasses import dataclass
+from typing import Callable, Dict, Iterator, List, Optional
+
 import torch
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
-from typing import Optional, Dict, Any, Iterator, List, Callable
-from dataclasses import dataclass
-import math
 
 
 @dataclass

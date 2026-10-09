@@ -9,12 +9,13 @@ Provides:
 - Coherence metrics
 """
 
-import torch
-import torch.nn as nn
-from typing import List, Dict, Any, Optional, Tuple
-from collections import Counter
 import math
 import re
+from collections import Counter
+from typing import Any, Dict, List, Optional
+
+import torch
+import torch.nn as nn
 
 
 class RougeScorer:

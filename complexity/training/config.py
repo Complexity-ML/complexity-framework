@@ -1,7 +1,10 @@
 """Training configuration."""
 
-from dataclasses import dataclass
-from typing import Optional, Dict, Any
+import json
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, fields
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 
 @dataclass
@@ -147,22 +150,38 @@ class TrainingConfig:
         self.checkpoint_dir = value
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "max_steps": self.max_steps,
-            "max_epochs": self.max_epochs,
-            "batch_size": self.batch_size,
-            "gradient_accumulation_steps": self.gradient_accumulation_steps,
-            "optimizer_type": self.optimizer_type,
-            "learning_rate": self.learning_rate,
-            "muon_lr": self.muon_lr,
-            "weight_decay": self.weight_decay,
-            "warmup_steps": self.warmup_steps,
-            "lr_scheduler": self.lr_scheduler,
-            "min_lr_ratio": self.min_lr_ratio,
-            "precision": self.precision,
-            "grad_clip": self.grad_clip,
-            "use_fsdp": self.use_fsdp,
-            "sharding_mode": self.sharding_mode,
-            "checkpoint_dir": self.checkpoint_dir,
-            "save_steps": self.save_steps,
-        }
+        """Serialize every setting, including resume, scheduler and logging policy."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any], *, strict: bool = True) -> "TrainingConfig":
+        if not isinstance(data, Mapping):
+            raise ValueError("Training config must be a mapping")
+        valid = {field.name for field in fields(cls)}
+        unknown = set(data) - valid
+        if strict and unknown:
+            raise ValueError("Unknown training config keys: " + ", ".join(sorted(map(str, unknown))))
+        if strict:
+            from complexity._config_utils import validate_field_types
+            validate_field_types(cls, data)
+        return cls(**{key: value for key, value in data.items() if key in valid})
+
+    def save(self, path: str | Path) -> None:
+        path = Path(path)
+        with path.open("w", encoding="utf-8") as stream:
+            if path.suffix.lower() in {".yaml", ".yml"}:
+                import yaml
+                yaml.safe_dump(self.to_dict(), stream, sort_keys=False)
+            else:
+                json.dump(self.to_dict(), stream, indent=2)
+
+    @classmethod
+    def load(cls, path: str | Path, *, strict: bool = True) -> "TrainingConfig":
+        path = Path(path)
+        with path.open(encoding="utf-8") as stream:
+            if path.suffix.lower() in {".yaml", ".yml"}:
+                import yaml
+                data = yaml.safe_load(stream)
+            else:
+                data = json.load(stream)
+        return cls.from_dict(data, strict=strict)

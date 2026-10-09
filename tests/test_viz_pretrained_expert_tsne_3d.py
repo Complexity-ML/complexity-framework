@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 import torch
 from safetensors.torch import save_file
 
@@ -8,7 +9,7 @@ from complexity.config import ModelConfig
 from complexity.core.mlp.base import MLPConfig
 from complexity.core.mlp.tr_hash_engine import TRHashEngineMLP
 from complexity.models import ComplexityModel
-from scripts.viz_pretrained_expert_tsne_3d import (
+from complexity.profiling.routing import (
     audit_full_probe_routing,
     load_tr_hash_model,
     parse_layers,
@@ -92,9 +93,7 @@ def test_full_probe_audit_uses_unsampled_routes_and_reports_finite_norm_ratios()
     )
 
     expected_routes = mlp.engine.route_table[:, token_ids]
-    expected_counts = [
-        torch.bincount(route, minlength=4).tolist() for route in expected_routes
-    ]
+    expected_counts = [torch.bincount(route, minlength=4).tolist() for route in expected_routes]
     assert audit["tokens"] == 32
     assert audit["unique_token_ids"] == 32
     assert audit["sampling"] == "all_collected_probe_tokens"
@@ -150,3 +149,43 @@ def test_load_tr_hash_model_accepts_current_engine_bundle(tmp_path):
         loaded.layers[0].mlp.engine.route_table,
         source.layers[0].mlp.engine.route_table,
     )
+
+
+def test_contributions_reconstruct_forward_with_reduced_active_capacity():
+    mlp = _small_mlp()
+    mlp.set_active_experts(2)
+    mlp.set_active_expert_width(2)
+    hidden = torch.randn(32, 8, generator=torch.Generator().manual_seed(71))
+    token_ids = torch.arange(32)
+    packed, norms = routed_contributions(mlp, hidden, token_ids, np.arange(32), "cpu")
+    vectors, experts, _, _ = packed
+    reconstructed = (vectors * norms[:, None]).reshape(2, 32, 8).sum(axis=0)
+    with torch.no_grad():
+        actual = mlp(hidden.unsqueeze(0), token_ids.unsqueeze(0)).squeeze(0).numpy()
+    assert set(experts) == {0, 1}
+    np.testing.assert_allclose(reconstructed, actual, atol=1e-9, rtol=1e-5)
+    audit = audit_full_probe_routing(mlp, hidden, hidden, token_ids, "cpu", batch_size=5)
+    assert audit["active_num_experts"] == 2
+    assert audit["active_expert_width"] == 2
+    assert sum(audit["combined_route_counts"]) == 64
+
+
+def test_sampling_rejects_a_count_that_cannot_represent_every_expert():
+    mlp = _small_mlp()
+    with pytest.raises(ValueError, match="every observed primary expert"):
+        stratified_token_sample(
+            mlp.engine.route_table, torch.arange(32), 2, np.random.default_rng(0)
+        )
+
+
+def test_primary_weight_control_changes_the_executed_route_mix():
+    mlp = _small_mlp()
+    hidden = torch.randn(32, 8, generator=torch.Generator().manual_seed(19))
+    token_ids = torch.arange(32)
+    before = mlp(hidden.unsqueeze(0), token_ids.unsqueeze(0)).detach()
+    mlp.set_top_k_primary_weight(0.9)
+    after = mlp(hidden.unsqueeze(0), token_ids.unsqueeze(0)).detach()
+    assert not torch.equal(before, after)
+    packed, norms = routed_contributions(mlp, hidden, token_ids, np.arange(32), "cpu")
+    reconstructed = (packed[0] * norms[:, None]).reshape(2, 32, 8).sum(axis=0)
+    np.testing.assert_allclose(reconstructed, after.squeeze(0).numpy(), atol=1e-9, rtol=1e-5)

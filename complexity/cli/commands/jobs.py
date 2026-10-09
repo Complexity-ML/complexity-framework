@@ -10,17 +10,35 @@ from typing import Callable, Optional, TypeVar
 
 import typer
 
-from complexity.jobs import (
-    Job,
-    JobManager,
-    load_job_manifest,
-    parse_job_status,
-    wait_for_job_artifacts,
-)
-
 from ..utils import HAS_RICH, console, error, print_table, success
 
+
+def _jobs_api():
+    # Job operations use training supervisor helpers. Import on execution so
+    # --help and read-only recipe/checkpoint tools need no training runtime.
+    import complexity.jobs
+
+    return complexity.jobs
+
+
 jobs = typer.Typer(name="jobs", help="Run and control long-lived framework jobs")
+
+
+@jobs.command("metrics")
+def export_metrics(
+    csv_path: Path = typer.Argument(..., help="Recorded training metrics CSV or JSONL"),
+    log_dir: Path = typer.Option(..., "--logdir", help="Destination TensorBoard events directory"),
+) -> None:
+    """Export finite recorded CSV/JSONL scalars into TensorBoard events once."""
+    from complexity.training.tensorboard import export_recorded_metrics
+
+    try:
+        count = export_recorded_metrics(csv_path, log_dir)
+    except (ImportError, OSError, ValueError) as exc:
+        console.print(error(str(exc)))
+        raise typer.Exit(1) from exc
+    console.print(success(f"Exported {count} scalar points to {log_dir}"))
+
 
 _T = TypeVar("_T")
 _STATE_STYLES = {
@@ -47,7 +65,7 @@ def _call(action: Callable[[], _T]) -> _T:
 def _print_status(raw_status: str) -> None:
     rows: list[tuple[str, str, str]] = []
     for line in raw_status.splitlines():
-        name, state, details = parse_job_status(line)
+        name, state, details = _jobs_api().parse_job_status(line)
         if not name:
             continue
         style = _STATE_STYLES[state]
@@ -110,7 +128,7 @@ def submit_job(
     """
 
     job = _call(
-        lambda: Job(
+        lambda: _jobs_api().Job(
             name=name,
             command=tuple(command),
             directory=directory,
@@ -118,7 +136,7 @@ def submit_job(
             autorestart=False if no_restart else "unexpected",
         )
     )
-    _call(lambda: JobManager().submit(job))
+    _call(lambda: _jobs_api().JobManager().submit(job))
     console.print(success(f"Submitted {name}"))
 
 
@@ -139,7 +157,7 @@ def render_job_file(
     """Validate and render generated Supervisor programs without installing them."""
 
     loaded = _call(
-        lambda: load_job_manifest(
+        lambda: _jobs_api().load_job_manifest(
             manifest,
             root=root,
             variables=_parse_variables(variable),
@@ -168,13 +186,13 @@ def submit_job_file(
     """Install a portable group of Supervisor jobs and apply it once."""
 
     loaded = _call(
-        lambda: load_job_manifest(
+        lambda: _jobs_api().load_job_manifest(
             manifest,
             root=root,
             variables=_parse_variables(variable),
         )
     )
-    handles = _call(lambda: JobManager().submit_many(loaded.jobs))
+    handles = _call(lambda: _jobs_api().JobManager().submit_many(loaded.jobs))
     console.print(success(f"Submitted {len(handles)} job(s) from {manifest}"))
     for handle in handles:
         console.print(f"  {handle.name}")
@@ -199,8 +217,8 @@ def run_after_job(
     """Wait for a verified managed predecessor, then replace this process."""
 
     _call(
-        lambda: wait_for_job_artifacts(
-            JobManager(),
+        lambda: _jobs_api().wait_for_job_artifacts(
+            _jobs_api().JobManager(),
             predecessor,
             artifact,
             poll_seconds=poll_seconds,
@@ -220,14 +238,14 @@ def run_after_job(
 def list_jobs() -> None:
     """List all Supervisor-managed framework jobs."""
 
-    _print_status(_call(lambda: JobManager().list()))
+    _print_status(_call(lambda: _jobs_api().JobManager().list()))
 
 
 @jobs.command("status")
 def status_job(name: str = typer.Argument(..., help="Job name")) -> None:
     """Show one managed job."""
 
-    _print_status(_call(lambda: JobManager().status(name)))
+    _print_status(_call(lambda: _jobs_api().JobManager().status(name)))
 
 
 @jobs.command("logs")
@@ -238,7 +256,7 @@ def logs_job(
 ) -> None:
     """Read or follow the configured log for one managed job."""
 
-    manager = JobManager()
+    manager = _jobs_api().JobManager()
     try:
         if follow:
             for line in _call(lambda: manager.follow_logs(name, lines=lines)):
@@ -251,7 +269,7 @@ def logs_job(
 
 
 def _lifecycle(action: str, name: str) -> None:
-    manager = JobManager()
+    manager = _jobs_api().JobManager()
     result = _call(lambda: getattr(manager, action)(name))
     if result:
         console.print(result)
@@ -280,5 +298,5 @@ def remove_job(
 ) -> None:
     """Remove one generated job definition and apply the change."""
 
-    _call(lambda: JobManager().remove(name, missing_ok=missing_ok))
+    _call(lambda: _jobs_api().JobManager().remove(name, missing_ok=missing_ok))
     console.print(success(f"Removed {name}"))

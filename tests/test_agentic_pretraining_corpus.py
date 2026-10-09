@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.build_agentic_pretraining_corpus import (
+from complexity.training.agentic_corpus import (
     BenchmarkContaminationIndex,
     _stack_download_workers,
     agentic_signals,
@@ -17,6 +17,7 @@ from scripts.build_agentic_pretraining_corpus import (
     iter_source,
     normalize_text,
     quality_rejection,
+    source_row_rejection,
     validate_config,
 )
 
@@ -191,3 +192,53 @@ def test_raw_hub_jsonl_preserves_heterogeneous_tool_schemas(
             "rt",
         )
     ]
+
+
+def test_explicit_license_and_score_guards_fail_closed() -> None:
+    source = {"allowed_license_types": ["permissive"], "min_int_score": 2}
+    assert source_row_rejection({"license_type": "permissive", "int_score": 2}, source) is None
+    assert (
+        source_row_rejection({"license_type": "copyleft", "int_score": 3}, source) == "license_type"
+    )
+    assert (
+        source_row_rejection({"license_type": "permissive", "int_score": 1}, source)
+        == "upstream_score"
+    )
+    assert source_row_rejection({"int_score": 3}, source) == "license_type"
+
+
+def test_raw_corpus_config_requires_safe_names_and_pinned_remote_sources() -> None:
+    config = {
+        "version": 1,
+        "target_bytes": 100,
+        "sources": [
+            {"name": "../outside", "bucket": "general", "weight": 1.0, "license_audit": "fixture"}
+        ],
+    }
+    with pytest.raises(ValueError, match="path components"):
+        validate_config(config)
+    config["sources"][0].update(name="remote", dataset_id="owner/source", revision="main")
+    with pytest.raises(ValueError, match="immutable revision"):
+        validate_config(config)
+
+
+def test_raw_hub_reader_rejects_escaping_repo_paths(monkeypatch) -> None:
+    monkeypatch.setitem(
+        sys.modules, "huggingface_hub", types.SimpleNamespace(HfFileSystem=lambda: object())
+    )
+    with pytest.raises(ValueError, match="contained"):
+        list(
+            iter_source(
+                {
+                    "dataset_id": "owner/source",
+                    "revision": "a" * 40,
+                    "source_type": "hf_raw_jsonl",
+                    "repo_files": ["../escape.jsonl"],
+                },
+                seed=0,
+            )
+        )
+
+
+def test_normalized_hash_handles_unicode_and_zero_width_null() -> None:
+    assert content_sha256("ＡＢＣ\x00   text") == content_sha256("abc text")

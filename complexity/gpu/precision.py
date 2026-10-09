@@ -6,8 +6,9 @@ Fine-grained control over which operations run in bf16 vs fp32.
 Complexity-ML — 2026
 """
 
-import torch
 import logging
+
+import torch
 
 logger = logging.getLogger(__name__)
 

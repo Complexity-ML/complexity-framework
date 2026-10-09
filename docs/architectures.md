@@ -14,12 +14,14 @@ state.
 
 ## Released TR-HASH MoE 200M
 
-The current reference release is TR-GQA with the following shape:
+The separate 200M reference release is TR-GQA. Load its own configuration
+instead of importing an archived training script:
 
 ```python
-from scripts.train_tr_hash_200m_200b import make_config
+from complexity import ModelConfig
 
-config = make_config()
+# Use the configuration that belongs to the downloaded release.
+config = ModelConfig.load("checkpoints/tr-hash-moe-200m-sft/config.json")
 ```
 
 | Component | Released value |
@@ -46,6 +48,7 @@ TR-GQA combines grouped-query attention with TR-MoE:
 ```python
 ModelConfig(
     attention_type="gqa",
+    hidden_size=896,
     num_attention_heads=14,
     num_key_value_heads=2,
     mlp_type="tr_hash_engine",
@@ -159,6 +162,9 @@ Their routing keys and evidence must be documented separately.
 - parameter and active-width claims are measured after construction.
 
 ## Related pages
+
+- [Framework module boundaries](framework-architecture.md)
+- [Training and evaluation workflows](workflows.md)
 
 - [TR-HASH MoE 200M release](tr-hash-200m-release.md)
 - [TR-Hash engine](tr-hash-engine.md)

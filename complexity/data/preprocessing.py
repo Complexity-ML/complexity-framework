@@ -8,10 +8,11 @@ Provides:
 - Efficient batching
 """
 
-import torch
-from typing import List, Dict, Any, Optional, Callable
-import re
 import random
+import re
+from typing import Any, Callable, Dict, List, Optional
+
+import torch
 
 
 class TextPreprocessor:

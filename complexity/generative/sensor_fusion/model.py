@@ -8,16 +8,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from complexity.generative.detection.config import TRHashDetectorConfig
-from complexity.generative.detection.hierarchical_tower import (
-    HierarchicalTRHashVisionTower,
-)
 from complexity.tr_hash import (
     TRHashBackend,
     TRHashEngine,
     TRHashEngineConfig,
     TRHashPrecision,
     TRHashStrategy,
+)
+from complexity.vision.detection.config import TRHashDetectorConfig
+from complexity.vision.detection.hierarchical_tower import (
+    HierarchicalTRHashVisionTower,
 )
 
 from .config import SENSOR_MODALITIES, TRHashSensorFusionConfig

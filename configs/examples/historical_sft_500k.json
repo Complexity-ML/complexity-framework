@@ -1,0 +1,65 @@
+{
+  "format": "complexity-historical-sft-recipe-v1",
+  "historical_reference": true,
+  "release_eligible": false,
+  "sequence_length": 2048,
+  "max_tokens_including_eos": 2049,
+  "name": "historical-agentic-sft-500k",
+  "implementation_revision": "d14d3160ffad0baa7b9e7cdddb48bfa84820c81e",
+  "repository": "AETHORIA-AI/TR-HASH-Agentic-SFT-32K-500K",
+  "tokenizer": {
+    "repository": "AETHORIA-AI/TR-HASH-Tokenizer-32K-Agentic",
+    "revision": "2fcbc2c5359ded0244ca14531f1b3806eebac55e"
+  },
+  "sources": {
+    "base": {
+      "repository": "AETHORIA-AI/TR-HASH-Agentic-SFT-32K-250K",
+      "revision": "c6697cc1bc48a086e47fefabcd326ba371500f86",
+      "train_sha256": "b06a168a4368942b57af2cbdd477056546961d46f2a2954091c8f43b5386f9ec",
+      "eval_sha256": "eb4670d72a25651eecf2d399afaa6eb30919e8563032c33e3e6bb552669142f7"
+    },
+    "open-r1/OpenR1-Math-220k": {
+      "repository": "open-r1/OpenR1-Math-220k",
+      "revision": "e4e141ec9dea9f8326f4d347be56105859b2bd68"
+    },
+    "bigcode/self-oss-instruct-sc2-exec-filter-50k": {
+      "repository": "bigcode/self-oss-instruct-sc2-exec-filter-50k",
+      "revision": "356bb069eee815daa6e23e9a282eeefe1490ad44"
+    },
+    "HuggingFaceTB/smoltalk": {
+      "repository": "HuggingFaceTB/smoltalk",
+      "revision": "5feaf2fd3ffca7c237fc38d1861bc30365d48ffa"
+    }
+  },
+  "train_quotas": {
+    "base_clean": 228184,
+    "verified_math_reasoning": 60000,
+    "verified_arithmetic_reasoning": 75000,
+    "calculator_tool_call": 35000,
+    "calculator_tool_final": 15000,
+    "execution_checked_code": 30000,
+    "instruction_constraints": 20000,
+    "general_direct": 36816
+  },
+  "eval_quotas": {
+    "base_clean": 10742,
+    "verified_math_reasoning": 3000,
+    "verified_arithmetic_reasoning": 4000,
+    "calculator_tool_call": 2000,
+    "calculator_tool_final": 1000,
+    "execution_checked_code": 1500,
+    "instruction_constraints": 1000,
+    "general_direct": 1758
+  },
+  "protected_benchmarks": {
+    "piqa": {
+      "sha256": "54d32a04f59a7e354396f321723c8d7ec35cc6b08506563d8d1ffcc15ce98ddd"
+    }
+  },
+  "generator_seed_bases": {
+    "arithmetic": 500000,
+    "calculator": 900000
+  },
+  "max_reasoning_chars": 4000,
+  "historical_implementation_path": "scripts/prepare_tr_hash_agentic_sft_500k.py"
+}

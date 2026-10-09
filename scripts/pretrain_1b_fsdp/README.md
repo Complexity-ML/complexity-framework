@@ -1,53 +1,80 @@
-# Reprise FSDP 1B — 70B tokens, 4 GPU
+# Preserved TR-HASH 1B pretraining — 70B tokens
 
-Préentraînement uniquement. Le refit sera une phase séparée.
-Sources d’origine : `/Users/boris/Documents/Codex/2026-09-07/ok-x20/outputs/pretrain-1b-70b/`.
-Le modèle, la recette et le lecteur sont conservés ; le lanceur est portable,
-la reprise obligatoire, et la restauration récupère le plan exact depuis HF.
+This is the original four-rank FSDP recipe. The run is paused and resumed
+periodically; framework maintenance does not start or alter it. Refinement
+and instruction SFT are separate stages.
 
-## Checkpoint vérifié le 27 septembre 2026
+| Setting | Original value |
+|---|---:|
+| Model repository | `Pacific-i64/TR-HASH-MoE-1B-70B-Agentic-Pretraining` |
+| World size | 4 |
+| Per-rank microbatch | 2 |
+| Context | 16,384 |
+| Tokens per optimizer update | 131,072 |
+| Optimizer updates | 534,057 |
+| Scheduled token exposure | 69,999,919,104 (approximately 70B) |
 
-- Dépôt : `Pacific-i64/TR-HASH-MoE-1B-70B-Agentic-Pretraining`.
-- Révision : `0ba0e730f9ef078a669e5fd84277bdb60903f57f`.
-- Checkpoint : `step_0018000` ; 2 359 296 000 tokens déjà entraînés.
-- Cible : 534 057 updates ; 69 999 919 104 tokens au total.
-- Restant : 516 057 updates ; 67 640 623 104 tokens.
-- 4 ranks, microbatch 2, contexte 16 384 ; 131 072 tokens/update.
+`recipe.json` and `model.json` are preserved byte for byte. The original
+`data-plan.json`, `schedule.npy`, `source-update-offsets.npy` and tokenizer
+must be recovered from the same checkpoint snapshot. Similar YAML plans
+elsewhere in the repository are not substitutes for this recipe.
 
-Le manifeste, le hash de la recette et de l’état, ainsi que la présence et les
-tailles des 11 fichiers distants ont été vérifiés (12 164 821 782 octets).
-Les poids n’ont pas été téléchargés pour cet audit : leurs hashes seront
-vérifiés par `restore.py` sur le serveur. Aucune reprise GPU n’est encore validée.
+## Inspect without starting a run
 
-## Sur le serveur, depuis la racine du framework
-
-Activer l’environnement CUDA/PyTorch avec Triton, Liger, Hugging Face Hub,
-NumPy et TensorBoard, puis s’authentifier avec `hf auth login`.
+From the framework root:
 
 ```bash
-python scripts/pretrain_1b_fsdp/restore.py --revision 0ba0e730f9ef078a669e5fd84277bdb60903f57f
-bash scripts/pretrain_1b_fsdp/run.sh --limit 18002 --verify-resume
+complexity train inspect scripts/pretrain_1b_fsdp/recipe.json --json
+complexity checkpoint inspect /path/to/complete/step_directory \
+  --recipe scripts/pretrain_1b_fsdp/recipe.json --verify --json
 ```
 
-Le premier log `resumed` doit indiquer `step: 18000`. Le test effectue deux
-updates et vérifie une sauvegarde/relecture du modèle, de l’optimiseur et des
-RNG. Il reste nécessaire de mesurer la mémoire sur les 4 RTX 5090.
-`--limit` est une étape absolue ; le planning de LR reste celui du run 70B.
-Le lanceur refuse de partir de zéro. Ne pas exécuter `prepare.py` pour cette
-reprise : `restore.py` télécharge le plan, le schedule et le tokenizer originaux.
+The first command reports the token arithmetic and available linked assets.
+The second checks checkpoint JSON, rank files and manifest integrity without
+loading tensors. Neither starts training, downloads a checkpoint or uploads
+anything. File integrity alone does not demonstrate a successful FSDP restore.
 
-Après validation, `bash scripts/pretrain_1b_fsdp/run.sh` reprend le dernier
-checkpoint local complet. L’uploader doit être configuré avant un long run :
-l’entraînement attend dès que trois checkpoints locaux ne sont pas envoyés.
-Tous les ranks participent à cette attente et vérifient l’état toutes les
-30 secondes, sans rester bloqués dans une barrière pendant la panne.
-Créer `runtime/request-stop` sauvegarde l’update courant puis arrête le run,
-y compris pendant cette attente. `runtime/request-checkpoint` sauvegarde
-l’update courant puis revérifie la capacité d’upload avant de reprendre.
+## Resume later on the selected GPU server
 
-`upload.py` conserve la politique historique : trois checkpoints réguliers,
-un checkpoint d’interruption, suppression des anciens chemins distants. La purge de l’historique HF est
-désactivée par défaut (`purge_history_after_eviction: false`).
-Il utilise `runtime/hf-token`. Son lancement et cette politique restent à
-vérifier avant exploitation ; l’audit n’a modifié aucun dépôt HF.
-Les documents `README.original.md` et `TRAINING.md` décrivent l’ancien serveur.
+Use the CUDA/PyTorch environment matched to the original runtime, with
+Triton, Liger, Hugging Face Hub, NumPy and TensorBoard. Authenticate through
+`hf auth login`. Choose one pinned repository revision that actually exists:
+old revisions and old checkpoint paths may have been removed by retention.
+
+1. Run `python scripts/pretrain_1b_fsdp/restore.py --revision <revision>`.
+   The restore retrieves the original assets and verifies recipe, plan,
+   schedule, checkpoint-file sizes and hashes. It refuses to overwrite an
+   existing output checkpoint.
+2. Inspect the restored complete checkpoint and read its actual step `N`.
+   Never infer it from a historical example or regenerate assets with
+   `prepare.py`.
+3. Run `bash scripts/pretrain_1b_fsdp/run.sh --limit <N+2> --verify-resume`.
+   Replace `<N+2>` with the numeric absolute target step. This verifies a
+   bounded advance and save/reload of model, optimizer and rank RNG state.
+   The learning-rate horizon remains the original 70B run; the launcher
+   refuses an accidental zero-step start.
+4. Once this bounded check passes on the intended four-rank environment,
+   the original `run.sh` continues the latest complete local checkpoint.
+   This is an operational action, separate from framework inspection.
+
+Configure and verify the uploader before a sustained run. Training waits when
+three complete local checkpoints have not been acknowledged as uploaded;
+all ranks coordinate and poll every 30 seconds. During that wait:
+
+- `runtime/request-stop` saves the current update and stops;
+- `runtime/request-checkpoint` saves the current update, then rechecks upload
+  capacity.
+
+`upload.py` keeps three regular checkpoints and one interruption checkpoint,
+removing older remote paths. Historical Hub revision purging is disabled by
+`purge_history_after_eviction: false`. The uploader reads `runtime/hf-token`.
+Inspection commands never start this uploader or apply its retention policy.
+
+## Historical records
+
+An audit on 27 September 2026 concerned `step_0018000` at revision
+`0ba0e730f9ef078a669e5fd84277bdb60903f57f`, with 2,359,296,000 tokens consumed.
+That is a historical observation, not the current resume target.
+`README.original.md` and `TRAINING.md` describe the earlier server.
+For shared model/export/resume terminology, read the
+[framework workflows](../../docs/workflows.md).

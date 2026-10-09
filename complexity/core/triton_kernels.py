@@ -19,8 +19,8 @@ Backends:
 INL / Complexity-ML — 2026
 """
 
-import os
 import logging
+import os
 
 import torch
 
@@ -241,10 +241,11 @@ def fused_routed_proj(
     if chunk < 64:
         return _pytorch_fallback(x, weight, sort_idx, num_experts, orig_shape)
 
-    grid = lambda meta: (
-        triton.cdiv(N, meta["BLOCK_M"]),
-        triton.cdiv(D_out, meta["BLOCK_N"]),
-    )
+    def grid(meta):
+        return (
+            triton.cdiv(N, meta["BLOCK_M"]),
+            triton.cdiv(D_out, meta["BLOCK_N"]),
+        )
 
     _fused_routed_proj_kernel[grid](
         x, weight, sort_idx, out,

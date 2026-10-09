@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -50,7 +51,9 @@ def parse_args_with_yaml_config(
 def load_yaml_run_config(path: str | Path, parser: argparse.ArgumentParser) -> dict[str, Any]:
     config_path = Path(path)
     with config_path.open("r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+        raw = yaml.safe_load(f)
+    if raw is None:
+        raw = {}
     if not isinstance(raw, dict):
         raise ValueError(f"YAML config must be a mapping: {config_path}")
 
@@ -58,6 +61,7 @@ def load_yaml_run_config(path: str | Path, parser: argparse.ArgumentParser) -> d
     if not isinstance(data, dict):
         raise ValueError(f"YAML 'run' section must be a mapping: {config_path}")
 
+    actions = {action.dest: action for action in parser._actions}
     valid = parser_destinations(parser)
     normalized: dict[str, Any] = {}
     unknown: list[str] = []
@@ -66,6 +70,39 @@ def load_yaml_run_config(path: str | Path, parser: argparse.ArgumentParser) -> d
         if dest not in valid:
             unknown.append(str(key))
         else:
+            if dest in normalized:
+                raise ValueError(f"Duplicate YAML config key after normalization: {dest}")
+            action = actions[dest]
+            # argparse converts string defaults but leaves numeric/boolean
+            # YAML values untouched. Validate those before changing defaults.
+            if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction,
+                                   argparse.BooleanOptionalAction)):
+                if type(value) is not bool:
+                    raise ValueError(f"YAML {key} must be a boolean")
+            elif value is not None:
+                sequence = action.nargs not in (None, "?") or isinstance(action, argparse._AppendAction)
+                if sequence and not isinstance(value, list):
+                    raise ValueError(f"YAML {key} must be a list")
+                if action.nargs == "+" and not value:
+                    raise ValueError(f"YAML {key} must be a non-empty list")
+                if isinstance(action.nargs, int) and len(value) != action.nargs:
+                    raise ValueError(f"YAML {key} must contain {action.nargs} values")
+                converted = []
+                for item in (value if sequence else [value]):
+                    if action.type is int and type(item) is not int:
+                        raise ValueError(f"YAML {key} must be an integer")
+                    if action.type is float and (type(item) not in (int, float) or not math.isfinite(item)):
+                        raise ValueError(f"YAML {key} must be a finite number")
+                    if action.type is str and not isinstance(item, str):
+                        raise ValueError(f"YAML {key} must be a string")
+                    try:
+                        item = action.type(item) if action.type is not None else item
+                    except (TypeError, ValueError, argparse.ArgumentTypeError) as exc:
+                        raise ValueError(f"Invalid YAML value for {key}: {item!r}") from exc
+                    if action.choices is not None and item not in action.choices:
+                        raise ValueError(f"YAML {key} must be one of {list(action.choices)}")
+                    converted.append(item)
+                value = converted if sequence else converted[0]
             normalized[dest] = value
 
     if unknown:

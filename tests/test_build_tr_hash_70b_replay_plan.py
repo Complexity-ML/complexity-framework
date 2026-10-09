@@ -1,6 +1,6 @@
 """Regression guard for the 200M pretrain data mix.
 
-build_tr_hash_70b_replay_plan.py has no free "--target-tokens" knob: the
+The canonical replay planner has no free "target_tokens" knob: the
 trained-token total is *derived* from per-source unique_token_budgets x
 replay_passes. Bumping the total (e.g. to extend training past the current
 130B-token plan) means changing one or both of those maps -- and doing that
@@ -13,26 +13,16 @@ exactly for a bigger target.
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-SCRIPT = Path("scripts/build_tr_hash_70b_replay_plan.py")
-
-
-def _load_module():
-    spec = importlib.util.spec_from_file_location("build_tr_hash_70b_replay_plan", SCRIPT)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
 
 @pytest.fixture()
 def mod():
-    return _load_module()
+    from complexity.training import replay
+
+    return replay
 
 
 def _fake_dataset(unique_token_budgets: dict[str, int], *, headroom: float = 1.0):
@@ -129,11 +119,15 @@ def test_bumping_only_one_sources_replay_passes_does_change_its_mix_share(mod):
     dataset = _fake_dataset(budgets)
 
     plan = mod.build_replay_plan(
-        dataset, unique_token_budgets=budgets, replay_passes=passes, row_alignment=1,
+        dataset,
+        unique_token_budgets=budgets,
+        replay_passes=passes,
+        row_alignment=1,
     )
 
     dclm_share = (
-        plan["source_unique_tokens"]["dclm"] * plan["source_passes"]["dclm"]
+        plan["source_unique_tokens"]["dclm"]
+        * plan["source_passes"]["dclm"]
         / plan["trained_tokens"]
     )
     assert dclm_share != pytest.approx(EXPECTED_SOURCE_SHARE["dclm"], abs=1e-9)

@@ -4,12 +4,13 @@ Base MLP class for framework-complexity.
 All MLP implementations must inherit from this class.
 """
 
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass

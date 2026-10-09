@@ -14,12 +14,12 @@ References:
 - Accelerating Large Language Model Decoding (https://arxiv.org/abs/2302.01318)
 """
 
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple, List, Callable
-from dataclasses import dataclass
-import time
 
 
 @dataclass

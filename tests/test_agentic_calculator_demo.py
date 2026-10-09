@@ -1,4 +1,6 @@
-from scripts.agentic_calculator_demo import (
+import pytest
+
+from complexity.inference.tool_rewards import (
     DatetimeError,
     ToolCallParseError,
     extract_arithmetic_expression,
@@ -87,3 +89,11 @@ def test_extract_datetime_hint_add_days():
 def test_extract_datetime_hint_returns_none_for_non_date_question():
     assert extract_datetime_hint("Hello") is None
     assert extract_datetime_hint("What is 17 + 25?") is None
+
+
+@pytest.mark.parametrize(
+    "payload", ["{}", '{"name":"calculator","arguments":[]}', '{"name":0,"arguments":{}}']
+)
+def test_parse_tool_call_requires_structured_arguments(payload):
+    with pytest.raises(ToolCallParseError, match="name and an arguments object"):
+        parse_tool_call(f"<tool_call>{payload}</tool_call>")

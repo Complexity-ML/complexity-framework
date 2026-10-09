@@ -4,18 +4,18 @@ Model Builder - constructs complete models from configuration.
 This is the main entry point for creating models in the framework.
 """
 
-import os
 import json
 import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as activation_checkpoint
-from typing import Optional, Tuple, List, Dict, Any, Union
-from pathlib import Path
 
 from ..config import ModelConfig, get_preset
-from ..core.registry import NORMALIZATION_REGISTRY, MODEL_REGISTRY, register_model
+from ..core.registry import NORMALIZATION_REGISTRY, register_model
 from .block import TransformerBlock
 
 
@@ -93,6 +93,11 @@ class ComplexityModel(nn.Module):
                 for index in range(config.num_hidden_layers)
             ]
         )
+        if config.layer_mlp_controls is not None:
+            for layer, control in zip(self.layers, config.layer_mlp_controls):
+                layer.mlp.set_top_k_primary_weight(control["top_k_primary_weight"])
+                layer.mlp.set_active_experts(control["active_num_experts"])
+                layer.mlp.set_active_expert_width(control["active_expert_width"])
         if config.attention_type == "causal_fast_weight_conv":
             shared_context = getattr(self.layers[0].self_attn, "shared_context")
             for index, layer in enumerate(self.layers):
@@ -568,98 +573,164 @@ class ComplexityModel(nn.Module):
         return sum(p.numel() for p in self.parameters())
 
     def save_pretrained(self, save_directory: Union[str, Path], safe_serialization: bool = True):
+        """Save complete native weights and config, writing only on rank zero.
+
+        Replicated models can be exported by rank zero alone. DTensor exports
+        require every rank to participate in ``full_tensor``; a failed gather
+        never falls back to saving an incomplete local shard.
         """
-        Save model and config to directory (HuggingFace-compatible format).
+        import tempfile
 
-        Args:
-            save_directory: Path to save the model
-            safe_serialization: If True, save using safetensors format (requires safetensors)
-        """
-        save_directory = Path(save_directory)
-        save_directory.mkdir(parents=True, exist_ok=True)
-
-        # Save config
-        config_path = save_directory / "config.json"
-        with open(config_path, "w") as f:
-            json.dump(self.config.to_dict(), f, indent=2)
-
-        # Save model weights — handles FSDP v2 (composable) DTensor params.
-        # CRITICAL: full_tensor() is a collective op (all-gather), so it MUST
-        # be called on every rank — even though only rank 0 writes the file.
-        # Calling it from inside an "if is_main" block deadlocks the others.
         import torch.distributed as dist
-        is_distributed = dist.is_initialized() and dist.get_world_size() > 1
-        is_main = (not is_distributed) or dist.get_rank() == 0
 
-        # Collective barrier at entry: if a caller forgot to invoke this on
-        # every rank (e.g. wrapped it in `if rank == 0`), the missing ranks
-        # will fail the barrier with a clear NCCL timeout instead of hanging
-        # silently inside full_tensor() for 30 minutes.
-        if is_distributed:
+        distributed = dist.is_initialized() and dist.get_world_size() > 1
+        is_main = not distributed or dist.get_rank() == 0
+        raw_state = self.state_dict()
+        collective = any(hasattr(value, "full_tensor") for value in raw_state.values())
+        if not is_main and not collective:
+            return
+        cpu_state, errors = {}, []
+        for name, value in raw_state.items():
             try:
-                dist.barrier()
-            except Exception as e:
-                print(f"[save_pretrained] barrier failed on rank {dist.get_rank()}: {e}", flush=True)
-                raise
-            if is_main:
-                print(f"[save_pretrained] collecting weights across {dist.get_world_size()} ranks → {save_directory}", flush=True)
-
-        raw_sd = self.state_dict()
-        cpu_sd = {}
-        n_gathered = 0
-        n_local_only = 0
-        first_error: Optional[Exception] = None
-        for k, v in raw_sd.items():
-            is_dtensor = hasattr(v, "full_tensor")
-            if is_dtensor:
-                # Collective: every rank participates in the all-gather.
-                # We MUST NOT swallow errors silently here — falling back to
-                # .to_local() would write rank 0's shard only, producing a
-                # corrupted checkpoint with ~1/world_size of the weights.
-                try:
-                    v = v.full_tensor()
-                    n_gathered += 1
-                except Exception as e:
-                    if first_error is None:
-                        first_error = e
-                    if is_main:
-                        print(f"[save_pretrained] full_tensor() failed on '{k}': "
-                              f"{type(e).__name__}: {e}", flush=True)
-                    if hasattr(v, "to_local"):
-                        v = v.to_local()
-                        n_local_only += 1
-            elif hasattr(v, "to_local"):
-                # Non-sharded DTensor (replicated); to_local is safe.
-                v = v.to_local()
-            if is_main:
-                cpu_sd[k] = v.detach().cpu().contiguous() if hasattr(v, "detach") else v
-
-        if is_main and n_local_only > 0:
-            print(
-                f"[save_pretrained] WARNING: {n_local_only}/{len(raw_sd)} params "
-                f"fell back to to_local() after full_tensor() failed "
-                f"(first error: {type(first_error).__name__}: {first_error}). "
-                f"The saved checkpoint is INCOMPLETE — it only contains rank 0's "
-                f"shard for those params. Investigate before using this file.",
-                flush=True,
-            )
-
+                if hasattr(value, "full_tensor"):
+                    value = value.full_tensor()
+                elif hasattr(value, "to_local"):
+                    value = value.to_local()
+                if is_main:
+                    if not isinstance(value, torch.Tensor):
+                        raise TypeError("native model exports require tensor-only state")
+                    cpu_state[name] = value.detach().cpu().contiguous()
+            except Exception as error:
+                errors.append(f"{name}: {type(error).__name__}: {error}")
+        if collective and distributed:
+            rank_errors = [None] * dist.get_world_size()
+            dist.all_gather_object(rank_errors, errors)
+            errors = [error for group in rank_errors for error in group]
+        if errors:
+            raise RuntimeError("Cannot export complete model weights: " + "; ".join(errors))
         if not is_main:
             return
 
         if safe_serialization:
+            from safetensors.torch import save_file
+        save_directory = Path(save_directory)
+        save_directory.mkdir(parents=True, exist_ok=True)
+        weights_path = save_directory / (
+            "model.safetensors" if safe_serialization else "pytorch_model.bin"
+        )
+        config_path = save_directory / "config.json"
+        pending, backups, published, recovery_files = [], {}, [], set()
+        try:
+            with tempfile.NamedTemporaryFile(dir=save_directory, suffix=".tmp", delete=False) as f:
+                weight_temp = Path(f.name)
+            pending.append(weight_temp)
+            if safe_serialization:
+                save_file(cpu_state, str(weight_temp))
+            else:
+                torch.save(cpu_state, weight_temp)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=save_directory, suffix=".tmp", delete=False
+            ) as f:
+                config_temp = Path(f.name)
+                pending.append(config_temp)
+                json.dump(self.export_config(), f, indent=2)
+                f.write("\n")
+            # Preserve both formats and config until the complete replacement
+            # succeeds. A Python-level commit error restores the old bundle.
+            for old in (config_path, save_directory / "model.safetensors", save_directory / "pytorch_model.bin"):
+                if old.is_file():
+                    with tempfile.NamedTemporaryFile(dir=save_directory, suffix=".backup", delete=False) as f:
+                        backup = Path(f.name)
+                    pending.append(backup)
+                    old.replace(backup)
+                    backups[old] = backup
+            weight_temp.replace(weights_path)
+            published.append(weights_path)
+            config_temp.replace(config_path)
+            published.append(config_path)
+        except Exception:
             try:
-                from safetensors.torch import save_file
-                weights_path = save_directory / "model.safetensors"
-                save_file(cpu_sd, str(weights_path))
-            except ImportError:
-                weights_path = save_directory / "pytorch_model.bin"
-                torch.save(cpu_sd, weights_path)
-        else:
-            weights_path = save_directory / "pytorch_model.bin"
-            torch.save(cpu_sd, weights_path)
-
+                for path in published:
+                    path.unlink(missing_ok=True)
+                for original, backup in backups.items():
+                    backup.replace(original)
+            except OSError as error:
+                recovery_files.update(path for path in backups.values() if path.exists())
+                raise RuntimeError(
+                    "Native export rollback failed; preserved original files at: "
+                    + ", ".join(map(str, sorted(recovery_files)))
+                ) from error
+            raise
+        finally:
+            for path in pending:
+                if path not in recovery_files:
+                    path.unlink(missing_ok=True)
         print(f"Model saved to {save_directory}")
+
+    def validate_export_controls(self, raw_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Validate saved controls against the allocated architecture, without mutation."""
+        restored = ModelConfig.from_dict(raw_config)
+        if restored.mlp_type not in {"tr_hash_engine", "tr_hash_moe"}:
+            raise ValueError("Runtime MLP controls require a TR-Hash engine model")
+        shape_fields = (
+            "hidden_size", "vocab_size", "num_hidden_layers", "intermediate_size",
+            "num_experts", "top_k", "routing_strategy", "route_hash_count",
+        )
+        if self.config.mlp_type not in {"tr_hash_engine", "tr_hash_moe"} or any(
+            getattr(restored, name) != getattr(self.config, name) for name in shape_fields
+        ):
+            raise ValueError("Runtime MLP control architecture differs from the model")
+        controls = restored.layer_mlp_controls or [
+            {
+                "top_k_primary_weight": 1.0 if restored.top_k == 1 else (
+                    1 / restored.top_k if restored.top_k_primary_weight is None
+                    else restored.top_k_primary_weight
+                ),
+                "active_num_experts": restored.active_num_experts if restored.active_num_experts is not None else restored.num_experts,
+                "active_expert_width": restored.active_expert_width if restored.active_expert_width is not None else restored.intermediate_size // restored.num_experts,
+            }
+            for _ in self.layers
+        ]
+        # Validate the complete list before changing any live layer.
+        ModelConfig.from_dict({**restored.to_dict(), "layer_mlp_controls": controls}, strict=True)
+        return controls
+
+    def apply_export_controls(self, raw_config: Dict[str, Any]) -> None:
+        """Restore validated non-parameter MLP controls for this architecture."""
+        controls = self.validate_export_controls(raw_config)
+        for layer, control in zip(self.layers, controls):
+            layer.mlp.set_top_k_primary_weight(control["top_k_primary_weight"])
+            layer.mlp.set_active_experts(control["active_num_experts"])
+            layer.mlp.set_active_expert_width(control["active_expert_width"])
+
+    def export_config(self) -> Dict[str, Any]:
+        """Describe the live model's execution controls without mutating its config."""
+        config = self.config.to_dict()
+        if self.config.mlp_type not in {"tr_hash_engine", "tr_hash_moe"}:
+            return config
+        controls = [
+            {
+                "top_k_primary_weight": layer.mlp.training_telemetry()["topk_w"],
+                "active_num_experts": layer.mlp.engine.active_num_experts,
+                "active_expert_width": layer.mlp.engine.active_expert_width,
+            }
+            for layer in self.layers
+        ]
+        if all(control == controls[0] for control in controls):
+            control = controls[0]
+            defaults = {
+                "top_k_primary_weight": 1 / self.config.top_k,
+                "active_num_experts": self.config.num_experts,
+                "active_expert_width": self.config.intermediate_size // self.config.num_experts,
+            }
+            for name, value in control.items():
+                configured = config.get(name)
+                if value != (defaults[name] if configured is None else configured):
+                    config[name] = value
+            config.pop("layer_mlp_controls", None)
+        else:
+            config["layer_mlp_controls"] = controls
+        return config
 
     @classmethod
     def from_pretrained(
@@ -694,32 +765,56 @@ class ComplexityModel(nn.Module):
         # Create model
         model = cls(config)
 
-        # Load weights
-        safetensors_path = pretrained_model_path / "model.safetensors"
-        pytorch_path = pretrained_model_path / "pytorch_model.bin"
+        model._load_pretrained_weights(pretrained_model_path)
 
-        if safetensors_path.exists():
+        # Move to device/dtype if specified
+        if device is not None:
+            model = model.to(device)
+        if dtype is not None:
+            model = model.to(dtype)
+
+        return model
+
+    def _load_pretrained_weights(self, path: Union[str, Path]) -> None:
+        """Load native exports or historical model.pt weights with one policy.
+
+        This is shared with the convenience API. No missing learned parameter
+        is accepted; omitted deterministic buffers are reconstructed by config.
+        """
+        path = Path(path)
+        if path.is_dir():
+            candidates = [
+                path / name for name in ("model.safetensors", "pytorch_model.bin", "model.pt")
+            ]
+            weights_path = next((candidate for candidate in candidates if candidate.is_file()), None)
+            if weights_path is None:
+                raise FileNotFoundError(
+                    f"No model weights found in {path}: expected "
+                    "model.safetensors, pytorch_model.bin or model.pt"
+                )
+        else:
+            weights_path = path
+            if not weights_path.is_file():
+                raise FileNotFoundError(f"Model weights not found: {weights_path}")
+
+        if weights_path.suffix == ".safetensors":
             try:
                 from safetensors.torch import load_file
-                state_dict = load_file(str(safetensors_path))
-            except ImportError:
+            except ImportError as exc:
                 raise ImportError(
                     "safetensors is required to load .safetensors files. "
                     "Install with: pip install safetensors"
-                )
-        elif pytorch_path.exists():
-            state_dict = torch.load(pytorch_path, map_location="cpu", weights_only=True)
+                ) from exc
+            state_dict = load_file(str(weights_path))
         else:
-            raise ValueError(
-                f"No model weights found. Expected {safetensors_path} or {pytorch_path}"
-            )
+            state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
 
         # strict=False: deterministic buffers (RoPE inv_freq, TokenRoutedMLP's
         # token_to_expert/pair_hash_* routing tables) are pure functions of
         # config and are already correct on the freshly constructed model —
         # some checkpoint export paths omit them. Any missing key that isn't
         # one of those is a real problem, so it's still surfaced loudly.
-        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        missing, unexpected = self.load_state_dict(state_dict, strict=False)
         deterministic_buffer = re.compile(
             r"\.(inv_freq|token_to_expert|pair_hash_route_codes|pair_hash_expert_pairs)$"
         )
@@ -729,14 +824,6 @@ class ComplexityModel(nn.Module):
                 "Error(s) in loading state_dict for ComplexityModel: "
                 f"missing={unexplained_missing}, unexpected={unexpected}"
             )
-
-        # Move to device/dtype if specified
-        if device is not None:
-            model = model.to(device)
-        if dtype is not None:
-            model = model.to(dtype)
-
-        return model
 
     def __repr__(self) -> str:
         params = self.num_parameters() / 1e6

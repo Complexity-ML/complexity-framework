@@ -1,22 +1,23 @@
 import gzip
 import hashlib
 import json
-import pickle
 import shutil
+import sqlite3
 from pathlib import Path
 
 import pytest
 from tokenizers import Tokenizer, models, pre_tokenizers
 
-from scripts.build_agentic_pretraining_corpus import (
+from complexity.training.agentic_candidates import (
+    effective_stage_config,
+    pack_candidates,
+    stage_source,
+)
+from complexity.training.agentic_corpus import (
+    BenchmarkContaminationIndex,
     build_benchmark_index,
     content_sha256,
     normalize_text,
-)
-from scripts.pack_tr_hash_pretraining_125b_candidates import pack_candidates
-from scripts.stage_tr_hash_pretraining_125b_candidates import (
-    effective_stage_config,
-    stage_source,
 )
 
 
@@ -65,7 +66,7 @@ def _tokenizer(path: Path) -> Path:
     return path
 
 
-def _fixture(tmp_path: Path) -> tuple[dict, dict, Path, Path]:
+def _fixture(tmp_path: Path) -> tuple[dict, dict, Path, BenchmarkContaminationIndex]:
     source_path = tmp_path / "source.jsonl"
     source_path.write_text(
         "\n".join(
@@ -100,9 +101,7 @@ def _fixture(tmp_path: Path) -> tuple[dict, dict, Path, Path]:
         "sources": [source],
     }
     tokenizer_path = _tokenizer(tmp_path / "tokenizer")
-    benchmark_path = tmp_path / "benchmark.pkl"
-    with benchmark_path.open("wb") as stream:
-        pickle.dump(build_benchmark_index(()), stream)
+    benchmark_path = build_benchmark_index(())
     return config, source, tokenizer_path, benchmark_path
 
 
@@ -117,7 +116,7 @@ def test_candidate_stage_resumes_only_after_verified_upload(tmp_path: Path) -> N
             source=source,
             config=config,
             tokenizer_path=tokenizer_path,
-            benchmark_index_path=benchmark_path,
+            benchmark_index=benchmark_path,
             work_dir=work_dir,
             publisher=publisher,
         )
@@ -127,7 +126,7 @@ def test_candidate_stage_resumes_only_after_verified_upload(tmp_path: Path) -> N
         source=source,
         config=config,
         tokenizer_path=tokenizer_path,
-        benchmark_index_path=benchmark_path,
+        benchmark_index=benchmark_path,
         work_dir=work_dir,
         publisher=publisher,
     )
@@ -149,7 +148,7 @@ def test_candidate_gzip_is_byte_reproducible(tmp_path: Path) -> None:
             source=source,
             config=config,
             tokenizer_path=tokenizer_path,
-            benchmark_index_path=benchmark_path,
+            benchmark_index=benchmark_path,
             work_dir=work_dir,
             publisher=publisher,
         )
@@ -228,7 +227,7 @@ def test_final_pack_globally_deduplicates_staged_candidates(tmp_path: Path) -> N
                     "bucket": bucket,
                     "agentic_signals": ["planning"] if bucket == "agentic" else [],
                     "content_sha256": content_sha256(text),
-                    "reference_tokens": 8,
+                    "reference_tokens": len(tokenizer.encode(text, add_special_tokens=False).ids),
                 }
             )
         shard_path = tmp_path / f"{name}.jsonl.gz"
@@ -240,16 +239,19 @@ def test_final_pack_globally_deduplicates_staged_candidates(tmp_path: Path) -> N
             "repo_path": f"_candidates/{name}/candidate-00000.jsonl.gz",
             "local_path": str(shard_path),
             "records": len(rows),
-            "reference_tokens": 320,
+            "reference_tokens": sum(row["reference_tokens"] for row in rows),
             "bytes": shard_path.stat().st_size,
             "sha256": hashlib.sha256(shard_path.read_bytes()).hexdigest(),
         }
         source_manifests.append(
             {
                 "source": name,
+                "tokenizer_sha256": hashlib.sha256(
+                    (tokenizer_dir / "tokenizer.json").read_bytes()
+                ).hexdigest(),
                 "complete": True,
                 "candidate_target_tokens": 64,
-                "retained_tokens": 320,
+                "retained_tokens": sum(row["reference_tokens"] for row in rows),
                 "shards": [shard],
             }
         )
@@ -324,3 +326,233 @@ def test_final_pack_globally_deduplicates_staged_candidates(tmp_path: Path) -> N
     assert by_source["foundation"]["counters"]["exact_duplicate"] >= 1
     assert (hub / "mixture_manifest.json").is_file()
     assert (hub / "pretrain_plan.json").is_file()
+
+
+def test_wrong_candidate_receipt_preserves_uncommitted_cursor_and_retries(tmp_path: Path) -> None:
+    config, source, tokenizer_path, benchmark = _fixture(tmp_path)
+
+    class WrongReceipt(MemoryPublisher):
+        def publish_file(self, local_path: Path, relative: str) -> dict[str, object]:
+            receipt = super().publish_file(local_path, relative)
+            receipt["sha256"] = "0" * 64
+            return receipt
+
+    work = tmp_path / "work"
+    with pytest.raises(ValueError, match="publisher receipt"):
+        stage_source(
+            source_index=0,
+            source=source,
+            config=config,
+            tokenizer_path=tokenizer_path,
+            benchmark_index=benchmark,
+            work_dir=work,
+            publisher=WrongReceipt(),
+        )
+    with sqlite3.connect(work / "00-fixture/state.sqlite3") as connection:
+        assert connection.execute("SELECT COUNT(*) FROM progress").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM seen").fetchone()[0] == 0
+    assert list(work.rglob("*.partial*"))
+    publisher = MemoryPublisher()
+    manifest = stage_source(
+        source_index=0,
+        source=source,
+        config=config,
+        tokenizer_path=tokenizer_path,
+        benchmark_index=benchmark,
+        work_dir=work,
+        publisher=publisher,
+    )
+    rows = [
+        json.loads(line)
+        for line in gzip.decompress(publisher.files[manifest["shards"][0]["repo_path"]])
+        .decode()
+        .splitlines()
+    ]
+    assert [row["source_record_id"] for row in rows] == [0, 1]
+    assert manifest["complete"] is True
+
+
+def test_candidate_manifest_repair_does_not_reread_completed_source(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config, source, tokenizer_path, benchmark = _fixture(tmp_path)
+
+    class FailManifest(MemoryPublisher):
+        def publish_json(self, payload, relative: str, work_dir: Path) -> None:
+            raise RuntimeError("manifest acknowledgement failed")
+
+    work = tmp_path / "work"
+    with pytest.raises(RuntimeError, match="manifest acknowledgement"):
+        stage_source(
+            source_index=0,
+            source=source,
+            config=config,
+            tokenizer_path=tokenizer_path,
+            benchmark_index=benchmark,
+            work_dir=work,
+            publisher=FailManifest(),
+        )
+    monkeypatch.setattr(
+        "complexity.training.agentic_candidates.iter_source",
+        lambda *args, **kwargs: pytest.fail("completed source was reread"),
+    )
+    publisher = MemoryPublisher()
+    manifest = stage_source(
+        source_index=0,
+        source=source,
+        config=config,
+        tokenizer_path=tokenizer_path,
+        benchmark_index=benchmark,
+        work_dir=work,
+        publisher=publisher,
+    )
+    assert manifest["complete"] is True
+    assert len(manifest["shards"]) == 1
+    assert not list(work.rglob("*.partial*"))
+
+
+@pytest.mark.parametrize("changed", ["source", "tokenizer", "protected_index"])
+def test_candidate_resume_rejects_changed_identity(tmp_path: Path, changed: str) -> None:
+    config, source, tokenizer_path, benchmark = _fixture(tmp_path)
+    work = tmp_path / "work"
+    stage_source(
+        source_index=0,
+        source=source,
+        config=config,
+        tokenizer_path=tokenizer_path,
+        benchmark_index=benchmark,
+        work_dir=work,
+        publisher=MemoryPublisher(),
+    )
+    if changed == "source":
+        with Path(source["path"]).open("a") as stream:
+            stream.write('{"text":"changed input"}\n')
+    elif changed == "tokenizer":
+        path = tokenizer_path / "tokenizer.json"
+        path.write_text(path.read_text() + "\n")
+    else:
+        benchmark.add("protected", "one two three four five six seven eight nine ten")
+    with pytest.raises(ValueError, match="another build"):
+        stage_source(
+            source_index=0,
+            source=source,
+            config=config,
+            tokenizer_path=tokenizer_path,
+            benchmark_index=benchmark,
+            work_dir=work,
+            publisher=MemoryPublisher(),
+        )
+
+
+def _staged_fixture(tmp_path: Path):
+    config, source, tokenizer_path, benchmark = _fixture(tmp_path)
+    config["candidate_oversample"] = 1.5
+    publisher = MemoryPublisher()
+    manifest = stage_source(
+        source_index=0,
+        source=source,
+        config=config,
+        tokenizer_path=tokenizer_path,
+        benchmark_index=benchmark,
+        work_dir=tmp_path / "stage",
+        publisher=publisher,
+    )
+    for index, shard in enumerate(manifest["shards"]):
+        local = tmp_path / f"candidate-{index}.jsonl.gz"
+        local.write_bytes(publisher.files[shard["repo_path"]])
+        shard["local_path"] = str(local)
+    candidate_manifest = tmp_path / "candidates.json"
+    candidate_manifest.write_text(json.dumps({"complete": True, "sources": [manifest]}))
+    source["weight"] = 1.0
+    config.update(
+        version=1,
+        target_tokens=8,
+        bucket_targets={"foundation": 8},
+        seq_len=2,
+        global_batch_sequences=1,
+        shard_trained_tokens=4,
+    )
+    curriculum = {
+        "total_tokens": 8,
+        "phases": [
+            {
+                "name": "only",
+                "target_tokens": 8,
+                "bucket_tokens": {"foundation": 8},
+                "bucket_shares": {"foundation": 1.0},
+            }
+        ],
+        "invariants": {"replay": False, "each_packed_row_consumed_once": True},
+    }
+    return config, curriculum, tokenizer_path, candidate_manifest
+
+
+def test_candidate_stage_and_pack_reads_native_runtime_rows(tmp_path: Path) -> None:
+    from complexity.training import PretokenizedCorpusMixtureDataset
+
+    config, curriculum, tokenizer_path, manifest_path = _staged_fixture(tmp_path)
+    hub = tmp_path / "hub"
+    state = pack_candidates(
+        config=config,
+        curriculum=curriculum,
+        tokenizer_path=tokenizer_path,
+        candidate_manifest_path=manifest_path,
+        work_dir=tmp_path / "pack",
+        publisher=FilePublisher(hub),
+    )
+    dataset = PretokenizedCorpusMixtureDataset(hub, replay_plan=hub / "pretrain_plan.json")
+    assert len(list(dataset)) == 4
+    assert dataset.unique_tokens == dataset.trained_tokens == 8
+    assert state["execution_mode"] == "deterministic_sequential"
+    assert (
+        state["candidate_manifest_sha256"] == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    )
+
+
+@pytest.mark.parametrize("changed", ["bytes", "tokenizer", "tail", "reference_tokens", "remote"])
+def test_candidate_pack_preflight_rejects_invalid_artifacts_before_writes(
+    tmp_path: Path, changed: str
+) -> None:
+    config, curriculum, tokenizer_path, manifest_path = _staged_fixture(tmp_path)
+    payload = json.loads(manifest_path.read_text())
+    manifest = payload["sources"][0]
+    shard = manifest["shards"][0]
+    if changed == "tokenizer":
+        manifest["tokenizer_sha256"] = "0" * 64
+    elif changed == "remote":
+        shard.pop("local_path")
+    else:
+        local = Path(shard["local_path"])
+        if changed == "bytes":
+            local.write_bytes(local.read_bytes() + b"tampered")
+        else:
+            rows = [
+                json.loads(line)
+                for line in gzip.decompress(local.read_bytes()).decode().splitlines()
+            ]
+            if changed == "tail":
+                rows[-1]["text"] = "changed tail"
+            else:
+                rows[-1]["reference_tokens"] += 1
+                shard["reference_tokens"] += 1
+                manifest["retained_tokens"] += 1
+            local.write_bytes(
+                gzip.compress("".join(json.dumps(row) + "\n" for row in rows).encode(), mtime=0)
+            )
+            shard.update(
+                bytes=local.stat().st_size, sha256=hashlib.sha256(local.read_bytes()).hexdigest()
+            )
+    manifest_path.write_text(json.dumps(payload))
+    work = tmp_path / "pack"
+    publisher = MemoryPublisher()
+    with pytest.raises(ValueError):
+        pack_candidates(
+            config=config,
+            curriculum=curriculum,
+            tokenizer_path=tokenizer_path,
+            candidate_manifest_path=manifest_path,
+            work_dir=work,
+            publisher=publisher,
+        )
+    assert not work.exists()
+    assert publisher.files == {}

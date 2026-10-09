@@ -11,33 +11,147 @@ References:
 - PyTorch distributed checkpointing: https://pytorch.org/docs/stable/distributed.checkpoint.html
 """
 
+import hashlib
+import json
+import logging
 import os
+import random
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Dict, Optional, Union
+
+import numpy as np
 import torch
-import torch.nn as nn
 import torch.distributed as dist
-from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP,
-    StateDictType,
-    FullStateDictConfig,
-    ShardedStateDictConfig,
-)
+import torch.nn as nn
 from torch.distributed.checkpoint import (
-    save_state_dict,
-    load_state_dict,
     FileSystemReader,
     FileSystemWriter,
+    load_state_dict,
+    save_state_dict,
 )
-from typing import Optional, Dict, Any, Union
-from pathlib import Path
-import json
-from dataclasses import dataclass, asdict
-import logging
-import hashlib
-import random
-import numpy as np
-from contextlib import contextmanager
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+)
+from torch.distributed.fsdp import (
+    ShardedStateDictConfig,
+    StateDictType,
+)
 
 logger = logging.getLogger(__name__)
+
+_MLP_CONTROL_FORMAT = "complexity-runtime-mlp-controls-v1"
+_MLP_CONTROL_KEY = "runtime_mlp_controls"
+_MLP_CONTROL_FILE = "runtime_mlp_controls.json"
+
+
+def _control_model(model: nn.Module):
+    """Unwrap training wrappers without discovering arbitrary child modules."""
+    while isinstance(model, (FSDP, torch.nn.parallel.DistributedDataParallel)):
+        model = model.module
+    if getattr(getattr(model, "config", None), "mlp_type", None) in {
+        "tr_hash_engine",
+        "tr_hash_moe",
+    } and all(
+        callable(getattr(model, name, None))
+        for name in ("export_config", "validate_export_controls", "apply_export_controls")
+    ):
+        return model
+    return None
+
+
+def _json_controls(metadata: Any) -> dict:
+    """Accept only the explicit JSON-safe metadata contract, never tensors."""
+    if not isinstance(metadata, dict) or set(metadata) != {"format", "model_config"}:
+        raise ValueError("Malformed checkpoint runtime MLP controls")
+    if metadata["format"] != _MLP_CONTROL_FORMAT or not isinstance(metadata["model_config"], dict):
+        raise ValueError("Unsupported checkpoint runtime MLP controls")
+    try:
+        normalized = json.loads(json.dumps(metadata, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Checkpoint runtime MLP controls must be finite JSON data") from exc
+    from ..config import ModelConfig
+
+    ModelConfig.from_dict(normalized["model_config"], strict=True)
+    return normalized
+
+
+def _capture_controls(model: nn.Module) -> Optional[dict]:
+    base = _control_model(model)
+    if base is None:
+        return None
+    metadata = _json_controls({"format": _MLP_CONTROL_FORMAT, "model_config": base.export_config()})
+    base.validate_export_controls(metadata["model_config"])
+    return metadata
+
+
+def _prepare_control_restore(model: nn.Module, metadata: Any):
+    """Validate every control before a loader copies any model tensor."""
+    if metadata is None:
+        return None
+    metadata = _json_controls(metadata)
+    base = _control_model(model)
+    if base is None:
+        raise ValueError("Checkpoint runtime MLP controls require a compatible model")
+    # The canonical model owns dimensional/routing compatibility and validates
+    # the entire per-layer list without mutating buffers or the authored config.
+    base.validate_export_controls(metadata["model_config"])
+    return lambda: base.apply_export_controls(metadata["model_config"])
+
+
+def _validate_saved_routes(model: nn.Module, state: dict) -> None:
+    """Require each trained route table; no config-generated substitute is used."""
+    base = _control_model(model)
+    if base is None:
+        return
+    for index, layer in enumerate(base.layers):
+        name = f"layers.{index}.mlp.engine.route_table"
+        matches = [value for key, value in state.items() if key == name or key.endswith("." + name)]
+        if len(matches) != 1:
+            raise ValueError(f"Checkpoint must contain exactly one trained route table: {name}")
+        route = matches[0]
+        engine = layer.mlp.engine
+        if (
+            not isinstance(route, torch.Tensor)
+            or tuple(route.shape) != tuple(engine.route_table.shape)
+            or route.dtype not in {torch.int8, torch.uint8, torch.int16, torch.int32, torch.int64}
+            or bool((route < 0).any())
+            or bool((route >= engine.config.num_experts).any())
+        ):
+            raise ValueError(f"Invalid trained route table in checkpoint: {name}")
+
+
+def _write_controls(metadata: Optional[dict], checkpoint_path: Path) -> None:
+    path = checkpoint_path / _MLP_CONTROL_FILE
+    if metadata is None:
+        # A non-transactional save may replace a tag previously owned by a
+        # controlled model. Do not retain metadata from those older weights.
+        path.unlink(missing_ok=True)
+        return
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        temporary.write_text(
+            json.dumps(metadata, allow_nan=False, indent=2) + "\n", encoding="utf-8"
+        )
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_controls(checkpoint_path: Path, payload: Optional[dict] = None):
+    sidecar = checkpoint_path / _MLP_CONTROL_FILE
+    metadata = (
+        _json_controls(payload[_MLP_CONTROL_KEY])
+        if payload is not None and _MLP_CONTROL_KEY in payload
+        else None
+    )
+    if sidecar.is_file():
+        saved = _json_controls(json.loads(sidecar.read_text(encoding="utf-8")))
+        if payload is not None and metadata != saved:
+            raise ValueError("Checkpoint runtime MLP control metadata disagree")
+        metadata = saved
+    return metadata
 
 
 @contextmanager
@@ -52,7 +166,7 @@ def _checkpoint_stage():
         errors = [None] * dist.get_world_size()
         dist.all_gather_object(errors, repr(error) if error else None)
         if any(errors):
-            raise RuntimeError(f'Checkpoint failed on a rank: {errors}') from error
+            raise RuntimeError(f"Checkpoint failed on a rank: {errors}") from error
     elif error:
         raise error
 
@@ -94,15 +208,25 @@ def _detensor_state_dict(state_dict: dict) -> dict:
     _save_regular (rank 0 only) with FSDP v2's full state_dict, so DTensors
     carry Replicate() placement — to_local() returns the complete tensor.
     """
-    result = {}
-    for k, v in state_dict.items():
-        if _is_dtensor(v):
-            result[k] = v.to_local().contiguous()
-        elif isinstance(v, dict):
-            result[k] = _detensor_state_dict(v)
-        else:
-            result[k] = v
-    return result
+    return detensor(state_dict)
+
+
+def detensor(value):
+    """Convert a local checkpoint tensor tree without gathering across ranks.
+
+    The caller owns the placement contract: ``to_local`` is a full tensor only
+    for replicated placement. Sharded values remain local shards. Containers
+    retain their shape and ordinary tensors retain their identity.
+    """
+    if _is_dtensor(value):
+        return value.to_local().contiguous()
+    if isinstance(value, dict):
+        return {key: detensor(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [detensor(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(detensor(item) for item in value)
+    return value
 
 
 def _rewrap_optimizer_state_as_dtensors(optimizer: torch.optim.Optimizer) -> None:
@@ -148,9 +272,10 @@ def _rewrap_optimizer_state_as_dtensors(optimizer: torch.optim.Optimizer) -> Non
 @dataclass
 class TrainingState:
     """Training state to save/restore."""
+
     step: int = 0
     epoch: int = 0
-    best_loss: float = float('inf')
+    best_loss: float = float("inf")
     total_tokens: int = 0
     learning_rate: float = 0.0
 
@@ -282,7 +407,7 @@ class CheckpointManager:
         if self.is_main and training_state is not None:
             state_path = checkpoint_path / "training_state.json"
             state_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(state_path, 'w') as f:
+            with open(state_path, "w") as f:
                 json.dump(training_state.to_dict(), f, indent=2)
 
         # Rotate old checkpoints
@@ -294,20 +419,21 @@ class CheckpointManager:
     @staticmethod
     def _digest(path):
         digest = hashlib.sha256()
-        with path.open('rb') as stream:
-            for chunk in iter(lambda: stream.read(8 << 20), b''):
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(8 << 20), b""):
                 digest.update(chunk)
         return digest.hexdigest()
 
     def _save_transaction(self, step, training_state, tag):
         """Commit all DDP rank files before making a checkpoint discoverable."""
         if self.is_fsdp or any(_is_dtensor(p) for p in self.model.parameters()):
-            raise ValueError('Transactional resume currently supports DDP and single process only')
+            raise ValueError("Transactional resume currently supports DDP and single process only")
         if training_state is None:
-            raise ValueError('Transactional checkpoints require training state')
+            raise ValueError("Transactional checkpoints require training state")
         import shutil
-        final = self.checkpoint_dir / f'{tag}_{step}'
-        pending = self.checkpoint_dir / f'.pending-{tag}_{step}.writing'
+
+        final = self.checkpoint_dir / f"{tag}_{step}"
+        pending = self.checkpoint_dir / f".pending-{tag}_{step}.writing"
         distributed = dist.is_initialized()
         rank = dist.get_rank() if distributed else 0
         world = dist.get_world_size() if distributed else 1
@@ -315,55 +441,86 @@ class CheckpointManager:
             if self.is_main:
                 if final.exists():
                     raise FileExistsError(final)
-                if pending.exists(): shutil.rmtree(pending)
+                if pending.exists():
+                    shutil.rmtree(pending)
                 pending.mkdir()
-        if distributed: dist.barrier()
-        rng = dict(torch=torch.get_rng_state(), python=random.getstate(), numpy=np.random.get_state(),
-                   cuda=torch.cuda.get_rng_state() if torch.cuda.is_available() else None)
+        if distributed:
+            dist.barrier()
+        rng = dict(
+            torch=torch.get_rng_state(),
+            python=random.getstate(),
+            numpy=np.random.get_state(),
+            cuda=torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+        )
         with _checkpoint_stage():
             self._save_regular(pending)
-            _atomic_torch_save(rng, pending / f'rng_rank{rank}.pt')
-        if distributed: dist.barrier()
+            _atomic_torch_save(rng, pending / f"rng_rank{rank}.pt")
+        if distributed:
+            dist.barrier()
         with _checkpoint_stage():
             if self.is_main:
-                (pending/'training_state.json').write_text(json.dumps(training_state.to_dict()))
-                files = {p.name: dict(bytes=p.stat().st_size, sha256=self._digest(p)) for p in pending.iterdir()}
-                with (pending/'complete.json').open('w') as stream:
-                    json.dump(dict(contract=self.resume_contract, world_size=world, files=files), stream)
-                    stream.flush(); os.fsync(stream.fileno())
+                (pending / "training_state.json").write_text(json.dumps(training_state.to_dict()))
+                files = {
+                    p.name: dict(bytes=p.stat().st_size, sha256=self._digest(p))
+                    for p in pending.iterdir()
+                }
+                with (pending / "complete.json").open("w") as stream:
+                    json.dump(
+                        dict(contract=self.resume_contract, world_size=world, files=files), stream
+                    )
+                    stream.flush()
+                    os.fsync(stream.fileno())
                 # Flush payloads before publishing the directory entry.
                 for path in pending.iterdir():
-                    with path.open('rb') as stream: os.fsync(stream.fileno())
+                    with path.open("rb") as stream:
+                        os.fsync(stream.fileno())
                 pending.rename(final)
                 fd = os.open(self.checkpoint_dir, os.O_RDONLY)
-                try: os.fsync(fd)
-                finally: os.close(fd)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
                 if not self.defer_rotation:
-                    candidates = sorted((p for p in self.checkpoint_dir.iterdir() if (p/'complete.json').is_file()),
-                                        key=lambda p: int(p.name.rsplit('_',1)[1]), reverse=True)
-                    for old in candidates[self.max_checkpoints:]: shutil.rmtree(old)
-        if distributed: dist.barrier()
+                    candidates = sorted(
+                        (
+                            p
+                            for p in self.checkpoint_dir.iterdir()
+                            if (p / "complete.json").is_file()
+                        ),
+                        key=lambda p: int(p.name.rsplit("_", 1)[1]),
+                        reverse=True,
+                    )
+                    for old in candidates[self.max_checkpoints :]:
+                        shutil.rmtree(old)
+        if distributed:
+            dist.barrier()
         return str(final)
 
     def _validate_transaction(self, path):
-        marker = json.loads((path/'complete.json').read_text())
+        marker = json.loads((path / "complete.json").read_text())
         world = dist.get_world_size() if dist.is_initialized() else 1
-        if marker['contract'] != self.resume_contract or marker['world_size'] != world:
-            raise ValueError('Resume contract or world size changed')
-        required = {'checkpoint.pt', 'training_state.json'}
-        required.update(f'optimizer_rank{i}.pt' for i in range(world))
-        required.update(f'rng_rank{i}.pt' for i in range(world))
-        if not required.issubset(marker['files']):
-            raise ValueError('Checkpoint missing required state')
-        for name, info in marker['files'].items():
+        if marker["contract"] != self.resume_contract or marker["world_size"] != world:
+            raise ValueError("Resume contract or world size changed")
+        required = {"checkpoint.pt", "training_state.json"}
+        required.update(f"optimizer_rank{i}.pt" for i in range(world))
+        required.update(f"rng_rank{i}.pt" for i in range(world))
+        if not required.issubset(marker["files"]):
+            raise ValueError("Checkpoint missing required state")
+        for name, info in marker["files"].items():
             if Path(name).name != name:
-                raise ValueError('Unsafe checkpoint filename')
-            file = path/name
-            if not file.is_file() or file.stat().st_size != info['bytes'] or self._digest(file) != info['sha256']:
-                raise ValueError(f'Checkpoint integrity failure: {name}')
+                raise ValueError("Unsafe checkpoint filename")
+            file = path / name
+            if (
+                not file.is_file()
+                or file.stat().st_size != info["bytes"]
+                or self._digest(file) != info["sha256"]
+            ):
+                raise ValueError(f"Checkpoint integrity failure: {name}")
 
     def _save_fsdp(self, checkpoint_path: Path):
         """Save FSDP sharded checkpoint."""
+        with _checkpoint_stage():
+            controls = _capture_controls(self.model)
         checkpoint_path.mkdir(parents=True, exist_ok=True)
 
         # Option 1: Sharded checkpoint (recommended for large models)
@@ -384,6 +541,9 @@ class CheckpointManager:
                 state_dict=state_dict,
                 storage_writer=FileSystemWriter(str(checkpoint_path)),
             )
+        with _checkpoint_stage():
+            if self.is_main:
+                _write_controls(controls, checkpoint_path)
 
     def _save_regular(self, checkpoint_path: Path):
         """Save checkpoint using torch.distributed.checkpoint.state_dict API.
@@ -391,27 +551,43 @@ class CheckpointManager:
         Uses get_model_state_dict (full, all-gather on all ranks) and
         get_optimizer_state_dict (per-rank shards) for correct FSDP v2 handling.
         """
+        # Validate runtime metadata before entering tensor collectives/writes.
+        # Plain replicated saves retain their existing rank-zero-only scope.
+        collective = self.resume_contract is not None or any(
+            _is_dtensor(p) for p in self.model.parameters()
+        )
+        from contextlib import nullcontext
+
+        with _checkpoint_stage() if collective else nullcontext():
+            controls = _capture_controls(self.model)
         checkpoint_path.mkdir(parents=True, exist_ok=True)
         rank = dist.get_rank() if dist.is_initialized() else 0
 
         # Model weights: all ranks participate in all-gather, rank 0 saves
         try:
             from torch.distributed.checkpoint.state_dict import (
-                get_model_state_dict, get_optimizer_state_dict, StateDictOptions,
+                StateDictOptions,
+                get_model_state_dict,
+                get_optimizer_state_dict,
             )
+
             model_sd = get_model_state_dict(
                 self.model,
                 options=StateDictOptions(full_state_dict=True, cpu_offload=True),
             )
             if self.is_main:
                 save_dict = {"model": model_sd}
+                if controls is not None:
+                    save_dict[_MLP_CONTROL_KEY] = controls
                 if self.scheduler is not None:
                     save_dict["scheduler"] = self.scheduler.state_dict()
                 _atomic_torch_save(save_dict, checkpoint_path / "checkpoint.pt")
+                _write_controls(controls, checkpoint_path)
 
                 # Also save as safetensors (HF-compatible, full weights)
                 try:
                     from safetensors.torch import save_file
+
                     # Convert DTensors to plain tensors for safetensors
                     clean_sd = {}
                     for k, v in model_sd.items():
@@ -432,7 +608,8 @@ class CheckpointManager:
                             self.optimizer.state[p]["exp_avg"] = torch.zeros_like(p)
                             self.optimizer.state[p]["exp_avg_sq"] = torch.zeros_like(p)
                 opt_sd = get_optimizer_state_dict(
-                    self.model, self.optimizer,
+                    self.model,
+                    self.optimizer,
                     options=StateDictOptions(full_state_dict=False, cpu_offload=True),
                 )
                 _atomic_torch_save(opt_sd, checkpoint_path / f"optimizer_rank{rank}.pt")
@@ -446,13 +623,17 @@ class CheckpointManager:
             logger.debug(f"get_model_state_dict not compatible ({e}), using legacy save")
             if self.is_main:
                 model_sd = {"model": self.model.state_dict()}
+                if controls is not None:
+                    model_sd[_MLP_CONTROL_KEY] = controls
                 if self.scheduler is not None:
                     model_sd["scheduler"] = self.scheduler.state_dict()
                 _atomic_torch_save(model_sd, checkpoint_path / "checkpoint.pt")
+                _write_controls(controls, checkpoint_path)
 
                 # Also save as safetensors for HF-compatible loading
                 try:
                     from safetensors.torch import save_file
+
                     raw_sd = self.model.state_dict()
                     clean_sd = {}
                     for k, v in raw_sd.items():
@@ -500,7 +681,7 @@ class CheckpointManager:
 
         if self.resume_contract is not None:
             if not load_optimizer:
-                raise ValueError('Exact resume requires optimizer state')
+                raise ValueError("Exact resume requires optimizer state")
             with _checkpoint_stage():
                 self._validate_transaction(checkpoint_path)
 
@@ -512,13 +693,18 @@ class CheckpointManager:
         # Load training state
         state_path = checkpoint_path / "training_state.json"
         if state_path.exists():
-            with open(state_path, 'r') as f:
+            with open(state_path, "r") as f:
                 state = TrainingState.from_dict(json.load(f))
             if self.resume_contract is not None:
                 rank = dist.get_rank() if dist.is_initialized() else 0
-                rng = torch.load(checkpoint_path/f'rng_rank{rank}.pt', map_location='cpu', weights_only=False)
-                torch.set_rng_state(rng['torch']); random.setstate(rng['python']); np.random.set_state(rng['numpy'])
-                if rng['cuda'] is not None: torch.cuda.set_rng_state(rng['cuda'])
+                rng = torch.load(
+                    checkpoint_path / f"rng_rank{rank}.pt", map_location="cpu", weights_only=False
+                )
+                torch.set_rng_state(rng["torch"])
+                random.setstate(rng["python"])
+                np.random.set_state(rng["numpy"])
+                if rng["cuda"] is not None:
+                    torch.cuda.set_rng_state(rng["cuda"])
             return state
 
         logger.info(f"Loaded checkpoint: {checkpoint_path}")
@@ -531,6 +717,9 @@ class CheckpointManager:
             logger.info("No .metadata found, falling back to regular checkpoint load")
             self._load_regular(checkpoint_path, load_optimizer)
             return
+
+        with _checkpoint_stage():
+            restore_controls = _prepare_control_restore(self.model, _read_controls(checkpoint_path))
 
         with FSDP.state_dict_type(
             self.model,
@@ -551,6 +740,8 @@ class CheckpointManager:
             )
 
             self.model.load_state_dict(state_dict["model"])
+            if restore_controls is not None:
+                restore_controls()
 
             if load_optimizer and self.optimizer is not None:
                 FSDP.optim_state_dict_to_load(
@@ -566,21 +757,45 @@ class CheckpointManager:
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_file}")
 
         state_dict = torch.load(checkpoint_file, map_location="cpu", weights_only=False)
-        if self.resume_contract is not None and self.scheduler is not None and 'scheduler' not in state_dict:
-            raise ValueError('Missing scheduler state')
+        if (
+            self.resume_contract is not None
+            and self.scheduler is not None
+            and "scheduler" not in state_dict
+        ):
+            raise ValueError("Missing scheduler state")
+        from contextlib import nullcontext
+
+        collective = (
+            self.resume_contract is not None
+            or self.is_fsdp
+            or any(_is_dtensor(p) for p in self.model.parameters())
+        )
+        with _checkpoint_stage() if collective else nullcontext():
+            restore_controls = _prepare_control_restore(
+                self.model, _read_controls(checkpoint_path, state_dict)
+            )
+            if restore_controls is not None:
+                _validate_saved_routes(self.model, state_dict["model"])
 
         # Model weights
         try:
             from torch.distributed.checkpoint.state_dict import (
-                set_model_state_dict, set_optimizer_state_dict, StateDictOptions,
+                StateDictOptions,
+                set_model_state_dict,
+                set_optimizer_state_dict,
             )
+
             set_model_state_dict(
-                self.model, state_dict["model"],
+                self.model,
+                state_dict["model"],
                 options=StateDictOptions(full_state_dict=True, strict=True),
             )
         except Exception as e:
             logger.warning(f"set_model_state_dict failed ({e}), using load_state_dict")
             self.model.load_state_dict(state_dict["model"])
+
+        if restore_controls is not None:
+            restore_controls()
 
         if self.scheduler is not None and "scheduler" in state_dict:
             self.scheduler.load_state_dict(state_dict["scheduler"])
@@ -592,19 +807,24 @@ class CheckpointManager:
             if rank_opt_file.exists():
                 try:
                     from torch.distributed.checkpoint.state_dict import (
-                        set_optimizer_state_dict, StateDictOptions,
+                        StateDictOptions,
+                        set_optimizer_state_dict,
                     )
+
                     opt_sd = torch.load(rank_opt_file, map_location="cpu", weights_only=False)
                     set_optimizer_state_dict(
-                        self.model, self.optimizer,
+                        self.model,
+                        self.optimizer,
                         optim_state_dict=opt_sd,
                         options=StateDictOptions(full_state_dict=False),
                     )
                     logger.info(f"Loaded optimizer state from {rank_opt_file.name}")
                 except Exception as e:
                     if self.resume_contract is not None:
-                        raise RuntimeError('Exact optimizer restore failed') from e
-                    logger.warning(f"Skipping optimizer state ({rank_opt_file.name}): {e} — moments restart from zero")
+                        raise RuntimeError("Exact optimizer restore failed") from e
+                    logger.warning(
+                        f"Skipping optimizer state ({rank_opt_file.name}): {e} — moments restart from zero"
+                    )
 
     def load_latest(self, load_optimizer: bool = True) -> Optional[TrainingState]:
         """Load the most recent checkpoint."""
@@ -627,20 +847,40 @@ class CheckpointManager:
             raise FileNotFoundError(
                 f"--init-checkpoint expects an HF-style export: {safetensors_path} not found"
             )
+        metadata = _read_controls(path)
+        if (
+            metadata is None
+            and _control_model(self.model) is not None
+            and (path / "config.json").is_file()
+        ):
+            metadata = {
+                "format": _MLP_CONTROL_FORMAT,
+                "model_config": json.loads((path / "config.json").read_text(encoding="utf-8")),
+            }
+        restore_controls = _prepare_control_restore(self.model, metadata)
         state_dict = load_file(str(safetensors_path))
+        if restore_controls is not None:
+            _validate_saved_routes(self.model, state_dict)
         try:
             from torch.distributed.checkpoint.state_dict import (
-                set_model_state_dict, StateDictOptions,
+                StateDictOptions,
+                set_model_state_dict,
             )
+
             set_model_state_dict(
-                self.model, state_dict,
+                self.model,
+                state_dict,
                 options=StateDictOptions(full_state_dict=True, strict=True),
             )
         except Exception as e:
             logger.warning(f"set_model_state_dict failed ({e}), using load_state_dict")
             self.model.load_state_dict(state_dict)
+        if restore_controls is not None:
+            restore_controls()
         if self.is_main:
-            logger.info(f"Initialized model weights from {safetensors_path} (fresh optimizer/scheduler/step)")
+            logger.info(
+                f"Initialized model weights from {safetensors_path} (fresh optimizer/scheduler/step)"
+            )
 
     @staticmethod
     def _is_complete_checkpoint(path: Path) -> bool:
@@ -684,9 +924,10 @@ class CheckpointManager:
         )
 
         # Keep only max_checkpoints
-        for checkpoint in checkpoints[self.max_checkpoints:]:
+        for checkpoint in checkpoints[self.max_checkpoints :]:
             if checkpoint.is_dir():
                 import shutil
+
                 shutil.rmtree(checkpoint)
             else:
                 checkpoint.unlink()
@@ -723,6 +964,7 @@ class CheckpointManager:
 # Activation Checkpointing (Gradient Checkpointing)
 # =============================================================================
 
+
 def enable_activation_checkpointing(model: nn.Module, checkpoint_layers: bool = True):
     """
     Enable activation checkpointing to reduce memory usage.
@@ -734,16 +976,14 @@ def enable_activation_checkpointing(model: nn.Module, checkpoint_layers: bool = 
         model: The model to enable checkpointing for
         checkpoint_layers: Whether to checkpoint transformer layers
     """
-    from torch.utils.checkpoint import checkpoint
 
-    if hasattr(model, 'layers'):
+    if hasattr(model, "layers"):
         for layer in model.layers:
             layer.use_checkpoint = True
 
     # For FSDP models
     if isinstance(model, FSDP):
         from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
-            checkpoint_wrapper,
             CheckpointImpl,
             apply_activation_checkpointing,
         )
@@ -751,7 +991,7 @@ def enable_activation_checkpointing(model: nn.Module, checkpoint_layers: bool = 
         # Apply to transformer blocks
         apply_activation_checkpointing(
             model,
-            check_fn=lambda module: hasattr(module, 'self_attn'),
+            check_fn=lambda module: hasattr(module, "self_attn"),
             checkpoint_impl=CheckpointImpl.REENTRANT,
         )
 
@@ -779,6 +1019,7 @@ def checkpoint_sequential(
             for j in range(start, end):
                 input = functions[j](input, **kwargs)
             return input
+
         return forward
 
     # Checkpoint every function

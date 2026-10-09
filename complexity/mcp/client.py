@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, Sequence
+from typing import Any, AsyncIterator, List, Mapping, Optional, Sequence
 
 
 @dataclass(frozen=True)

@@ -25,7 +25,6 @@ from typing import Any, Callable, Dict, List, Optional
 import torch
 import torch.nn.functional as F
 
-
 ExtraStateFn = Callable[[], Dict[str, Any]]
 ReloadFn = Callable[[Path], None]
 

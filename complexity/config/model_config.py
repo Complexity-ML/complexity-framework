@@ -6,7 +6,10 @@ Users can define any architecture by setting these parameters.
 """
 
 import json
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
@@ -121,6 +124,9 @@ class ModelConfig:
     # afterwards at runtime via the MLP's set_active_experts()/set_active_expert_width().
     active_num_experts: Optional[int] = None
     active_expert_width: Optional[int] = None
+    # Native exports record non-uniform runtime controls without adding model
+    # tensors or changing historical checkpoint layouts.
+    layer_mlp_controls: Optional[list[Dict[str, Any]]] = None
 
     # === Lexical feature-modulated residual ===
     lexical_object_rank: int = 16
@@ -323,6 +329,24 @@ class ModelConfig:
             raise ValueError("top_k cannot exceed num_experts")
         if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
             raise ValueError("top_k_primary_weight must be in [0, 1]")
+        if self.layer_mlp_controls is not None:
+            if self.mlp_type not in {"tr_hash_engine", "tr_hash_moe"}:
+                raise ValueError("layer_mlp_controls requires a TR-Hash engine MLP")
+            if not isinstance(self.layer_mlp_controls, list) or len(self.layer_mlp_controls) != self.num_hidden_layers:
+                raise ValueError("layer_mlp_controls must contain one entry per layer")
+            keys = {"top_k_primary_weight", "active_num_experts", "active_expert_width"}
+            for control in self.layer_mlp_controls:
+                if not isinstance(control, dict) or set(control) != keys:
+                    raise ValueError("layer_mlp_controls requires exact routing and capacity fields")
+                weight = control["top_k_primary_weight"]
+                experts = control["active_num_experts"]
+                width = control["active_expert_width"]
+                if type(weight) not in {float, int} or not math.isfinite(weight) or not 0 <= weight <= 1:
+                    raise ValueError("layer_mlp_controls primary weight must be finite and in [0, 1]")
+                if type(experts) is not int or experts not in {1, 2, 4, 8, 16} or not self.top_k <= experts <= self.num_experts:
+                    raise ValueError("layer_mlp_controls expert count exceeds allocated routing capacity")
+                if type(width) is not int or not 0 < width <= self.intermediate_size // self.num_experts:
+                    raise ValueError("layer_mlp_controls expert width exceeds allocated capacity")
         if not 0.0 < self.hash_pair_gate_init < 1.0:
             raise ValueError("hash_pair_gate_init must be strictly between 0 and 1")
         if abs(self.hash_channel_scale_init) > 1.0:
@@ -416,25 +440,41 @@ class ModelConfig:
         for k, v in self.__dict__.items():
             if k.startswith("_"):
                 continue
+            if k == "layer_mlp_controls" and v is None:
+                continue  # Keep unmodified historical model dictionaries identical.
             if isinstance(v, torch.Tensor):
                 continue  # token_frequencies etc. — not JSON serializable
             result[k] = v
         return result
 
-    def save(self, path: str):
+    def save(self, path: str | Path):
         """Save config to file (JSON or YAML)."""
         data = self.to_dict()
-        with open(path, "w") as f:
-            if path.endswith(".yaml") or path.endswith(".yml"):
-                yaml.dump(data, f, default_flow_style=False)
+        path = Path(path)
+        with path.open("w", encoding="utf-8") as f:
+            if path.suffix.lower() in {".yaml", ".yml"}:
+                yaml.safe_dump(data, f, default_flow_style=False)
             else:
                 json.dump(data, f, indent=2)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ModelConfig":
-        """Create config from dictionary, ignoring unknown keys."""
+    def from_dict(cls, data: Dict[str, Any], *, strict: bool = False) -> "ModelConfig":
+        """Read architecture settings.
+
+        Use ``strict=True`` when authoring a new model to reject misspelled
+        fields and routing strategies. The default retains compatibility with
+        historical exports containing extra Hugging Face metadata.
+        """
         import dataclasses
+        if not isinstance(data, Mapping):
+            raise ValueError("Model config must be a mapping")
         valid_keys = {f.name for f in dataclasses.fields(cls)}
+        unknown = set(data) - valid_keys
+        if strict and unknown:
+            raise ValueError("Unknown model config keys: " + ", ".join(sorted(map(str, unknown))))
+        if strict:
+            from complexity._config_utils import validate_field_types
+            validate_field_types(cls, data)
         filtered = {k: v for k, v in data.items() if k in valid_keys}
         if filtered.get("routing_strategy") not in {
             None,
@@ -451,18 +491,21 @@ class ModelConfig:
             "random",
             "lsh_hidden",
         }:
+            if strict:
+                raise ValueError(f"Unknown routing_strategy: {filtered['routing_strategy']!r}")
             filtered["routing_strategy"] = "modulo_cyclic"
         return cls(**filtered)
 
     @classmethod
-    def load(cls, path: str) -> "ModelConfig":
+    def load(cls, path: str | Path, *, strict: bool = False) -> "ModelConfig":
         """Load config from file (JSON or YAML)."""
-        with open(path, "r") as f:
-            if path.endswith(".yaml") or path.endswith(".yml"):
+        path = Path(path)
+        with path.open("r", encoding="utf-8") as f:
+            if path.suffix.lower() in {".yaml", ".yml"}:
                 data = yaml.safe_load(f)
             else:
                 data = json.load(f)
-        return cls.from_dict(data)
+        return cls.from_dict(data, strict=strict)
 
     def __repr__(self) -> str:
         params = ", ".join(f"{k}={v}" for k, v in self.to_dict().items() if v is not None)

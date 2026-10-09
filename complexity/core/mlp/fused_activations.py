@@ -22,7 +22,9 @@ def _liger_silu_mul_available() -> bool:
     """Cached availability check."""
     if not hasattr(_liger_silu_mul_available, "_cache"):
         try:
-            from liger_kernel.ops.swiglu import LigerSiLUMulFunction  # type: ignore[import-not-found] # noqa: F401
+            from liger_kernel.ops.swiglu import (
+                LigerSiLUMulFunction,  # type: ignore[import-not-found] # noqa: F401
+            )
             _liger_silu_mul_available._cache = True
         except Exception:
             _liger_silu_mul_available._cache = False

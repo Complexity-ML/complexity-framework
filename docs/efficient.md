@@ -4,7 +4,12 @@ Efficiency depends on active parameters, sequence length, vocabulary size,
 device kernels, loss implementation, and communication topology. Profile the
 realized run instead of relying on a model-size label.
 
-## Current 200M full-SFT controls
+## Recorded 200M full-SFT controls
+
+These flags belong to the archived release runner. They are recipe evidence,
+not generic `Trainer` options. Use [current workflows](workflows.md) and the
+[prepared ablation](experiments/tr-hash-200m-refinement-ablation.md) for the
+current interfaces and their validation status.
 
 1. Use BF16 on supported devices with `--bf16`.
 2. Bound tied-head loss memory with `--loss-chunk-tokens`.
@@ -29,16 +34,19 @@ normalizes by visible weighted-token mass. Extremely sparse task targets can
 increase gradient variance, so production curricula enforce
 `max_task_loss_weight` and fail before training when the cap is exceeded.
 
-This optional weighting mechanism remains available through the generic SFT
-runner, but the retired 500M experiment-specific launchers are no longer kept.
+Weighting and curriculum helpers are package components. Staged execution is
+implemented in `complexity.training.stack_sft`, replacing the removed SFT
+subprocess path. Its package update/resume checks use small CPU models; see
+[current SFT workflows](workflows.md#explicit-sft-workflows) for the supported
+contracts and [refactor status](refactor-status.md) for validation evidence.
 
 ## DDP
 
-The released launcher uses `torch.distributed.run` with one process per GPU.
+The recorded release launcher used `torch.distributed.run` with one process per GPU.
 Batch size is per rank. The loader shards one shuffled stream deterministically
-across ranks and computes the exact complete-pass boundary. The historical
-`scripts/run_sft_curriculum.py --world-size 8` path follows the same per-rank
-batch convention for 500M LoRA reproduction.
+across ranks and computes the exact complete-pass boundary. Its world-size
+and batch conventions are release provenance; current staged LoRA execution
+must follow the packaged workflow's explicitly supported topology.
 
 TP/PP/DP files under `configs/run_configs/` are planning contracts validated by
 `cf-plan-cluster`; they need an external launcher.

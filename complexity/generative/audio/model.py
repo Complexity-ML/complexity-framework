@@ -9,13 +9,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
 
-from complexity.generative.image.model import (
-    _TextEncoder,
-    _TRHashDiTBlock,
-    _modulate,
-    _timestep_embedding,
-)
 from complexity.models import ComplexityModel
+from complexity.vision.image.model import (
+    _modulate,
+    _TextEncoder,
+    _timestep_embedding,
+    _TRHashDiTBlock,
+)
 
 from .config import TRHashAudioConfig, TRHashSpeechToTextConfig
 from .encoder import AudioEncoder

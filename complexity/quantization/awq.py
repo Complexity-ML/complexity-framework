@@ -10,11 +10,12 @@ Solution: Scale weights based on activation magnitude.
 Reference: https://arxiv.org/abs/2306.00978
 """
 
+import logging
+from dataclasses import dataclass
+from typing import Any, Dict
+
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Any, List
-from dataclasses import dataclass
-import logging
 
 logger = logging.getLogger(__name__)
 
