@@ -6,14 +6,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from safetensors.torch import save_file
-
 from complexity.generative.detection import (
     TRHashDetectorConfig,
     TRHashObjectDetector,
     load_detector_checkpoint,
 )
 from complexity.generative.detection.exporting import RawDetectorExport
+from safetensors.torch import save_file
+
 from scripts.check_onnx_parity import (
     DECODED_BOX_GATE,
     DECODED_SCORE_GATE,

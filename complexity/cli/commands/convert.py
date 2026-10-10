@@ -7,6 +7,8 @@ from typing import Optional
 
 import typer
 
+from complexity._optional import require_optional
+
 from ..utils import console, error, info, print_panel, spinner, success, warning
 
 convert = typer.Typer(name="convert", help="Model conversion commands")
@@ -106,6 +108,7 @@ def convert_from_huggingface(
     """
     try:
         import torch
+        require_optional("transformers", "hf")
         from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -165,7 +168,7 @@ def convert_from_huggingface(
 
     except ImportError as e:
         console.print(error(f"Missing dependency: {e}"))
-        console.print(info("Install with: pip install transformers"))
+        console.print(info("Install with: pip install \"complexity-framework[hf]\""))
         raise typer.Exit(1)
 
 

@@ -4,6 +4,7 @@ import logging
 import math
 from typing import Optional
 
+from .._optional import MissingOptionalDependencyError, require_optional
 from ..parallel.data_parallel import is_main_process
 
 logger = logging.getLogger(__name__)
@@ -34,13 +35,13 @@ class WandBCallback:
 
     def __init__(self, project: str, name: Optional[str] = None):
         try:
-            import wandb
+            wandb = require_optional("wandb", "tracking", feature="W&B logging")
             self.wandb = wandb
             if is_main_process():
                 wandb.init(project=project, name=name)
-        except ImportError:
+        except MissingOptionalDependencyError as exc:
             self.wandb = None
-            logger.warning("wandb not installed, skipping W&B logging")
+            logger.warning("W&B logging disabled: %s", exc)
 
     def __call__(self, trainer, step: int, loss: float):
         if self.wandb and is_main_process():
@@ -152,15 +153,16 @@ class TensorBoardCallback:
 
     def __init__(self, log_dir: str = "runs"):
         try:
+            require_optional("tensorboard", "tracking", feature="TensorBoard logging")
             from torch.utils.tensorboard import SummaryWriter
             if is_main_process():
                 self.writer = SummaryWriter(log_dir)
             else:
                 self.writer = None
-        except ImportError:
+        except MissingOptionalDependencyError as exc:
             self.writer = None
             if is_main_process():
-                logger.warning("tensorboard not installed")
+                logger.warning("TensorBoard logging disabled: %s", exc)
 
     def __call__(self, trainer, step: int, loss: float):
         if self.writer:

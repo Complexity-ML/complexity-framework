@@ -30,6 +30,9 @@ import torch
 
 os.environ["COMPLEXITY_DISABLE_KERNELS"] = "1"
 
+from complexity.generative.detection.exporting import ExportBranch, RawDetectorExport
+from complexity.generative.detection.hub import load_detector_checkpoint
+
 from complexity.deploy.onnx_detector.dfl import decode_dfl_boxes
 from complexity.deploy.onnx_detector.grid import GridGeometry, generate_grid_geometry
 from complexity.deploy.onnx_detector.metadata import (
@@ -37,8 +40,6 @@ from complexity.deploy.onnx_detector.metadata import (
     metadata_from_mapping,
     validate_output_shape,
 )
-from complexity.generative.detection.exporting import ExportBranch, RawDetectorExport
-from complexity.generative.detection.hub import load_detector_checkpoint
 
 RAW_GATE = "raw"
 DECODED_BOX_GATE = "decoded-box"

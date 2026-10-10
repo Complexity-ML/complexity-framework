@@ -22,6 +22,8 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from complexity._optional import require_optional
+
 DEFAULT_PROTECTED_BENCHMARKS = (
     "arc_easy",
     "arc_challenge",
@@ -331,6 +333,7 @@ def iter_source(source: Mapping[str, Any], *, seed: int) -> Iterator[Mapping[str
     if not dataset or re.fullmatch(r"[0-9a-f]{40}", str(revision)) is None:
         raise ValueError("remote sources require a dataset ID and immutable revision")
     if source.get("source_type") == "hf_raw_jsonl":
+        require_optional("huggingface_hub", "hf")
         from huggingface_hub import HfFileSystem
 
         files = source.get("repo_files")
@@ -345,6 +348,7 @@ def iter_source(source: Mapping[str, Any], *, seed: int) -> Iterator[Mapping[str
             with filesystem.open(path, "rt") as stream:
                 yield from _rows(stream, path)
         return
+    require_optional("datasets", "data")
     from datasets import load_dataset
 
     dataset = load_dataset(
@@ -412,6 +416,7 @@ def build_corpus(
     if targets_tokens:
         if reference_tokenizer is None:
             raise ValueError("target_tokens requires a reference_tokenizer")
+        require_optional("tokenizers", "tokenizers")
         from tokenizers import Tokenizer
 
         path = Path(reference_tokenizer)

@@ -6,7 +6,15 @@ a Hub model repository and loaded with ``trust_remote_code=True``.
 
 from __future__ import annotations
 
-from transformers import PretrainedConfig
+try:
+    from transformers import PretrainedConfig
+except ModuleNotFoundError as exc:
+    if exc.name != "transformers":
+        raise
+    raise ImportError(
+        'The TR-HASH Transformers adapter requires transformers. '
+        'Install with: pip install "complexity-framework[hf]"'
+    ) from exc
 
 
 class TRHashConfig(PretrainedConfig):

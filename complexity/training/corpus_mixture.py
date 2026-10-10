@@ -20,6 +20,8 @@ import numpy as np
 import torch
 from torch.utils.data import IterableDataset, get_worker_info
 
+from complexity._optional import require_optional
+
 from ..parallel.data_parallel import is_main_process
 
 logger = logging.getLogger(__name__)
@@ -95,6 +97,7 @@ def _force_hf_http_transport() -> Iterator[None]:
         os.environ["HF_HUB_DISABLE_XET"] = "1"
         try:
             try:
+                require_optional("huggingface_hub", "hf")
                 from huggingface_hub import constants
 
                 previous_constant = getattr(constants, "HF_HUB_DISABLE_XET", missing)
@@ -259,6 +262,7 @@ class _HubShardCache:
         filename = _safe_relative_path(filename).as_posix()
         downloader = self._downloader
         if downloader is None:
+            require_optional("huggingface_hub", "hf")
             from huggingface_hub import hf_hub_download
 
             downloader = hf_hub_download
@@ -446,6 +450,7 @@ class _HubShardCache:
                         token=self.token,
                     )
                 else:
+                    require_optional("huggingface_hub", "hf")
                     from huggingface_hub import HfApi
 
                     files = HfApi(token=self.token).list_repo_files(
@@ -625,6 +630,7 @@ class WeightedStreamingTextDataset(IterableDataset):
             except KeyError as exc:
                 raise ValueError(f"missing provided stream for {source.name}") from exc
 
+        require_optional("datasets", "data")
         from datasets import load_dataset
 
         if source.data_files is not None:

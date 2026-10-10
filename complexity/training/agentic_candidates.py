@@ -20,6 +20,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from complexity._optional import require_optional
+
 from .agentic_corpus import (
     DEFAULT_PROTECTED_BENCHMARKS,
     BenchmarkContaminationIndex,
@@ -279,6 +281,7 @@ def stage_source(
 ) -> dict[str, Any]:
     """Stage one source. Only verified shards become durable progress."""
 
+    require_optional("tokenizers", "tokenizers")
     from tokenizers import Tokenizer
 
     if type(source_index) is not int or source_index < 0:
@@ -690,6 +693,7 @@ def pack_candidates(
         raise ValueError("candidate tokenizer SHA-256 differs from the final tokenizer")
     # Exhaust every shard during preflight, even when its token quota needs only
     # a prefix; malformed tail rows cannot gain a completed-corpus manifest.
+    require_optional("tokenizers", "tokenizers")
     from tokenizers import Tokenizer
 
     reader = CandidateShardReader(Tokenizer.from_file(str(token_path)))

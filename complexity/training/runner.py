@@ -55,6 +55,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, IterableDataset
 
+from complexity._optional import require_optional
+
 from ..config import ModelConfig
 from ..models import ComplexityModel
 from ..parallel import (
@@ -191,6 +193,7 @@ class FineWebStreamingDataset(IterableDataset):
     packing_contract = "text-pretraining"
 
     def __init__(self, tokenizer, seq_len: int, rank: int = 0, world_size: int = 1):
+        require_optional("datasets", "data")
         from datasets import load_dataset
 
         self.tokenizer = tokenizer
@@ -417,6 +420,7 @@ class TrainRunner:
         return p
 
     def _load_tokenizer(self, path: str):
+        require_optional("transformers", "hf")
         from transformers import PreTrainedTokenizerFast
 
         if not os.path.exists(path):

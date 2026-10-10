@@ -8,6 +8,8 @@ from typing import List, Optional
 
 import typer
 
+from complexity._optional import require_optional
+
 from ..utils import console, error, info, print_panel, print_table, spinner, warning
 
 tokenize = typer.Typer(name="tokenize", help="Tokenization commands")
@@ -409,7 +411,7 @@ def train_tokenizer(
 
     except ImportError:
         console.print(error("tokenizers library not installed"))
-        console.print(info("Install with: pip install tokenizers"))
+        console.print(info("Install with: pip install \"complexity-framework[tokenizers]\""))
         raise typer.Exit(1)
 
 
@@ -497,7 +499,7 @@ def train_sentencepiece(
 
     except ImportError:
         console.print(error("sentencepiece not installed"))
-        console.print(info("Install with: pip install sentencepiece"))
+        console.print(info("Install with: pip install \"complexity-framework[tokenizers]\""))
         raise typer.Exit(1)
 
 
@@ -895,6 +897,7 @@ def preprocess_data(
         elif format == "txt":
             texts.append(f.read_text())
         elif format == "parquet":
+            require_optional("pandas", "data")
             import pandas as pd
 
             df = pd.read_parquet(f)

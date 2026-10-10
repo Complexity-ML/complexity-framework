@@ -14,6 +14,8 @@ import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from complexity._optional import require_optional
+
 FINAL_PATTERNS = (
     re.compile(r"final\s+answer\s*[:=]\s*\$?\s*([^\n]+)", re.IGNORECASE),
     re.compile(r"####\s*([^\n]+)"),
@@ -176,12 +178,14 @@ def load_examples(
             if line.strip()
         ]
     if test_parquet is not None:
+        require_optional("pyarrow", "data")
         import pyarrow.parquet as pq
 
         return [
             {"question": str(row["question"]), "answer": str(row["answer"])}
             for row in pq.read_table(test_parquet, columns=["question", "answer"]).to_pylist()
         ]
+    require_optional("datasets", "data")
     from datasets import load_dataset
 
     return list(load_dataset("openai/gsm8k", "main", split=split, revision=DATASET_REVISION))

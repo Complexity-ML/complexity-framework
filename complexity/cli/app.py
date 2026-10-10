@@ -104,6 +104,19 @@ complexity --version
 
 Use `cuda` or `rocm` instead of `cpu` on the corresponding training host.
 
+## Check the complete local workflow
+
+```bash
+complexity train demo --output artifacts/demo-cpu --device cpu
+```
+
+The packaged demo uses a tiny native model and local synthetic data, pauses and
+resumes optimization, evaluates, then exports and reloads the model. It requires
+a new or empty output directory and downloads no models or datasets. On a
+compatible Mac, use `--device mps` with a separate output directory.
+
+Optional integrations use `[hf]`, `[tokenizers]`, `[data]` or `[tracking]` extras.
+
 ## Validate an architecture without training
 
 ```bash

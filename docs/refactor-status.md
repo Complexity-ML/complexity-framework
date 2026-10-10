@@ -1,18 +1,20 @@
 # Framework refactor status
 
-Local refactor completed and audited **9 October 2026**. The complete
-repository suite passes in this worktree. The results below qualify the local
-interfaces and CPU contracts; hardware and research limits are listed separately.
+The local refactor was completed on **9 October 2026**. Lightweight installation
+and the packaged CPU/MPS workflow were verified on **10 October 2026**. The
+complete repository suite passes; hardware and research limits remain separate.
 
 ## Implemented
 
 | Area | Change |
 |---|---|
 | Public API | consistent native model/config loading, strict new authoring, explicit missing-weight failures and reusable training |
+| Installation | lightweight native core; explicit `hf`, `tokenizers`, `data` and `tracking` extras; Torch installed separately |
 | CLI | common data, training, checkpoint, evaluation and vision command trees; lightweight discovery |
 | Vision | physical `complexity.vision` package; legacy imports retain class/module identity; four script paths are thin compatibility wrappers |
 | Data | reusable preparation, projections, quota recipes, candidate staging, transactional sharding and curriculum/replay plans |
 | Training | explicit full-parameter SFT, staged LoRA, CPU-tested DDP SFT and checked optimization/resume boundaries |
+| Local workflow | packaged `train demo`: synthetic fixtures, pause/resume, independent reference, held-out evaluation and native export/reload on CPU or MPS |
 | Evaluation | held-out loss, continuation scoring and matched checkpoint comparisons with explicit source/runtime provenance |
 | Routing | live blend controls synchronize execution paths; diagnostics use actual current capacity and contributions |
 | Export | full DTensor gathering, rank-zero replicated export, runtime-control persistence, rollback on commit errors and explicit unsupported adapter behavior |
@@ -26,24 +28,31 @@ and [API](api.md).
 
 | Gate | Latest result | Scope |
 |---|---|---|
-| `make test` | **1,772 passed, 26 skipped**, 53.75 s | complete collection/execution, no excluded files |
-| `make test-core` | **880 passed, 8 skipped**, 39.98 s | selected API/model/data/training contracts; overlaps the complete suite |
+| `make test` | **1,795 passed, 30 skipped**, 53.08 s | complete collection/execution, no excluded files |
 | `make lint` / `git diff --check` | passed | entire package, including tracked modules covered by ignore patterns |
-| Final installed wheel acceptance outside checkout | passed | 83 help paths, console entrypoint, vision aliases/pickle, data operations, two packaged recipes and autonomous CPU Transformers logits parity |
+| Fresh installed-wheel acceptance outside checkout | **4 passed** | non-editable isolated wheel, no shared system packages, optional dependencies absent, 84 help paths, output preservation and offline CPU demo |
+| Installed-wheel MPS demo | passed | real Apple Metal execution; model/AdamW/scheduler/RNG/cursor parity and export/reload on the small synthetic fixture |
 
-The local test environment is macOS / Python 3.14.6 with CPU/Gloo. Logs are
-`/private/tmp/complexity-framework-full-validation-20261009.txt` and
-`/private/tmp/complexity-framework-core-validation-20261009.txt`. Counts overlap
-and are not added together. Skipped tests are not qualified by these results.
+The repository suite uses macOS / Python 3.14.6 / Torch 2.13.0 with CPU/Gloo.
+Log: `/private/tmp/complexity-install-demo-full-tests-20261010.log`. Four skips
+belong to the installed-wheel tests, which run separately in the isolated
+environment; other skipped tests are not qualified by the suite result.
 
-The final wheel is `complexity_framework-0.3.0-py3-none-any.whl`, 936,151 bytes,
-SHA-256 `6c4bb1981ad3cae0e5a75790cd009c58ae2f5460cb0ab89de233331cdd8b5e1f`.
-It was installed into a separate venv with `--no-index --no-deps`, using the
-host's existing dependencies through `--system-site-packages`. Acceptance
-blocked network/GPU operations and required the package origin inside that
-venv. This verifies installed-package integration, not a fresh dependency or
-backend matrix. Report:
-`/private/tmp/complexity-final-wheel-20261009-0qv0ba_2/acceptance.json`.
+The installed wheel is `complexity_framework-0.3.0-py3-none-any.whl`, 992,496 bytes,
+SHA-256 `68e84ad84fe044bda17f548b5fa9711b48e24476d374f5b23434e81beb5dba1d`.
+It was built from a frozen source copy and installed with its resolved minimal
+dependencies into a venv with `include-system-site-packages = false`.
+Transformers, tokenizers, tiktoken, datasets, Hub, W&B and TensorBoard are absent.
+Python 3.14.6 / Torch 2.14.1 exercised CPU and MPS; the offline CPU acceptance
+also blocked network access and heavy runtime imports during discovery.
+Evidence: `/private/tmp/complexity-clean-install-20261010-3alfor/qualification.json`.
+
+The demo uses 30,912 parameters, four updates, dropout and a fixed schedule.
+CPU continuation is exact. MPS uses tolerance `1e-6`, with observed maximum
+logit difference `1.7881393432617188e-7`; export/reload difference is zero.
+This is a tiny native-model/backend contract, not large-run or quality evidence.
+Linux CI separately installs base profiles on Python 3.10/3.11/3.12 and full
+profiles on 3.11/3.12, retaining wheel, dependency and acceptance artifacts.
 
 CPU/Gloo tests include update parity, optimizer/schedule/cursor/RNG resume,
 rank agreement, interrupted checkpoint publication and export rollback. Tiny
@@ -100,5 +109,5 @@ make test
 ```
 
 Both targets select the local Gloo loopback interface and limit CPU threads.
-The training CI runs the complete suite on its configured CPU Python matrix;
-local results do not establish that the remote CI has run.
+The training CI runs the complete suite and the isolated installed-wheel gate;
+check the selected commit's GitHub run for its remote result.

@@ -17,6 +17,8 @@ from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 
+from complexity._optional import require_optional
+
 from .corpus_mixture import TextCorpusSource, allocate_weighted_counts, validate_corpus_mixture
 
 logger = logging.getLogger(__name__)
@@ -246,6 +248,7 @@ def upload_dataset_subset(
 
     workers = _positive_integer(workers, "Hugging Face upload workers")
     if api is None:
+        require_optional("huggingface_hub", "hf")
         from huggingface_hub import HfApi
 
         api = HfApi(token=token)
@@ -303,6 +306,7 @@ def prepare_corpus_mixture(
     eos = getattr(tokenizer, "eos_token_id", None)
     for source in sources:
         if streams is None:
+            require_optional("datasets", "data")
             from datasets import load_dataset
 
             stream = (

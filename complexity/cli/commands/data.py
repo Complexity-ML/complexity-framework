@@ -9,6 +9,8 @@ from pathlib import Path
 
 import typer
 
+from complexity._optional import require_optional
+
 from ..inspection import load_mapping
 
 data = typer.Typer(name="data", help="Prepare and inspect token corpora", no_args_is_help=True)
@@ -140,6 +142,7 @@ def prepare_corpus(
             return
         if tokenizer is None or not tokenizer.is_dir():
             raise ValueError("--tokenizer must name a local tokenizer directory")
+        require_optional("transformers", "hf")
         from transformers import PreTrainedTokenizerFast
 
         loaded_tokenizer = PreTrainedTokenizerFast.from_pretrained(

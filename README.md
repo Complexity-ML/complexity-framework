@@ -42,14 +42,31 @@ its backend matches the machine. If PyTorch is already installed correctly:
 
 ```bash
 python -m pip install -e .
-# Only needed for development checks:
-python -m pip install -e '.[dev]'
+# Complete development and regression environment:
+python -m pip install -e '.[dev,hf,tokenizers,data,tracking]'
 ```
 
-Kernel and vision dependencies are optional; see [backend notes](docs/cuda.md)
+The base package supports native model construction, training, evaluation and
+exports. Add only the extras needed for your task: `[hf]` for Transformers and
+Hub integration, `[tokenizers]` for tokenizer backends, `[data]` for Hugging Face
+datasets and `[tracking]` for W&B/TensorBoard. Kernel and vision dependencies
+are also optional; see [backend notes](docs/cuda.md)
 and the [vision dependency contract](docs/vision/vision-dependency-stack.md).
 
 ## Check the installation
+
+Run a complete small local workflow, including checkpoint resume and export
+reload, with synthetic data and no downloads:
+
+```bash
+complexity train demo --output artifacts/demo-cpu --device cpu
+# Apple Silicon, with Metal available:
+complexity train demo --output artifacts/demo-mps --device mps
+```
+
+Use a new output directory for each run. The [local workflow guide](docs/local-training.md)
+explains the saved report and its scope; the demo checks execution and
+continuation, not language quality.
 
 This configuration allocates a small, randomly initialized CPU model. It does
 not download weights, resume a checkpoint or run an optimizer.

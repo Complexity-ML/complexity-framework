@@ -113,13 +113,19 @@ from complexity.evaluation import EvalConfig, Evaluator
 
 | Interface | Contract |
 |---|---|
-| `Trainer(model, config, train_dataloader, eval_dataloader=None)` | explicit reusable optimizer/update loop |
+| `Trainer(model, config, train_dataloader, eval_dataloader=None, device=None)` | explicit reusable optimizer/update loop; an explicit device never silently falls back |
 | `trainer.train()` | run this configured experiment |
 | `TrainingConfig.resume_from` | restore this trainer's saved optimization state |
 | `TrainingConfig.init_checkpoint` | weights-only initialization for a new stage |
 | `Evaluator(model, tokenizer=None, config=None)` | model evaluation; loader still supplied explicitly |
 | `evaluator.perplexity(dataloader)` | token-weighted finite-loader causal loss/perplexity |
 | `EvalConfig.labels_are_shifted` | `True` by default for explicit next-token labels; `False` for full labels aligned with input IDs |
+
+`device="cpu"`, `device="cuda"` or `device="mps"` selects the backend explicitly.
+MPS requires FP32 and one process. Omitting the argument preserves the original
+CUDA-when-available/CPU choice. The packaged `complexity train demo` workflow
+checks actual optimization, resume and native export/reload on local synthetic
+fixtures; see [local training](local-training.md).
 
 `TrainingConfig` uses `batch_size` per rank, `gradient_accumulation_steps`,
 `max_steps`, `learning_rate`, `precision`, `grad_clip`, `save_steps`,

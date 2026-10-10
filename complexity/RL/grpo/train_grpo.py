@@ -38,14 +38,20 @@ from typing import Dict, List, Optional
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-from datasets import load_dataset
 from tqdm import tqdm
 
+from complexity._optional import require_optional
 from complexity.models.builder import ComplexityModel
 
 from .rewards import combined_reward, language_quality_reward, mcq_exact_match_reward
 
 logger = logging.getLogger(__name__)
+
+
+def load_dataset(*args, **kwargs):
+    return require_optional("datasets", "data", feature="RL dataset loading").load_dataset(
+        *args, **kwargs
+    )
 
 
 # ── Dataset ──────────────────────────────────────────────────────────

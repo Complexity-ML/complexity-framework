@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Union
 
+from .._optional import require_optional
+
 if TYPE_CHECKING:
     import torch
 
@@ -123,7 +125,7 @@ class Tokenizer:
         # Load tokenizer
         tok_file = p / "tokenizer.json" if p.is_dir() else p
         if tok_file.exists() and tok_file.suffix == ".json":
-            from tokenizers import Tokenizer as HFTok
+            HFTok = require_optional("tokenizers", "tokenizers", feature="Loading tokenizer.json").Tokenizer
             tokenizer = HFTok.from_file(str(tok_file))
         else:
             raise ValueError(f"No tokenizer in {path}")
@@ -154,13 +156,9 @@ class Tokenizer:
 
     @classmethod
     def _load_tiktoken(cls, encoding_name: str, cache_dir: Union[str, Path, None] = None, **kwargs) -> "Tokenizer":
-        try:
-            import tiktoken
-        except ImportError as exc:
-            raise ImportError(
-                f"Tokenizer.load('{encoding_name}') requires tiktoken. "
-                "Install with `pip install tiktoken` or reinstall the package."
-            ) from exc
+        tiktoken = require_optional(
+            "tiktoken", "tokenizers", feature=f"Tokenizer.load('{encoding_name}')"
+        )
 
         if cache_dir is not None:
             os.environ["TIKTOKEN_CACHE_DIR"] = str(Path(cache_dir).resolve())
@@ -372,6 +370,7 @@ class Tokenizer:
 
     @staticmethod
     def _make_tokenizer(vocab_size: int, special_tokens: List[str]):
+        require_optional("tokenizers", "tokenizers")
         from tokenizers import Tokenizer as HFTok
         from tokenizers.models import BPE
         from tokenizers.pre_tokenizers import ByteLevel
@@ -382,6 +381,7 @@ class Tokenizer:
 
     @staticmethod
     def _train_bpe(files, vocab_size, special_tokens, min_freq):
+        require_optional("tokenizers", "tokenizers")
         from tokenizers import Tokenizer as HFTok
         from tokenizers.decoders import ByteLevel as BLD
         from tokenizers.models import BPE
@@ -401,6 +401,7 @@ class Tokenizer:
 
     @staticmethod
     def _train_unigram(files, vocab_size, special_tokens):
+        require_optional("tokenizers", "tokenizers")
         from tokenizers import Tokenizer as HFTok
         from tokenizers.models import Unigram
         from tokenizers.pre_tokenizers import Metaspace
@@ -418,6 +419,7 @@ class Tokenizer:
 
     @staticmethod
     def _train_wordpiece(files, vocab_size, special_tokens, min_freq):
+        require_optional("tokenizers", "tokenizers")
         from tokenizers import Tokenizer as HFTok
         from tokenizers.models import WordPiece
         from tokenizers.pre_tokenizers import Whitespace
@@ -437,6 +439,7 @@ class Tokenizer:
 
     @staticmethod
     def _train_bpe_from_iterator(iterator, vocab_size, special_tokens, min_freq):
+        require_optional("tokenizers", "tokenizers")
         from tokenizers import Tokenizer as HFTok
         from tokenizers.decoders import ByteLevel as BLD
         from tokenizers.models import BPE
@@ -456,6 +459,7 @@ class Tokenizer:
 
     @staticmethod
     def _train_unigram_from_iterator(iterator, vocab_size, special_tokens):
+        require_optional("tokenizers", "tokenizers")
         from tokenizers import Tokenizer as HFTok
         from tokenizers.models import Unigram
         from tokenizers.pre_tokenizers import Metaspace
@@ -473,6 +477,7 @@ class Tokenizer:
 
     @staticmethod
     def _train_wordpiece_from_iterator(iterator, vocab_size, special_tokens, min_freq):
+        require_optional("tokenizers", "tokenizers")
         from tokenizers import Tokenizer as HFTok
         from tokenizers.models import WordPiece
         from tokenizers.pre_tokenizers import Whitespace

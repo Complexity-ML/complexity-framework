@@ -5,6 +5,7 @@ Training commands perform a preflight first; add `--run` to execute.
 
 | Task | Entry point |
 |---|---|
+| Check the complete local training/resume/export workflow | `complexity train demo --output PATH --device cpu` |
 | Prepare text shards or replay selections | `complexity data prepare`, `inspect`, `replay` |
 | Compile native SFT prompt/completion records | `complexity data sft` |
 | Train or refine an explicit text experiment | `complexity train lineage` |
@@ -45,6 +46,12 @@ See [data preparation](data-preparation.md) for schemas, native tool projection,
 quota recipes, replay, collection and recorded metrics.
 
 ## New local training experiment
+
+First check the installation with `complexity train demo --output artifacts/demo-cpu --device cpu`
+(or `--device mps` on a compatible Mac). The packaged demo uses
+local synthetic fixtures, checks continuation against an uninterrupted run and
+reloads its native export. It requires a new output directory. See the
+[local workflow guide](local-training.md).
 
 Use `complexity.training.Trainer` with explicit dataloaders for a custom
 experiment. The [complete CPU example](local-training.md) performs four

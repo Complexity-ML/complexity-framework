@@ -6,6 +6,7 @@ on:
       - ".github/workflows/detector-export.yml"
       - "complexity/deploy/onnx_detector/**"
       - "complexity/generative/detection/**"
+      - "complexity/vision/detection/**"
       - "scripts/build_onnx_release.py"
       - "scripts/check_onnx_parity.py"
       - "scripts/onnx_detect.py"
@@ -23,6 +24,7 @@ on:
       - ".github/workflows/detector-export.yml"
       - "complexity/deploy/onnx_detector/**"
       - "complexity/generative/detection/**"
+      - "complexity/vision/detection/**"
       - "scripts/build_onnx_release.py"
       - "scripts/check_onnx_parity.py"
       - "scripts/onnx_detect.py"
@@ -57,7 +59,7 @@ jobs:
         run: >-
           ruff check
           complexity/deploy/onnx_detector
-          complexity/generative/detection/exporting.py
+          complexity/vision/detection/exporting.py
           scripts/build_onnx_release.py
           scripts/check_onnx_parity.py
           scripts/onnx_detect.py

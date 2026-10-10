@@ -9,6 +9,8 @@ import math
 from pathlib import Path
 from typing import Any, Mapping
 
+from .._optional import MissingOptionalDependencyError, require_optional
+
 LOGGER = logging.getLogger(__name__)
 
 CSV_SCALARS = {
@@ -112,10 +114,8 @@ def export_recorded_metrics(metrics_path: str | Path, log_dir: str | Path) -> in
     metrics_path = Path(metrics_path)
     if not metrics_path.is_file():
         raise FileNotFoundError(f"Metrics file does not exist: {metrics_path}")
-    try:
-        from torch.utils.tensorboard import SummaryWriter
-    except ImportError as exc:
-        raise ImportError("Metrics export requires tensorboard: pip install tensorboard") from exc
+    require_optional("tensorboard", "tracking", feature="Metrics export")
+    from torch.utils.tensorboard import SummaryWriter
     with SummaryWriter(log_dir=str(log_dir)) as writer:
         return mirror_once(metrics_path, writer, set())
 
@@ -129,11 +129,10 @@ class TensorBoardMetricWriter:
         if not enabled:
             return
         try:
+            require_optional("tensorboard", "tracking", feature="TensorBoard logging")
             from torch.utils.tensorboard import SummaryWriter
-        except ImportError:
-            LOGGER.warning(
-                "TensorBoard logging disabled: install the task extra containing tensorboard"
-            )
+        except MissingOptionalDependencyError as exc:
+            LOGGER.warning("TensorBoard logging disabled: %s", exc)
             return
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.writer = SummaryWriter(str(self.log_dir))

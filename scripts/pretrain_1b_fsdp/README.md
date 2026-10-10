@@ -41,6 +41,11 @@ Triton, Liger, Hugging Face Hub, NumPy and TensorBoard. Authenticate through
 `hf auth login`. Choose one pinned repository revision that actually exists:
 old revisions and old checkpoint paths may have been removed by retention.
 
+The lightweight base install does not include Hub/data integrations or
+TensorBoard. Install the `pretrain-data,tracking` extras in the matched backend
+environment, retaining the original run's pinned runtime versions. The small
+`complexity train demo` is an installation check, not this FSDP resume path.
+
 1. Run `python scripts/pretrain_1b_fsdp/restore.py --revision <revision>`.
    The restore retrieves the original assets and verifies recipe, plan,
    schedule, checkpoint-file sizes and hashes. It refuses to overwrite an

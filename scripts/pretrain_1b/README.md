@@ -32,6 +32,7 @@ PyTorch CUDA build supporting this Blackwell GPU, then the framework:
 python3 -m venv .venv
 source .venv/bin/activate
 bash scripts/install_backend.sh cuda
+python -m pip install -e '.[pretrain-data,tracking]'
 hf auth login
 export TR_HASH_RUN_DIR=/workspace/tr-hash-1b-100b
 python -m scripts.pretrain_1b.prepare --create-repo

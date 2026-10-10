@@ -18,6 +18,8 @@ from typing import Any, Iterable
 
 import yaml
 
+from complexity._optional import require_optional
+
 
 def _string_tuple(value: Any, field_name: str) -> tuple[str, ...]:
     if value is None:
@@ -510,6 +512,7 @@ def load_projected_metadata(path: str | Path | None) -> dict[str, dict[str, Any]
     if not path.exists():
         return {}
     try:
+        require_optional("pyarrow", "data")
         import pyarrow.parquet as pq
     except ImportError as error:  # pragma: no cover - environment dependent
         raise ImportError("curriculum Parquet metadata requires pyarrow") from error

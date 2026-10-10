@@ -8,7 +8,7 @@ have separate recipes and checkpoint formats.
 
 | Task | Guide |
 |---|---|
-| Install, validate the environment and run a CPU forward pass | [Getting started](getting-started.md) |
+| Install and check a complete CPU/MPS workflow | [Getting started](getting-started.md), [local training](local-training.md) |
 | Find public interfaces and module ownership | [Framework architecture](framework-architecture.md), [API reference](api.md) |
 | Choose the correct configuration type | [Run configurations](run_configs.md) |
 | Prepare data, train, resume or evaluate | [Workflows](workflows.md) |

@@ -452,6 +452,10 @@ class CheckpointManager:
             numpy=np.random.get_state(),
             cuda=torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
         )
+        # Opt-in transactional checkpoints preserve the generator actually
+        # used by an MPS model. Legacy checkpoint files remain unchanged.
+        if any(parameter.device.type == "mps" for parameter in self.model.parameters()):
+            rng["mps"] = torch.mps.get_rng_state()
         with _checkpoint_stage():
             self._save_regular(pending)
             _atomic_torch_save(rng, pending / f"rng_rank{rank}.pt")
@@ -679,11 +683,33 @@ class CheckpointManager:
 
         checkpoint_path = Path(checkpoint_path)
 
+        rng = None
         if self.resume_contract is not None:
             if not load_optimizer:
                 raise ValueError("Exact resume requires optimizer state")
             with _checkpoint_stage():
                 self._validate_transaction(checkpoint_path)
+                rank = dist.get_rank() if dist.is_initialized() else 0
+                rng = torch.load(
+                    checkpoint_path / f"rng_rank{rank}.pt", map_location="cpu", weights_only=False
+                )
+                model_uses_mps = any(
+                    parameter.device.type == "mps" for parameter in self.model.parameters()
+                )
+                mps_rng = rng.get("mps")
+                if model_uses_mps and (
+                    not isinstance(mps_rng, torch.Tensor)
+                    or mps_rng.dtype != torch.uint8
+                    or mps_rng.ndim != 1
+                    or mps_rng.numel() == 0
+                ):
+                    raise ValueError("Exact MPS resume requires a valid MPS RNG state")
+                if mps_rng is not None and not model_uses_mps:
+                    raise ValueError("MPS RNG cannot be restored for a non-MPS model")
+                if mps_rng is not None and not torch.backends.mps.is_available():
+                    raise RuntimeError("Checkpoint requires the unavailable MPS RNG")
+                if model_uses_mps and mps_rng.shape != torch.mps.get_rng_state().shape:
+                    raise ValueError("Exact MPS resume requires the current MPS RNG layout")
 
         if self.is_fsdp:
             self._load_fsdp(checkpoint_path, load_optimizer)
@@ -696,15 +722,13 @@ class CheckpointManager:
             with open(state_path, "r") as f:
                 state = TrainingState.from_dict(json.load(f))
             if self.resume_contract is not None:
-                rank = dist.get_rank() if dist.is_initialized() else 0
-                rng = torch.load(
-                    checkpoint_path / f"rng_rank{rank}.pt", map_location="cpu", weights_only=False
-                )
                 torch.set_rng_state(rng["torch"])
                 random.setstate(rng["python"])
                 np.random.set_state(rng["numpy"])
                 if rng["cuda"] is not None:
                     torch.cuda.set_rng_state(rng["cuda"])
+                if rng.get("mps") is not None:
+                    torch.mps.set_rng_state(rng["mps"])
             return state
 
         logger.info(f"Loaded checkpoint: {checkpoint_path}")

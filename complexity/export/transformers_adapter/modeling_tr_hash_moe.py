@@ -13,8 +13,17 @@ from typing import Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import GenerationMixin, PreTrainedModel
-from transformers.modeling_outputs import CausalLMOutputWithPast
+
+try:
+    from transformers import GenerationMixin, PreTrainedModel
+    from transformers.modeling_outputs import CausalLMOutputWithPast
+except ModuleNotFoundError as exc:
+    if exc.name != "transformers":
+        raise
+    raise ImportError(
+        'The TR-HASH Transformers adapter requires transformers. '
+        'Install with: pip install "complexity-framework[hf]"'
+    ) from exc
 
 from .configuration_tr_hash_moe import TRHashConfig
 

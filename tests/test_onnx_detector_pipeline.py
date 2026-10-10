@@ -3,17 +3,17 @@ import json
 import numpy as np
 import pytest
 import torch
-from PIL import Image
-
-from complexity.deploy.onnx_detector.metadata import OnnxDetectorMetadata
-from complexity.deploy.onnx_detector.pipeline import OnnxDetectorPipeline
-from complexity.deploy.onnx_detector.preprocess import ImageGeometry, restore_boxes
 from complexity.generative.detection import TRHashDetectorConfig, TRHashObjectDetector
 from complexity.generative.detection.exporting import RawDetectorExport
 from complexity.generative.detection.hub import (
     preprocess_detector_image,
     restore_detector_boxes,
 )
+from PIL import Image
+
+from complexity.deploy.onnx_detector.metadata import OnnxDetectorMetadata
+from complexity.deploy.onnx_detector.pipeline import OnnxDetectorPipeline
+from complexity.deploy.onnx_detector.preprocess import ImageGeometry, restore_boxes
 
 
 class FakeSession:

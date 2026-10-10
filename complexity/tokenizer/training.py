@@ -10,6 +10,7 @@ import re
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 
+from .._optional import require_optional
 from .config import get_special_tokens
 
 AGENTIC_SPECIAL_TOKENS = get_special_tokens("tr_hash_agentic_reasoning")
@@ -69,6 +70,8 @@ def train_tokenizer_from_iterator(
     corpus_manifest_sha256: str | None = None,
     manifest_extra: Mapping[str, object] | None = None,
 ) -> dict:
+    require_optional("tokenizers", "tokenizers", feature="Agentic tokenizer training")
+    require_optional("transformers", "hf", feature="Agentic tokenizer HF export")
     from tokenizers import Tokenizer
     from tokenizers.decoders import ByteLevel as ByteLevelDecoder
     from tokenizers.models import BPE
@@ -205,7 +208,7 @@ def validate_tokenizer_contract(config: Mapping[str, object], tokenizer_path: Pa
         or _contract_sha256(tokenizer_json) != tokenizer_digest
     ):
         raise ValueError("local tokenizer.json does not match the pinned contract")
-    from tokenizers import Tokenizer
+    Tokenizer = require_optional("tokenizers", "tokenizers", feature="Tokenizer contract validation").Tokenizer
 
     expected = contract.get("vocab_size")
     manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
@@ -232,7 +235,7 @@ def _contract_manifest(root: Path, contract: Mapping[str, object]) -> Path:
 
 
 def pin_tokenizer_contract(config_path: Path, tokenizer_dir: Path, revision: str) -> dict:
-    from tokenizers import Tokenizer
+    Tokenizer = require_optional("tokenizers", "tokenizers", feature="Tokenizer contract pinning").Tokenizer
 
     config_path, tokenizer_dir = Path(config_path), Path(tokenizer_dir)
     if re.fullmatch(r"[0-9a-f]{40}", revision) is None:

@@ -13,6 +13,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from complexity._optional import require_optional
 from complexity.export.assets import copy_tokenizer_files, write_chat_template
 from complexity.inference.chat_template import default_chat_template, validate_chat_template
 from complexity.training.finetuning import (
@@ -144,6 +145,7 @@ class SFTPromptCompletionDataset(Dataset):
 def run_lora_stage(config, stage, checkpoint, dataset_path, output, *, resume=None):
     """Fresh adapters/optimizer per stage, exact local checkpoint continuation."""
     from safetensors.torch import save_file
+    require_optional("tokenizers", "tokenizers")
     from tokenizers import Tokenizer
 
     device = validate_stack_execution(config, stage)

@@ -11,7 +11,7 @@ import time
 import warnings
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
 import torch.distributed as dist
@@ -100,6 +100,7 @@ class Trainer:
         scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
         compute_loss: Optional[Callable] = None,
         callbacks: Optional[List[Callable]] = None,
+        device: Optional[Union[str, torch.device]] = None,
     ):
         self.config = config
         self.train_dataloader = train_dataloader
@@ -112,8 +113,37 @@ class Trainer:
         self.world_size = get_world_size()
         self.is_main = is_main_process()
 
-        # Device
-        if torch.cuda.is_available():
+        # An explicit device never silently falls back. Omitting it retains
+        # the historical CUDA-when-available / CPU selection.
+        if device is not None:
+            self.device = torch.device(device)
+            if self.device.type == "mps":
+                if self.device.index is not None:
+                    raise ValueError("MPS device must be specified as 'mps'")
+                if not torch.backends.mps.is_available():
+                    raise RuntimeError(
+                        "MPS was requested but is unavailable; refusing CPU fallback"
+                    )
+                if config.precision != "fp32":
+                    raise ValueError("Explicit MPS Trainer currently requires precision='fp32'")
+                if self.distributed:
+                    raise ValueError("Explicit MPS training supports a single process only")
+            elif self.device.type == "cuda":
+                if not torch.cuda.is_available():
+                    raise RuntimeError(
+                        "CUDA was requested but is unavailable; refusing CPU fallback"
+                    )
+                index = (
+                    self.device.index
+                    if self.device.index is not None
+                    else self.rank % torch.cuda.device_count()
+                )
+                if index >= torch.cuda.device_count():
+                    raise ValueError("Requested CUDA device index is unavailable")
+                self.device = torch.device("cuda", index)
+            elif self.device.type != "cpu":
+                raise ValueError("Trainer device must be cpu, mps or cuda")
+        elif torch.cuda.is_available():
             self.device = torch.device(f"cuda:{self.rank % torch.cuda.device_count()}")
         else:
             self.device = torch.device("cpu")

@@ -16,6 +16,37 @@ train = typer.Typer(
 )
 
 
+@train.command("demo")
+def local_training_demo(
+    output: Path = typer.Option(..., "--output", "-o", help="New or empty artifact directory"),
+    device: str = typer.Option("cpu", "--device", help="Explicit local device: cpu or mps"),
+):
+    """Train a tiny synthetic TR-HASH, restore, evaluate and verify native export."""
+    import sys
+    from contextlib import redirect_stdout
+
+    try:
+        with redirect_stdout(sys.stderr):
+            from complexity.training.demo import run_training_demo
+
+            report = run_training_demo(output, device=device)
+    except ImportError as exc:
+        typer.echo(
+            json.dumps(
+                {
+                    "error": "Local training requires PyTorch and the core dependencies; install the CPU or MPS Torch backend first",
+                    "dependency": getattr(exc, "name", None),
+                }
+            ),
+            err=True,
+        )
+        raise typer.Exit(2) from exc
+    except (ValueError, TypeError, RuntimeError, OSError, KeyError) as exc:
+        typer.echo(json.dumps({"error": str(exc)}), err=True)
+        raise typer.Exit(2) from exc
+    typer.echo(json.dumps(report, indent=2, sort_keys=True, allow_nan=False))
+
+
 @train.command("lineage")
 def text_lineage(
     config: Path = typer.Argument(..., help="Audited text pretraining/refinement JSON"),

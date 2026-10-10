@@ -7,6 +7,8 @@ import random
 from pathlib import Path
 from typing import Any
 
+from complexity._optional import require_optional
+
 from .config import DatasetMix, SourceConfig
 
 
@@ -124,6 +126,7 @@ class StackSFTDatasetBuilder:
 
     def _load_parquet(self, path: Path) -> list[dict[str, Any]]:
         try:
+            require_optional("pyarrow", "data")
             import pyarrow.parquet as pq
         except ImportError as exc:
             raise ImportError("parquet stack SFT sources require pyarrow") from exc

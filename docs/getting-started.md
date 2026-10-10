@@ -1,8 +1,8 @@
 # Getting started
 
-Begin with a small CPU model to check the environment. A successful forward
-pass validates the installation; it does not qualify a distributed checkpoint
-restart or model quality.
+Begin with the small integrated workflow to check installation, training,
+checkpoint resume, evaluation and native export. Synthetic data qualifies
+execution rather than language quality or a distributed checkpoint restart.
 
 ## Requirements and installation
 
@@ -26,9 +26,43 @@ The portable default selects the local backend. Explicit targets include
 python -m pip install -e .
 ```
 
-For tests use `python -m pip install -e '.[dev]'`; additional extras are for
-specific tasks, such as `[tools]` for MCP and `[detection]` for vision.
+Install only the task dependencies you need:
+
+| Extra | Task |
+|---|---|
+| `hf` | Transformers adapters and Hugging Face Hub integration |
+| `tokenizers` | Rust tokenizers, tiktoken and SentencePiece backends |
+| `data` | Hugging Face dataset loading |
+| `tracking` | W&B and TensorBoard logging |
+| `tools` | MCP integration |
+| `detection` | Vision detection |
+
+For the complete regression suite:
+
+```bash
+python -m pip install -e '.[dev,hf,tokenizers,data,tracking]'
+```
+
+The native CPU/MPS demo needs only the base framework and a matching PyTorch.
 See [backend notes](cuda.md) and [vision dependencies](vision/vision-dependency-stack.md).
+
+## Run the complete local workflow
+
+```bash
+complexity train demo --output artifacts/demo-cpu --device cpu
+```
+
+On Apple Silicon with Metal available:
+
+```bash
+complexity train demo --output artifacts/demo-mps --device mps
+```
+
+Each run requires a new output directory, uses a tiny TR-HASH model and local
+synthetic fixtures, then checks resumed versus uninterrupted optimization and
+native export/reload. See [local training](local-training.md) for the report.
+An unavailable explicitly requested backend fails rather than silently
+selecting a different device.
 
 ## Validate without allocating a model
 

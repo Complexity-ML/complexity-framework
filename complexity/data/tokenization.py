@@ -31,6 +31,8 @@ from pathlib import Path as Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from typing import Callable as Callable
 
+from .._optional import require_optional
+
 if TYPE_CHECKING:
     import torch
 
@@ -212,10 +214,7 @@ class SentencePieceTokenizer(Tokenizer):
         Args:
             model_path: Path to SentencePiece model file (.model)
         """
-        try:
-            import sentencepiece as spm
-        except ImportError:
-            raise ImportError("sentencepiece required. Install with: pip install sentencepiece")
+        spm = require_optional("sentencepiece", "tokenizers", feature="SentencePiece tokenization")
 
         self.sp = spm.SentencePieceProcessor()
         self.sp.Load(model_path)
@@ -270,10 +269,7 @@ class TiktokenWrapper(Tokenizer):
                 - "r50k_base": Older models
             special_tokens: Additional special tokens
         """
-        try:
-            import tiktoken
-        except ImportError:
-            raise ImportError("tiktoken required. Install with: pip install tiktoken")
+        tiktoken = require_optional("tiktoken", "tokenizers", feature="tiktoken tokenization")
 
         self.encoding = tiktoken.get_encoding(encoding_name)
 
@@ -329,10 +325,9 @@ class HuggingFaceTokenizer(Tokenizer):
             use_fast: Use fast Rust tokenizer if available
             **kwargs: Additional arguments for AutoTokenizer
         """
-        try:
-            from transformers import AutoTokenizer
-        except ImportError:
-            raise ImportError("transformers required. Install with: pip install transformers")
+        AutoTokenizer = require_optional(
+            "transformers", "hf", feature="Hugging Face tokenization"
+        ).AutoTokenizer
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name_or_path,
@@ -401,7 +396,7 @@ def get_tokenizer(
     if tokenizer_type == "tiktoken":
         encoding_name = kwargs.get("encoding_name")
         if encoding_name is None and model_path is not None:
-            import tiktoken
+            tiktoken = require_optional("tiktoken", "tokenizers", feature="tiktoken tokenization")
 
             if model_path in tiktoken.list_encoding_names():
                 encoding_name = model_path

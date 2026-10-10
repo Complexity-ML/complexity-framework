@@ -25,6 +25,8 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from complexity._optional import require_optional
+
 from .agentic_corpus import (
     DEFAULT_PROTECTED_BENCHMARKS,
     benchmark_match,
@@ -923,6 +925,7 @@ def build(
     Receipt matching is checked here; independent remote readback belongs to the
     publisher, and is not established by this module's local fixture tests.
     """
+    require_optional("tokenizers", "tokenizers")
     from tokenizers import Tokenizer
 
     from ..tokenizer.training import validate_tokenizer_contract

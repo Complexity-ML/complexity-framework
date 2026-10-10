@@ -23,9 +23,12 @@ from pathlib import Path
 from types import MethodType
 from typing import Any, Iterable
 
+from complexity._optional import require_optional
+
 
 def load_dataset(*args, **kwargs):
     """Load benchmark rows on demand; formatting needs no dataset runtime."""
+    require_optional("datasets", "data")
     from datasets import load_dataset as loader
 
     return loader(*args, **kwargs)
@@ -326,6 +329,7 @@ def load_piqa(maximum: int | None, *, data_dir: str | Path | None = None) -> lis
     # datasets>=4 no longer executes the legacy ybisk/piqa loader. Read the
     # same official AI2 archive and validation files that loader references.
     if data_dir is None:
+        require_optional("datasets", "data")
         from datasets import DownloadManager
 
         archive = DownloadManager().download_and_extract(
