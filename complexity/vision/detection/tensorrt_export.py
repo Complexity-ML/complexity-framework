@@ -1,7 +1,7 @@
 """Convert a TR-Hash ONNX model to a TensorRT engine and benchmark latency.
 
 The TensorRT engine is compiled for the specific GPU it runs on. Each user
-must run this script on their own hardware — the resulting .engine file is
+must build the engine on their own hardware — the resulting .engine file is
 not portable across GPU architectures.
 
 FP16 support uses NVIDIA ModelOpt AutoCast to convert the ONNX model to
@@ -9,10 +9,10 @@ mixed precision before building, as required by TensorRT 11.x (which removed
 the legacy BuilderFlag.FP16 in favor of strongly-typed networks).
 
 Usage:
-    python export_tensorrt.py model.onnx
-    python export_tensorrt.py model.onnx --fp16
-    python export_tensorrt.py model.onnx --fp16 --benchmark
-    python export_tensorrt.py model.onnx --benchmark --warmup 100 --iterations 500
+    python -m complexity.vision.detection.tensorrt_export model.onnx
+    python -m complexity.vision.detection.tensorrt_export model.onnx --fp16
+    python -m complexity.vision.detection.tensorrt_export model.onnx --fp16 --benchmark
+    python -m complexity.vision.detection.tensorrt_export model.onnx --benchmark --warmup 100 --iterations 500
 """
 
 from __future__ import annotations
@@ -21,12 +21,14 @@ import argparse
 import time
 from pathlib import Path
 
-try:
-    import tensorrt as trt
-except ImportError:
-    raise ImportError("TensorRT not installed. Run: pip install tensorrt")
 
-TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+def _load_tensorrt():
+    """Load the GPU runtime only when engine work is requested."""
+    try:
+        import tensorrt as trt
+    except ImportError as error:
+        raise ImportError("TensorRT not installed. Run: pip install tensorrt") from error
+    return trt, trt.Logger(trt.Logger.WARNING)
 
 
 def parse_args() -> argparse.Namespace:
@@ -121,11 +123,12 @@ def build_engine(
 ) -> Path:
     """Build a TensorRT engine from an ONNX model."""
 
+    trt, logger = _load_tensorrt()
     print(f"Loading ONNX: {onnx_path}")
 
-    builder = trt.Builder(TRT_LOGGER)
+    builder = trt.Builder(logger)
     network = builder.create_network(0)
-    parser = trt.OnnxParser(network, TRT_LOGGER)
+    parser = trt.OnnxParser(network, logger)
 
     with open(onnx_path, "rb") as f:
         if not parser.parse(f.read()):
@@ -191,9 +194,10 @@ def benchmark_engine(
 
     import torch
 
+    trt, logger = _load_tensorrt()
     print(f"\nBenchmarking: {engine_path}")
 
-    runtime = trt.Runtime(TRT_LOGGER)
+    runtime = trt.Runtime(logger)
     with open(engine_path, "rb") as f:
         engine = runtime.deserialize_cuda_engine(f.read())
 

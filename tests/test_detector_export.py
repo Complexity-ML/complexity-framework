@@ -6,15 +6,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from complexity.generative.detection import (
+from safetensors.torch import save_file
+
+from complexity.vision.detection import (
     TRHashDetectorConfig,
     TRHashObjectDetector,
     load_detector_checkpoint,
 )
-from complexity.generative.detection.exporting import RawDetectorExport
-from safetensors.torch import save_file
-
-from scripts.check_onnx_parity import (
+from complexity.vision.detection.exporting import RawDetectorExport
+from complexity.vision.detection.onnx_export import export_onnx
+from complexity.vision.detection.onnx_parity import (
     DECODED_BOX_GATE,
     DECODED_SCORE_GATE,
     DEFAULT_PARITY_TOLERANCE,
@@ -29,7 +30,6 @@ from scripts.check_onnx_parity import (
     decode_context,
     evaluate_gates,
 )
-from scripts.export_onnx import export_onnx
 
 
 def tiny_config(*, end_to_end: bool) -> TRHashDetectorConfig:
@@ -92,7 +92,7 @@ def test_auto_export_selects_the_production_branch() -> None:
 
 
 def sidecar_mapping(config: TRHashDetectorConfig, branch: str) -> dict:
-    """Mirror the metadata sidecar written by scripts/export_onnx.py."""
+    """Mirror the metadata sidecar written by complexity.vision.detection.onnx_export."""
 
     return {
         "architecture_version": config.architecture_version,

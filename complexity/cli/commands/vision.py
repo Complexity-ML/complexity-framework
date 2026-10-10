@@ -41,14 +41,50 @@ def pretrain(ctx: typer.Context, task: str = typer.Argument("backbone")):
 
 @vision.command("evaluate", context_settings=_CONTEXT)
 def evaluate(ctx: typer.Context, task: str = typer.Argument("detector")):
-    """Evaluate a detector with the existing COCO protocol."""
+    """Evaluate native or ONNX detectors with the COCO protocol."""
     _dispatch(ctx, "evaluate", task)
 
 
 @vision.command("export", context_settings=_CONTEXT)
 def export(ctx: typer.Context, task: str = typer.Argument("detector")):
-    """Export detector raw predictions to ONNX."""
+    """Export detector predictions to ONNX or build a TensorRT engine."""
     _dispatch(ctx, "export", task)
+
+
+@vision.command("check", context_settings=_CONTEXT)
+def check(ctx: typer.Context, task: str = typer.Argument(...)):
+    """Validate COCO reports or native/quantized ONNX parity."""
+    _dispatch(ctx, "check", task)
+
+
+@vision.command("merge", context_settings=_CONTEXT)
+def merge(ctx: typer.Context, task: str = typer.Argument("coco")):
+    """Merge COCO branch and precision reports."""
+    _dispatch(ctx, "merge", task)
+
+
+@vision.command("infer", context_settings=_CONTEXT)
+def infer(ctx: typer.Context, task: str = typer.Argument("onnx")):
+    """Run ONNX detector inference."""
+    _dispatch(ctx, "infer", task)
+
+
+@vision.command("benchmark", context_settings=_CONTEXT)
+def benchmark(ctx: typer.Context, task: str = typer.Argument("onnx")):
+    """Measure an ONNX artifact with an explicit provider."""
+    _dispatch(ctx, "benchmark", task)
+
+
+@vision.command("quantize", context_settings=_CONTEXT)
+def quantize(ctx: typer.Context, task: str = typer.Argument("onnx")):
+    """Prepare FP16 or calibrated INT8 ONNX artifacts."""
+    _dispatch(ctx, "quantize", task)
+
+
+@vision.command("release", context_settings=_CONTEXT)
+def release(ctx: typer.Context, task: str = typer.Argument("onnx")):
+    """Build or verify pinned ONNX artifacts and their manifest."""
+    _dispatch(ctx, "release", task)
 
 
 @vision.command("generate", context_settings=_CONTEXT)

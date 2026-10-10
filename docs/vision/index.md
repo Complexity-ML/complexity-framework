@@ -8,6 +8,8 @@ selected runtime retains its existing arguments and checkpoint contracts.
 complexity vision list
 complexity vision train detector -- --help
 complexity vision evaluate detector -- --help
+complexity vision evaluate onnx -- --help
+complexity vision check coco -- --help
 complexity vision export detector -- --help
 ```
 
@@ -24,14 +26,18 @@ Operations need the dependency profile specified by their guide.
 | Instruction-guided image editing | `vision train image-edit`, `vision edit image` | [Image editor](tr-hash-image-editor.md) |
 | Image + text to text | `vision train image-text` | [Vision-language model](tr-hash-image-text-to-text.md) |
 | Backbone pretraining | `vision pretrain backbone` | [Dependency stack](vision-dependency-stack.md) and runtime help |
-| Detector COCO evaluation | `vision evaluate detector` | [COCO accuracy gates](vision-v8-coco-accuracy-gates.md) |
+| Native/ONNX COCO evaluation | `vision evaluate detector`, `vision evaluate onnx` | [COCO accuracy gates](vision-v8-coco-accuracy-gates.md) |
+| COCO report validation/merging | `vision check coco`, `vision merge coco` | [COCO accuracy gates](vision-v8-coco-accuracy-gates.md) |
 | Detector ONNX export/deployment | `vision export detector` | [Deployment](onnx_deploy.md), [tensor contract](onnx_deploy_contract.md) |
-| Quantized deployment validation | dedicated ONNX tooling | [Quantization gates](vision-v8-onnx-quantization.md) |
+| ONNX inference/TensorRT export | `vision infer onnx`, `vision export tensorrt` | [Deployment](onnx_deploy.md) |
+| Quantization/benchmark/parity | `vision quantize onnx`, `vision benchmark onnx`, `vision check quantized-parity` | [Quantization gates](vision-v8-onnx-quantization.md) |
+| Native ONNX parity/release manifest | `vision check onnx-parity`, `vision release onnx` | [Validation report](../onnx/tr_hash_v8_validation_report.md) |
 
 All commands above use the `complexity` prefix, followed by forwarded runtime
 arguments, for example `complexity vision train detector -- --optimizer musgd ...`.
-The older `cf-*` executables and script paths remain compatibility entry
-points where documented; there is one implementation per operation.
+The COCO/ONNX operations, report validators and release tooling are installed
+with the framework. Their former 13 script files are removed. Defaults are
+packaged JSON resources; these commands also work outside the source checkout.
 
 ## Python tree
 

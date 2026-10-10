@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.check_onnx_quantized_artifacts import (
+from complexity.vision.detection.quantized_artifacts import (
     assert_disjoint_image_ids,
     image_id_manifest_sha256,
     load_calibration_manifest,

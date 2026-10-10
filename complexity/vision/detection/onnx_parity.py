@@ -13,8 +13,8 @@ They are only available when the ONNX sidecar exposes v8 decode metadata;
 legacy exports keep their strict raw-only behaviour.
 
 Usage:
-    python scripts/check_onnx_parity.py CHECKPOINT model.onnx
-    python scripts/check_onnx_parity.py CHECKPOINT model.onnx --num-tests 10
+    python -m complexity.vision.detection.onnx_parity CHECKPOINT model.onnx
+    python -m complexity.vision.detection.onnx_parity CHECKPOINT model.onnx --num-tests 10
 """
 
 from __future__ import annotations
@@ -30,9 +30,6 @@ import torch
 
 os.environ["COMPLEXITY_DISABLE_KERNELS"] = "1"
 
-from complexity.generative.detection.exporting import ExportBranch, RawDetectorExport
-from complexity.generative.detection.hub import load_detector_checkpoint
-
 from complexity.deploy.onnx_detector.dfl import decode_dfl_boxes
 from complexity.deploy.onnx_detector.grid import GridGeometry, generate_grid_geometry
 from complexity.deploy.onnx_detector.metadata import (
@@ -40,6 +37,8 @@ from complexity.deploy.onnx_detector.metadata import (
     metadata_from_mapping,
     validate_output_shape,
 )
+from complexity.vision.detection.exporting import ExportBranch, RawDetectorExport
+from complexity.vision.detection.hub import load_detector_checkpoint
 
 RAW_GATE = "raw"
 DECODED_BOX_GATE = "decoded-box"

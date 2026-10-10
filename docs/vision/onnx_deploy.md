@@ -28,7 +28,7 @@ Do not rename one without passing both paths to the CLI.
 ## CPU Example
 
 ```bash
-python scripts/onnx_detect.py \
+complexity vision infer onnx -- \
   --model tr_hash_v8_o2m.onnx \
   --metadata tr_hash_v8_o2m.json \
   --image sample.jpg \
@@ -56,7 +56,7 @@ Actual timings and detections depend on the image and hardware.
 ## CUDA Example
 
 ```bash
-python scripts/onnx_detect.py \
+complexity vision infer onnx -- \
   --model tr_hash_v8_nms_free.onnx \
   --metadata tr_hash_v8_nms_free.json \
   --image sample.jpg \
@@ -71,7 +71,8 @@ actually selected after session creation.
 TensorRT can be requested with:
 
 ```bash
-python scripts/onnx_detect.py --model model.onnx --metadata model.json --image sample.jpg --provider tensorrt
+complexity vision infer onnx -- \
+  --model model.onnx --metadata model.json --image sample.jpg --provider tensorrt
 ```
 
 That expands to TensorRT, CUDA, then CPU fallback.

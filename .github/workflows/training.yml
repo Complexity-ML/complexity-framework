@@ -78,6 +78,8 @@ jobs:
             profile: full
           - python: "3.12"
             profile: full
+          - python: "3.11"
+            profile: vision
     env:
       OMP_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
@@ -109,6 +111,8 @@ jobs:
           wheel_path=$(find "$RUNNER_TEMP/wheel-dist" -name '*.whl' -type f)
           if [ "$ACCEPTANCE_PROFILE" = full ]; then
             "$python_env" -m pip install "${wheel_path}[dev,hf,tokenizers,data,tracking]"
+          elif [ "$ACCEPTANCE_PROFILE" = vision ]; then
+            "$python_env" -m pip install "${wheel_path}[export]"
           else
             "$python_env" -m pip install "$wheel_path"
           fi

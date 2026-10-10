@@ -15,10 +15,6 @@ from typing import Any, Literal
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 Precision = Literal["fp32", "fp16", "int8"]
 
 
@@ -321,7 +317,7 @@ def quantize_once(
 
 
 def main() -> None:
-    from scripts.check_onnx_quantized_artifacts import load_calibration_manifest
+    from complexity.vision.detection.quantized_artifacts import load_calibration_manifest
 
     args = parse_args()
     calibration_manifest = (

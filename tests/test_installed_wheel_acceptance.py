@@ -1,8 +1,8 @@
 """Acceptance tests copied outside the checkout into a fresh wheel environment.
 
 The ordinary repository suite skips these checks: their contract requires a
-non-editable installed wheel and explicitly selected base/full dependencies.
-CI executes them in both profiles; no model or dataset is downloaded.
+non-editable installed wheel and explicitly selected base/full/vision dependencies.
+CI executes them in all profiles; no model or dataset is downloaded.
 """
 
 from __future__ import annotations
@@ -43,7 +43,12 @@ def _console(*args: str) -> subprocess.CompletedProcess[str]:
     console = shutil.which("complexity")
     assert console is not None
     code = """
-import runpy, socket, sys
+import importlib.abc, runpy, socket, sys
+class Blocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] == 'scripts':
+            raise AssertionError('Installed runtime depends on repository scripts: ' + fullname)
+sys.meta_path.insert(0, Blocker())
 def reject(*args, **kwargs):
     raise AssertionError('Installed-wheel acceptance must remain offline')
 socket.socket.connect = reject
@@ -85,11 +90,12 @@ class InstalledWheelAcceptance(unittest.TestCase):
         assert source["url"].endswith(".whl"), source
         assert not source.get("dir_info", {}).get("editable", False)
         profile = os.environ["COMPLEXITY_ACCEPTANCE_PROFILE"]
-        assert profile in {"base", "full"}
+        assert profile in {"base", "full", "vision"}
         dependencies = {}
         for name, module in OPTIONAL_DISTRIBUTIONS.items():
             installed = importlib.util.find_spec(module) is not None
-            assert installed == (profile == "full"), (profile, name, installed)
+            expected = profile == "full" or (profile == "vision" and name == "huggingface-hub")
+            assert installed == expected, (profile, name, installed)
             if installed:
                 dependencies[name] = importlib.metadata.version(name)
         import torch
@@ -175,6 +181,69 @@ print(len(paths))
             assert result.returncode != 0, result.stdout
             assert sentinel.read_text() == "preserve existing artifacts\n"
             assert list(output.iterdir()) == [sentinel]
+
+    def test_packaged_vision_tools_work_without_repository_scripts(self):
+        import complexity
+
+        assert importlib.util.find_spec("scripts") is None
+        resource_root = Path(complexity.__file__).parent / "vision" / "detection"
+        for resource in ("accuracy_gate.json", "release.json", "quantization_thresholds.json"):
+            assert isinstance(json.loads((resource_root / resource).read_text()), dict)
+        if os.environ["COMPLEXITY_ACCEPTANCE_PROFILE"] != "vision":
+            return
+
+        paths = (
+            ("evaluate", "detector"), ("evaluate", "onnx"),
+            ("export", "detector"), ("export", "tensorrt"),
+            ("check", "coco"), ("check", "onnx-parity"), ("check", "quantized-parity"),
+            ("merge", "coco"), ("infer", "onnx"), ("benchmark", "onnx"),
+            ("quantize", "onnx"), ("release", "onnx"),
+        )
+        for operation, task in paths:
+            result = _console("vision", operation, task, "--", "--help")
+            assert result.returncode == 0, (operation, task, result.stderr, result.stdout)
+            assert "usage:" in result.stdout.lower(), result.stdout
+
+        output = _reports() / "vision"
+        output.mkdir()
+        invalid = output / "invalid.json"
+        invalid.write_text("{}")
+        result = _console("vision", "check", "coco", str(invalid))
+        assert result.returncode == 1, (result.stdout, result.stderr)
+        assert "malformed_report: report has no branch results" in result.stdout
+        assert "missing JSON file" not in result.stdout + result.stderr
+
+        metrics = {key: 0.1 for key in (
+            "map50_95", "map50", "map75", "ap_small", "ap_medium", "ap_large", "ar_100"
+        )}
+        report = {
+            "schema_version": 1, "backend": "onnx", "framework_commit": "synthetic-fixture",
+            "checkpoint": "fixture.onnx", "checkpoint_sha256": "c" * 64, "dataset": {
+                "name": "synthetic", "split": "fixture", "evaluated_images": 2,
+                "annotations_sha256": "a" * 64, "image_list_sha256": "b" * 64,
+            },
+            "protocol": {"seed": 0, "release_eligible": False},
+            "environment": {"python": sys.version, "os": sys.platform,
+                "torch": "fixture", "onnxruntime": "fixture", "cuda_available": False,
+                "torch_cuda": None, "tensorrt": None},
+        }
+        sources = []
+        for branch in ("o2m-nms", "nms-free"):
+            path = output / (branch + ".json")
+            path.write_text(json.dumps({**report, "branches": {branch: {"metrics": metrics}}}))
+            sources.append(str(path))
+        merged = output / "merged"
+        result = _console("vision", "merge", "coco", *sources, "--output", str(merged))
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        payload = json.loads((merged / "evaluation.json").read_text())
+        assert set(payload["branches"]) == {"o2m-nms", "nms-free"}
+        assert payload["protocol"]["release_eligible"] is False
+        assert (merged / "evaluation.md").is_file()
+        assert payload["branches"]["o2m-nms"]["metrics"] == metrics
+        (output / "acceptance.json").write_text(json.dumps({
+            "passed": True, "runtime_help_paths": len(paths), "repository_scripts": False,
+            "offline": True, "synthetic_data": True, "release_eligible": False,
+        }, indent=2) + "\n")
 
     def test_offline_cpu_demo_trains_resumes_evaluates_and_reloads_export(self):
         output = _reports() / "demo"

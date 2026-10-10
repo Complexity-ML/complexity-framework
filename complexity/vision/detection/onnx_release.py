@@ -1,6 +1,6 @@
 """Build and verify reproducible Vision v8 ONNX release artifacts.
 
-The release is pinned by ``docs/onnx/release.json``: checkpoint repository and
+The release is pinned by the packaged ``release.json``: checkpoint repository and
 revision, opset, and the exact export toolchain. Pinning the toolchain is what
 makes the artifacts reproducible from a repository commit — the ONNX graph, and
 therefore the SHA-256 of the binary, depends on the PyTorch version that traced
@@ -10,8 +10,8 @@ Publication is fail-closed: a toolchain mismatch, a failed export, a failed
 parity gate, or a checksum mismatch aborts before anything is uploaded.
 
 Usage:
-    python scripts/build_onnx_release.py --output-dir dist/onnx
-    python scripts/build_onnx_release.py --verify dist/onnx/manifest.json
+    python -m complexity.vision.detection.onnx_release --output-dir dist/onnx
+    python -m complexity.vision.detection.onnx_release --verify dist/onnx/manifest.json
 """
 
 from __future__ import annotations
@@ -21,21 +21,17 @@ import hashlib
 import json
 import os
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 os.environ.setdefault("COMPLEXITY_DISABLE_KERNELS", "1")
 
 MANIFEST_NAME = "manifest.json"
 RELEASE_NOTES_NAME = "RELEASE_NOTES.md"
 MANIFEST_VERSION = 1
-DEFAULT_CONFIG_PATH = Path("docs/onnx/release.json")
+DEFAULT_CONFIG_PATH = Path(__file__).with_name("release.json")
+DEFAULT_THRESHOLDS_PATH = Path(__file__).with_name("quantization_thresholds.json")
 
 
 @dataclass(frozen=True)
@@ -89,7 +85,15 @@ class ReleaseError(RuntimeError):
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> ReleaseConfig:
     """Load and validate the pinned release configuration."""
 
-    return config_from_mapping(json.loads(Path(path).read_text()))
+    values = json.loads(Path(path).read_text(encoding="utf-8"))
+    # Static policy ships with the package. Runtime evidence remains supplied
+    # by the caller, so missing calibration or accuracy files still block a
+    # release rather than silently changing the qualification protocol.
+    if Path(path).resolve() == DEFAULT_CONFIG_PATH.resolve():
+        quantization = values.get("quantization")
+        if isinstance(quantization, dict):
+            quantization["thresholds"] = str(DEFAULT_THRESHOLDS_PATH)
+    return config_from_mapping(values)
 
 
 def config_from_mapping(values: Mapping[str, Any]) -> ReleaseConfig:
@@ -402,9 +406,20 @@ def build_release(
 
     from huggingface_hub import snapshot_download
 
-    from scripts.benchmark_onnx_artifacts import benchmark_onnx_artifact
-    from scripts.check_onnx_parity import check_parity
-    from scripts.check_onnx_quantized_artifacts import (
+    from complexity.vision.detection.onnx_benchmark import benchmark_onnx_artifact
+    from complexity.vision.detection.onnx_export import export_onnx
+    from complexity.vision.detection.onnx_parity import check_parity
+    from complexity.vision.detection.onnx_quantization import (
+        assert_identical_artifact_hashes,
+        copy_detector_metadata,
+        default_quantization_sidecar,
+        quantize_once,
+        write_quantization_sidecar,
+    )
+    from complexity.vision.detection.onnx_quantization import (
+        toolchain_versions as quantization_toolchain_versions,
+    )
+    from complexity.vision.detection.quantized_artifacts import (
         assert_disjoint_image_ids,
         check_provider_precision_supported,
         check_quantized_accuracy_report,
@@ -416,18 +431,7 @@ def build_release(
         load_calibration_manifest,
         load_quantization_thresholds,
     )
-    from scripts.check_onnx_quantized_parity import build_parity_report
-    from scripts.export_onnx import export_onnx
-    from scripts.quantize_onnx import (
-        assert_identical_artifact_hashes,
-        copy_detector_metadata,
-        default_quantization_sidecar,
-        quantize_once,
-        write_quantization_sidecar,
-    )
-    from scripts.quantize_onnx import (
-        toolchain_versions as quantization_toolchain_versions,
-    )
+    from complexity.vision.detection.quantized_parity import build_parity_report
 
     installed = installed_toolchain()
     mismatches = toolchain_mismatches(config.toolchain, installed)

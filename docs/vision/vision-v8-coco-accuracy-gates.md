@@ -56,7 +56,9 @@ JSON reports must include:
 
 ## Gate Policy
 
-The gate uses `configs/vision_v8_coco_accuracy_gate.json` and fails reports for
+The gate uses the bundled
+[`accuracy_gate.json`](../../complexity/vision/detection/accuracy_gate.json)
+and fails reports for
 two separate metric reasons:
 
 - absolute floor failure: the metric is below the minimum acceptable value;
@@ -71,7 +73,9 @@ provider fallback fails the gate. Gate configuration must be changed explicitly
 in source review; CI must not relax tolerances or thresholds at runtime.
 
 The `Vision v8 COCO accuracy` workflow runs lightweight gate tests on pull
-requests. Its manual full-COCO publication job always evaluates both configured
+requests and relevant pushes to `main`. Passing these fixture tests validates
+the report checks; a full COCO measurement requires the dataset and model
+artifacts. Its manual full-COCO publication job evaluates both configured
 branches twice with the same seed, rejects malformed/regressed/non-deterministic
 reports, uploads the JSON and Markdown reports as workflow artifacts, and can
 attach those reports to an existing GitHub Release when `release_tag` is
@@ -99,7 +103,7 @@ that the native loader uses: `ema.safetensors` when present, otherwise
 ONNX Runtime full COCO evaluation for one exported branch:
 
 ```bash
-python scripts/evaluate_onnx_coco.py \
+complexity vision evaluate onnx -- \
   --model artifacts/onnx/tr_hash_v8_o2m.onnx \
   --metadata artifacts/onnx/tr_hash_v8_o2m.json \
   --annotations artifacts/COCO/annotations/instances_val2017.json \
@@ -114,7 +118,7 @@ command once for the O2M export and once for the NMS-free export, merge the
 per-branch reports, then gate the combined report:
 
 ```bash
-python scripts/merge_vision_v8_coco_reports.py \
+complexity vision merge coco -- \
   artifacts/vision_v8_coco_eval/onnx_o2m/evaluation.json \
   artifacts/vision_v8_coco_eval/onnx_nms_free/evaluation.json \
   --output artifacts/vision_v8_coco_eval/onnx_both
@@ -123,10 +127,12 @@ python scripts/merge_vision_v8_coco_reports.py \
 Report gate:
 
 ```bash
-python scripts/check_vision_v8_coco_report.py \
-  artifacts/vision_v8_coco_eval/pytorch/evaluation.json \
-  --config configs/vision_v8_coco_accuracy_gate.json
+complexity vision check coco -- \
+  artifacts/vision_v8_coco_eval/pytorch/evaluation.json
 ```
+
+The default gate configuration is installed with the package. To select a
+separate reviewed configuration, pass `--config /path/to/accuracy_gate.json`.
 
 The ONNX Runtime evaluator emits the same report schema with `backend=onnx`,
 `requested_provider`, and `actual_provider` populated from ONNX Runtime after

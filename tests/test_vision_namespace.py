@@ -37,8 +37,6 @@ def test_legacy_launcher_help_still_works_without_training():
 
 
 @pytest.mark.parametrize("old, new", [
-    ("evaluate_tr_hash_coco", "detection.evaluation"),
-    ("export_onnx", "detection.onnx_export"),
     ("generate_tr_hash_image", "image.generation"),
     ("edit_tr_hash_image", "image.edit_inference"),
 ])

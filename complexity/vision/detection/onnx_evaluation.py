@@ -20,9 +20,8 @@ import torch
 
 from complexity.deploy.onnx_detector import OnnxDetectorPipeline
 from complexity.deploy.onnx_detector.metadata import load_metadata
-from complexity.generative.detection.coco_evaluation import evaluate_coco_predictions
-from complexity.generative.detection.hub import COCO_CLASS_NAMES
-from scripts.evaluate_tr_hash_coco import (
+from complexity.vision.detection.coco_evaluation import evaluate_coco_predictions
+from complexity.vision.detection.evaluation import (
     _branch_contract,
     _checkpoint_sha256,
     _configure_determinism,
@@ -33,10 +32,11 @@ from scripts.evaluate_tr_hash_coco import (
     _sha256_file,
     _write_markdown_report,
 )
-from scripts.onnx_detect import provider_names
+from complexity.vision.detection.hub import COCO_CLASS_NAMES
+from complexity.vision.detection.onnx_inference import provider_names
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--metadata", type=Path, required=True)
@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="non-release smoke-test limit; zero evaluates all val2017 images",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _branch_name(metadata_branch: str) -> str:
@@ -139,8 +139,8 @@ def _run_onnx_branch(
     }
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     if args.limit < 0:
         raise ValueError("limit must be non-negative")
     _configure_determinism(args.seed)

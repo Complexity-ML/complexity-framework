@@ -4,14 +4,18 @@ on:
   pull_request:
     paths:
       - ".github/workflows/vision-v8-coco-accuracy.yml"
-      - "configs/vision_v8_coco_accuracy_gate.json"
-      - "docs/vision-v8-coco-accuracy-gates.md"
+      - "complexity/vision/detection/accuracy_gate.json"
+      - "docs/vision/vision-v8-coco-accuracy-gates.md"
       - "docs/index.md"
-      - "scripts/check_vision_v8_coco_report.py"
-      - "scripts/evaluate_tr_hash_coco.py"
-      - "scripts/evaluate_onnx_coco.py"
-      - "scripts/merge_vision_v8_coco_reports.py"
+      - "complexity/vision/detection/accuracy_gate.py"
+      - "complexity/vision/detection/evaluation.py"
+      - "complexity/vision/detection/onnx_evaluation.py"
+      - "complexity/vision/detection/report_merging.py"
       - "complexity/deploy/onnx_detector/**"
+      - "complexity/vision/detection/**"
+      - "complexity/vision/workflows.py"
+      - "complexity/cli/commands/vision.py"
+      - "pyproject.toml"
       - "tests/test_coco_release_evaluation.py"
       - "tests/test_onnx_detector_core.py"
       - "tests/test_vision_v8_coco_accuracy_gate.py"
@@ -19,14 +23,18 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/vision-v8-coco-accuracy.yml"
-      - "configs/vision_v8_coco_accuracy_gate.json"
-      - "docs/vision-v8-coco-accuracy-gates.md"
+      - "complexity/vision/detection/accuracy_gate.json"
+      - "docs/vision/vision-v8-coco-accuracy-gates.md"
       - "docs/index.md"
-      - "scripts/check_vision_v8_coco_report.py"
-      - "scripts/evaluate_tr_hash_coco.py"
-      - "scripts/evaluate_onnx_coco.py"
-      - "scripts/merge_vision_v8_coco_reports.py"
+      - "complexity/vision/detection/accuracy_gate.py"
+      - "complexity/vision/detection/evaluation.py"
+      - "complexity/vision/detection/onnx_evaluation.py"
+      - "complexity/vision/detection/report_merging.py"
       - "complexity/deploy/onnx_detector/**"
+      - "complexity/vision/detection/**"
+      - "complexity/vision/workflows.py"
+      - "complexity/cli/commands/vision.py"
+      - "pyproject.toml"
       - "tests/test_coco_release_evaluation.py"
       - "tests/test_onnx_detector_core.py"
       - "tests/test_vision_v8_coco_accuracy_gate.py"
@@ -145,10 +153,11 @@ jobs:
       - name: Lint COCO accuracy gate
         run: >-
           ruff check
-          scripts/check_vision_v8_coco_report.py
-          scripts/evaluate_onnx_coco.py
-          scripts/evaluate_tr_hash_coco.py
-          scripts/merge_vision_v8_coco_reports.py
+          complexity/vision/detection/accuracy_gate.py
+          complexity/vision/detection/onnx_evaluation.py
+          complexity/vision/detection/evaluation.py
+          complexity/vision/detection/report_merging.py
+          complexity/vision/detection/quantized_artifacts.py
           tests/test_coco_release_evaluation.py
           tests/test_onnx_detector_core.py
           tests/test_vision_v8_coco_accuracy_gate.py
@@ -175,32 +184,32 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[detection,export]"
-          ONNXRUNTIME_VERSION=$(python -c "import json; print(json.load(open('docs/onnx/release.json'))['toolchain']['onnxruntime'])")
+          ONNXRUNTIME_VERSION=$(python -c "import json; print(json.load(open('complexity/vision/detection/release.json'))['toolchain']['onnxruntime'])")
           python -m pip install "onnxruntime-gpu==$ONNXRUNTIME_VERSION"
       - name: Run deterministic COCO evaluation twice
         run: |
           if [ "${{ inputs.backend }}" = "pytorch" ]; then
             test -n "${{ inputs.checkpoint }}"
-            python scripts/evaluate_tr_hash_coco.py "${{ inputs.checkpoint }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a --branch both --device "${{ inputs.device }}" --precision "${{ inputs.precision }}" --seed 0
-            python scripts/evaluate_tr_hash_coco.py "${{ inputs.checkpoint }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b --branch both --device "${{ inputs.device }}" --precision "${{ inputs.precision }}" --seed 0
+            complexity vision evaluate detector "${{ inputs.checkpoint }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a --branch both --device "${{ inputs.device }}" --precision "${{ inputs.precision }}" --seed 0
+            complexity vision evaluate detector "${{ inputs.checkpoint }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b --branch both --device "${{ inputs.device }}" --precision "${{ inputs.precision }}" --seed 0
           else
             test -n "${{ inputs.onnx_o2m_model }}"
             test -n "${{ inputs.onnx_o2m_metadata }}"
             test -n "${{ inputs.onnx_nms_free_model }}"
             test -n "${{ inputs.onnx_nms_free_metadata }}"
-            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_model }}" --metadata "${{ inputs.onnx_o2m_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a_o2m --branch o2m-nms --provider "${{ inputs.fp32_provider }}" --precision fp32 --seed 0
-            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_nms_free_model }}" --metadata "${{ inputs.onnx_nms_free_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a_nms_free --branch nms-free --provider "${{ inputs.fp32_provider }}" --precision fp32 --seed 0
-            python scripts/merge_vision_v8_coco_reports.py artifacts/vision_v8_coco_eval/run_a_o2m/evaluation.json artifacts/vision_v8_coco_eval/run_a_nms_free/evaluation.json --output artifacts/vision_v8_coco_eval/run_a
-            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_model }}" --metadata "${{ inputs.onnx_o2m_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b_o2m --branch o2m-nms --provider "${{ inputs.fp32_provider }}" --precision fp32 --seed 0
-            python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_nms_free_model }}" --metadata "${{ inputs.onnx_nms_free_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b_nms_free --branch nms-free --provider "${{ inputs.fp32_provider }}" --precision fp32 --seed 0
-            python scripts/merge_vision_v8_coco_reports.py artifacts/vision_v8_coco_eval/run_b_o2m/evaluation.json artifacts/vision_v8_coco_eval/run_b_nms_free/evaluation.json --output artifacts/vision_v8_coco_eval/run_b
+            complexity vision evaluate onnx --model "${{ inputs.onnx_o2m_model }}" --metadata "${{ inputs.onnx_o2m_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a_o2m --branch o2m-nms --provider "${{ inputs.fp32_provider }}" --precision fp32 --seed 0
+            complexity vision evaluate onnx --model "${{ inputs.onnx_nms_free_model }}" --metadata "${{ inputs.onnx_nms_free_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_a_nms_free --branch nms-free --provider "${{ inputs.fp32_provider }}" --precision fp32 --seed 0
+            complexity vision merge coco artifacts/vision_v8_coco_eval/run_a_o2m/evaluation.json artifacts/vision_v8_coco_eval/run_a_nms_free/evaluation.json --output artifacts/vision_v8_coco_eval/run_a
+            complexity vision evaluate onnx --model "${{ inputs.onnx_o2m_model }}" --metadata "${{ inputs.onnx_o2m_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b_o2m --branch o2m-nms --provider "${{ inputs.fp32_provider }}" --precision fp32 --seed 0
+            complexity vision evaluate onnx --model "${{ inputs.onnx_nms_free_model }}" --metadata "${{ inputs.onnx_nms_free_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_coco_eval/run_b_nms_free --branch nms-free --provider "${{ inputs.fp32_provider }}" --precision fp32 --seed 0
+            complexity vision merge coco artifacts/vision_v8_coco_eval/run_b_o2m/evaluation.json artifacts/vision_v8_coco_eval/run_b_nms_free/evaluation.json --output artifacts/vision_v8_coco_eval/run_b
           fi
       - name: Gate full COCO report
         run: >-
-          python scripts/check_vision_v8_coco_report.py
+          complexity vision check coco
           artifacts/vision_v8_coco_eval/run_a/evaluation.json
           --repeat-report artifacts/vision_v8_coco_eval/run_b/evaluation.json
-          --config configs/vision_v8_coco_accuracy_gate.json
+          --config complexity/vision/detection/accuracy_gate.json
       - name: Build quantized release evidence artifact
         if: inputs.backend == 'onnx' && inputs.calibration_manifest != ''
         env:
@@ -215,12 +224,12 @@ jobs:
           test -n "${{ inputs.onnx_nms_free_int8_model }}"
           test -n "${{ inputs.onnx_nms_free_int8_metadata }}"
           mkdir -p artifacts/vision_v8_quantized_eval
-          python -c "import os; from pathlib import Path; from scripts.check_onnx_quantized_artifacts import materialize_calibration_manifest_images; materialize_calibration_manifest_images(Path(os.environ['CALIBRATION_MANIFEST']), artifact_root=Path('artifacts/vision_v8_quantized_eval'), output_manifest_path=Path('artifacts/vision_v8_quantized_eval/calibration.json'))"
-          python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_fp16_model }}" --metadata "${{ inputs.onnx_o2m_fp16_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_quantized_eval/o2m_fp16 --branch o2m-nms --provider "${{ inputs.fp16_provider }}" --precision fp16 --seed 0
-          python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_nms_free_fp16_model }}" --metadata "${{ inputs.onnx_nms_free_fp16_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_quantized_eval/nms_free_fp16 --branch nms-free --provider "${{ inputs.fp16_provider }}" --precision fp16 --seed 0
-          python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_o2m_int8_model }}" --metadata "${{ inputs.onnx_o2m_int8_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_quantized_eval/o2m_int8 --branch o2m-nms --provider "${{ inputs.int8_provider }}" --precision int8 --seed 0
-          python scripts/evaluate_onnx_coco.py --model "${{ inputs.onnx_nms_free_int8_model }}" --metadata "${{ inputs.onnx_nms_free_int8_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_quantized_eval/nms_free_int8 --branch nms-free --provider "${{ inputs.int8_provider }}" --precision int8 --seed 0
-          python scripts/merge_vision_v8_coco_reports.py \
+          python -c "import os; from pathlib import Path; from complexity.vision.detection.quantized_artifacts import materialize_calibration_manifest_images; materialize_calibration_manifest_images(Path(os.environ['CALIBRATION_MANIFEST']), artifact_root=Path('artifacts/vision_v8_quantized_eval'), output_manifest_path=Path('artifacts/vision_v8_quantized_eval/calibration.json'))"
+          complexity vision evaluate onnx --model "${{ inputs.onnx_o2m_fp16_model }}" --metadata "${{ inputs.onnx_o2m_fp16_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_quantized_eval/o2m_fp16 --branch o2m-nms --provider "${{ inputs.fp16_provider }}" --precision fp16 --seed 0
+          complexity vision evaluate onnx --model "${{ inputs.onnx_nms_free_fp16_model }}" --metadata "${{ inputs.onnx_nms_free_fp16_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_quantized_eval/nms_free_fp16 --branch nms-free --provider "${{ inputs.fp16_provider }}" --precision fp16 --seed 0
+          complexity vision evaluate onnx --model "${{ inputs.onnx_o2m_int8_model }}" --metadata "${{ inputs.onnx_o2m_int8_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_quantized_eval/o2m_int8 --branch o2m-nms --provider "${{ inputs.int8_provider }}" --precision int8 --seed 0
+          complexity vision evaluate onnx --model "${{ inputs.onnx_nms_free_int8_model }}" --metadata "${{ inputs.onnx_nms_free_int8_metadata }}" --annotations "${{ inputs.annotations }}" --images "${{ inputs.images }}" --output artifacts/vision_v8_quantized_eval/nms_free_int8 --branch nms-free --provider "${{ inputs.int8_provider }}" --precision int8 --seed 0
+          complexity vision merge coco \
             artifacts/vision_v8_coco_eval/run_a_o2m/evaluation.json \
             artifacts/vision_v8_coco_eval/run_a_nms_free/evaluation.json \
             artifacts/vision_v8_quantized_eval/o2m_fp16/evaluation.json \

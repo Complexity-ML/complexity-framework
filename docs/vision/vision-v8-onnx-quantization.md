@@ -16,8 +16,9 @@ Each branch is quantized separately:
 - `o2m`: decode, confidence filtering, and class-aware NMS.
 - `nms-free`: decode and confidence filtering only; NMS must not run.
 
-Unsupported provider and precision pairs fail explicitly using
-`configs/vision_v8_quantization_thresholds.json`. Provider fallback is separate
+Unsupported provider and precision pairs fail explicitly using the bundled
+[`quantization_thresholds.json`](../../complexity/vision/detection/quantization_thresholds.json).
+Provider fallback is separate
 from FP16 partial fallback: the release check must verify both that ONNX Runtime
 used the requested provider and that unexpected graph nodes did not remain FP32.
 The default release contract runs FP32 and INT8 on CPU, but FP16 on CUDA because
@@ -48,7 +49,7 @@ claim final AP.
 Create an FP16 artifact:
 
 ```bash
-python scripts/quantize_onnx.py \
+complexity vision quantize onnx -- \
   --fp32-model artifacts/onnx/tr_hash_v8_o2m.onnx \
   --metadata artifacts/onnx/tr_hash_v8_o2m.json \
   --precision fp16 \
@@ -66,7 +67,7 @@ provenance sidecar used by release verification.
 Create an INT8 artifact:
 
 ```bash
-python scripts/quantize_onnx.py \
+complexity vision quantize onnx -- \
   --fp32-model artifacts/onnx/tr_hash_v8_o2m.onnx \
   --metadata artifacts/onnx/tr_hash_v8_o2m.json \
   --precision int8 \
@@ -80,20 +81,21 @@ python scripts/quantize_onnx.py \
 Evaluate a quantized ONNX artifact on COCO:
 
 ```bash
-python scripts/evaluate_onnx_coco.py \
+complexity vision evaluate onnx -- \
   --model artifacts/onnx/tr_hash_v8_o2m_fp16.onnx \
   --metadata artifacts/onnx/tr_hash_v8_o2m_fp16.json \
   --annotations artifacts/COCO/annotations/instances_val2017.json \
   --images artifacts/COCO/images/val2017 \
   --output artifacts/vision_v8_quantized_eval/o2m_fp16 \
   --branch o2m-nms \
+  --precision fp16 \
   --provider cuda
 ```
 
 Before publishing, merge the FP32 reference and quantized branch reports into
 `artifacts/vision_v8_quantized_eval/accuracy.json` and
 `artifacts/vision_v8_quantized_eval/accuracy.md`. The release builder validates
-that JSON against `configs/vision_v8_quantization_thresholds.json`; missing or
+that JSON against the bundled quantization thresholds; missing or
 regressed reports block publication. The report must include the evaluated image
 IDs so the release gate can prove the calibration set and evaluation set are
 actually disjoint.
@@ -103,7 +105,7 @@ contain `fp32`, `fp16`, and `int8` entries so the gate can compare every
 quantized candidate against the FP32 reference:
 
 ```bash
-python scripts/merge_vision_v8_coco_reports.py \
+complexity vision merge coco -- \
   artifacts/vision_v8_coco_eval/run_a_o2m/evaluation.json \
   artifacts/vision_v8_coco_eval/run_a_nms_free/evaluation.json \
   artifacts/vision_v8_quantized_eval/o2m_fp16/evaluation.json \
@@ -120,7 +122,7 @@ cp artifacts/vision_v8_quantized_eval/evaluation.md \
 Benchmark an artifact:
 
 ```bash
-python scripts/benchmark_onnx_artifacts.py \
+complexity vision benchmark onnx -- \
   --model artifacts/onnx/tr_hash_v8_o2m_fp16.onnx \
   --metadata artifacts/onnx/tr_hash_v8_o2m_fp16.json \
   --output artifacts/vision_v8_quantized_eval/o2m_fp16/benchmark.json \
@@ -144,7 +146,7 @@ policy. The merged accuracy report preserves `requested_provider` and
 provider fallback or stale evidence generated from a different framework
 commit. The artifact must provide `calibration.json`, `calibration_images/`,
 `accuracy.json`, and `accuracy.md` under
-`artifacts/vision_v8_quantized_eval/` before `build_onnx_release.py` runs. The
+`artifacts/vision_v8_quantized_eval/` before `complexity vision release onnx` runs. The
 COCO workflow copies the pinned calibration images into `calibration_images/`
 and rewrites the manifest paths so the fresh release runner can open them.
 Pass the source run as workflow input `evidence_run_id`, or set repository

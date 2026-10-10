@@ -16,10 +16,6 @@ from typing import Any
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -119,7 +115,7 @@ def benchmark_onnx_artifact(
     ort_inter_op_threads: int,
 ) -> dict[str, Any]:
     from complexity.deploy.onnx_detector import OnnxDetectorPipeline
-    from scripts.quantize_onnx import package_version, sha256_file
+    from complexity.vision.detection.onnx_quantization import package_version, sha256_file
 
     if batch_size <= 0 or warmup_iterations < 0 or measured_iterations <= 0:
         raise ValueError("batch size and measured iterations must be positive")
@@ -165,7 +161,7 @@ def benchmark_onnx_artifact(
 
 
 def main() -> None:
-    from scripts.onnx_detect import provider_names
+    from complexity.vision.detection.onnx_inference import provider_names
 
     args = parse_args()
     if not math.isfinite(float(args.batch_size)):

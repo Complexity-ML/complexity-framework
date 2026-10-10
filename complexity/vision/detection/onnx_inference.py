@@ -1,7 +1,7 @@
 """Run TR-Hash Vision v8 ONNX detector inference on one image.
 
 Example:
-    python scripts/onnx_detect.py --model tr_hash_v8_o2m.onnx --metadata tr_hash_v8_o2m.json --image sample.jpg --provider cpu
+    python -m complexity.vision.detection.onnx_inference --model tr_hash_v8_o2m.onnx --metadata tr_hash_v8_o2m.json --image sample.jpg --provider cpu
 """
 
 from __future__ import annotations
@@ -11,10 +11,6 @@ import json
 import sys
 from dataclasses import replace
 from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,30 +62,37 @@ def provider_names(values: list[str] | None) -> tuple[str, ...]:
     return tuple(resolved)
 
 
-def main() -> None:
-    args = parse_args()
-
+def run_inference(
+    model_path: Path,
+    metadata_path: Path,
+    image_path: Path,
+    *,
+    providers: tuple[str, ...] = ("CPUExecutionProvider",),
+    confidence_threshold: float | None = None,
+    iou_threshold: float | None = None,
+) -> dict[str, object]:
+    """Run one detector image and return the deployment report as data."""
     from complexity.deploy.onnx_detector import OnnxDetectorPipeline
     from complexity.deploy.onnx_detector.metadata import load_metadata
 
-    metadata = load_metadata(args.metadata)
-    if args.conf_threshold is not None:
-        metadata = replace(metadata, confidence_threshold=args.conf_threshold)
-    if args.iou_threshold is not None:
+    metadata = load_metadata(metadata_path)
+    if confidence_threshold is not None:
+        metadata = replace(metadata, confidence_threshold=confidence_threshold)
+    if iou_threshold is not None:
         if metadata.branch == "nms-free":
             print(
                 "warning: --iou-threshold is ignored for nms-free exports",
                 file=sys.stderr,
             )
-        metadata = replace(metadata, iou_threshold=args.iou_threshold)
+        metadata = replace(metadata, iou_threshold=iou_threshold)
 
     session = OnnxDetectorPipeline.create_session(
-        args.model,
-        providers=provider_names(args.provider),
+        model_path,
+        providers=providers,
     ).open()
     pipeline = OnnxDetectorPipeline(metadata=metadata, session=session)
-    result = pipeline.predict(args.image)
-    payload = {
+    result = pipeline.predict(image_path)
+    return {
         "provider_used": result.provider_used,
         "branch_type": result.branch_type,
         "timing": result.timing.as_dict(),
@@ -103,6 +106,18 @@ def main() -> None:
             for detection in result.detections
         ],
     }
+
+
+def main() -> None:
+    args = parse_args()
+    payload = run_inference(
+        args.model,
+        args.metadata,
+        args.image,
+        providers=provider_names(args.provider),
+        confidence_threshold=args.conf_threshold,
+        iou_threshold=args.iou_threshold,
+    )
     print(json.dumps(payload, indent=2 if args.pretty else None))
 
 

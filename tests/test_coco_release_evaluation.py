@@ -1,9 +1,16 @@
 import hashlib
+import json
+from types import SimpleNamespace
 
 import pytest
 
-from scripts.check_onnx_quantized_artifacts import check_quantized_accuracy_report
-from scripts.evaluate_tr_hash_coco import (
+from complexity.deploy.onnx_detector.types import (
+    Detection,
+    DetectionResult,
+    TimingBreakdown,
+)
+from complexity.vision.detection import report_merging
+from complexity.vision.detection.evaluation import (
     BRANCHES,
     _branch_contract,
     _branches_to_run,
@@ -13,7 +20,9 @@ from scripts.evaluate_tr_hash_coco import (
     _timing_summary,
     _write_markdown_report,
 )
-from scripts.merge_vision_v8_coco_reports import merge_reports
+from complexity.vision.detection.onnx_evaluation import _run_onnx_branch
+from complexity.vision.detection.quantized_artifacts import check_quantized_accuracy_report
+from complexity.vision.detection.report_merging import merge_reports
 
 
 def test_both_branches_require_end_to_end_head():
@@ -269,3 +278,99 @@ def test_merge_onnx_reports_rejects_mismatched_protocol():
 
     with pytest.raises(ValueError, match="protocol"):
         merge_reports([first, second])
+
+
+def test_packaged_merge_writes_json_and_markdown_without_repository_paths(
+    tmp_path, monkeypatch
+):
+    report = {
+        "backend": "onnx",
+        "framework_commit": "abc123",
+        "checkpoint": "detector.onnx",
+        "checkpoint_sha256": "a" * 64,
+        "dataset": {
+            "name": "coco-2017",
+            "split": "val2017",
+            "evaluated_images": 2,
+            "annotations_sha256": "b" * 64,
+            "image_list_sha256": "c" * 64,
+        },
+        "environment": {
+            "python": "3.11",
+            "os": "linux",
+            "torch": "2.6.0",
+            "onnxruntime": "1.23.2",
+            "cuda_available": False,
+            "torch_cuda": None,
+            "tensorrt": None,
+        },
+        "protocol": {"seed": 0},
+        "branches": {
+            "o2m-nms": {
+                "metrics": {
+                    "map50_95": 0.2,
+                    "map50": 0.3,
+                    "map75": 0.1,
+                    "ap_small": 0.01,
+                    "ap_medium": 0.2,
+                    "ap_large": 0.3,
+                    "ar_100": 0.4,
+                }
+            }
+        },
+    }
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(report), encoding="utf-8")
+    output_path = tmp_path / "merged"
+    monkeypatch.chdir(tmp_path)
+
+    report_merging.main([str(input_path), "--output", str(output_path)])
+
+    merged = json.loads((output_path / "evaluation.json").read_text(encoding="utf-8"))
+    assert merged["branches"]["o2m-nms"]["checkpoint_sha256"] == "a" * 64
+    assert "o2m-nms" in (output_path / "evaluation.md").read_text(encoding="utf-8")
+
+
+def test_packaged_onnx_evaluator_maps_boxes_categories_and_measured_latency(tmp_path):
+    image_root = tmp_path / "images"
+    paths = []
+    coco = SimpleNamespace(imgs={7: {"file_name": "000000000007.jpg"}})
+
+    class Pipeline:
+        def predict(self, path):
+            paths.append(path)
+            return DetectionResult(
+                detections=[
+                    Detection(
+                        box_norm=(0.1, 0.2, 0.4, 0.6),
+                        box_pixel=(10.0, 20.0, 40.0, 60.0),
+                        class_id=1,
+                        score=0.75,
+                    )
+                ],
+                timing=TimingBreakdown(
+                    preprocess_ms=2.0, inference_ms=4.0, postprocess_ms=1.0
+                ),
+            )
+
+    predictions, timing = _run_onnx_branch(
+        Pipeline(), coco, image_root, [7], [1, 3]
+    )
+
+    assert paths == [image_root / "000000000007.jpg"]
+    assert predictions == [
+        {"image_id": 7, "category_id": 3, "bbox": [10.0, 20.0, 30.0, 40.0], "score": 0.75}
+    ]
+    assert timing["inference"]["measured_ms"] == 4.0
+    assert timing["images_per_second"] == 250.0
+
+
+def test_packaged_onnx_evaluator_rejects_class_outside_coco_mapping(tmp_path):
+    result = DetectionResult(
+        detections=[Detection((0, 0, 1, 1), (0, 0, 10, 10), 1, 0.9)]
+    )
+    pipeline = SimpleNamespace(predict=lambda path: result)
+    coco = SimpleNamespace(imgs={7: {"file_name": "image.jpg"}})
+
+    with pytest.raises(ValueError, match="class ID outside COCO mapping"):
+        _run_onnx_branch(pipeline, coco, tmp_path, [7], [1])

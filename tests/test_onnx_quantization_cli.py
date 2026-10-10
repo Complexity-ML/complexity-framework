@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from scripts import quantize_onnx
-from scripts.quantize_onnx import (
+from complexity.vision.detection import onnx_quantization as quantize_onnx
+from complexity.vision.detection.onnx_quantization import (
     assert_identical_artifact_hashes,
     copy_detector_metadata,
     default_detector_metadata_output,

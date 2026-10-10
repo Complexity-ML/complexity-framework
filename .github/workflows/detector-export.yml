@@ -7,16 +7,16 @@ on:
       - "complexity/deploy/onnx_detector/**"
       - "complexity/generative/detection/**"
       - "complexity/vision/detection/**"
-      - "scripts/build_onnx_release.py"
-      - "scripts/check_onnx_parity.py"
-      - "scripts/onnx_detect.py"
-      - "scripts/export_onnx.py"
-      - "scripts/export_tensorrt.py"
-      - "docs/onnx/release.json"
+      - "complexity/vision/detection/onnx_release.py"
+      - "complexity/vision/detection/onnx_parity.py"
+      - "complexity/vision/detection/onnx_inference.py"
+      - "complexity/vision/detection/onnx_export.py"
+      - "complexity/vision/detection/tensorrt_export.py"
+      - "complexity/vision/detection/release.json"
       - "tests/test_detector_export.py"
       - "tests/test_onnx_release.py"
       - "tests/test_onnx_detect_cli.py"
-      - "tests/test_onnx_detector_*.py"
+      - "tests/test_onnx_*.py"
       - "pyproject.toml"
   push:
     branches: [main]
@@ -25,16 +25,16 @@ on:
       - "complexity/deploy/onnx_detector/**"
       - "complexity/generative/detection/**"
       - "complexity/vision/detection/**"
-      - "scripts/build_onnx_release.py"
-      - "scripts/check_onnx_parity.py"
-      - "scripts/onnx_detect.py"
-      - "scripts/export_onnx.py"
-      - "scripts/export_tensorrt.py"
-      - "docs/onnx/release.json"
+      - "complexity/vision/detection/onnx_release.py"
+      - "complexity/vision/detection/onnx_parity.py"
+      - "complexity/vision/detection/onnx_inference.py"
+      - "complexity/vision/detection/onnx_export.py"
+      - "complexity/vision/detection/tensorrt_export.py"
+      - "complexity/vision/detection/release.json"
       - "tests/test_detector_export.py"
       - "tests/test_onnx_release.py"
       - "tests/test_onnx_detect_cli.py"
-      - "tests/test_onnx_detector_*.py"
+      - "tests/test_onnx_*.py"
       - "pyproject.toml"
 
 permissions:
@@ -59,26 +59,11 @@ jobs:
         run: >-
           ruff check
           complexity/deploy/onnx_detector
-          complexity/vision/detection/exporting.py
-          scripts/build_onnx_release.py
-          scripts/check_onnx_parity.py
-          scripts/onnx_detect.py
-          scripts/export_onnx.py
-          scripts/export_tensorrt.py
+          complexity/vision/detection
           tests/test_detector_export.py
-          tests/test_onnx_detect_cli.py
-          tests/test_onnx_detector_core.py
-          tests/test_onnx_detector_metadata.py
-          tests/test_onnx_detector_pipeline.py
-          tests/test_onnx_detector_skeleton.py
-          tests/test_onnx_release.py
+          tests/test_onnx_*.py
       - name: Test ONNX branches and dynamic batch parity
         run: >-
           pytest -q
           tests/test_detector_export.py
-          tests/test_onnx_detect_cli.py
-          tests/test_onnx_detector_core.py
-          tests/test_onnx_detector_metadata.py
-          tests/test_onnx_detector_pipeline.py
-          tests/test_onnx_detector_skeleton.py
-          tests/test_onnx_release.py
+          tests/test_onnx_*.py

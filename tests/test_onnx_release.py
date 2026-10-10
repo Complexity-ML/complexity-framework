@@ -8,7 +8,9 @@ from typing import Any
 
 import pytest
 
-from scripts.build_onnx_release import (
+from complexity.vision.detection.onnx_release import (
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_THRESHOLDS_PATH,
     MANIFEST_NAME,
     ReleaseConfig,
     ReleaseError,
@@ -23,7 +25,7 @@ from scripts.build_onnx_release import (
     verify_manifest,
 )
 
-CONFIG_PATH = Path("docs/onnx/release.json")
+CONFIG_PATH = DEFAULT_CONFIG_PATH
 
 SIDECAR = {
     "architecture_version": 8,
@@ -108,7 +110,7 @@ def test_committed_release_config_is_valid_and_pins_both_branches() -> None:
     assert config.quantization.calibration_manifest == Path(
         "artifacts/vision_v8_quantized_eval/calibration.json"
     )
-    assert config.quantization.thresholds == Path("configs/vision_v8_quantization_thresholds.json")
+    assert config.quantization.thresholds == DEFAULT_THRESHOLDS_PATH
     assert config.quantization.accuracy_report == Path(
         "artifacts/vision_v8_quantized_eval/accuracy.json"
     )
@@ -123,6 +125,22 @@ def test_committed_release_config_is_valid_and_pins_both_branches() -> None:
     # Five seeds underestimate the observed maxima (see the validation report),
     # so a release gate has to be deeper than the development default.
     assert config.parity_num_tests >= 20
+
+
+def test_packaged_release_policy_loads_outside_a_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from complexity.vision.detection.quantized_artifacts import load_quantization_thresholds
+
+    monkeypatch.chdir(tmp_path)
+    config = load_config()
+    assert config.quantization is not None
+    policy = load_quantization_thresholds(config.quantization.thresholds)
+    assert policy["release_policy"]["partial_release"] == "block"
+    assert policy["release_policy"]["required_precisions"] == ["fp32", "fp16", "int8"]
+    assert config.quantization.calibration_manifest == Path(
+        "artifacts/vision_v8_quantized_eval/calibration.json"
+    )
 
 
 def test_release_workflows_share_quantized_evidence_artifact_contract() -> None:
@@ -148,40 +166,28 @@ def test_release_workflows_share_quantized_evidence_artifact_contract() -> None:
     assert "accuracy.md" in coco_workflow
 
 
-def test_release_builder_runs_by_documented_file_path(tmp_path: Path) -> None:
-    config_path = tmp_path / "release.json"
-    config_path.write_text(
-        json.dumps(
-            config_mapping(
-                quantization={
-                    "enabled_precisions": ["int8"],
-                    "calibration_manifest": str(tmp_path / "missing-calibration.json"),
-                    "thresholds": "configs/vision_v8_quantization_thresholds.json",
-                    "accuracy_report": str(tmp_path / "missing-accuracy.json"),
-                    "accuracy_markdown": str(tmp_path / "missing-accuracy.md"),
-                }
-            )
-        ),
-        encoding="utf-8",
-    )
-
+def test_release_builder_runs_as_a_package_module(tmp_path: Path) -> None:
+    manifest_path = tmp_path / MANIFEST_NAME
+    manifest_path.write_text(json.dumps(written_release(tmp_path)), encoding="utf-8")
     result = subprocess.run(
         [
             sys.executable,
-            "scripts/build_onnx_release.py",
-            "--config",
-            str(config_path),
-            "--output-dir",
-            str(tmp_path / "dist"),
-            "--allow-toolchain-drift",
+            "-m",
+            "complexity.vision.detection.onnx_release",
+            "--verify",
+            str(manifest_path),
+            "--expect-commit",
+            "f" * 40,
         ],
         capture_output=True,
         text=True,
         check=False,
     )
 
-    assert result.returncode != 0
-    assert "No module named 'scripts." not in result.stderr
+    assert result.returncode == 1
+    assert "Verification FAILED" in result.stdout
+    assert "framework_commit" in result.stdout
+    assert "ModuleNotFoundError" not in result.stderr
 
 
 def test_a_moving_checkpoint_ref_is_rejected() -> None:

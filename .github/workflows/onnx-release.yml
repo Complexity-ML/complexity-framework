@@ -51,7 +51,7 @@ jobs:
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
-          toolchain = json.load(open("docs/onnx/release.json"))["toolchain"]
+          toolchain = json.load(open("complexity/vision/detection/release.json"))["toolchain"]
           for package, version in toolchain.items():
               print(f"{package}={version}")
           PY
@@ -59,7 +59,7 @@ jobs:
       - name: Install the pinned export toolchain
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,export]" huggingface_hub
+          python -m pip install -e ".[dev,export]"
           # Installed last so the pins win over the extras' version ranges.
           python -m pip install "torch==${{ steps.pins.outputs.torch }}" \
             --index-url https://download.pytorch.org/whl/cpu
@@ -87,13 +87,11 @@ jobs:
         run: pytest -q tests/test_onnx_release.py tests/test_onnx_quantization_benchmark.py
 
       - name: Build, gate and verify the release
-        env:
-          PYTHONPATH: .
-        run: python scripts/build_onnx_release.py --output-dir dist/onnx
+        run: complexity vision release onnx --output-dir dist/onnx
 
       - name: Re-verify the published files against the manifest
         run: >-
-          python scripts/build_onnx_release.py
+          complexity vision release onnx
           --verify dist/onnx/manifest.json
           --expect-commit "$GITHUB_SHA"
 

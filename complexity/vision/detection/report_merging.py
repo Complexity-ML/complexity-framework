@@ -8,14 +8,14 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping
 
-from scripts.evaluate_tr_hash_coco import _write_markdown_report
+from complexity.vision.detection.evaluation import _write_markdown_report
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("reports", nargs="+", type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -95,8 +95,8 @@ def _report_precision(report: Mapping[str, Any]) -> str | None:
     return str(precision) if precision is not None else None
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     report = merge_reports([load_json(path) for path in args.reports])
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "evaluation.json").write_text(

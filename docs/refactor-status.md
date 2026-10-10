@@ -11,7 +11,7 @@ complete repository suite passes; hardware and research limits remain separate.
 | Public API | consistent native model/config loading, strict new authoring, explicit missing-weight failures and reusable training |
 | Installation | lightweight native core; explicit `hf`, `tokenizers`, `data` and `tracking` extras; Torch installed separately |
 | CLI | common data, training, checkpoint, evaluation and vision command trees; lightweight discovery |
-| Vision | physical `complexity.vision` package; legacy imports retain class/module identity; four script paths are thin compatibility wrappers |
+| Vision | physical `complexity.vision` package; COCO/ONNX tools and configs integrated; 13 former scripts removed; legacy model imports retain class/module identity |
 | Data | reusable preparation, projections, quota recipes, candidate staging, transactional sharding and curriculum/replay plans |
 | Training | explicit full-parameter SFT, staged LoRA, CPU-tested DDP SFT and checked optimization/resume boundaries |
 | Local workflow | packaged `train demo`: synthetic fixtures, pause/resume, independent reference, held-out evaluation and native export/reload on CPU or MPS |
@@ -28,31 +28,34 @@ and [API](api.md).
 
 | Gate | Latest result | Scope |
 |---|---|---|
-| `make test` | **1,795 passed, 30 skipped**, 53.08 s | complete collection/execution, no excluded files |
+| `make test` | **1,801 passed, 31 skipped**, 52.53 s | complete collection/execution, no excluded files |
 | `make lint` / `git diff --check` | passed | entire package, including tracked modules covered by ignore patterns |
-| Fresh installed-wheel acceptance outside checkout | **4 passed** | non-editable isolated wheel, no shared system packages, optional dependencies absent, 84 help paths, output preservation and offline CPU demo |
-| Installed-wheel MPS demo | passed | real Apple Metal execution; model/AdamW/scheduler/RNG/cursor parity and export/reload on the small synthetic fixture |
+| Installed-wheel acceptance outside checkout | **5 passed in each base and vision profile** | isolated wheel; 90 discovery help paths; offline CPU demo; 12 Vision runtime helps, report merging and invalid-report rejection with repository scripts blocked |
+| Installed-wheel MPS demo at `e841141` | passed | unchanged training path; real Apple Metal continuation and export/reload on the small synthetic fixture |
 
 The repository suite uses macOS / Python 3.14.6 / Torch 2.13.0 with CPU/Gloo.
-Log: `/private/tmp/complexity-install-demo-full-tests-20261010.log`. Four skips
+Log: `/private/tmp/complexity-vision-integration-tests-20261010.log`. Five skips
 belong to the installed-wheel tests, which run separately in the isolated
 environment; other skipped tests are not qualified by the suite result.
 
-The installed wheel is `complexity_framework-0.3.0-py3-none-any.whl`, 992,496 bytes,
-SHA-256 `68e84ad84fe044bda17f548b5fa9711b48e24476d374f5b23434e81beb5dba1d`.
+The installed wheel is `complexity_framework-0.3.0-py3-none-any.whl`, 986,233 bytes,
+SHA-256 `fe1ebcddd1de158916ce49274bb59b74dd6c946d358db82d045b867f73855b29`.
 It was built from a frozen source copy and installed with its resolved minimal
 dependencies into a venv with `include-system-site-packages = false`.
-Transformers, tokenizers, tiktoken, datasets, Hub, W&B and TensorBoard are absent.
-Python 3.14.6 / Torch 2.14.1 exercised CPU and MPS; the offline CPU acceptance
-also blocked network access and heavy runtime imports during discovery.
-Evidence: `/private/tmp/complexity-clean-install-20261010-3alfor/qualification.json`.
+Transformers, tokenizers, tiktoken, datasets, Hub, W&B and TensorBoard are absent
+in the base profile. The vision profile adds `[export]`, including Hub and
+memory measurement, while keeping text/data/tracking extras absent.
+Python 3.14.6 / Torch 2.14.1 exercised both profiles on CPU; acceptance blocked
+network access, repository-script imports and heavy imports during discovery.
+Evidence: `/private/tmp/complexity-vision-integration-20261010-h5xzrk74/qualification.json`.
 
 The demo uses 30,912 parameters, four updates, dropout and a fixed schedule.
-CPU continuation is exact. MPS uses tolerance `1e-6`, with observed maximum
+CPU continuation is exact. The earlier MPS qualification at `e841141` uses tolerance `1e-6`, with observed maximum
 logit difference `1.7881393432617188e-7`; export/reload difference is zero.
 This is a tiny native-model/backend contract, not large-run or quality evidence.
 Linux CI separately installs base profiles on Python 3.10/3.11/3.12 and full
-profiles on 3.11/3.12, retaining wheel, dependency and acceptance artifacts.
+profiles on 3.11/3.12 and the vision profile on 3.11, retaining wheel, dependency
+and acceptance artifacts. Remote results are recorded by the commit's GitHub jobs.
 
 CPU/Gloo tests include update parity, optimizer/schedule/cursor/RNG resume,
 rank agreement, interrupted checkpoint publication and export rollback. Tiny
@@ -97,8 +100,8 @@ optimizer, data cursor, schedule and rank RNG remain the resume authority.
   transaction contract.
 - The separate direct-SFT comparison has no completed new benchmark result.
   Local framework tests do not establish the lexical/semantic research claim.
-- Validation is local. Remote CI and a public package release require separate
-  verification.
+- Local and remote CI results have separate evidence. A public package release
+  requires its own verification and publication.
 
 ## Reproduce
 

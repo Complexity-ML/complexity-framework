@@ -10,10 +10,6 @@ from typing import Sequence
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -132,12 +128,12 @@ def build_parity_report(
 
 
 def main() -> None:
-    from scripts.check_onnx_quantized_artifacts import (
+    from complexity.vision.detection.onnx_inference import provider_names
+    from complexity.vision.detection.quantized_artifacts import (
         check_provider_precision_supported,
         check_quantized_parity_report,
         load_quantization_thresholds,
     )
-    from scripts.onnx_detect import provider_names
 
     args = parse_args()
     thresholds = load_quantization_thresholds(args.thresholds)

@@ -38,7 +38,7 @@ class GateFailure:
     message: str
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", type=Path)
     parser.add_argument(
@@ -49,9 +49,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("configs/vision_v8_coco_accuracy_gate.json"),
+        default=Path(__file__).with_name("accuracy_gate.json"),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -476,8 +476,8 @@ def _float_config(value: object, *, default: float) -> float:
     return numeric if math.isfinite(numeric) else default
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     report = load_json(args.report)
     config = load_json(args.config)
     failures = check_report(report, config)
