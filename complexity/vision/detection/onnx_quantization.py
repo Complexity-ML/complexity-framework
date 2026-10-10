@@ -7,13 +7,14 @@ import hashlib
 import json
 import platform
 import shutil
-import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
+
+from complexity.utils.source_provenance import framework_source_commit
 
 Precision = Literal["fp32", "fp16", "int8"]
 
@@ -57,14 +58,7 @@ def sha256_file(path: Path) -> str:
 
 
 def framework_commit() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-    except (OSError, subprocess.CalledProcessError):
-        return "unknown"
+    return framework_source_commit()
 
 
 def package_version(module_name: str) -> str | None:

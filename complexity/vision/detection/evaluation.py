@@ -13,7 +13,6 @@ import json
 import platform
 import random
 import statistics
-import subprocess
 import sys
 import time
 from contextlib import nullcontext
@@ -24,6 +23,7 @@ import numpy as np
 import torch
 from PIL import Image
 
+from complexity.utils.source_provenance import framework_source_commit
 from complexity.vision.detection.coco_evaluation import evaluate_coco_predictions
 from complexity.vision.detection.hub import (
     COCO_CLASS_NAMES,
@@ -106,14 +106,7 @@ def _image_list_sha256(coco: Any, image_ids: list[int]) -> str:
 
 
 def _framework_commit() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-    except (OSError, subprocess.CalledProcessError):
-        return "unknown"
+    return framework_source_commit()
 
 
 def _package_version(module_name: str) -> str | None:

@@ -20,10 +20,11 @@ import argparse
 import hashlib
 import json
 import os
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+from complexity.utils.source_provenance import framework_source_commit
 
 os.environ.setdefault("COMPLEXITY_DISABLE_KERNELS", "1")
 
@@ -198,17 +199,7 @@ def sha256_file(path: Path) -> str:
 
 def framework_commit() -> str:
     """Return the commit the release is built from."""
-
-    from_ci = os.environ.get("GITHUB_SHA")
-    if from_ci:
-        return from_ci
-    result = subprocess.run(
-        ("git", "rev-parse", "HEAD"),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.stdout.strip() if result.returncode == 0 else "unknown"
+    return framework_source_commit()
 
 
 def artifact_entry(path: Path, **fields: Any) -> dict[str, Any]:

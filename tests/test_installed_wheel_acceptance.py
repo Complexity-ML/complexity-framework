@@ -182,6 +182,35 @@ print(len(paths))
             assert sentinel.read_text() == "preserve existing artifacts\n"
             assert list(output.iterdir()) == [sentinel]
 
+    def test_installed_source_provenance_rejects_a_consumer_repository_commit(self):
+        with tempfile.TemporaryDirectory(prefix="wheel-consumer-") as temporary:
+            consumer = Path(temporary)
+            (consumer / "fixture.txt").write_text("unrelated consumer repository\n")
+            commands = (
+                ["git", "init", "-q", str(consumer)],
+                ["git", "-C", str(consumer), "add", "fixture.txt"],
+                ["git", "-C", str(consumer), "-c", "user.name=Wheel fixture",
+                 "-c", "user.email=fixture@example.invalid", "commit", "-q", "-m", "fixture"],
+            )
+            for command in commands:
+                subprocess.run(command, check=True, capture_output=True, text=True)
+            foreign = subprocess.check_output(
+                ["git", "-C", str(consumer), "rev-parse", "HEAD"], text=True
+            ).strip()
+            environment = dict(os.environ, GITHUB_SHA=foreign)
+            result = subprocess.run(
+                [sys.executable, "-I", "-c", (
+                    "from complexity.utils.source_provenance import framework_source_commit; "
+                    "print(framework_source_commit())"
+                )], cwd=consumer, env=environment, capture_output=True, text=True, timeout=30,
+            )
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.strip() == "unknown", (foreign, result.stdout)
+            (_reports() / "source-provenance.json").write_text(json.dumps({
+                "passed": True, "framework_commit": "unknown", "consumer_commit": foreign,
+                "consumer_commit_rejected": True, "github_sha_rejected": True,
+            }, indent=2) + "\n")
+
     def test_packaged_vision_tools_work_without_repository_scripts(self):
         import complexity
 

@@ -28,24 +28,26 @@ and [API](api.md).
 
 | Gate | Latest result | Scope |
 |---|---|---|
-| `make test` | **1,801 passed, 31 skipped**, 52.53 s | complete collection/execution, no excluded files |
+| `make test` | **1,825 passed, 32 skipped**, 56.68 s | complete collection/execution, no excluded files |
 | `make lint` / `git diff --check` | passed | entire package, including tracked modules covered by ignore patterns |
-| Installed-wheel acceptance outside checkout | **5 passed in each base and vision profile** | isolated wheel; 90 discovery help paths; offline CPU demo; 12 Vision runtime helps, report merging and invalid-report rejection with repository scripts blocked |
+| Installed-wheel Vision acceptance outside checkout | **6 passed** | isolated wheel; 90 discovery help paths; offline CPU demo; 12 Vision runtime helps, report merging, invalid-report rejection and foreign-source-commit rejection |
 | Installed-wheel MPS demo at `e841141` | passed | unchanged training path; real Apple Metal continuation and export/reload on the small synthetic fixture |
 
 The repository suite uses macOS / Python 3.14.6 / Torch 2.13.0 with CPU/Gloo.
-Log: `/private/tmp/complexity-vision-integration-tests-20261010.log`. Five skips
+Log: `/private/tmp/complexity-vision-integration-final-tests-20261010.log`. Six skips
 belong to the installed-wheel tests, which run separately in the isolated
 environment; other skipped tests are not qualified by the suite result.
 
-The installed wheel is `complexity_framework-0.3.0-py3-none-any.whl`, 986,233 bytes,
-SHA-256 `fe1ebcddd1de158916ce49274bb59b74dd6c946d358db82d045b867f73855b29`.
+The latest installed wheel is `complexity_framework-0.3.0-py3-none-any.whl`, 987,229 bytes,
+SHA-256 `14b037d88012b6bb98821cc2f6fe0a9237334d6ef9d890491f1f1e720f9122d6`.
 It was built from a frozen source copy and installed with its resolved minimal
 dependencies into a venv with `include-system-site-packages = false`.
 Transformers, tokenizers, tiktoken, datasets, Hub, W&B and TensorBoard are absent
 in the base profile. The vision profile adds `[export]`, including Hub and
 memory measurement, while keeping text/data/tracking extras absent.
-Python 3.14.6 / Torch 2.14.1 exercised both profiles on CPU; acceptance blocked
+The base profile passed five local acceptance tests at `f9e3483`; the final
+Vision wheel also checks source provenance from an unrelated consumer Git repo.
+Python 3.14.6 / Torch 2.14.1 exercised these profiles on CPU; acceptance blocked
 network access, repository-script imports and heavy imports during discovery.
 Evidence: `/private/tmp/complexity-vision-integration-20261010-h5xzrk74/qualification.json`.
 

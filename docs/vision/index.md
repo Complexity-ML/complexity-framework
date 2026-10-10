@@ -38,6 +38,10 @@ arguments, for example `complexity vision train detector -- --optimizer musgd ..
 The COCO/ONNX operations, report validators and release tooling are installed
 with the framework. Their former 13 script files are removed. Defaults are
 packaged JSON resources; these commands also work outside the source checkout.
+Source provenance is resolved from the framework checkout itself. An installed
+wheel without that checkout records `unknown`, rather than the commit of the
+project using it. Build reproducible release artifacts from the pinned framework
+checkout so their manifest can identify the source revision.
 
 ## Python tree
 
