@@ -295,6 +295,37 @@ class GGUFWriter:
             self._write_string(f, str(value))
 
 
+def _validate_gguf_architecture(model: nn.Module) -> None:
+    """Reject TR-HASH before a Llama-only writer can emit an invalid export."""
+    from collections.abc import Mapping
+
+    from ..core.attention.gqa import TRHashAttention
+    from ..tr_hash.attention import DomainSelfAttention
+    from ..tr_hash.engine import TRHashEngine
+
+    for module in model.modules():
+        config = getattr(module, "config", None)
+        fields = {
+            key: (
+                config.get(key)
+                if isinstance(config, Mapping)
+                else getattr(config, key, None)
+            )
+            for key in ("mlp_type", "attention_type", "model_type")
+        }
+        if (
+            isinstance(module, (TRHashEngine, TRHashAttention, DomainSelfAttention))
+            or fields["mlp_type"] in {"tr_hash_engine", "tr_hash_moe"}
+            or fields["attention_type"] == "tr_hash_gqa"
+            or fields["model_type"] == "tr_hash_moe"
+        ):
+            raise ValueError(
+                "GGUF export cannot represent TR-HASH composed two-lag routing, "
+                "identity-selected attention heads or V0 channel binding. "
+                "Use the native or Transformers export instead."
+            )
+
+
 def export_gguf(
     model: nn.Module,
     output_path: str,
@@ -312,9 +343,15 @@ def export_gguf(
         model_name: Model name for metadata
         vocab_size: Vocabulary size
 
+    Raises:
+        ValueError: TR-HASH routing and attention are not represented by this
+            Llama-only exporter. Validation happens before writer creation.
+
     Example:
         export_gguf(model, "model.gguf", quantization="Q4_K_M")
     """
+    _validate_gguf_architecture(model)
+
     # Map quantization string to enum
     quant_map = {
         "F32": GGUFQuantType.F32,

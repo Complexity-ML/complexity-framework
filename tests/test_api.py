@@ -63,6 +63,64 @@ class TestMLPFactory:
         assert aux_loss.ndim == 0  # scalar
 
 
+class TestBlockFactory:
+    def test_public_moe_block_uses_canonical_attention_routes_and_cache(self):
+        from complexity.api import Block
+        from complexity.core.attention.gqa import TRHashAttention
+        from complexity.core.mlp.tr_hash_engine import TRHashEngineMLP
+
+        torch.manual_seed(17)
+        block = Block.moe(
+            hidden_size=32,
+            vocab_size=64,
+            num_hidden_layers=2,
+            layer_idx=1,
+            use_custom_kernels=False,
+        ).eval()
+        assert isinstance(block.self_attn, TRHashAttention)
+        assert isinstance(block.mlp, TRHashEngineMLP)
+        assert (block.config.num_attention_heads, block.config.num_key_value_heads) == (4, 1)
+        assert (block.config.num_experts, block.config.top_k) == (4, 2)
+        assert block.config.mlp_type == "tr_hash_engine"
+        assert block.mlp.engine.config.layer_index == block.layer_idx == 1
+        assert block.mlp.engine.config.route_weights == (0.5, 0.5)
+        assert (
+            block.mlp.engine.config.shared_output_scale,
+            block.mlp.engine.config.routed_output_scale,
+        ) == (1, 2)
+        hidden = torch.randn(2, 6, 32)
+        ids = torch.tensor([[1, 7, 13, 2, 3, 5], [8, 6, 4, 2, 9, 7]])
+        with torch.no_grad():
+            full, _, _ = block(hidden, token_ids=ids)
+            prefix, cache, _ = block(hidden[:, :4], token_ids=ids[:, :4], use_cache=True)
+            assert len(cache) == 3
+            assert torch.equal(cache[2], ids[:, 2:4])
+            suffix, cache, _ = block(
+                hidden[:, 4:],
+                token_ids=ids[:, 4:],
+                past_key_value=cache,
+                use_cache=True,
+            )
+        torch.testing.assert_close(torch.cat((prefix, suffix), dim=1), full, atol=2e-7, rtol=3e-6)
+        assert torch.equal(cache[2], ids[:, -2:])
+
+    @pytest.mark.parametrize(
+        "options",
+        (
+            {"num_experts": 8},
+            {"top_k": 1},
+            {"num_heads": 8},
+            {"num_key_value_heads": 2},
+            {"mlp_type": "token_routed"},
+        ),
+    )
+    def test_public_moe_block_rejects_incompatible_architectures(self, options):
+        from complexity.api import Block
+
+        with pytest.raises(ValueError, match="TR-HASH"):
+            Block.moe(hidden_size=32, vocab_size=64, **options)
+
+
 class TestCUDANamespace:
     """Test CUDA namespace."""
 

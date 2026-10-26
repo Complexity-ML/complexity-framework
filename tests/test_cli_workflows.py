@@ -536,3 +536,32 @@ def test_meta_parameter_profile_matches_cpu_model_counts(tmp_path: Path) -> None
     assert report["weights_allocated"] is False
     assert report["execution_measured"] is False
     assert report["memory_measured"] is False
+
+
+def test_meta_parameter_profile_flags_use_canonical_kv_and_widths():
+    from complexity import ComplexityModel, ModelConfig
+
+    result = RUNNER.invoke(
+        app,
+        [
+            "profile",
+            "model",
+            "--hidden",
+            "32",
+            "--layers",
+            "2",
+            "--heads",
+            "4",
+            "--vocab",
+            "64",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.stdout)
+    assert report["model"]["num_key_value_heads"] == 1
+    assert report["model"]["intermediate_size"] == 32
+    assert report["model"]["routing_strategy"] == "token_id_composed_modulo"
+    expected = ComplexityModel(ModelConfig(hidden_size=32, num_hidden_layers=2, vocab_size=64))
+    assert report["parameters"] == sum(p.numel() for p in expected.parameters())
+    assert report["weights_allocated"] is False

@@ -14,33 +14,47 @@ class Block:
     """
     Factory pour créer des transformer blocks complets.
 
-    This framework is scoped to TR-Hash MoE; dense (Llama-style SwiGLU,
-    GPT-style standard MLP) block factories were removed and will return
-    as explicit comparison baselines later.
+    TR-HASH blocks use four query heads, one key/value head, and two
+    equally weighted routes among four experts beside a shared SwiGLU.
 
     Usage:
-        block = Block.create(hidden_size=4096, num_heads=32, mlp_type="token_routed")
-        block = Block.moe(hidden_size=4096, num_heads=32, num_experts=8)
+        block = Block.create(hidden_size=256, num_attention_heads=4)
+        block = Block.moe(hidden_size=256)
     """
 
     @classmethod
     def create(cls, **kwargs) -> nn.Module:
         """Crée un transformer block."""
+        layer_idx = kwargs.pop("layer_idx", 0)
         config = ModelConfig(**kwargs)
-        return TransformerBlock(config, layer_idx=kwargs.get("layer_idx", 0))
+        return TransformerBlock(config, layer_idx=layer_idx)
 
     @classmethod
-    def moe(cls, hidden_size: int, num_heads: int, num_experts: int = 8, top_k: int = 2, **kwargs) -> nn.Module:
-        """MoE block (RMSNorm + GQA + MoE)."""
-        return cls.create(
+    def moe(
+        cls,
+        hidden_size: int,
+        num_heads: int = 4,
+        num_experts: int = 4,
+        top_k: int = 2,
+        **kwargs,
+    ) -> nn.Module:
+        """Build the canonical shared-plus-four-expert TR-HASH block."""
+        options = dict(kwargs)
+        mlp_type = options.pop("mlp_type", "tr_hash_engine")
+        if mlp_type not in {"tr_hash_engine", "tr_hash_moe"}:
+            raise ValueError("Block.moe requires the canonical TR-HASH engine")
+        if options.get("num_attention_heads", num_heads) != num_heads:
+            raise ValueError("num_heads and num_attention_heads must agree")
+        options.update(
             hidden_size=hidden_size,
             num_attention_heads=num_heads,
-            mlp_type="moe",
+            mlp_type="tr_hash_engine",
             num_experts=num_experts,
-            moe_top_k=top_k,
-            norm_type="rmsnorm",
-            **kwargs
+            top_k=top_k,
         )
+        options.setdefault("num_key_value_heads", 1)
+        options.setdefault("norm_type", "rmsnorm")
+        return cls.create(**options)
 
 
 __all__ = [

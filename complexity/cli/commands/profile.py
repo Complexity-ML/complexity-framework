@@ -58,8 +58,8 @@ def profile_model(
                     hidden_size=hidden_size,
                     num_hidden_layers=num_layers,
                     num_attention_heads=num_heads,
-                    num_key_value_heads=num_heads,
-                    intermediate_size=hidden_size * 4,
+                    num_key_value_heads=1,
+                    intermediate_size=hidden_size,
                     vocab_size=vocab_size,
                 )
             if model_config.lexical_zipf_mode != "uniform":

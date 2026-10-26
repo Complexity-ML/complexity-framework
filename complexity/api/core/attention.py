@@ -62,7 +62,7 @@ class Attention:
             kwargs["attention_dropout"] = kwargs.pop("dropout")
         if "num_key_value_heads" not in kwargs:
             heads = kwargs.get("num_attention_heads")
-            if attention_type == "mqa":
+            if attention_type in {"mqa", "tr_hash_gqa"}:
                 kwargs["num_key_value_heads"] = 1
             elif heads is not None:
                 kwargs["num_key_value_heads"] = heads

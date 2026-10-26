@@ -316,6 +316,13 @@ class PagedKVCache:
         """Get current sequence length."""
         return self.page_positions.get(seq_id, 0)
 
+    def reset(self):
+        """Release every sequence and page before beginning a new request."""
+        self.page_tables.clear()
+        self.page_positions.clear()
+        self.free_pages = list(range(self.num_pages))
+        self.page_pool.zero_()
+
     def memory_usage(self) -> Dict[str, float]:
         """Memory usage statistics."""
         used_pages = self.num_pages - len(self.free_pages)

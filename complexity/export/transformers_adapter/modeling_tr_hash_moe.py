@@ -7,7 +7,9 @@ job of an external serving runtime that implements this same routing law.
 
 from __future__ import annotations
 
+import inspect
 import math
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -27,6 +29,29 @@ except ModuleNotFoundError as exc:
 
 from .configuration_tr_hash_moe import TRHashConfig
 from .composed_routing import bind_value_channels, composed_head_routes, composed_mlp_routes, update_routing_history
+
+
+def _expected_route_anchor(vocab_size, layer_index):
+    tokens = torch.arange(vocab_size, device="cpu", dtype=torch.long).view(-1, 1)
+    return composed_mlp_routes(tokens, layer_index).squeeze(-1)
+
+
+def _validate_route_anchors(config, state_dict, *, require_all):
+    for index in range(config.num_hidden_layers):
+        key = f"layers.{index}.mlp.engine.route_table"
+        if key not in state_dict:
+            if require_all:
+                raise RuntimeError(f"Missing canonical zero-history routing anchor: {key}")
+            continue
+        anchor = state_dict[key]
+        expected = _expected_route_anchor(config.vocab_size, index)
+        if (
+            not isinstance(anchor, torch.Tensor)
+            or anchor.dtype != torch.long
+            or anchor.is_meta
+            or not torch.equal(anchor.detach().cpu(), expected)
+        ):
+            raise RuntimeError(f"{key} must match the canonical zero-history routing anchor")
 
 try:
     from transformers.cache_utils import Cache, DynamicCache
@@ -230,6 +255,23 @@ class TRHashExpertEngine(nn.Module):
         self.shared_up = nn.Linear(config.hidden_size, config.shared_intermediate_size, bias=False)
         self.shared_down = nn.Linear(config.shared_intermediate_size, config.hidden_size, bias=False)
 
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+    ):
+        anchor = state_dict.get(prefix + "route_table")
+        expected = _expected_route_anchor(self.route_table.shape[1], self.layer_idx)
+        if anchor is not None and (
+            not isinstance(anchor, torch.Tensor)
+            or anchor.dtype != torch.long
+            or anchor.is_meta
+            or not torch.equal(anchor.detach().cpu(), expected)
+        ):
+            error_msgs.append(prefix + "route_table must match the canonical zero-history routing anchor")
+            return
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )
+
     @property
     def experts(self):
         return self.expert_gate, self.expert_up, self.expert_down
@@ -328,6 +370,42 @@ class TRHashForCausalLM(PreTrainedModel, _GenerationBase):
         # from_pretrained replaces every persisted tensor immediately after.
         self.post_init()
 
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        _validate_route_anchors(self.config, state_dict, require_all=strict)
+        return super().load_state_dict(state_dict, strict=strict, assign=assign)
+
+    @classmethod
+    def _load_pretrained_model(cls, model, *args, **kwargs):
+        # Transformers 4 and 5 use different argument names and loading paths.
+        # Check actual checkpoint anchors before either path assigns any weights.
+        parent = super()._load_pretrained_model
+        arguments = inspect.signature(parent).bind(model, *args, **kwargs).arguments
+        state_dict = arguments.get("state_dict")
+        if state_dict is not None:
+            anchors = state_dict
+        else:
+            files = arguments.get("checkpoint_files", arguments.get("resolved_archive_file"))
+            if isinstance(files, (str, Path)):
+                files = [files]
+            anchors = {}
+            for filename in files or []:
+                path = Path(filename)
+                if path.suffix == ".safetensors":
+                    from safetensors import safe_open
+
+                    with safe_open(path, framework="pt", device="cpu") as checkpoint:
+                        for key in checkpoint.keys():
+                            if key.endswith(".mlp.engine.route_table"):
+                                anchors[key] = checkpoint.get_tensor(key)
+                else:
+                    checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+                    anchors.update({
+                        key: value for key, value in checkpoint.items()
+                        if key.endswith(".mlp.engine.route_table")
+                    })
+        _validate_route_anchors(model.config, anchors, require_all=True)
+        return parent(model, *args, **kwargs)
+
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
             nn.init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
@@ -367,9 +445,13 @@ class TRHashForCausalLM(PreTrainedModel, _GenerationBase):
         """Bridge the generation contracts used by Transformers 4 and 5."""
 
         if isinstance(past_key_values, Cache):
-            has_cached_values = past_key_values.get_seq_length() > 0
+            past_length = past_key_values.get_seq_length()
+        elif past_key_values:
+            past_length = past_key_values[0][0].shape[2]
         else:
-            has_cached_values = past_key_values is not None
+            past_length = 0
+        has_cached_values = past_length > 0
+        full_input_ids = input_ids
         if has_cached_values:
             input_ids = input_ids[:, -1:]
         position_ids = kwargs.get("position_ids")
@@ -385,7 +467,26 @@ class TRHashForCausalLM(PreTrainedModel, _GenerationBase):
             model_inputs = {"input_ids": input_ids}
         routing_ids = kwargs.get("routing_ids")
         if routing_ids is not None:
-            model_inputs["routing_ids"] = routing_ids[:, -input_ids.shape[1]:]
+            if routing_ids.ndim != 2 or routing_ids.shape[0] != input_ids.shape[0]:
+                raise ValueError("routing_ids must match the generation batch")
+            if has_cached_values:
+                # Generation retains prompt kwargs. Only an explicitly extended
+                # aligned sequence supplies routing IDs for newly decoded tokens.
+                if (
+                    routing_ids.shape == full_input_ids.shape
+                    and routing_ids.shape[1] > past_length
+                ):
+                    routing_ids = routing_ids[:, -input_ids.shape[1]:]
+                else:
+                    routing_ids = input_ids
+            elif inputs_embeds is None:
+                prefix_length = routing_ids.shape[1]
+                if prefix_length > input_ids.shape[1]:
+                    raise ValueError("routing_ids exceed the generation input length")
+                # Without KV caching, preserve the prompt's original routing
+                # IDs and append the actual generated token IDs on every pass.
+                routing_ids = torch.cat((routing_ids, input_ids[:, prefix_length:]), dim=1)
+            model_inputs["routing_ids"] = routing_ids
         elif inputs_embeds is not None and not has_cached_values and input_ids.shape[:2] == inputs_embeds.shape[:2]:
             model_inputs["routing_ids"] = input_ids
         model_inputs.update(

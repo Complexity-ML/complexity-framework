@@ -56,15 +56,37 @@ def test_canonical_tr_hash_engine_weight_shapes_and_backend():
     assert tuple(mlp.engine.route_table.shape) == (2, 17)
 
 
-def test_cuda_extras_remain_available_from_historical_module():
-    from complexity_cuda.token_routed_extras import (
-        RoboticsTokenRoutedLayer as MovedRoboticsLayer,
-        benchmark_token_routed_mlp as moved_benchmark,
-    )
-    from complexity_cuda.triton_token_routed import (
-        RoboticsTokenRoutedLayer,
-        benchmark_token_routed_mlp,
-    )
+@pytest.mark.parametrize(
+    "module_name,retired_names",
+    [
+        (
+            "complexity_cuda",
+            (
+                "TokenRoutedMLPTriton",
+                "PersistentTokenRoutedMLP",
+                "Int8TokenRoutedMLP",
+                "RoboticsTokenRoutedLayer",
+            ),
+        ),
+        (
+            "complexity_cuda.triton_token_routed",
+            ("TokenRoutedMLPTriton", "RoboticsTokenRoutedLayer", "fused_token_route_residual"),
+        ),
+        ("complexity_cuda.persistent_cggr", ("PersistentTokenRoutedMLP",)),
+        ("complexity_cuda.quantization", ("Int8TokenRoutedMLP",)),
+    ],
+)
+def test_cuda_modules_do_not_offer_an_alternative_routing_model(module_name, retired_names):
+    from importlib import import_module
 
-    assert RoboticsTokenRoutedLayer is MovedRoboticsLayer
-    assert benchmark_token_routed_mlp is moved_benchmark
+    module = import_module(module_name)
+    for name in retired_names:
+        assert not hasattr(module, name)
+
+
+@pytest.mark.parametrize("module_name", ["optimized_layer", "token_routed_extras"])
+def test_removed_cuda_model_modules_cannot_be_imported(module_name):
+    from importlib import import_module
+
+    with pytest.raises(ModuleNotFoundError, match=module_name):
+        import_module("complexity_cuda." + module_name)

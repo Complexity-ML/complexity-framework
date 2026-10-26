@@ -23,6 +23,14 @@ class TRHashConfig(PretrainedConfig):
     model_type = "tr_hash_moe"
     keys_to_ignore_at_inference = ["past_key_values"]
 
+    @classmethod
+    def from_dict(cls, config_dict, **kwargs):
+        if config_dict.get("routing_strategy") != "token_id_composed_modulo":
+            raise ValueError(
+                "TR-HASH checkpoints must explicitly declare routing_strategy='token_id_composed_modulo'"
+            )
+        return super().from_dict(config_dict, **kwargs)
+
     def __init__(
         self,
         hidden_size: int = 896,

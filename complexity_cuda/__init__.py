@@ -1,37 +1,21 @@
-"""
-CUDA/Triton accelerated kernels for Complexity.
+"""CUDA/Triton primitives used by the canonical Complexity architecture.
 
-Provides optimized kernels for:
-- Token-Routed MLP with CGGR
-- Fused QK Norm + Flash Attention
-- Fused RMSNorm + Projections
-- INT8/FP8 Quantization
-- Fused Residual + RMSNorm
-
-Performance gains:
-- Fused QK Norm + Attention: ~15-20% faster
-- Fused RMSNorm + MLP: ~20-30% faster
-- Persistent CGGR: ~10-15% faster
-- INT8 Quantization: ~40-50% throughput, 50% memory
-- Fused Residual + Norm: ~5-10% faster
-
+Construct TR-HASH models through ``complexity`` or ``complexity.tr_hash``.
+This package supplies kernels; it does not define another routing architecture.
 """
 
 # Check for Triton availability
 try:
-    import triton
+    import triton as triton
     HAS_TRITON = True
 except ImportError:
     HAS_TRITON = False
 
-# Original CGGR Token-Routed MLP
+# CGGR primitives. Expert assignments are supplied by the canonical engine.
 from .triton_token_routed import (
-    TokenRoutedMLPTriton,
     sort_tokens_by_expert,
     fused_swiglu_triton,
     fused_rmsnorm,
-    fused_token_route_residual,
-    RoboticsTokenRoutedLayer,
 )
 
 # Fused QK Norm + Flash Attention
@@ -55,7 +39,6 @@ from .fused_mlp import (
 from .persistent_cggr import (
     sort_tokens_by_expert_fast,
     persistent_swiglu_cggr,
-    PersistentTokenRoutedMLP,
 )
 
 # INT8/FP8 Quantization
@@ -65,7 +48,6 @@ from .quantization import (
     int8_gemm,
     fused_quantize_gemm,
     QuantizedLinear,
-    Int8TokenRoutedMLP,
     quantize_model,
 )
 
@@ -81,13 +63,10 @@ __all__ = [
     # Triton flag
     "HAS_TRITON",
 
-    # === Original CGGR ===
-    "TokenRoutedMLPTriton",
+    # === CGGR primitives ===
     "sort_tokens_by_expert",
     "fused_swiglu_triton",
     "fused_rmsnorm",
-    "fused_token_route_residual",
-    "RoboticsTokenRoutedLayer",
 
     # === Fused Attention ===
     "fused_qk_rmsnorm",
@@ -105,7 +84,6 @@ __all__ = [
     # === Persistent CGGR ===
     "sort_tokens_by_expert_fast",
     "persistent_swiglu_cggr",
-    "PersistentTokenRoutedMLP",
 
     # === Quantization ===
     "QuantType",
@@ -113,7 +91,6 @@ __all__ = [
     "int8_gemm",
     "fused_quantize_gemm",
     "QuantizedLinear",
-    "Int8TokenRoutedMLP",
     "quantize_model",
 
     # === Fused Residual ===

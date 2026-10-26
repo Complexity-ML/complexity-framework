@@ -276,3 +276,134 @@ def test_adapter_cache_beam_reorder_and_crop_preserve_routing_ids():
             torch.testing.assert_close(
                 actual, model(ids[order]).logits[:, 2:], rtol=1e-5, atol=1e-6
             )
+
+
+@pytest.mark.parametrize("legacy_tuple_cache", (False, True))
+def test_generation_preparation_uses_decoded_ids_and_preserves_prompt_history(legacy_tuple_cache):
+    Config, CausalLM = _load_adapter_modules()
+    native = ComplexityModel(_tiny_config()).eval()
+    model = CausalLM(Config(**native.config.to_dict())).eval()
+    model.load_state_dict(native.state_dict(), strict=True)
+    prompt = torch.tensor([[1, 7, 3], [8, 4, 2]])
+    prompt_routes = torch.tensor([[11, 22, 35], [6, 27, 42]])
+    sequence = prompt.clone()
+    routes = prompt_routes.clone()
+    with torch.inference_mode():
+        cache = model(prompt, routing_ids=prompt_routes, use_cache=True).past_key_values
+        if legacy_tuple_cache and hasattr(cache, "routing_history"):
+            key_values = (
+                cache.to_legacy_cache()
+                if hasattr(cache, "to_legacy_cache")
+                else tuple((layer.keys, layer.values) for layer in cache.layers)
+            )
+            cache = tuple((*pair, cache.routing_history.clone()) for pair in key_values)
+        for decoded in (torch.tensor([[9], [13]]), torch.tensor([[17], [23]])):
+            sequence = torch.cat((sequence, decoded), dim=1)
+            routes = torch.cat((routes, decoded), dim=1)
+            prepared = model.prepare_inputs_for_generation(
+                sequence,
+                past_key_values=cache,
+                routing_ids=prompt_routes,
+                attention_mask=torch.ones_like(sequence),
+                use_cache=True,
+            )
+            assert torch.equal(prepared["input_ids"], decoded)
+            assert torch.equal(prepared["routing_ids"], decoded)
+            assert prepared["past_key_values"] is cache
+            expected_history = routes[:, -3:-1]
+            if hasattr(cache, "routing_history"):
+                assert torch.equal(cache.routing_history, expected_history)
+            else:
+                assert all(torch.equal(layer[2], expected_history) for layer in cache)
+            actual = model(**prepared)
+            expected = model(sequence, routing_ids=routes, use_cache=False).logits[:, -1:]
+            torch.testing.assert_close(actual.logits, expected, atol=1e-6, rtol=1e-5)
+            cache = actual.past_key_values
+            if hasattr(cache, "routing_history"):
+                assert torch.equal(cache.routing_history, routes[:, -2:])
+            else:
+                assert all(torch.equal(layer[2], routes[:, -2:]) for layer in cache)
+
+
+@pytest.mark.parametrize("use_cache", (False, True))
+def test_generate_with_explicit_prompt_routes_matches_full_sequence_scores(use_cache):
+    Config, CausalLM = _load_adapter_modules()
+    native = ComplexityModel(_tiny_config()).eval()
+    model = CausalLM(Config(**native.config.to_dict())).eval()
+    model.load_state_dict(native.state_dict(), strict=True)
+    prompt = torch.tensor([[1, 7, 3]])
+    prompt_routes = torch.tensor([[11, 22, 35]])
+    expected = prompt.clone()
+    expected_scores = []
+    with torch.inference_mode():
+        for _ in range(3):
+            routes = torch.cat((prompt_routes, expected[:, prompt.shape[1] :]), dim=1)
+            scores = model(expected, routing_ids=routes, use_cache=False).logits[:, -1]
+            expected_scores.append(scores)
+            expected = torch.cat((expected, scores.argmax(dim=-1, keepdim=True)), dim=1)
+        actual = model.generate(
+            prompt,
+            routing_ids=prompt_routes,
+            attention_mask=torch.ones_like(prompt),
+            max_new_tokens=3,
+            do_sample=False,
+            use_cache=use_cache,
+            eos_token_id=None,
+            pad_token_id=0,
+            return_dict_in_generate=True,
+            output_scores=True,
+        )
+    assert torch.equal(actual.sequences, expected)
+    for actual_scores, expected_step in zip(actual.scores, expected_scores):
+        torch.testing.assert_close(actual_scores, expected_step, atol=1e-6, rtol=1e-5)
+
+
+@pytest.mark.parametrize("routing_marker", (None, "token_id_balanced_hash"))
+def test_adapter_config_reload_rejects_missing_or_obsolete_routing_marker(tmp_path, routing_marker):
+    import json
+
+    Config, _ = _load_adapter_modules()
+    raw = _tiny_config().to_dict()
+    if routing_marker is None:
+        raw.pop("routing_strategy")
+    else:
+        raw["routing_strategy"] = routing_marker
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match="explicitly declare routing_strategy"):
+        Config.from_dict(raw)
+    with pytest.raises(ValueError, match="explicitly declare routing_strategy"):
+        Config.from_pretrained(tmp_path)
+
+
+@pytest.mark.parametrize("corruption", ("values", "dtype", "missing"))
+def test_adapter_rejects_noncanonical_anchors_before_assigning_weights(tmp_path, corruption):
+    from safetensors.torch import load_file, save_file
+
+    Config, CausalLM = _load_adapter_modules()
+    model = CausalLM(Config(**_tiny_config().to_dict())).eval()
+    original = {key: value.detach().clone() for key, value in model.state_dict().items()}
+    corrupted = {key: value.clone() for key, value in original.items()}
+    key = "layers.0.mlp.engine.route_table"
+    if corruption == "values":
+        corrupted[key] = corrupted[key].roll(1, dims=1)
+    elif corruption == "dtype":
+        corrupted[key] = corrupted[key].to(torch.int32)
+    else:
+        corrupted.pop(key)
+    corrupted["embed_tokens.weight"].fill_(7)
+    with pytest.raises(RuntimeError, match="canonical zero-history routing anchor"):
+        model.load_state_dict(corrupted)
+    assert all(torch.equal(model.state_dict()[key], value) for key, value in original.items())
+
+    model.save_pretrained(tmp_path)
+    checkpoint_path = tmp_path / "model.safetensors"
+    saved = load_file(checkpoint_path)
+    if corruption == "values":
+        saved[key] = saved[key].roll(1, dims=1)
+    elif corruption == "dtype":
+        saved[key] = saved[key].to(torch.int32)
+    else:
+        saved.pop(key)
+    save_file(saved, checkpoint_path, metadata={"format": "pt"})
+    with pytest.raises(RuntimeError, match="canonical zero-history routing anchor"):
+        CausalLM.from_pretrained(tmp_path)

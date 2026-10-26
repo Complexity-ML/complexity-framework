@@ -72,6 +72,33 @@ class TestKVCache:
         assert cache is not None
         assert cache.window_size == 64
 
+    def test_paged_reset_releases_sequences_pages_and_stale_values(self):
+        from complexity.inference import PagedKVCache
+
+        cache = PagedKVCache(num_layers=2, num_heads=1, head_dim=4, page_size=2, max_pages=6)
+        pointer = cache.page_pool.data_ptr()
+        key = torch.ones(1, 1, 1, 4)
+        value = 2 * key
+        for sequence in (5, 9):
+            cache.allocate_sequence(sequence)
+            for layer in range(2):
+                cache.update(sequence, layer, key, value)
+            cache.advance(sequence)
+        assert cache.memory_usage()["used_pages"] == 4
+        assert torch.count_nonzero(cache.page_pool) > 0
+        cache.reset()
+        cache.reset()
+        assert cache.page_tables == cache.page_positions == {}
+        assert sorted(cache.free_pages) == list(range(6))
+        assert cache.memory_usage()["used_pages"] == 0
+        assert cache.page_pool.data_ptr() == pointer
+        assert torch.count_nonzero(cache.page_pool) == 0
+        cache.allocate_sequence(5)
+        assert cache.get_seq_len(5) == 0
+        fresh_key, fresh_value = cache.update(5, 0, 3 * key, 4 * key)
+        torch.testing.assert_close(fresh_key, 3 * key)
+        torch.testing.assert_close(fresh_value, 4 * key)
+
 
 class TestInferenceEngine:
     """Test inference engine."""
@@ -120,7 +147,8 @@ class TestInferenceEngine:
         assert engine is not None
 
     @pytest.mark.parametrize("prefix_length", (1, 5))
-    def test_generation_preserves_kv_and_two_token_routing_history(self, prefix_length):
+    @pytest.mark.parametrize("cache_type", ("standard", "paged"))
+    def test_generation_preserves_kv_and_two_token_routing_history(self, prefix_length, cache_type):
         from complexity.config import ModelConfig
         from complexity.inference import GenerationConfig, InferenceConfig, InferenceEngine
         from complexity.inference.engine import DecodingStrategy
@@ -136,7 +164,7 @@ class TestInferenceEngine:
                 use_custom_kernels=False,
             )
         )
-        cached = InferenceEngine(model, InferenceConfig(max_cache_length=32))
+        cached = InferenceEngine(model, InferenceConfig(max_cache_length=32, cache_type=cache_type))
         full = InferenceEngine(model, InferenceConfig(use_kv_cache=False))
         assert cached.cache.num_heads == 1
         assert cached.cache.head_dim == 8

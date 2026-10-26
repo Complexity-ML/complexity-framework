@@ -3,7 +3,7 @@ Utilities module for framework-complexity.
 
 Provides:
 - Checkpointing: Save/load model and training state
-- HuggingFace conversion: Load from / save to HF format
+- HuggingFace bundles: Preserve the complete canonical TR-HASH architecture
 - Security: Safe checkpoint loading, audit logging
 - Safety: Representation Engineering for safe inference
 
@@ -22,7 +22,7 @@ Usage:
     # HuggingFace conversion
     from complexity.utils import load_from_huggingface, save_to_huggingface
 
-    model = load_from_huggingface("meta-llama/Llama-2-7b-hf", model)
+    model = load_from_huggingface("my_tr_hash_bundle", model)
     save_to_huggingface(model, "my_model_hf")
 
     # Security
@@ -62,6 +62,7 @@ from .device import (
 from .hf_conversion import (
     convert_hf_state_dict,
     convert_to_hf_state_dict,
+    create_hf_config,
     from_pretrained,
     load_from_huggingface,
     push_to_hub,
@@ -124,6 +125,7 @@ __all__ = [
     "from_pretrained",
     "convert_hf_state_dict",
     "convert_to_hf_state_dict",
+    "create_hf_config",
     # Security
     "safe_torch_load",
     "load_safetensors",
