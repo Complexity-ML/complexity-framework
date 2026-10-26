@@ -1,4 +1,4 @@
-"""Eight-expert TR-Hash fusion model for multimodal robot perception."""
+"""Source67 TR-Hash fusion model for multimodal robot perception."""
 
 from __future__ import annotations
 
@@ -12,12 +12,9 @@ from complexity.generative.detection.config import TRHashDetectorConfig
 from complexity.generative.detection.hierarchical_tower import (
     HierarchicalTRHashVisionTower,
 )
+from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
 from complexity.tr_hash import (
-    TRHashBackend,
-    TRHashEngine,
-    TRHashEngineConfig,
     TRHashPrecision,
-    TRHashStrategy,
 )
 
 from .config import SENSOR_MODALITIES, TRHashSensorFusionConfig
@@ -42,28 +39,9 @@ def gradient_reverse(values: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
     return _GradientReverse.apply(values, scale)
 
 
-class _FusionSelfAttention(nn.Module):
-    def __init__(self, hidden_size: int, num_heads: int, dropout: float):
-        super().__init__()
-        self.num_heads = num_heads
-        self.head_dim = hidden_size // num_heads
-        self.dropout = float(dropout)
-        self.qkv = nn.Linear(hidden_size, 3 * hidden_size)
-        self.out = nn.Linear(hidden_size, hidden_size)
-
-    def forward(self, tokens: torch.Tensor, token_mask: torch.Tensor) -> torch.Tensor:
-        batch, length, width = tokens.shape
-        qkv = self.qkv(tokens).view(batch, length, 3, self.num_heads, self.head_dim)
-        query, key, value = qkv.unbind(dim=2)
-        query, key, value = (tensor.transpose(1, 2) for tensor in (query, key, value))
-        output = F.scaled_dot_product_attention(
-            query,
-            key,
-            value,
-            attn_mask=token_mask[:, None, None, :],
-            dropout_p=self.dropout if self.training else 0.0,
-        )
-        return self.out(output.transpose(1, 2).reshape(batch, length, width))
+class _FusionSelfAttention(DomainSelfAttention):
+    def forward(self, tokens, token_mask, route_ids=None):
+        return super().forward(tokens, route_ids, token_mask[:, None, None, :])
 
 
 class TRHashSensorFusionBlock(nn.Module):
@@ -74,22 +52,22 @@ class TRHashSensorFusionBlock(nn.Module):
             config.hidden_size,
             config.num_attention_heads,
             config.attention_dropout,
+            num_key_value_heads=config.num_key_value_heads,
+            architecture_profile=config.architecture_profile,
+            layer_index=layer_index,
         )
         self.norm2 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.mlp = TRHashEngine(
-            TRHashEngineConfig(
-                hidden_size=config.hidden_size,
-                vocab_size=config.route_vocab_size,
-                num_experts=config.num_experts,
-                top_k=config.top_k,
-                shared_width=config.shared_width,
-                expert_width=config.expert_width,
-                routing_strategy=TRHashStrategy.BALANCED_HASH,
-                layer_index=layer_index,
-                route_seed=config.route_seed,
-                precision=TRHashPrecision(config.precision),
-                backend=TRHashBackend.AUTO,
-            )
+        self.mlp = make_domain_mlp(
+            hidden_size=config.hidden_size,
+            vocab_size=config.route_vocab_size,
+            num_experts=config.num_experts,
+            top_k=config.top_k,
+            shared_width=config.shared_width,
+            expert_width=config.expert_width,
+            layer_index=layer_index,
+            route_seed=config.route_seed,
+            precision=TRHashPrecision(config.precision),
+            architecture_profile=config.architecture_profile,
         )
 
     def forward(
@@ -98,7 +76,7 @@ class TRHashSensorFusionBlock(nn.Module):
         route_ids: torch.Tensor,
         token_mask: torch.Tensor,
     ) -> torch.Tensor:
-        tokens = tokens + self.attention(self.norm1(tokens), token_mask)
+        tokens = tokens + self.attention(self.norm1(tokens), token_mask, route_ids)
         tokens = tokens + self.mlp(self.norm2(tokens), route_ids)
         return tokens
 
@@ -111,27 +89,20 @@ class _ClassModalityHashGate(nn.Module):
         num_modalities = len(SENSOR_MODALITIES)
         self.num_classes = config.num_classes
         self.num_modalities = num_modalities
-        self.class_embedding = nn.Parameter(
-            torch.empty(config.num_classes, config.hidden_size)
-        )
-        self.modality_embedding = nn.Parameter(
-            torch.empty(num_modalities, config.hidden_size)
-        )
+        self.class_embedding = nn.Parameter(torch.empty(config.num_classes, config.hidden_size))
+        self.modality_embedding = nn.Parameter(torch.empty(num_modalities, config.hidden_size))
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.mlp = TRHashEngine(
-            TRHashEngineConfig(
-                hidden_size=config.hidden_size,
-                vocab_size=num_modalities * config.num_classes,
-                num_experts=config.num_experts,
-                top_k=config.top_k,
-                shared_width=config.shared_width,
-                expert_width=config.expert_width,
-                routing_strategy=TRHashStrategy.BALANCED_HASH,
-                layer_index=config.num_hidden_layers + config.vision_layers,
-                route_seed=config.route_seed,
-                precision=TRHashPrecision(config.precision),
-                backend=TRHashBackend.AUTO,
-            )
+        self.mlp = make_domain_mlp(
+            hidden_size=config.hidden_size,
+            vocab_size=num_modalities * config.num_classes,
+            num_experts=config.num_experts,
+            top_k=config.top_k,
+            shared_width=config.shared_width,
+            expert_width=config.expert_width,
+            layer_index=config.num_hidden_layers + config.vision_layers,
+            route_seed=config.route_seed,
+            precision=TRHashPrecision(config.precision),
+            architecture_profile=config.architecture_profile,
         )
         self.score = nn.Linear(config.hidden_size, 1)
         self.register_buffer(
@@ -166,24 +137,19 @@ class _ClassHashResidualHead(nn.Module):
     def __init__(self, config: TRHashSensorFusionConfig):
         super().__init__()
         self.num_classes = config.num_classes
-        self.class_embedding = nn.Parameter(
-            torch.empty(config.num_classes, config.hidden_size)
-        )
+        self.class_embedding = nn.Parameter(torch.empty(config.num_classes, config.hidden_size))
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.mlp = TRHashEngine(
-            TRHashEngineConfig(
-                hidden_size=config.hidden_size,
-                vocab_size=config.num_classes,
-                num_experts=config.num_experts,
-                top_k=config.top_k,
-                shared_width=config.class_hash_shared_width,
-                expert_width=config.class_hash_expert_width,
-                routing_strategy=TRHashStrategy.BALANCED_HASH,
-                layer_index=config.num_hidden_layers + config.vision_layers + 1,
-                route_seed=config.route_seed ^ 0xC1A55,
-                precision=TRHashPrecision(config.precision),
-                backend=TRHashBackend.AUTO,
-            )
+        self.mlp = make_domain_mlp(
+            hidden_size=config.hidden_size,
+            vocab_size=config.num_classes,
+            num_experts=config.num_experts,
+            top_k=config.top_k,
+            shared_width=config.class_hash_shared_width,
+            expert_width=config.class_hash_expert_width,
+            layer_index=config.num_hidden_layers + config.vision_layers + 1,
+            route_seed=config.route_seed ^ 0xC1A55,
+            precision=TRHashPrecision(config.precision),
+            architecture_profile=config.architecture_profile,
         )
         self.score = nn.Linear(config.hidden_size, 1, bias=False)
         self.scale = nn.Parameter(torch.tensor(config.class_hash_initial_scale))
@@ -269,8 +235,8 @@ class TRHashSensorFusionClassifier(nn.Module):
     """Fuse six sensor modalities and predict one of ``num_classes`` states.
 
     Routing IDs encode ``(modality, local token position)``. The assignment to
-    experts is hash-based and fixed per layer; input content never selects the
-    expert. A sample-level modality mask allows clips with absent sensors.
+    experts uses the Source67 two-lag identity context. Raw sensor values do
+    not select the expert. A sample-level modality mask allows clips with absent sensors.
 
     This is the perception front-end of a robot stack: sensors -> encoders ->
     TR-Hash fusion -> fused state -> classification head. Downstream policy,
@@ -289,6 +255,9 @@ class TRHashSensorFusionClassifier(nn.Module):
         # TR-Hash MoE vision tower; modality embeddings keep their identities
         # distinct after the shared visual representation is formed.
         tower_config = TRHashDetectorConfig(
+            architecture_profile=config.architecture_profile,
+            architecture_profile_version=config.architecture_profile_version,
+            vision_key_value_heads=config.vision_key_value_heads,
             image_size=config.vision_image_size,
             patch_size=config.vision_patch_size,
             vision_hidden_size=config.vision_hidden_size,
@@ -388,10 +357,7 @@ class TRHashSensorFusionClassifier(nn.Module):
             nn.Linear(config.hidden_size // 2, 18),
         )
         self.modality_heads = nn.ModuleDict(
-            {
-                name: nn.Linear(config.hidden_size, config.num_classes)
-                for name in SENSOR_MODALITIES
-            }
+            {name: nn.Linear(config.hidden_size, config.num_classes) for name in SENSOR_MODALITIES}
         )
         self.class_modality_gate = _ClassModalityHashGate(config)
         self.register_buffer(

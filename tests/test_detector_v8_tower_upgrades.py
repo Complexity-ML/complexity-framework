@@ -112,7 +112,11 @@ def test_windowed_attention_applies_bias_and_respects_padding_mask():
     torch.manual_seed(0)
     window_size = 4
     attention = _SpatialSelfAttention(
-        hidden_size=16, num_heads=4, dropout=0.0, window_size=window_size
+        hidden_size=16,
+        num_heads=4,
+        dropout=0.0,
+        window_size=window_size,
+        architecture_profile="legacy",
     )
     tokens = torch.randn(2, window_size**2, 16)
 

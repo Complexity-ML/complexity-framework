@@ -1,16 +1,18 @@
 #!/bin/bash
 set -euo pipefail
 
-# Competitive v8 baseline: narrow 8-way MoE over a dominant shared branch,
-# extra depth, a progressive conv stem, relative position bias, and P2 on by
-# default (~2.4M parameters).
-export OUTPUT="${OUTPUT:-artifacts/detector_coco_v08_nano_o2m}"
+# Source67 v8 adaptation: four contextual experts, routed GQA heads and V0.
+# Explicit 216/27 widths and task-specific pyramid/heads are retained.
+# The text result does not establish a vision accuracy score.
+export OUTPUT="${OUTPUT:-artifacts/detector_coco_v08_nano_source67_o2m}"
 export ARCHITECTURE_VERSION=8
+export ARCHITECTURE_PROFILE=source67
+export KEY_VALUE_HEADS=1
 export VISION_HIDDEN_SIZE=128
 export VISION_LAYERS=7
 export VISION_STAGE_DEPTHS="2 2 3"
 export VISION_HEADS=4
-export VISION_NUM_EXPERTS=8
+export VISION_NUM_EXPERTS=4
 export VISION_TOP_K=2
 export VISION_SHARED_WIDTH=216
 export VISION_EXPERT_WIDTH=27

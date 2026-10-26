@@ -17,6 +17,7 @@ import torch.nn.functional as F
 from ...utils.device import sdpa_kernel_context
 from ..position.rotary import PartialRoPE, RotaryEmbedding
 from ..registry import register_attention
+from ...tr_hash.baseline import bind_source67_values, source67_head_routes
 from .base import AttentionBase, AttentionConfig
 
 HAS_SDPA = hasattr(F, "scaled_dot_product_attention")
@@ -75,6 +76,7 @@ class GroupedQueryAttention(AttentionBase):
         self.sliding_window = config.sliding_window
         self.use_sdpa = config.use_sdpa and HAS_SDPA
         self.is_causal = getattr(config, "is_causal", True)
+        self.source67 = config.architecture_profile == "source67"
 
         # Attention logit scale. Default = 1/√d_head (standard).
         # μP variant = 1/d_head (Yang et al. 2022) for hyper-parameter
@@ -108,6 +110,8 @@ class GroupedQueryAttention(AttentionBase):
                 - past_key_value: Updated (key, value) cache if use_cache=True, else None.
         """
         batch_size, seq_len, _ = hidden_states.shape
+        if self.source67 and kwargs.get("token_ids") is None:
+            raise ValueError("source67 attention requires original token_ids")
         k, q, v = self._project_kqv(
             hidden_states,
             token_ids=kwargs.get("token_ids"),
@@ -159,6 +163,12 @@ class GroupedQueryAttention(AttentionBase):
         else:
             attn_output = self._standard_attention(q, k, v, attention_mask, seq_len, kv_seq_len)
 
+        if self.source67:
+            routes = source67_head_routes(kwargs.get("token_ids"), self.config.layer_idx, self.num_heads)
+            selection = F.one_hot(routes, num_classes=self.num_heads).sum(dim=-2)
+            mask = selection.permute(0, 2, 1).unsqueeze(-1).to(attn_output.dtype)
+            attn_output = attn_output * mask * math.sqrt(self.num_heads / routes.shape[-1])
+
         # Reshape and project output
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(batch_size, seq_len, -1)
@@ -178,7 +188,11 @@ class GroupedQueryAttention(AttentionBase):
         RoPE, cache, masking and SDPA implementation.
         """
 
-        del token_ids
+        if self.source67:
+            # V0 binds the original IDs to the input channels of V only.
+            # Preserve separate projections as in the pinned Source67 model.
+            value_input = bind_source67_values(hidden_states, token_ids, self.config.layer_idx)
+            return self.k_proj(hidden_states), self.q_proj(hidden_states), self.v_proj(value_input)
         projections = (self.k_proj, self.q_proj, self.v_proj)
         lora_projections = tuple(
             getattr(projection, "is_lora_adapter", False)
@@ -236,16 +250,7 @@ class GroupedQueryAttention(AttentionBase):
         kv_seq_len: int,
     ) -> torch.Tensor:
         """Flash Attention via PyTorch SDPA."""
-        # Build attention mask for SDPA
-        if self.sliding_window is not None and seq_len > self.sliding_window:
-            attn_mask = self._make_sliding_window_mask(seq_len, kv_seq_len, q.device, q.dtype)
-        elif not self.is_causal:
-            # Bidirectional (encoder-style): forward the caller's padding
-            # mask instead of discarding it -- there's no causal structure
-            # to fall back on here.
-            attn_mask = attention_mask
-        else:
-            attn_mask = None
+        attn_mask = self._combined_attention_mask(q, attention_mask, seq_len, kv_seq_len)
 
         dropout_p = self.attention_dropout if self.training else 0.0
 
@@ -276,9 +281,12 @@ class GroupedQueryAttention(AttentionBase):
         """Standard attention fallback (for PyTorch < 2.0)."""
         attn_weights = torch.matmul(q, k.transpose(-2, -1)) * self.attn_scale
 
-        if self.sliding_window is not None:
-            mask = self._make_sliding_window_mask(seq_len, kv_seq_len, q.device, q.dtype)
-            attn_weights = attn_weights + mask
+        mask = self._combined_attention_mask(q, attention_mask, seq_len, kv_seq_len)
+        if mask is not None:
+            if mask.dtype == torch.bool:
+                attn_weights = attn_weights.masked_fill(~mask, float("-inf"))
+            else:
+                attn_weights = attn_weights + mask
         elif self.is_causal:
             causal_mask = torch.triu(
                 torch.ones(seq_len, kv_seq_len, device=q.device, dtype=torch.bool),
@@ -286,14 +294,46 @@ class GroupedQueryAttention(AttentionBase):
             )
             attn_weights = attn_weights.masked_fill(causal_mask, float("-inf"))
 
-        if attention_mask is not None:
-            attn_weights = attn_weights + attention_mask
-
         attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(q.dtype)
         if self.training and self.attention_dropout > 0:
             attn_weights = F.dropout(attn_weights, p=self.attention_dropout)
 
         return torch.matmul(attn_weights, v)
+
+    def _combined_attention_mask(
+        self,
+        q: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        seq_len: int,
+        kv_seq_len: int,
+    ) -> Optional[torch.Tensor]:
+        """Combine padding and causal masks at the cached query positions."""
+        if attention_mask is None and self.sliding_window is None:
+            if not self.is_causal or seq_len == kv_seq_len or seq_len == 1:
+                return None
+        queries = torch.arange(seq_len, device=q.device) + kv_seq_len - seq_len
+        keys = torch.arange(kv_seq_len, device=q.device)
+        allowed = torch.ones((seq_len, kv_seq_len), dtype=torch.bool, device=q.device)
+        if self.is_causal:
+            allowed = allowed & (keys.unsqueeze(0) <= queries.unsqueeze(1))
+        if self.sliding_window is not None:
+            allowed = allowed & (keys.unsqueeze(0) > queries.unsqueeze(1) - self.sliding_window)
+        allowed = allowed.unsqueeze(0).unsqueeze(0)
+        if attention_mask is None:
+            return allowed
+        mask = attention_mask.to(device=q.device)
+        if mask.ndim == 2:
+            if mask.shape != (q.shape[0], kv_seq_len):
+                raise ValueError("2D attention_mask must have shape [batch, cached_sequence_length]")
+            mask = mask.to(torch.bool)[:, None, None, :]
+        elif mask.ndim == 3:
+            mask = mask.unsqueeze(1)
+        elif mask.ndim != 4:
+            raise ValueError("attention_mask must have two, three, or four dimensions")
+        if mask.dtype == torch.bool:
+            return allowed & mask
+        additive = torch.zeros_like(allowed, dtype=q.dtype).masked_fill(~allowed, float("-inf"))
+        return additive + mask.to(dtype=q.dtype)
 
     def _make_sliding_window_mask(
         self,

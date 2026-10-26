@@ -28,12 +28,19 @@ Architecture choices
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields, field
 from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from complexity.tr_hash.attention import (
+    DomainSelfAttention,
+    make_domain_mlp,
+    resolve_domain_heads,
+    validate_domain_profile,
+)
 
 # =============================================================================
 # Config
@@ -48,10 +55,13 @@ class VideoConfig:
     patch_size: int = 16
     num_frames: int = 16
     temporal_patch_size: int = 2
+    architecture_profile: str = field(default="source67", kw_only=True)
+    architecture_profile_version: int = field(default=1, kw_only=True)
     hidden_size: int = 768
     num_hidden_layers: int = 12
     num_attention_heads: int = 12
-    intermediate_size: int = 3072
+    num_key_value_heads: int | None = field(default=None, kw_only=True)
+    intermediate_size: int | None = None
     shared_intermediate_size: Optional[int] = None
     hidden_dropout_prob: float = 0.0
     attention_dropout_prob: float = 0.0
@@ -59,6 +69,32 @@ class VideoConfig:
     layer_norm_eps: float = 1e-6
     # Token-routed MLP: 1 = standard MLP, >1 = spatial-position routing
     num_experts: int = 4
+
+    def __post_init__(self):
+        validate_domain_profile(self.architecture_profile, self.architecture_profile_version)
+        resolve_domain_heads(self)
+        if self.architecture_profile == "source67" and self.num_experts != 4:
+            raise ValueError(
+                "source67 requires four experts; use architecture_profile='legacy' for earlier models"
+            )
+        if self.intermediate_size is None:
+            self.intermediate_size = (
+                self.hidden_size if self.architecture_profile == "source67" else 3072
+            )
+        if self.shared_intermediate_size is None and self.architecture_profile == "source67":
+            self.shared_intermediate_size = 2 * self.hidden_size
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, values):
+        values = dict(values)
+        values.setdefault("architecture_profile", "legacy")
+        unknown = set(values) - {item.name for item in fields(cls)}
+        if unknown:
+            raise ValueError(f"unknown multimodal config fields: {sorted(unknown)}")
+        return cls(**values)
 
     @property
     def num_spatial_patches(self) -> int:
@@ -120,8 +156,19 @@ class TubeletEmbedding(nn.Module):
 class VideoAttention(nn.Module):
     """Multi-head self-attention (shared by spatial and temporal ops)."""
 
-    def __init__(self, config: VideoConfig):
+    def __init__(self, config: VideoConfig, layer_index: int = 0):
         super().__init__()
+        self.architecture_profile = config.architecture_profile
+        if config.architecture_profile == "source67":
+            self.source_attention = DomainSelfAttention(
+                config.hidden_size,
+                config.num_attention_heads,
+                config.attention_dropout_prob,
+                num_key_value_heads=config.num_key_value_heads,
+                architecture_profile=config.architecture_profile,
+                layer_index=layer_index,
+            )
+            return
         self.num_heads = config.num_attention_heads
         self.head_dim = config.hidden_size // config.num_attention_heads
         self.scale = self.head_dim**-0.5
@@ -130,7 +177,9 @@ class VideoAttention(nn.Module):
         self.proj = nn.Linear(config.hidden_size, config.hidden_size)
         self.dropout = nn.Dropout(config.attention_dropout_prob)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, route_ids=None) -> torch.Tensor:
+        if self.architecture_profile == "source67":
+            return self.source_attention(x, route_ids)
         B, N, _ = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim)
         qkv = qkv.permute(2, 0, 3, 1, 4)
@@ -161,8 +210,21 @@ class VideoTokenRoutedMLP(nn.Module):
         gate+up BMM  →  SwiGLU  →  down BMM
     """
 
-    def __init__(self, config: VideoConfig):
+    def __init__(self, config: VideoConfig, layer_index: int = 0):
         super().__init__()
+        if config.architecture_profile == "source67":
+            self.engine = make_domain_mlp(
+                hidden_size=config.hidden_size,
+                vocab_size=config.num_patches,
+                num_experts=4,
+                top_k=2,
+                shared_width=config.shared_intermediate_size,
+                expert_width=config.intermediate_size // 4,
+                layer_index=layer_index,
+                route_seed=0x71D5A17,
+                architecture_profile=config.architecture_profile,
+            )
+            return
         self.hidden_size = config.hidden_size
         self.num_experts = config.num_experts
         self.expert_intermediate_size = config.intermediate_size // config.num_experts
@@ -209,6 +271,15 @@ class VideoTokenRoutedMLP(nn.Module):
         x: torch.Tensor,  # [B, T*S, H]
         expert_ids: torch.Tensor,  # [T*S]  precomputed, broadcast over B
     ) -> torch.Tensor:
+        if hasattr(self, "engine"):
+            if expert_ids is None:
+                expert_ids = torch.arange(x.size(1), device=x.device)
+            route_ids = (
+                expert_ids.unsqueeze(0).expand(x.size(0), -1)
+                if expert_ids.ndim == 1
+                else expert_ids
+            )
+            return self.engine(x, route_ids)
         B, N, H = x.shape
 
         flat = x.view(B * N, H)
@@ -255,13 +326,13 @@ class SpatioTemporalBlock(nn.Module):
     3. Token-Routed MLP (or plain MLP if num_experts == 1).
     """
 
-    def __init__(self, config: VideoConfig):
+    def __init__(self, config: VideoConfig, layer_index: int = 0):
         super().__init__()
-        self.spatial_attn = VideoAttention(config)
-        self.temporal_attn = VideoAttention(config)
+        self.spatial_attn = VideoAttention(config, layer_index)
+        self.temporal_attn = VideoAttention(config, layer_index)
 
         if config.num_experts > 1:
-            self.mlp: nn.Module = VideoTokenRoutedMLP(config)
+            self.mlp: nn.Module = VideoTokenRoutedMLP(config, layer_index)
         else:
             self.mlp = VideoPlainMLP(config)
 
@@ -278,17 +349,19 @@ class SpatioTemporalBlock(nn.Module):
     ) -> torch.Tensor:
         B = x.shape[0]
 
+        route_ids = expert_ids.unsqueeze(0).expand(B, -1)
+
         # 1. Spatial attention
         residual = x
         x_s = self.norm_spatial(x).view(B * T, S, x.shape[-1])
-        x_s = self.spatial_attn(x_s).view(B, T * S, x.shape[-1])
+        x_s = self.spatial_attn(x_s, route_ids.reshape(B * T, S)).view(B, T * S, x.shape[-1])
         x = residual + x_s
 
         # 2. Temporal attention
         residual = x
         H = x.shape[-1]
         x_t = self.norm_temporal(x).view(B, T, S, H).permute(0, 2, 1, 3).reshape(B * S, T, H)
-        x_t = self.temporal_attn(x_t)
+        x_t = self.temporal_attn(x_t, route_ids.reshape(B, T, S).permute(0, 2, 1).reshape(B * S, T))
         x_t = x_t.view(B, S, T, H).permute(0, 2, 1, 3).reshape(B, T * S, H)
         x = residual + x_t
 
@@ -330,7 +403,7 @@ class VideoTransformer(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
         self.blocks = nn.ModuleList(
-            [SpatioTemporalBlock(config) for _ in range(config.num_hidden_layers)]
+            [SpatioTemporalBlock(config, index) for index in range(config.num_hidden_layers)]
         )
 
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
@@ -340,6 +413,8 @@ class VideoTransformer(nn.Module):
         S = config.num_spatial_patches
         spatial_ids = torch.arange(S) % config.num_experts  # [S]
         expert_ids = spatial_ids.unsqueeze(0).expand(config.num_temporal_patches, -1).reshape(-1)
+        if config.architecture_profile == "source67":
+            expert_ids = torch.arange(config.num_patches)
         self.register_buffer("expert_ids", expert_ids)  # [T*S], long
 
         self._init_weights()
@@ -415,10 +490,15 @@ class VideoEncoder(nn.Module):
         num_heads: int = 12,
         num_experts: int = 4,
         output_dim: Optional[int] = None,
+        *,
+        architecture_profile: str = "source67",
+        num_key_value_heads: int | None = None,
     ):
         super().__init__()
 
         config = VideoConfig(
+            architecture_profile=architecture_profile,
+            num_key_value_heads=num_key_value_heads,
             image_size=image_size,
             patch_size=patch_size,
             num_frames=num_frames,

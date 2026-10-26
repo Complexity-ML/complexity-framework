@@ -76,6 +76,8 @@ class TRHashImageTextToText(nn.Module):
         self.decoder = decoder or ComplexityModel(self.config.decoder_config())
         if self.decoder.config.hidden_size != self.config.hidden_size:
             raise ValueError("decoder hidden size does not match VLM configuration")
+        if self.decoder.config.architecture_profile != self.config.architecture_profile:
+            raise ValueError("decoder architecture profile does not match VLM configuration")
         if self.decoder.config.vocab_size != self.config.vocab_size:
             raise ValueError("decoder vocabulary does not match VLM configuration")
 

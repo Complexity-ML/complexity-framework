@@ -77,6 +77,7 @@ def _candidate_config(**overrides) -> TRHashDetectorConfig:
         "vision_layers": 8,
         "vision_heads": 4,
         "vision_num_experts": 8,
+        "architecture_profile": "legacy",
         "vision_top_k": 2,
         "vision_shared_width": 32,
         "vision_expert_width": 8,

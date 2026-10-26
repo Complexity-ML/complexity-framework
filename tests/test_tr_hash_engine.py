@@ -219,6 +219,7 @@ def test_reference_engine_matches_token_by_token_definition_and_gradients(
         top_k=top_k,
         shared_width=12,
         expert_width=4,
+        routing_strategy=TRHashStrategy.BALANCED_HASH,
         precision=TRHashPrecision.FP32,
         backend=TRHashBackend.PYTORCH,
     )
@@ -277,6 +278,7 @@ def test_backend_selection_prefers_fused_cuda_for_supported_pair_shape():
     config = TRHashEngineConfig(
         hidden_size=8,
         vocab_size=101,
+        routing_strategy=TRHashStrategy.BALANCED_HASH,
         precision=TRHashPrecision.FP16,
     )
     decision = select_backend(

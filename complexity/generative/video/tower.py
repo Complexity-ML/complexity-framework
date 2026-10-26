@@ -1,12 +1,8 @@
-"""TR-Hash MoE video tower — tubelets route through deterministic expert IDs.
+"""TR-Hash video tower with contextual Source67 routing by tubelet identity.
 
-Replaces ``complexity.multimodal.video``'s ``VideoTokenRoutedMLP`` (spatial
-position mod num_experts, precomputed once and applied identically at every
-layer) with a real ``TRHashEngine`` per block, keyed on each tubelet's fixed
-position in the flattened temporal x spatial grid — same principle as
-``TRHashVisionTower`` for images, generalized from patches to tubelets, with
-a per-layer route permutation (via ``TRHashEngineConfig.layer_index``)
-instead of one fixed routing reused at every depth.
+Raw flattened temporal/spatial positions feed both GQA and the two-lag MLP.
+The legacy profile retains static balanced-hash routes and MHA projections.
+No video accuracy result is implied by the text recipe.
 """
 
 from __future__ import annotations
@@ -16,35 +12,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from complexity.multimodal.video import TubeletEmbedding, VideoConfig
+from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
 from complexity.tr_hash import (
-    TRHashBackend,
-    TRHashEngine,
-    TRHashEngineConfig,
     TRHashPrecision,
-    TRHashStrategy,
 )
 
 from .config import TRHashVideoTowerConfig
 
 
-class _VideoSelfAttention(nn.Module):
-    def __init__(self, hidden_size: int, num_heads: int, dropout: float):
-        super().__init__()
-        self.num_heads = num_heads
-        self.head_dim = hidden_size // num_heads
-        self.dropout = float(dropout)
-        self.qkv = nn.Linear(hidden_size, 3 * hidden_size)
-        self.out = nn.Linear(hidden_size, hidden_size)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch, length, width = x.shape
-        qkv = self.qkv(x).view(batch, length, 3, self.num_heads, self.head_dim)
-        q, k, v = qkv.unbind(dim=2)
-        q, k, v = (value.transpose(1, 2) for value in (q, k, v))
-        output = F.scaled_dot_product_attention(
-            q, k, v, dropout_p=self.dropout if self.training else 0.0,
-        )
-        return self.out(output.transpose(1, 2).reshape(batch, length, width))
+class _VideoSelfAttention(DomainSelfAttention):
+    pass
 
 
 class TRHashVideoBlock(nn.Module):
@@ -52,27 +29,29 @@ class TRHashVideoBlock(nn.Module):
         super().__init__()
         self.norm1 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.attention = _VideoSelfAttention(
-            config.hidden_size, config.num_attention_heads, config.attention_dropout
+            config.hidden_size,
+            config.num_attention_heads,
+            config.attention_dropout,
+            num_key_value_heads=config.num_key_value_heads,
+            architecture_profile=config.architecture_profile,
+            layer_index=layer_index,
         )
         self.norm2 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.mlp = TRHashEngine(
-            TRHashEngineConfig(
-                hidden_size=config.hidden_size,
-                vocab_size=config.route_vocab_size,
-                num_experts=config.num_experts,
-                top_k=config.top_k,
-                shared_width=config.shared_width,
-                expert_width=config.expert_width,
-                routing_strategy=TRHashStrategy.BALANCED_HASH,
-                layer_index=layer_index,
-                route_seed=config.route_seed,
-                precision=TRHashPrecision.BF16,
-                backend=TRHashBackend.AUTO,
-            )
+        self.mlp = make_domain_mlp(
+            hidden_size=config.hidden_size,
+            vocab_size=config.route_vocab_size,
+            num_experts=config.num_experts,
+            top_k=config.top_k,
+            shared_width=config.shared_width,
+            expert_width=config.expert_width,
+            layer_index=layer_index,
+            route_seed=config.route_seed,
+            precision=TRHashPrecision.BF16,
+            architecture_profile=config.architecture_profile,
         )
 
     def forward(self, x: torch.Tensor, route_ids: torch.Tensor) -> torch.Tensor:
-        x = x + self.attention(self.norm1(x))
+        x = x + self.attention(self.norm1(x), route_ids)
         x = x + self.mlp(self.norm2(x), route_ids)
         return x
 
@@ -98,8 +77,7 @@ class TRHashVideoTower(nn.Module):
             torch.zeros(1, config.num_patches, config.hidden_size)
         )
         self.blocks = nn.ModuleList(
-            TRHashVideoBlock(config, layer_index=index)
-            for index in range(config.num_hidden_layers)
+            TRHashVideoBlock(config, layer_index=index) for index in range(config.num_hidden_layers)
         )
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.register_buffer(
@@ -135,9 +113,7 @@ class TRHashVideoClassifier(nn.Module):
         self.head_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.head = nn.Linear(config.hidden_size, num_classes)
 
-    def forward(
-        self, video: torch.Tensor, labels: "torch.Tensor | None" = None
-    ) -> dict:
+    def forward(self, video: torch.Tensor, labels: "torch.Tensor | None" = None) -> dict:
         features = self.tower(video)
         pooled = self.head_norm(features.mean(dim=1))
         logits = self.head(pooled)

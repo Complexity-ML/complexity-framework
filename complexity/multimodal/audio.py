@@ -12,12 +12,19 @@ v2: AudioTokenRoutedMLP — time-step position routing (t % num_experts).
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields, field
 from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from complexity.tr_hash.attention import (
+    DomainSelfAttention,
+    make_domain_mlp,
+    resolve_domain_heads,
+    validate_domain_profile,
+)
 
 
 @dataclass
@@ -28,16 +35,45 @@ class AudioConfig:
     n_fft: int = 400  # FFT size
     hop_length: int = 160  # Hop length for STFT
     sample_rate: int = 16000  # Audio sample rate
+    architecture_profile: str = field(default="source67", kw_only=True)
+    architecture_profile_version: int = field(default=1, kw_only=True)
     hidden_size: int = 768
     num_hidden_layers: int = 12
     num_attention_heads: int = 12
-    intermediate_size: int = 3072
+    num_key_value_heads: int | None = field(default=None, kw_only=True)
+    intermediate_size: int | None = None
     shared_intermediate_size: Optional[int] = None
     dropout: float = 0.0
     max_length: int = 3000  # Maximum spectrogram length
     layer_norm_eps: float = 1e-5
     # Token-routed MLP: 1 = standard, >1 = time-step position routing
     num_experts: int = 4
+
+    def __post_init__(self):
+        validate_domain_profile(self.architecture_profile, self.architecture_profile_version)
+        resolve_domain_heads(self)
+        if self.architecture_profile == "source67" and self.num_experts != 4:
+            raise ValueError(
+                "source67 requires four experts; use architecture_profile='legacy' for earlier models"
+            )
+        if self.intermediate_size is None:
+            self.intermediate_size = (
+                self.hidden_size if self.architecture_profile == "source67" else 3072
+            )
+        if self.shared_intermediate_size is None and self.architecture_profile == "source67":
+            self.shared_intermediate_size = 2 * self.hidden_size
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, values):
+        values = dict(values)
+        values.setdefault("architecture_profile", "legacy")
+        unknown = set(values) - {item.name for item in fields(cls)}
+        if unknown:
+            raise ValueError(f"unknown multimodal config fields: {sorted(unknown)}")
+        return cls(**values)
 
 
 class AudioConvStack(nn.Module):
@@ -74,8 +110,19 @@ class AudioConvStack(nn.Module):
 class AudioAttention(nn.Module):
     """Multi-head self-attention for audio."""
 
-    def __init__(self, config: AudioConfig):
+    def __init__(self, config: AudioConfig, layer_index: int = 0):
         super().__init__()
+        self.architecture_profile = config.architecture_profile
+        if config.architecture_profile == "source67":
+            self.source_attention = DomainSelfAttention(
+                config.hidden_size,
+                config.num_attention_heads,
+                config.dropout,
+                num_key_value_heads=config.num_key_value_heads,
+                architecture_profile=config.architecture_profile,
+                layer_index=layer_index,
+            )
+            return
 
         self.num_heads = config.num_attention_heads
         self.head_dim = config.hidden_size // config.num_attention_heads
@@ -92,7 +139,14 @@ class AudioAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
+        route_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        if self.architecture_profile == "source67":
+            if route_ids is None:
+                route_ids = torch.arange(hidden_states.size(1), device=hidden_states.device)
+            if route_ids.ndim == 1:
+                route_ids = route_ids.unsqueeze(0).expand(hidden_states.size(0), -1)
+            return self.source_attention(hidden_states, route_ids, attention_mask)
         batch_size, seq_len, _ = hidden_states.shape
 
         q = (
@@ -142,8 +196,21 @@ class AudioTokenRoutedMLP(nn.Module):
     Fused BMM: gate+up → SwiGLU → down.
     """
 
-    def __init__(self, config: AudioConfig):
+    def __init__(self, config: AudioConfig, layer_index: int = 0):
         super().__init__()
+        if config.architecture_profile == "source67":
+            self.engine = make_domain_mlp(
+                hidden_size=config.hidden_size,
+                vocab_size=config.max_length,
+                num_experts=4,
+                top_k=2,
+                shared_width=config.shared_intermediate_size,
+                expert_width=config.intermediate_size // 4,
+                layer_index=layer_index,
+                route_seed=0x71D5A17,
+                architecture_profile=config.architecture_profile,
+            )
+            return
         self.hidden_size = config.hidden_size
         self.num_experts = config.num_experts
         self.expert_intermediate_size = config.intermediate_size // config.num_experts
@@ -180,6 +247,15 @@ class AudioTokenRoutedMLP(nn.Module):
         x: torch.Tensor,  # [B, T, H]
         expert_ids: Optional[torch.Tensor] = None,  # [T] or None
     ) -> torch.Tensor:
+        if hasattr(self, "engine"):
+            if expert_ids is None:
+                expert_ids = torch.arange(x.size(1), device=x.device)
+            route_ids = (
+                expert_ids.unsqueeze(0).expand(x.size(0), -1)
+                if expert_ids.ndim == 1
+                else expert_ids
+            )
+            return self.engine(x, route_ids)
         B, T, H = x.shape
         flat = x.view(B * T, H)
         shared_gate, shared_up = self.shared_gate_up_proj(flat).chunk(2, dim=-1)
@@ -224,13 +300,13 @@ class AudioMLP(nn.Module):
 class AudioTransformerBlock(nn.Module):
     """Single transformer block for audio (with optional token-routed MLP)."""
 
-    def __init__(self, config: AudioConfig):
+    def __init__(self, config: AudioConfig, layer_index: int = 0):
         super().__init__()
 
-        self.self_attn = AudioAttention(config)
+        self.self_attn = AudioAttention(config, layer_index)
 
         if config.num_experts > 1:
-            self.mlp: nn.Module = AudioTokenRoutedMLP(config)
+            self.mlp: nn.Module = AudioTokenRoutedMLP(config, layer_index)
         else:
             self.mlp = AudioMLP(config)
 
@@ -246,7 +322,7 @@ class AudioTransformerBlock(nn.Module):
         # Pre-norm self-attention
         residual = hidden_states
         hidden_states = self.norm1(hidden_states)
-        hidden_states = self.self_attn(hidden_states, attention_mask)
+        hidden_states = self.self_attn(hidden_states, attention_mask, expert_ids)
         hidden_states = residual + hidden_states
 
         # Token-routed (or plain) MLP
@@ -274,14 +350,16 @@ class MelSpectrogramEncoder(nn.Module):
         self.position_embedding = nn.Embedding(config.max_length, config.hidden_size)
 
         self.blocks = nn.ModuleList(
-            [AudioTransformerBlock(config) for _ in range(config.num_hidden_layers)]
+            [AudioTransformerBlock(config, index) for index in range(config.num_hidden_layers)]
         )
 
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
         # Precompute expert_ids for time steps after conv downsampling (stride=2)
         max_t = config.max_length // 2
-        expert_ids = torch.arange(max_t) % config.num_experts
+        expert_ids = torch.arange(max_t)
+        if config.architecture_profile == "legacy":
+            expert_ids = expert_ids % config.num_experts
         self.register_buffer("expert_ids_table", expert_ids)  # [max_T]
 
     def forward(
@@ -339,15 +417,22 @@ class WhisperEncoder(nn.Module):
         num_heads: int = 12,
         max_length: int = 1500,
         num_experts: int = 4,
+        *,
+        architecture_profile: str = "source67",
+        num_key_value_heads: int | None = None,
     ):
         super().__init__()
 
         config = AudioConfig(
+            architecture_profile=architecture_profile,
+            num_key_value_heads=num_key_value_heads,
             n_mels=n_mels,
             hidden_size=hidden_size,
             num_hidden_layers=num_layers,
             num_attention_heads=num_heads,
-            intermediate_size=hidden_size * 4,
+            intermediate_size=(
+                hidden_size if architecture_profile == "source67" else hidden_size * 4
+            ),
             max_length=max_length,
             num_experts=num_experts,
         )
@@ -359,12 +444,16 @@ class WhisperEncoder(nn.Module):
             "positional_embedding", self._create_sinusoidal_embeddings(max_length, hidden_size)
         )
 
-        self.blocks = nn.ModuleList([AudioTransformerBlock(config) for _ in range(num_layers)])
+        self.blocks = nn.ModuleList(
+            [AudioTransformerBlock(config, index) for index in range(num_layers)]
+        )
 
         self.norm = nn.LayerNorm(hidden_size)
 
         # Precompute expert routing (fixed Whisper output length after conv)
-        expert_ids = torch.arange(max_length) % config.num_experts
+        expert_ids = torch.arange(max_length)
+        if config.architecture_profile == "legacy":
+            expert_ids = expert_ids % config.num_experts
         self.register_buffer("expert_ids_table", expert_ids)  # [max_length]
 
     def _create_sinusoidal_embeddings(self, max_length: int, hidden_size: int) -> torch.Tensor:
@@ -424,6 +513,9 @@ class AudioEncoder(nn.Module):
         output_dim: Optional[int] = None,
         encoder_type: str = "whisper",
         num_experts: int = 4,
+        *,
+        architecture_profile: str = "source67",
+        num_key_value_heads: int | None = None,
     ):
         super().__init__()
 
@@ -434,9 +526,13 @@ class AudioEncoder(nn.Module):
                 num_layers=num_layers,
                 num_heads=num_heads,
                 num_experts=num_experts,
+                architecture_profile=architecture_profile,
+                num_key_value_heads=num_key_value_heads,
             )
         else:
             config = AudioConfig(
+                architecture_profile=architecture_profile,
+                num_key_value_heads=num_key_value_heads,
                 n_mels=n_mels,
                 hidden_size=hidden_size,
                 num_hidden_layers=num_layers,

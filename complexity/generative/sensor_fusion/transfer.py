@@ -11,6 +11,9 @@ from ..detection.config import TRHashDetectorConfig
 from .model import TRHashSensorFusionClassifier
 
 _VISION_FIELDS = (
+    "architecture_profile",
+    "architecture_profile_version",
+    "vision_key_value_heads",
     "image_size",
     "patch_size",
     "vision_hidden_size",
@@ -36,9 +39,7 @@ def load_pretrained_visual_tower(
     config_path = checkpoint / "config.json"
     weights_path = checkpoint / "tower.safetensors"
     if not config_path.is_file() or not weights_path.is_file():
-        raise FileNotFoundError(
-            "vision checkpoint must contain config.json and tower.safetensors"
-        )
+        raise FileNotFoundError("vision checkpoint must contain config.json and tower.safetensors")
     payload = json.loads(config_path.read_text())
     # Vision-only checkpoints wrap the detector configuration under ``tower``;
     # detection checkpoints store it directly. Supporting both lets downstream
@@ -46,9 +47,7 @@ def load_pretrained_visual_tower(
     # pretraining dependency.
     source = TRHashDetectorConfig.from_dict(payload.get("tower", payload))
     target = model.vision_tower.config
-    mismatches = [
-        name for name in _VISION_FIELDS if getattr(source, name) != getattr(target, name)
-    ]
+    mismatches = [name for name in _VISION_FIELDS if getattr(source, name) != getattr(target, name)]
     if mismatches:
         raise ValueError("incompatible pretrained vision tower: " + ", ".join(mismatches))
     state = load_file(str(weights_path), device="cpu")

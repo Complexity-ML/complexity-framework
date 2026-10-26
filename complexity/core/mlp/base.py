@@ -21,12 +21,12 @@ class MLPConfig:
     bias: bool = False
 
     # MoE specific
-    num_experts: int = 1  # 1 = standard MLP, >1 = MoE
+    num_experts: int = 4  # 1 = single expert, >1 = MoE
     expert_initialization: str = "gpt_normal"
     initializer_range: float = 0.02
     vocab_size: int = 100000  # For token-routed MoE
     hash_routing: str = ""  # "" = modulo (token_id % E), "learned" = learned projection router
-    routing_strategy: str = "modulo_cyclic"
+    routing_strategy: str = "auto"
     route_hash_count: int = 2
     # Present only so the standalone historical ablations can be replayed.
     token_frequencies: Optional[torch.Tensor] = None
@@ -45,8 +45,8 @@ class MLPConfig:
     shared_gate_init: float = 1.0  # Initial shared expert output multiplier.
     routed_gate_init: float = 1.0  # Initial routed expert output multiplier.
     shared_output_scale: float = 1.0  # Fixed shared branch multiplier; adds no parameters.
-    routed_output_scale: float = 1.0  # Fixed routed branch multiplier; adds no parameters.
-    top_k: int = 1  # Token-Routed top-K deterministic: each token activates K fixed expert routes.
+    routed_output_scale: Optional[float] = None  # Auto: source67=2, historical routing=1.
+    top_k: int = 2  # Each token activates K deterministic expert routes.
     top_k_primary_weight: Optional[float] = None  # K>1 primary expert blend weight; None keeps the default 0.95.
     learn_hash_pair_gates: bool = False  # Learn one mixture scalar per fixed unordered hash pair.
     hash_pair_gate_init: float = 0.5  # Initial expert-a weight; 0.5 exactly reproduces equal top-2 routing.
@@ -74,6 +74,23 @@ class MLPConfig:
     micro_expert_gate_init: float = 0.1
 
     def __post_init__(self):
+        if self.routing_strategy is None or self.routing_strategy == "auto":
+            self.routing_strategy = (
+                "token_id_composed_modulo"
+                if self.num_experts == 4 and self.top_k == 2
+                else "token_id_balanced_hash"
+            )
+        source67 = self.routing_strategy == "token_id_composed_modulo"
+        if source67 and (self.num_experts != 4 or self.top_k != 2):
+            raise ValueError("source67 composed modulo requires num_experts=4 and top_k=2")
+        if self.routed_output_scale is None:
+            self.routed_output_scale = 2.0 if source67 else 1.0
+        if source67 and (
+            self.top_k_primary_weight not in {None, 0.5}
+            or self.shared_output_scale != 1.0
+            or self.routed_output_scale != 2.0
+        ):
+            raise ValueError("source67 requires fixed 50/50 routing and shared/routed scales 1/2")
         if self.hidden_size <= 0:
             raise ValueError("hidden_size must be positive")
         if self.intermediate_size <= 0:
@@ -114,6 +131,7 @@ class MLPConfig:
                 "modulo_balanced_secondary, modulo_frequency_balanced_secondary)."
             )
         if self.routing_strategy not in {
+            "token_id_composed_modulo",
             "modulo",
             "modulo_cyclic",
             "modulo_balanced_secondary",
@@ -124,7 +142,7 @@ class MLPConfig:
             "token_id_hierarchical_hash",
         }:
             raise ValueError(
-                "routing_strategy must be one of modulo_cyclic, "
+                "routing_strategy must be one of token_id_composed_modulo, modulo_cyclic, "
                 "modulo_frequency_balanced_secondary, token_id_balanced_hash, "
                 "token_id_pair_coverage_hash, token_id_multi_hash, "
                 "token_id_hierarchical_hash "

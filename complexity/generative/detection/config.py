@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields
+from complexity.tr_hash.attention import (
+    resolve_domain_heads,
+    resolve_domain_widths,
+    validate_domain_profile,
+)
+
+from dataclasses import asdict, dataclass, fields, field
 from typing import Any, Dict, Tuple
 
 
@@ -17,15 +23,18 @@ class TRHashDetectorConfig:
     """
 
     architecture_version: int = 8
+    architecture_profile: str = field(default="source67", kw_only=True)
+    architecture_profile_version: int = field(default=1, kw_only=True)
     image_size: int = 224
     patch_size: int = 16
     vision_hidden_size: int = 384
     vision_layers: int = 6
     vision_heads: int = 6
+    vision_key_value_heads: int | None = field(default=None, kw_only=True)
     vision_num_experts: int = 4
     vision_top_k: int = 2
-    vision_shared_width: int = 224
-    vision_expert_width: int = 64
+    vision_shared_width: int | None = None
+    vision_expert_width: int | None = None
     vision_stage_depths: Tuple[int, ...] = (1, 1, 4)
     vision_window_size: int = 8
     vision_precision: str = "bf16"
@@ -83,6 +92,19 @@ class TRHashDetectorConfig:
     layer_norm_eps: float = 1e-6
 
     def __post_init__(self) -> None:
+        validate_domain_profile(self.architecture_profile, self.architecture_profile_version)
+        resolve_domain_heads(self, heads="vision_heads", kv="vision_key_value_heads")
+        resolve_domain_widths(
+            self,
+            hidden="vision_hidden_size",
+            shared="vision_shared_width",
+            expert="vision_expert_width",
+            legacy_shared=224,
+            legacy_expert=64,
+        )
+        if self.architecture_profile == "source67":
+            if self.vision_num_experts != 4 or self.vision_top_k != 2:
+                raise ValueError("source67 requires four experts and top_k=2")
         object.__setattr__(self, "scale_factors", tuple(self.scale_factors))
         object.__setattr__(self, "vision_stage_depths", tuple(self.vision_stage_depths))
         if self.architecture_version != 8:
@@ -222,4 +244,6 @@ class TRHashDetectorConfig:
         unknown = sorted(set(values) - allowed)
         if unknown:
             raise ValueError(f"unknown detector config fields: {unknown}")
+        values = dict(values)
+        values.setdefault("architecture_profile", "legacy")
         return cls(**values)

@@ -10,12 +10,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
 
+from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
 from complexity.tr_hash import (
-    TRHashBackend,
-    TRHashEngine,
-    TRHashEngineConfig,
     TRHashPrecision,
-    TRHashStrategy,
 )
 
 from .config import TRHashImageConfig
@@ -39,27 +36,8 @@ def _timestep_embedding(timesteps: torch.Tensor, width: int) -> torch.Tensor:
     return embedding
 
 
-class _Attention(nn.Module):
-    def __init__(self, hidden_size: int, num_heads: int, dropout: float):
-        super().__init__()
-        self.num_heads = num_heads
-        self.head_dim = hidden_size // num_heads
-        self.dropout = float(dropout)
-        self.qkv = nn.Linear(hidden_size, 3 * hidden_size)
-        self.out = nn.Linear(hidden_size, hidden_size)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch, length, width = x.shape
-        qkv = self.qkv(x).view(batch, length, 3, self.num_heads, self.head_dim)
-        q, k, v = qkv.unbind(dim=2)
-        q, k, v = (value.transpose(1, 2) for value in (q, k, v))
-        output = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            dropout_p=self.dropout if self.training else 0.0,
-        )
-        return self.out(output.transpose(1, 2).reshape(batch, length, width))
+class _Attention(DomainSelfAttention):
+    pass
 
 
 class _CrossAttention(nn.Module):
@@ -81,9 +59,11 @@ class _CrossAttention(nn.Module):
         batch, query_length, width = query.shape
         context_length = context.size(1)
         q = self.query(query).view(batch, query_length, self.num_heads, self.head_dim)
-        k, v = self.key_value(context).view(
-            batch, context_length, 2, self.num_heads, self.head_dim
-        ).unbind(dim=2)
+        k, v = (
+            self.key_value(context)
+            .view(batch, context_length, 2, self.num_heads, self.head_dim)
+            .unbind(dim=2)
+        )
         q, k, v = (value.transpose(1, 2) for value in (q, k, v))
         mask = context_mask[:, None, None, :]
         output = F.scaled_dot_product_attention(
@@ -96,6 +76,37 @@ class _CrossAttention(nn.Module):
         return self.out(output.transpose(1, 2).reshape(batch, query_length, width))
 
 
+class _Source67TextBlock(nn.Module):
+    def __init__(self, config, layer_index):
+        super().__init__()
+        width = config.text_hidden_size
+        self.norm1 = nn.LayerNorm(width, eps=config.layer_norm_eps)
+        self.norm2 = nn.LayerNorm(width, eps=config.layer_norm_eps)
+        self.attention = DomainSelfAttention(
+            width,
+            config.text_heads,
+            config.attention_dropout,
+            num_key_value_heads=config.text_key_value_heads,
+            architecture_profile=config.architecture_profile,
+            layer_index=layer_index,
+        )
+        self.mlp = make_domain_mlp(
+            hidden_size=width,
+            vocab_size=config.vocab_size,
+            num_experts=4,
+            top_k=2,
+            shared_width=2 * width,
+            expert_width=width // 4,
+            layer_index=layer_index,
+            route_seed=config.route_seed,
+            architecture_profile=config.architecture_profile,
+        )
+
+    def forward(self, x, token_ids, mask):
+        x = x + self.attention(self.norm1(x), token_ids, mask[:, None, None, :])
+        return x + self.mlp(self.norm2(x), token_ids)
+
+
 class _TextEncoder(nn.Module):
     def __init__(self, config: TRHashImageConfig):
         super().__init__()
@@ -104,16 +115,22 @@ class _TextEncoder(nn.Module):
         self.position_embedding = nn.Parameter(
             torch.zeros(1, config.max_text_length, config.text_hidden_size)
         )
-        layer = nn.TransformerEncoderLayer(
-            d_model=config.text_hidden_size,
-            nhead=config.text_heads,
-            dim_feedforward=4 * config.text_hidden_size,
-            dropout=config.attention_dropout,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
-        )
-        self.layers = nn.TransformerEncoder(layer, num_layers=config.text_layers)
+        self.architecture_profile = config.architecture_profile
+        if config.architecture_profile == "source67":
+            self.layers = nn.ModuleList(
+                _Source67TextBlock(config, index) for index in range(config.text_layers)
+            )
+        else:
+            layer = nn.TransformerEncoderLayer(
+                d_model=config.text_hidden_size,
+                nhead=config.text_heads,
+                dim_feedforward=4 * config.text_hidden_size,
+                dropout=config.attention_dropout,
+                activation="gelu",
+                batch_first=True,
+                norm_first=True,
+            )
+            self.layers = nn.TransformerEncoder(layer, num_layers=config.text_layers)
         self.norm = nn.LayerNorm(config.text_hidden_size, eps=config.layer_norm_eps)
         self.projection = nn.Linear(config.text_hidden_size, config.hidden_size)
 
@@ -132,7 +149,11 @@ class _TextEncoder(nn.Module):
         if empty.any():
             mask[empty, 0] = True
         x = self.token_embedding(token_ids) + self.position_embedding[:, : token_ids.size(1)]
-        x = self.layers(x, src_key_padding_mask=~mask)
+        if self.architecture_profile == "source67":
+            for layer in self.layers:
+                x = layer(x, token_ids, mask)
+        else:
+            x = self.layers(x, src_key_padding_mask=~mask)
         x = self.projection(self.norm(x))
         x = x * mask.unsqueeze(-1).to(x.dtype)
         return x, mask
@@ -143,26 +164,28 @@ class _TRHashDiTBlock(nn.Module):
         super().__init__()
         self.eps = config.layer_norm_eps
         self.self_attention = _Attention(
-            config.hidden_size, config.num_attention_heads, config.attention_dropout
+            config.hidden_size,
+            config.num_attention_heads,
+            config.attention_dropout,
+            num_key_value_heads=config.num_key_value_heads,
+            architecture_profile=config.architecture_profile,
+            layer_index=layer_index,
         )
         self.cross_attention = _CrossAttention(
             config.hidden_size, config.num_attention_heads, config.attention_dropout
         )
         self.condition = nn.Linear(config.hidden_size, 6 * config.hidden_size)
-        self.mlp = TRHashEngine(
-            TRHashEngineConfig(
-                hidden_size=config.hidden_size,
-                vocab_size=config.route_vocab_size,
-                num_experts=config.num_experts,
-                top_k=config.top_k,
-                shared_width=config.shared_width,
-                expert_width=config.expert_width,
-                routing_strategy=TRHashStrategy.BALANCED_HASH,
-                layer_index=layer_index,
-                route_seed=config.route_seed,
-                precision=TRHashPrecision.BF16,
-                backend=TRHashBackend.AUTO,
-            )
+        self.mlp = make_domain_mlp(
+            hidden_size=config.hidden_size,
+            vocab_size=config.route_vocab_size,
+            num_experts=config.num_experts,
+            top_k=config.top_k,
+            shared_width=config.shared_width,
+            expert_width=config.expert_width,
+            layer_index=layer_index,
+            route_seed=config.route_seed,
+            precision=TRHashPrecision.BF16,
+            architecture_profile=config.architecture_profile,
         )
 
     def _norm(self, x: torch.Tensor) -> torch.Tensor:
@@ -180,7 +203,7 @@ class _TRHashDiTBlock(nn.Module):
             6, dim=-1
         )
         attention_input = _modulate(self._norm(x), shift_a, scale_a)
-        x = x + gate_a[:, None].tanh() * self.self_attention(attention_input)
+        x = x + gate_a[:, None].tanh() * self.self_attention(attention_input, route_ids)
         x = x + self.cross_attention(self._norm(x), text, text_mask)
         mlp_input = _modulate(self._norm(x), shift_m, scale_m)
         x = x + gate_m[:, None].tanh() * self.mlp(mlp_input, route_ids)
@@ -219,7 +242,9 @@ class TRHashTextToImage(nn.Module):
         config = self.config
         expected = (config.latent_channels, config.latent_resolution, config.latent_resolution)
         if tuple(latents.shape[1:]) != expected:
-            raise ValueError(f"expected latent shape [batch, {expected}], got {tuple(latents.shape)}")
+            raise ValueError(
+                f"expected latent shape [batch, {expected}], got {tuple(latents.shape)}"
+            )
         patch = config.latent_patch_size
         return (
             latents.unfold(2, patch, patch)
@@ -236,7 +261,9 @@ class TRHashTextToImage(nn.Module):
         return (
             patches.view(batch, grid, grid, config.latent_channels, patch, patch)
             .permute(0, 3, 1, 4, 2, 5)
-            .reshape(batch, config.latent_channels, config.latent_resolution, config.latent_resolution)
+            .reshape(
+                batch, config.latent_channels, config.latent_resolution, config.latent_resolution
+            )
         )
 
     def build_image_route_ids(self, timesteps: torch.Tensor) -> torch.Tensor:
@@ -339,9 +366,7 @@ class TRHashTextToImage(nn.Module):
         empty_mask[:, 0] = True
         step_size = 1.0 / steps
         for index in range(steps):
-            timestep = torch.full(
-                (batch,), 1.0 - index / steps, device=x.device, dtype=x.dtype
-            )
+            timestep = torch.full((batch,), 1.0 - index / steps, device=x.device, dtype=x.dtype)
             conditional = self(x, timestep, caption_ids, caption_mask)
             if guidance_scale == 1.0:
                 velocity = conditional

@@ -170,10 +170,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vision-hidden-size", type=int, default=192)
     parser.add_argument("--vision-layers", type=int, default=4)
     parser.add_argument("--vision-heads", type=int, default=6)
+    parser.add_argument(
+        "--architecture-profile", choices=("source67", "legacy"), default="source67"
+    )
+    parser.add_argument("--key-value-heads", type=int, default=None)
     parser.add_argument("--vision-num-experts", type=int, default=4)
     parser.add_argument("--vision-top-k", type=int, default=2)
-    parser.add_argument("--vision-shared-width", type=int, default=96)
-    parser.add_argument("--vision-expert-width", type=int, default=48)
+    parser.add_argument("--vision-shared-width", type=int, default=None)
+    parser.add_argument("--vision-expert-width", type=int, default=None)
     parser.add_argument(
         "--vision-stage-depths",
         type=int,
@@ -486,9 +490,7 @@ def resolve_initialization_provenance(args: argparse.Namespace) -> Dict[str, obj
     if training_purpose == VISION_SUPERVISED_FINETUNING:
         validate_full_parameter_finetuning(training_purpose)
         if args.detector_checkpoint is None:
-            raise ValueError(
-                "vision-supervised-finetuning requires --detector-checkpoint"
-            )
+            raise ValueError("vision-supervised-finetuning requires --detector-checkpoint")
         if args.resume is not None or args.backbone_checkpoint is not None:
             raise ValueError(
                 "vision-supervised-finetuning resets optimizer/scheduler and therefore "
@@ -824,6 +826,11 @@ def load_pretrained_tower(model: TRHashObjectDetector, checkpoint: Path) -> None
     grid, so they are deliberately regenerated instead of copied.
     """
 
+    config_path = checkpoint / "config.json"
+    payload = json.loads(config_path.read_text()) if config_path.is_file() else {}
+    source_profile = payload.get("tower", payload).get("architecture_profile", "legacy")
+    if source_profile != model.config.architecture_profile:
+        raise ValueError("pretrained tower architecture_profile must match the target")
     state = load_file(str(checkpoint / "tower.safetensors"))
     parameters = dict(model.tower.named_parameters())
     position_name = "position_embedding"
@@ -903,6 +910,8 @@ def load_pretrained_detector(
     source_config = TRHashDetectorConfig.from_dict(
         json.loads((checkpoint / "config.json").read_text())
     )
+    if source_config.architecture_profile != model.config.architecture_profile:
+        raise ValueError("pretrained detector architecture_profile must match the target")
     source_weights = (
         checkpoint / "ema.safetensors"
         if (checkpoint / "ema.safetensors").is_file()
@@ -1836,6 +1845,8 @@ def main() -> None:
     if vision_precision == "auto":
         vision_precision = "fp32" if device.type == "mps" else "bf16"
     config = TRHashDetectorConfig(
+        architecture_profile=args.architecture_profile,
+        vision_key_value_heads=args.key_value_heads,
         architecture_version=args.architecture_version,
         image_size=args.image_size,
         patch_size=args.patch_size,
@@ -1844,8 +1855,16 @@ def main() -> None:
         vision_heads=args.vision_heads,
         vision_num_experts=args.vision_num_experts,
         vision_top_k=args.vision_top_k,
-        vision_shared_width=args.vision_shared_width,
-        vision_expert_width=args.vision_expert_width,
+        vision_shared_width=(
+            args.vision_shared_width
+            if args.vision_shared_width is not None
+            else (96 if args.architecture_profile == "legacy" else None)
+        ),
+        vision_expert_width=(
+            args.vision_expert_width
+            if args.vision_expert_width is not None
+            else (48 if args.architecture_profile == "legacy" else None)
+        ),
         vision_stage_depths=tuple(args.vision_stage_depths),
         vision_window_size=args.vision_window_size,
         vision_precision=vision_precision,

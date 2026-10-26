@@ -48,6 +48,7 @@ def test_multimodal_fusion_raises_instead_of_returning_none_for_unknown_type():
 
 def test_mel_spectrogram_encoder_rejects_input_exceeding_configured_capacity():
     config = AudioConfig(
+        architecture_profile="legacy",
         n_mels=8,
         hidden_size=16,
         num_hidden_layers=1,
@@ -67,6 +68,7 @@ def test_mel_spectrogram_encoder_rejects_input_exceeding_configured_capacity():
 
 def test_mel_spectrogram_encoder_accepts_input_within_configured_capacity():
     config = AudioConfig(
+        architecture_profile="legacy",
         n_mels=8,
         hidden_size=16,
         num_hidden_layers=1,

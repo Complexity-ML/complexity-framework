@@ -120,6 +120,8 @@ def test_capability_summary_contract_is_stable_across_shapes():
         "is_reduced_capacity",
         "attention",
         "routing",
+        "baseline_profile",
+        "routing_context_tokens",
         "phase",
         "precision",
         "world_size",

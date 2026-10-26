@@ -39,6 +39,13 @@ def expanded_expert_config(
 ) -> ModelConfig:
     """Return an expanded config that preserves the source expert width."""
 
+    if (
+        raw_config.get("architecture_profile") == "source67"
+        or raw_config.get("routing_strategy") == "token_id_composed_modulo"
+    ):
+        raise ValueError(
+            "Source67 contextual routing cannot be preserved by token-only expert expansion"
+        )
     patched = dict(raw_config)
     source_num_experts = int(patched.get("num_experts", 1))
     if source_num_experts != 4:

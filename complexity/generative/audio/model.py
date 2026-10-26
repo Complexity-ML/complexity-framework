@@ -88,6 +88,8 @@ class TRHashSpeechToText(nn.Module):
         self.decoder = decoder or ComplexityModel(self.config.decoder_config())
         if self.decoder.config.hidden_size != self.config.hidden_size:
             raise ValueError("decoder hidden size does not match ASR configuration")
+        if self.decoder.config.architecture_profile != self.config.architecture_profile:
+            raise ValueError("decoder architecture profile does not match ASR configuration")
         if self.decoder.config.vocab_size != self.config.vocab_size:
             raise ValueError("decoder vocabulary does not match ASR configuration")
 
@@ -232,9 +234,7 @@ class TRHashTextToSpeech(nn.Module):
         text, text_mask = self.text_encoder(caption_ids, caption_mask)
         masked = text * text_mask.unsqueeze(-1).to(text.dtype)
         pooled_text = masked.sum(dim=1) / text_mask.sum(dim=1, keepdim=True).clamp_min(1)
-        time = self.time_mlp(
-            _timestep_embedding(timesteps, self.config.hidden_size).to(mel.dtype)
-        )
+        time = self.time_mlp(_timestep_embedding(timesteps, self.config.hidden_size).to(mel.dtype))
         condition = pooled_text + time
         x = self.latent_in(self._patchify(mel)) + self.position_embedding
         route_ids = self.build_audio_route_ids(timesteps)
@@ -311,9 +311,7 @@ class TRHashTextToSpeech(nn.Module):
         empty_mask[:, 0] = True
         step_size = 1.0 / steps
         for index in range(steps):
-            timestep = torch.full(
-                (batch,), 1.0 - index / steps, device=x.device, dtype=x.dtype
-            )
+            timestep = torch.full((batch,), 1.0 - index / steps, device=x.device, dtype=x.dtype)
             conditional = self(x, timestep, caption_ids, caption_mask)
             if guidance_scale == 1.0:
                 velocity = conditional

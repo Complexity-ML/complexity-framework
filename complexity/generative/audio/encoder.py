@@ -1,26 +1,25 @@
-"""TR-Hash MoE audio encoder — frames route through deterministic expert IDs.
+"""TR-Hash audio encoder with contextual Source67 routing by frame identity.
 
-Same principle as ``complexity.generative.vision_language.vision_tower``:
-each frame routes through real ``TRHashEngine`` experts keyed on its fixed
-position in the sequence (deterministic, never learned or contextual).
-Unlike image patches, the frame count is not fixed by the config alone (it
-depends on input length), so the route-ID space is sized by ``max_frames``
-and each forward pass only ever uses the first ``num_frames`` of it.
+Raw post-convolution frame positions feed GQA and the two-lag expert MLP.
+The legacy profile preserves static balanced hashing and MHA checkpoints.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from complexity.tr_hash.attention import (
+    resolve_domain_heads,
+    resolve_domain_widths,
+    validate_domain_profile,
+)
+
+from dataclasses import asdict, dataclass, fields, field
 
 import torch
 import torch.nn as nn
 
+from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
 from complexity.tr_hash import (
-    TRHashBackend,
-    TRHashEngine,
-    TRHashEngineConfig,
     TRHashPrecision,
-    TRHashStrategy,
 )
 
 from .mel import LogMelSpectrogram
@@ -28,6 +27,8 @@ from .mel import LogMelSpectrogram
 
 @dataclass
 class AudioEncoderConfig:
+    architecture_profile: str = field(default="source67", kw_only=True)
+    architecture_profile_version: int = field(default=1, kw_only=True)
     sample_rate: int = 16_000
     n_mels: int = 80
     n_fft: int = 400
@@ -35,10 +36,11 @@ class AudioEncoderConfig:
     hidden_size: int = 384
     num_hidden_layers: int = 6
     num_attention_heads: int = 6
+    num_key_value_heads: int | None = field(default=None, kw_only=True)
     num_experts: int = 4
     top_k: int = 2
-    shared_width: int = 128
-    expert_width: int = 48
+    shared_width: int | None = None
+    expert_width: int | None = None
     route_seed: int = 0x71D5A17
     max_frames: int = 1_500
     dropout: float = 0.0
@@ -46,6 +48,19 @@ class AudioEncoderConfig:
     conv_stride: int = 2
 
     def __post_init__(self) -> None:
+        validate_domain_profile(self.architecture_profile, self.architecture_profile_version)
+        resolve_domain_heads(self, heads="num_attention_heads", kv="num_key_value_heads")
+        resolve_domain_widths(
+            self,
+            hidden="hidden_size",
+            shared="shared_width",
+            expert="expert_width",
+            legacy_shared=128,
+            legacy_expert=48,
+        )
+        if self.architecture_profile == "source67":
+            if self.num_experts != 4 or self.top_k != 2:
+                raise ValueError("source67 requires four experts and top_k=2")
         if self.hidden_size % self.num_attention_heads:
             raise ValueError("hidden_size must be divisible by num_attention_heads")
         if self.top_k > self.num_experts:
@@ -53,34 +68,25 @@ class AudioEncoderConfig:
         if self.max_frames <= 0:
             raise ValueError("max_frames must be positive")
 
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, values):
+        values = dict(values)
+        values.setdefault("architecture_profile", "legacy")
+        unknown = set(values) - {item.name for item in fields(cls)}
+        if unknown:
+            raise ValueError(f"unknown encoder config fields: {sorted(unknown)}")
+        return cls(**values)
+
     @property
     def route_vocab_size(self) -> int:
         return self.max_frames
 
 
-class _AudioSelfAttention(nn.Module):
-    def __init__(self, hidden_size: int, num_heads: int, dropout: float):
-        super().__init__()
-        self.num_heads = num_heads
-        self.head_dim = hidden_size // num_heads
-        self.dropout = float(dropout)
-        self.qkv = nn.Linear(hidden_size, 3 * hidden_size)
-        self.out = nn.Linear(hidden_size, hidden_size)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        import torch.nn.functional as F
-
-        batch, length, width = x.shape
-        qkv = self.qkv(x).view(batch, length, 3, self.num_heads, self.head_dim)
-        q, k, v = qkv.unbind(dim=2)
-        q, k, v = (value.transpose(1, 2) for value in (q, k, v))
-        output = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            dropout_p=self.dropout if self.training else 0.0,
-        )
-        return self.out(output.transpose(1, 2).reshape(batch, length, width))
+class _AudioSelfAttention(DomainSelfAttention):
+    pass
 
 
 class AudioBlock(nn.Module):
@@ -88,27 +94,29 @@ class AudioBlock(nn.Module):
         super().__init__()
         self.norm1 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.attention = _AudioSelfAttention(
-            config.hidden_size, config.num_attention_heads, config.dropout
+            config.hidden_size,
+            config.num_attention_heads,
+            config.dropout,
+            num_key_value_heads=config.num_key_value_heads,
+            architecture_profile=config.architecture_profile,
+            layer_index=layer_index,
         )
         self.norm2 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.mlp = TRHashEngine(
-            TRHashEngineConfig(
-                hidden_size=config.hidden_size,
-                vocab_size=config.route_vocab_size,
-                num_experts=config.num_experts,
-                top_k=config.top_k,
-                shared_width=config.shared_width,
-                expert_width=config.expert_width,
-                routing_strategy=TRHashStrategy.BALANCED_HASH,
-                layer_index=layer_index,
-                route_seed=config.route_seed,
-                precision=TRHashPrecision.BF16,
-                backend=TRHashBackend.AUTO,
-            )
+        self.mlp = make_domain_mlp(
+            hidden_size=config.hidden_size,
+            vocab_size=config.route_vocab_size,
+            num_experts=config.num_experts,
+            top_k=config.top_k,
+            shared_width=config.shared_width,
+            expert_width=config.expert_width,
+            layer_index=layer_index,
+            route_seed=config.route_seed,
+            precision=TRHashPrecision.BF16,
+            architecture_profile=config.architecture_profile,
         )
 
     def forward(self, x: torch.Tensor, route_ids: torch.Tensor) -> torch.Tensor:
-        x = x + self.attention(self.norm1(x))
+        x = x + self.attention(self.norm1(x), route_ids)
         x = x + self.mlp(self.norm2(x), route_ids)
         return x
 

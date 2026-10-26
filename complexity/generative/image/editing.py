@@ -58,6 +58,8 @@ class TRHashImageEditConfig(TRHashImageConfig):
 
     @classmethod
     def from_dict(cls, values: Dict[str, Any]) -> "TRHashImageEditConfig":
+        values = dict(values)
+        values.setdefault("architecture_profile", "legacy")
         return cls(**values)
 
 

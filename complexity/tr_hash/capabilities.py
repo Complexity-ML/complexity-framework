@@ -12,6 +12,7 @@ from .config import (
     TRHashEngineConfig,
     TRHashPhase,
     TRHashPrecision,
+    TRHashStrategy,
 )
 
 
@@ -62,7 +63,11 @@ def _fused_cuda_available() -> bool:
 def supports_fused_cuda(config: TRHashEngineConfig) -> bool:
     """Return whether a shape has a hash-native fused CUDA implementation."""
 
-    return config.top_k == 2 and 2 <= config.num_experts <= 8
+    return (
+        config.routing_strategy is not TRHashStrategy.COMPOSED_MODULO
+        and config.top_k == 2
+        and 2 <= config.num_experts <= 8
+    )
 
 
 def select_backend(
@@ -87,6 +92,12 @@ def select_backend(
         )
 
     requested = config.backend
+    contextual = config.routing_strategy is TRHashStrategy.COMPOSED_MODULO
+    if contextual and requested in {TRHashBackend.FUSED_CUDA, TRHashBackend.CUDA_GRAPH}:
+        raise RuntimeError(
+            f"source67 contextual routing does not support {requested.value}; "
+            "use PyTorch, CGGR, or auto"
+        )
     if requested is TRHashBackend.PYTORCH:
         return BackendDecision(
             requested=requested,
@@ -142,6 +153,8 @@ def select_backend(
             quantized=False,
         )
 
+    if contextual:
+        reasons.append("source67 contextual routes require PyTorch or CGGR")
     if (
         device_type == "cuda"
         and fused_cuda_available
@@ -150,7 +163,7 @@ def select_backend(
         return BackendDecision(
             requested=requested,
             selected=TRHashBackend.FUSED_CUDA,
-            reasons=(),
+            reasons=tuple(reasons),
             graph_safe=False,
             quantized=False,
         )
@@ -162,7 +175,7 @@ def select_backend(
         return BackendDecision(
             requested=requested,
             selected=TRHashBackend.CGGR,
-            reasons=(),
+            reasons=tuple(reasons),
             graph_safe=False,
             quantized=False,
         )

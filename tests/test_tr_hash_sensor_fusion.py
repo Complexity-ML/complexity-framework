@@ -21,6 +21,7 @@ def _tiny_config(**overrides) -> TRHashSensorFusionConfig:
         num_hidden_layers=2,
         num_attention_heads=4,
         num_experts=8,
+        architecture_profile="legacy",
         top_k=2,
         shared_width=32,
         expert_width=8,
@@ -141,7 +142,7 @@ def test_missing_modalities_are_masked_per_sample():
 
 def test_default_model_is_a_real_sized_configuration():
     model = TRHashSensorFusionClassifier()
-    assert model.config.num_experts == 8
+    assert model.config.num_experts == 4
     assert model.num_parameters() > 5_000_000
 
 
@@ -256,6 +257,8 @@ def test_compact_profile_stays_under_ten_million_parameters():
 def test_loads_only_an_exact_compatible_pretrained_tower(tmp_path):
     config = _tiny_config()
     detector_config = TRHashDetectorConfig(
+        architecture_profile=config.architecture_profile,
+        vision_key_value_heads=config.vision_key_value_heads,
         image_size=config.vision_image_size,
         patch_size=config.vision_patch_size,
         vision_hidden_size=config.vision_hidden_size,

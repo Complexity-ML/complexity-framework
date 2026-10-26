@@ -25,6 +25,7 @@ def _checkpoint(path: Path) -> Path:
         vision_window_size=2,
         vision_heads=4,
         vision_num_experts=2,
+        architecture_profile="legacy",
         vision_top_k=1,
         vision_expert_width=8,
         vision_precision="fp32",

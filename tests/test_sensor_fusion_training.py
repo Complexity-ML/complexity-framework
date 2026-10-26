@@ -26,6 +26,7 @@ def _config() -> TRHashSensorFusionConfig:
         num_hidden_layers=1,
         num_attention_heads=4,
         num_experts=8,
+        architecture_profile="legacy",
         top_k=2,
         shared_width=16,
         expert_width=4,
@@ -120,9 +121,12 @@ def test_resolve_epoch_training_augmentation_is_always_off_when_disabled():
     from complexity.generative.sensor_fusion.training import resolve_epoch_training_augmentation
 
     for epoch in range(10):
-        assert resolve_epoch_training_augmentation(
-            base_enabled=False, aug_scale=1.0, seed=42, epoch=epoch
-        ) is False
+        assert (
+            resolve_epoch_training_augmentation(
+                base_enabled=False, aug_scale=1.0, seed=42, epoch=epoch
+            )
+            is False
+        )
 
 
 def test_resolve_epoch_training_augmentation_is_deterministic_and_bounded():
@@ -133,12 +137,18 @@ def test_resolve_epoch_training_augmentation_is_deterministic_and_bounded():
     from complexity.generative.sensor_fusion.training import resolve_epoch_training_augmentation
 
     for epoch in range(10):
-        assert resolve_epoch_training_augmentation(
-            base_enabled=True, aug_scale=1.0, seed=42, epoch=epoch
-        ) is True
-        assert resolve_epoch_training_augmentation(
-            base_enabled=True, aug_scale=0.0, seed=42, epoch=epoch
-        ) is False
+        assert (
+            resolve_epoch_training_augmentation(
+                base_enabled=True, aug_scale=1.0, seed=42, epoch=epoch
+            )
+            is True
+        )
+        assert (
+            resolve_epoch_training_augmentation(
+                base_enabled=True, aug_scale=0.0, seed=42, epoch=epoch
+            )
+            is False
+        )
 
     first = resolve_epoch_training_augmentation(base_enabled=True, aug_scale=0.5, seed=7, epoch=3)
     second = resolve_epoch_training_augmentation(base_enabled=True, aug_scale=0.5, seed=7, epoch=3)

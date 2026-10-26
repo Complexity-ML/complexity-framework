@@ -56,6 +56,7 @@ def _tiny_detector_config() -> TRHashDetectorConfig:
         vision_layers=3,
         vision_heads=4,
         vision_num_experts=2,
+        architecture_profile="legacy",
         vision_top_k=1,
         vision_expert_width=8,
         vision_stage_depths=(1, 1, 1),

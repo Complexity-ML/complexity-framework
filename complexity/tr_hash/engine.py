@@ -23,7 +23,9 @@ from .config import (
     TRHashBackend,
     TRHashEngineConfig,
     TRHashPhase,
+    TRHashStrategy,
 )
+from .baseline import source67_mlp_routes
 from .routing import build_route_table, compile_top2_pair_metadata
 
 logger = logging.getLogger(__name__)
@@ -238,6 +240,11 @@ class TRHashEngine(nn.Module):
                     f"active num_experts ({num_experts}) cannot exceed the "
                     f"allocated capacity ({self.config.num_experts})"
                 )
+            if (
+                self.config.routing_strategy is TRHashStrategy.COMPOSED_MODULO
+                and num_experts != 4
+            ):
+                raise ValueError("source67 requires four active experts")
             if num_experts == self.config.num_experts:
                 self._active_route_table = self.route_table
             else:
@@ -285,6 +292,11 @@ class TRHashEngine(nn.Module):
         and any captured CUDA graphs in sync with the new table.
         """
 
+        if (
+            self.config.routing_strategy is TRHashStrategy.COMPOSED_MODULO
+            and not torch.equal(route_table.cpu(), build_route_table(self.config))
+        ):
+            raise ValueError("source67 contextual routing cannot be replaced by a token-only table")
         if tuple(route_table.shape) != tuple(self.route_table.shape):
             raise ValueError(
                 f"route_table shape {tuple(route_table.shape)} does not match "
@@ -313,7 +325,13 @@ class TRHashEngine(nn.Module):
             if module is not None:
                 nn.init.normal_(module.weight, mean=0.0, std=std)
 
-    def _routes(self, token_ids: torch.Tensor) -> torch.Tensor:
+    def _routes(
+        self,
+        token_ids: torch.Tensor,
+        previous_token_ids: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if self.config.routing_strategy is TRHashStrategy.COMPOSED_MODULO:
+            return source67_mlp_routes(token_ids, self.config.layer_index, previous_token_ids)
         clamped = token_ids.clamp(0, self.config.vocab_size - 1)
         return self._active_route_table[:, clamped]
 
@@ -536,6 +554,7 @@ class TRHashEngine(nn.Module):
         hidden_states: torch.Tensor,
         token_ids: torch.Tensor,
         backend: TRHashBackend,
+        previous_token_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if hidden_states.ndim != 3:
             raise ValueError("hidden_states must be [batch, sequence, hidden]")
@@ -567,7 +586,7 @@ class TRHashEngine(nn.Module):
                 token_ids.reshape(-1),
             )
         else:
-            routes = self._routes(token_ids).reshape(
+            routes = self._routes(token_ids, previous_token_ids).reshape(
                 self.config.top_k,
                 -1,
             )
@@ -582,6 +601,7 @@ class TRHashEngine(nn.Module):
         self,
         hidden_states: torch.Tensor,
         token_ids: torch.Tensor,
+        previous_token_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         decision = select_backend(
             self.config,
@@ -592,7 +612,9 @@ class TRHashEngine(nn.Module):
         self.last_backend = decision
         if decision.selected is TRHashBackend.CUDA_GRAPH:
             return self._forward_cuda_graph(hidden_states, token_ids)
-        return self._forward_eager(hidden_states, token_ids, decision.selected)
+        return self._forward_eager(
+            hidden_states, token_ids, decision.selected, previous_token_ids
+        )
 
     def _forward_cuda_graph(
         self,
@@ -641,6 +663,10 @@ class TRHashEngine(nn.Module):
             ),
             "attention": self.config.attention_backbone.value,
             "routing": self.config.routing_strategy.value,
+            "baseline_profile": self.config.baseline_profile,
+            "routing_context_tokens": (
+                2 if self.config.routing_strategy is TRHashStrategy.COMPOSED_MODULO else 0
+            ),
             "phase": self.config.phase.value,
             "precision": self.config.precision.value,
             "world_size": self.config.world_size,

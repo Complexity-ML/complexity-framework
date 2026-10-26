@@ -12,20 +12,29 @@ v2: FusionTokenRoutedMLP — query-position routing (pos % num_experts).
     Same fused BMM pattern as TokenRoutedMLPParallel.
 """
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields, field
 from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from complexity.tr_hash.attention import (
+    make_domain_mlp,
+    resolve_domain_heads,
+    validate_domain_profile,
+)
+
 
 @dataclass
 class FusionConfig:
     """Configuration for multi-modal fusion."""
 
+    architecture_profile: str = field(default="source67", kw_only=True)
+    architecture_profile_version: int = field(default=1, kw_only=True)
     hidden_size: int = 768
     num_attention_heads: int = 12
+    num_key_value_heads: int | None = field(default=None, kw_only=True)
     num_layers: int = 2
     dropout: float = 0.1
     num_latents: int = 64  # For Perceiver
@@ -33,6 +42,28 @@ class FusionConfig:
     # Token-routed MLP: 1 = standard, >1 = query-position routing
     num_experts: int = 4
     shared_intermediate_size: Optional[int] = None
+
+    def __post_init__(self):
+        validate_domain_profile(self.architecture_profile, self.architecture_profile_version)
+        resolve_domain_heads(self)
+        if self.architecture_profile == "source67" and self.num_experts != 4:
+            raise ValueError(
+                "source67 requires four experts; use architecture_profile='legacy' for earlier models"
+            )
+        if self.shared_intermediate_size is None and self.architecture_profile == "source67":
+            self.shared_intermediate_size = 2 * self.hidden_size
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, values):
+        values = dict(values)
+        values.setdefault("architecture_profile", "legacy")
+        unknown = set(values) - {item.name for item in fields(cls)}
+        if unknown:
+            raise ValueError(f"unknown multimodal config fields: {sorted(unknown)}")
+        return cls(**values)
 
 
 # =============================================================================
@@ -54,8 +85,21 @@ class FusionTokenRoutedMLP(nn.Module):
     Fused BMM: gate+up → SwiGLU → down.
     """
 
-    def __init__(self, config: FusionConfig):
+    def __init__(self, config: FusionConfig, layer_index: int = 0):
         super().__init__()
+        if config.architecture_profile == "source67":
+            self.engine = make_domain_mlp(
+                hidden_size=config.hidden_size,
+                vocab_size=config.num_latents,
+                num_experts=4,
+                top_k=2,
+                shared_width=config.shared_intermediate_size,
+                expert_width=config.hidden_size // 4,
+                layer_index=layer_index,
+                route_seed=0x71D5A17,
+                architecture_profile=config.architecture_profile,
+            )
+            return
         self.hidden_size = config.hidden_size
         self.num_experts = config.num_experts
         self.expert_intermediate_size = (config.hidden_size * 4) // config.num_experts
@@ -92,6 +136,15 @@ class FusionTokenRoutedMLP(nn.Module):
         x: torch.Tensor,  # [B, N, H]
         expert_ids: Optional[torch.Tensor] = None,  # [N] or None
     ) -> torch.Tensor:
+        if hasattr(self, "engine"):
+            if expert_ids is None:
+                expert_ids = torch.arange(x.size(1), device=x.device)
+            route_ids = (
+                expert_ids.unsqueeze(0).expand(x.size(0), -1)
+                if expert_ids.ndim == 1
+                else expert_ids
+            )
+            return self.engine(x, route_ids)
         B, N, H = x.shape
 
         flat = x.view(B * N, H)
@@ -206,7 +259,7 @@ class CrossAttention(nn.Module):
 class CrossAttentionBlock(nn.Module):
     """Cross-attention block with token-routed feedforward."""
 
-    def __init__(self, config: FusionConfig):
+    def __init__(self, config: FusionConfig, layer_index: int = 0):
         super().__init__()
 
         self.cross_attn = CrossAttention(
@@ -219,7 +272,7 @@ class CrossAttentionBlock(nn.Module):
         self.norm2 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
         if config.num_experts > 1:
-            self.mlp: nn.Module = FusionTokenRoutedMLP(config)
+            self.mlp: nn.Module = FusionTokenRoutedMLP(config, layer_index)
         else:
             self.mlp = FusionPlainMLP(config)
 
@@ -265,10 +318,15 @@ class CrossAttentionFusion(nn.Module):
         num_layers: int = 2,
         dropout: float = 0.1,
         num_experts: int = 4,
+        *,
+        architecture_profile: str = "source67",
+        num_key_value_heads: int | None = None,
     ):
         super().__init__()
 
         config = FusionConfig(
+            architecture_profile=architecture_profile,
+            num_key_value_heads=num_key_value_heads,
             hidden_size=hidden_size,
             num_attention_heads=num_heads,
             num_layers=num_layers,
@@ -276,7 +334,9 @@ class CrossAttentionFusion(nn.Module):
             num_experts=num_experts,
         )
 
-        self.layers = nn.ModuleList([CrossAttentionBlock(config) for _ in range(num_layers)])
+        self.layers = nn.ModuleList(
+            [CrossAttentionBlock(config, index) for index in range(num_layers)]
+        )
 
         self.norm = nn.LayerNorm(hidden_size)
 
@@ -405,6 +465,9 @@ class PerceiverResampler(nn.Module):
         num_layers: int = 2,
         dropout: float = 0.1,
         num_experts: int = 4,
+        *,
+        architecture_profile: str = "source67",
+        num_key_value_heads: int | None = None,
     ):
         super().__init__()
 
@@ -413,6 +476,8 @@ class PerceiverResampler(nn.Module):
         self.latents = nn.Parameter(torch.randn(num_latents, hidden_size) * 0.02)
 
         config = FusionConfig(
+            architecture_profile=architecture_profile,
+            num_key_value_heads=num_key_value_heads,
             hidden_size=hidden_size,
             num_attention_heads=num_heads,
             num_layers=num_layers,
@@ -421,12 +486,16 @@ class PerceiverResampler(nn.Module):
             num_experts=num_experts,
         )
 
-        self.layers = nn.ModuleList([CrossAttentionBlock(config) for _ in range(num_layers)])
+        self.layers = nn.ModuleList(
+            [CrossAttentionBlock(config, index) for index in range(num_layers)]
+        )
 
         self.norm = nn.LayerNorm(hidden_size)
 
         # Precompute expert_ids for latents (fixed count)
-        expert_ids = torch.arange(num_latents) % num_experts
+        expert_ids = torch.arange(num_latents)
+        if config.architecture_profile == "legacy":
+            expert_ids = expert_ids % num_experts
         self.register_buffer("expert_ids", expert_ids)  # [num_latents]
 
     def forward(
@@ -467,6 +536,9 @@ class MultimodalFusion(nn.Module):
         num_latents: int = 64,
         dropout: float = 0.1,
         num_experts: int = 4,
+        *,
+        architecture_profile: str = "source67",
+        num_key_value_heads: int | None = None,
     ):
         super().__init__()
 
@@ -479,6 +551,8 @@ class MultimodalFusion(nn.Module):
                 num_layers=num_layers,
                 dropout=dropout,
                 num_experts=num_experts,
+                architecture_profile=architecture_profile,
+                num_key_value_heads=num_key_value_heads,
             )
         elif fusion_type == "gated":
             self.fusion = GatedFusion(hidden_size=hidden_size)
@@ -492,6 +566,8 @@ class MultimodalFusion(nn.Module):
                 num_layers=num_layers,
                 dropout=dropout,
                 num_experts=num_experts,
+                architecture_profile=architecture_profile,
+                num_key_value_heads=num_key_value_heads,
             )
         else:
             raise ValueError(f"Unknown fusion type: {fusion_type}")

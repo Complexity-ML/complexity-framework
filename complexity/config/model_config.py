@@ -16,8 +16,11 @@ import yaml
 @dataclass
 class ModelConfig:
     """
-    Unified configuration for TR-Hash MoE architectures: GQA/MHA attention
-    paired with deterministic token-ID / hash-table routed MoE FFN blocks.
+    Unified configuration for TR-Hash MoE architectures. New models use the
+    Source67 shared-plus-four-expert recipe, causal two-ID routing history,
+    routed GQA heads and layer-zero value binding. Other head counts, deeper
+    models and explicit widths extend the small measured reference.
+    Unversioned checkpoint dictionaries retain their historical architecture.
     Dense and learned-router baselines were removed and will return later as
     explicit comparisons against TR-Hash.
 
@@ -37,12 +40,12 @@ class ModelConfig:
     # === Model Architecture ===
     hidden_size: int = 768
     num_hidden_layers: int = 12
-    intermediate_size: Optional[int] = None  # Auto: hidden_size * 4 (or 8/3 for SwiGLU)
+    intermediate_size: Optional[int] = None  # Source67: hidden_size; legacy: rounded 8/3 width.
     vocab_size: int = 32000
 
     # === Attention ===
-    num_attention_heads: int = 12
-    num_key_value_heads: Optional[int] = None  # None = MHA, < num_heads = GQA, 1 = MQA
+    num_attention_heads: Optional[int] = None  # Source67: 4; historical profile: 12.
+    num_key_value_heads: Optional[int] = None  # Source67 default: 1; legacy depends on attention_type.
     attention_type: str = "gqa"  # gqa, mha, mqa
     attention_dropout: float = 0.0
     use_qk_norm: bool = True
@@ -82,12 +85,12 @@ class ModelConfig:
     hidden_act: str = "silu"  # silu, gelu, relu
 
     # === MoE (Token-Routed) ===
-    num_experts: int = 1  # 1 = standard MLP, >1 = MoE
+    num_experts: Optional[int] = None  # Source67: four routed experts plus the shared expert.
     expert_initialization: str = "gpt_normal"  # gpt_normal or legacy_kaiming
     # Frequency tables are accepted only for reproducing historical ablations.
-    # Canonical TR-GQA/TR-MHA uses a fixed token-ID modulo route.
+    # Source67 routes use the original ID and its two causal predecessors.
     token_frequencies: Optional[torch.Tensor] = None
-    routing_strategy: str = "modulo_cyclic"
+    routing_strategy: Optional[str] = None  # Source67: token_id_composed_modulo.
     route_hash_count: int = 2  # Independent hashes used by token_id_multi_hash.
     lsh_routing: bool = False  # Route on a fixed random-hyperplane hash of h (semantic), not the token id
     lsh_bits: int = 0  # Number of hyperplanes (0 = ceil(log2(num_experts)))
@@ -100,13 +103,13 @@ class ModelConfig:
     shared_gate_init: float = 1.0  # Initial multiplier for shared expert output
     routed_gate_init: float = 1.0  # Initial multiplier for routed expert output
     shared_output_scale: float = 1.0  # Fixed, non-parameter shared branch multiplier
-    routed_output_scale: float = 1.0  # Fixed, non-parameter routed branch multiplier
+    routed_output_scale: Optional[float] = None  # Source67: 2; historical profile: 1.
     shared_output_scale_first_layer: Optional[float] = None
     shared_output_scale_last_layer: Optional[float] = None
     routed_output_scale_first_layer: Optional[float] = None
     routed_output_scale_last_layer: Optional[float] = None
-    top_k: int = 1  # Token-Routed top-K deterministic fixed lookup
-    top_k_primary_weight: Optional[float] = None  # K>1 blend weight for primary expert (default: 0.95)
+    top_k: Optional[int] = None  # Source67: two deterministic routes.
+    top_k_primary_weight: Optional[float] = None  # Source67 fixes the two weights at 0.5.
     learn_hash_pair_gates: bool = False  # Learn one mixture scalar per fixed unordered hash pair
     hash_pair_gate_init: float = 0.5  # Expert-a weight; 0.5 preserves the equal-route initialization
     learn_hash_channel_modulation: bool = False  # Fixed token-ID hash selects signs for learned expert/channel gains
@@ -169,6 +172,8 @@ class ModelConfig:
 
     # === Extra (for custom extensions) ===
     extra_config: Dict[str, Any] = field(default_factory=dict)
+    architecture_profile: str = "auto"  # Resolved to source67 or legacy before serialization.
+    architecture_profile_version: int = 1
 
     _removed_mlp_types = {
         "standard",
@@ -200,6 +205,53 @@ class ModelConfig:
 
     def __post_init__(self):
         """Validate and set defaults."""
+        if self.architecture_profile not in {"auto", "source67", "legacy"}:
+            raise ValueError("architecture_profile must be source67, legacy, or auto")
+        if type(self.architecture_profile_version) is not int or self.architecture_profile_version != 1:
+            raise ValueError("unsupported architecture_profile_version; expected 1")
+        composed = "token_id_composed_modulo"
+        if self.architecture_profile == "auto":
+            self.architecture_profile = (
+                "source67"
+                if self.routing_strategy in {None, composed}
+                and self.num_experts in {None, 4}
+                and self.top_k in {None, 2}
+                and self.attention_type == "gqa"
+                and self.mlp_type in {"tr_hash_engine", "tr_hash_moe"}
+                else "legacy"
+            )
+        source67 = self.architecture_profile == "source67"
+        if self.num_experts is None:
+            self.num_experts = 4 if source67 else 1
+        if self.top_k is None:
+            self.top_k = 2 if source67 else 1
+        if self.routing_strategy is None:
+            self.routing_strategy = composed if source67 else "modulo_cyclic"
+        if self.num_attention_heads is None:
+            self.num_attention_heads = 4 if source67 else 12
+        if self.routed_output_scale is None:
+            self.routed_output_scale = 2.0 if source67 else 1.0
+        if source67:
+            if self.num_experts != 4 or self.top_k != 2 or self.routing_strategy != composed:
+                raise ValueError("source67 requires four experts, top_k=2 and token_id_composed_modulo routing")
+            if self.attention_type != "gqa" or self.mlp_type not in {"tr_hash_engine", "tr_hash_moe"}:
+                raise ValueError("source67 requires gqa attention and a TR-Hash engine MLP")
+            if self.hidden_size % 4:
+                raise ValueError("source67 value binding requires hidden_size divisible by 4")
+            if self.top_k_primary_weight is None:
+                self.top_k_primary_weight = 0.5
+            if self.shared_intermediate_size is None:
+                self.shared_intermediate_size = 2 * self.hidden_size
+            if (
+                self.top_k_primary_weight != 0.5
+                or self.shared_output_scale != 1.0
+                or self.routed_output_scale != 2.0
+                or any(value is not None for value in (
+                    self.shared_output_scale_first_layer, self.shared_output_scale_last_layer,
+                    self.routed_output_scale_first_layer, self.routed_output_scale_last_layer,
+                ))
+            ):
+                raise ValueError("source67 requires fixed 50/50 routing and shared/routed scales 1/2")
         if self.mlp_type in self._removed_mlp_types:
             if self.mlp_type in self._token_routed_mlp_types:
                 raise ValueError(
@@ -222,7 +274,9 @@ class ModelConfig:
 
         # Auto-compute intermediate_size
         if self.intermediate_size is None:
-            if self.mlp_type in {"tr_hash_engine", "tr_hash_moe"}:
+            if source67:
+                self.intermediate_size = self.hidden_size
+            elif self.mlp_type in {"tr_hash_engine", "tr_hash_moe"}:
                 # SwiGLU uses 8/3 ratio (rounded to multiple of 256)
                 self.intermediate_size = int(self.hidden_size * 8 / 3)
                 self.intermediate_size = ((self.intermediate_size + 255) // 256) * 256
@@ -232,7 +286,7 @@ class ModelConfig:
 
         # Default num_key_value_heads for GQA
         if self.num_key_value_heads is None:
-            if self.attention_type == "mqa":
+            if source67 or self.attention_type == "mqa":
                 self.num_key_value_heads = 1
             elif self.attention_type in {
                 "mha",
@@ -328,6 +382,7 @@ class ModelConfig:
         if abs(self.hash_channel_scale_init) > 1.0:
             raise ValueError("hash_channel_scale_init must be in [-1, 1]")
         if self.routing_strategy not in {
+            "token_id_composed_modulo",
             "zipf",
             "modulo",
             "modulo_cyclic",
@@ -432,12 +487,26 @@ class ModelConfig:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ModelConfig":
-        """Create config from dictionary, ignoring unknown keys."""
+        """Read saved settings; unversioned dictionaries retain legacy defaults."""
         import dataclasses
         valid_keys = {f.name for f in dataclasses.fields(cls)}
         filtered = {k: v for k, v in data.items() if k in valid_keys}
+        # An unversioned dictionary is a historical checkpoint/configuration.
+        # Resolve the old omitted values explicitly before the new constructor
+        # defaults can change its architecture or numerical behavior.
+        if "architecture_profile" not in filtered:
+            historical_defaults = {
+                "architecture_profile": "legacy",
+                "num_attention_heads": 12,
+                "num_experts": 1,
+                "top_k": 1,
+                "routing_strategy": "modulo_cyclic",
+                "routed_output_scale": 1.0,
+            }
+            filtered = {**historical_defaults, **filtered}
         if filtered.get("routing_strategy") not in {
             None,
+            "token_id_composed_modulo",
             "zipf",
             "modulo",
             "modulo_cyclic",
@@ -476,12 +545,12 @@ class ModelConfig:
 # and the I64 integer-precision presets were removed and will return later as
 # explicit comparison baselines.
 def complexity_7b_config() -> ModelConfig:
-    """Complexity 7B with Token-Routed MoE."""
+    """Historical 7B size name; Source67 now stores 9,066,917,888 parameters."""
     return ModelConfig(
         hidden_size=4096,
         num_hidden_layers=32,
         num_attention_heads=32,
-        num_key_value_heads=8,
+        num_key_value_heads=1,
         intermediate_size=11008,
         vocab_size=100000,
         max_position_embeddings=8192,
@@ -495,12 +564,12 @@ def complexity_7b_config() -> ModelConfig:
 
 # === Complexity Size Presets (TR-Hash: GQA + Token-Routed MoE) ===
 def complexity_tiny_config() -> ModelConfig:
-    """Complexity Tiny (~15M params) - for testing and debugging."""
+    """Complexity Tiny (14,782,464 params) - for testing and debugging."""
     return ModelConfig(
         hidden_size=256,
         num_hidden_layers=6,
         num_attention_heads=4,
-        num_key_value_heads=2,
+        num_key_value_heads=1,
         intermediate_size=704,
         vocab_size=32000,
         max_position_embeddings=2048,
@@ -513,12 +582,12 @@ def complexity_tiny_config() -> ModelConfig:
 
 
 def complexity_small_config() -> ModelConfig:
-    """Complexity Small (~50M params) - for rapid prototyping."""
+    """Complexity Small (50,996,736 params) - for rapid prototyping."""
     return ModelConfig(
         hidden_size=512,
         num_hidden_layers=8,
         num_attention_heads=8,
-        num_key_value_heads=4,
+        num_key_value_heads=1,
         intermediate_size=1408,
         vocab_size=32000,
         max_position_embeddings=2048,
@@ -531,12 +600,12 @@ def complexity_small_config() -> ModelConfig:
 
 
 def complexity_100m_config() -> ModelConfig:
-    """Complexity 100M+ (100.4M params) for long-horizon Agentic 32K training."""
+    """Historical 100M size name; Source67 now stores 89,102,720 parameters."""
     return ModelConfig(
         hidden_size=640,
         num_hidden_layers=10,
         num_attention_heads=10,
-        num_key_value_heads=2,
+        num_key_value_heads=1,
         intermediate_size=1824,
         vocab_size=32000,
         max_position_embeddings=2048,
@@ -549,12 +618,12 @@ def complexity_100m_config() -> ModelConfig:
 
 
 def complexity_base_config() -> ModelConfig:
-    """Complexity Base (~125M params) - balanced size for training."""
+    """Complexity Base (139,022,592 parameters)."""
     return ModelConfig(
         hidden_size=768,
         num_hidden_layers=12,
         num_attention_heads=12,
-        num_key_value_heads=4,
+        num_key_value_heads=1,
         intermediate_size=2048,
         vocab_size=32000,
         max_position_embeddings=2048,
@@ -567,12 +636,12 @@ def complexity_base_config() -> ModelConfig:
 
 
 def complexity_large_config() -> ModelConfig:
-    """Complexity Large (~350M params) - for serious experiments."""
+    """Complexity Large (444,911,616 parameters)."""
     return ModelConfig(
         hidden_size=1024,
         num_hidden_layers=24,
         num_attention_heads=16,
-        num_key_value_heads=4,
+        num_key_value_heads=1,
         intermediate_size=2816,
         vocab_size=32000,
         max_position_embeddings=4096,
@@ -585,12 +654,12 @@ def complexity_large_config() -> ModelConfig:
 
 
 def complexity_xl_config() -> ModelConfig:
-    """Complexity XL (~1B params) - large scale training."""
+    """Complexity XL (1,714,003,968 parameters)."""
     return ModelConfig(
         hidden_size=2048,
         num_hidden_layers=24,
         num_attention_heads=16,
-        num_key_value_heads=4,
+        num_key_value_heads=1,
         intermediate_size=5632,
         vocab_size=32000,
         max_position_embeddings=4096,

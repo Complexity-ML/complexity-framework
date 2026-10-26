@@ -115,9 +115,9 @@ def test_index_merges_modalities_and_cross_subject_split(tmp_path):
     assert records[0].action_id == 3
     assert records[0].action_name == "Walk_forward"
     assert {record.user_id for record in subject_disjoint_records(records, split="train")} == {1}
-    assert {
-        record.user_id for record in subject_disjoint_records(records, split="validation")
-    } == {8}
+    assert {record.user_id for record in subject_disjoint_records(records, split="validation")} == {
+        8
+    }
 
     manifest = tmp_path / "manifest.json"
     save_cuhkx_manifest(records, manifest)
@@ -152,6 +152,7 @@ def test_dataset_preprocessing_collation_and_model_forward(tmp_path):
         num_hidden_layers=1,
         num_attention_heads=4,
         num_experts=8,
+        architecture_profile="legacy",
         top_k=2,
         shared_width=32,
         expert_width=8,
@@ -290,10 +291,7 @@ def test_preprocessing_v2_sorts_imu_and_preserves_absolute_sensor_values(tmp_pat
 def test_preprocessing_v3_preserves_normalized_root_trajectory(tmp_path):
     skeleton = _trial(tmp_path, "skeleton", 1)
     for frame in range(4):
-        keypoints = [
-            [frame * 0.5 + joint * 0.1, joint * 0.2, 1.0]
-            for joint in range(17)
-        ]
+        keypoints = [[frame * 0.5 + joint * 0.1, joint * 0.2, 1.0] for joint in range(17)]
         (skeleton / f"pose_{frame:03d}.json").write_text(
             json.dumps([{"keypoints": keypoints, "keypoint_scores": [1.0] * 17}])
         )

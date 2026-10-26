@@ -15,12 +15,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
 from complexity.tr_hash import (
-    TRHashBackend,
-    TRHashEngine,
-    TRHashEngineConfig,
     TRHashPrecision,
-    TRHashStrategy,
 )
 
 
@@ -39,7 +36,7 @@ def _build_relative_position_index(window_size: int) -> torch.Tensor:
     return relative.sum(-1)  # N, N
 
 
-class _SpatialSelfAttention(nn.Module):
+class _SpatialSelfAttention(DomainSelfAttention):
     """Windowed attention with a learned relative position bias (Swin-style).
 
     Absolute additive position embeddings tell a token roughly where it is on
@@ -57,13 +54,19 @@ class _SpatialSelfAttention(nn.Module):
         num_heads: int,
         dropout: float,
         window_size: int = 0,
+        *,
+        num_key_value_heads: int | None = None,
+        architecture_profile: str = "source67",
+        layer_index: int = 0,
     ):
-        super().__init__()
-        self.num_heads = num_heads
-        self.head_dim = hidden_size // num_heads
-        self.dropout = float(dropout)
-        self.qkv = nn.Linear(hidden_size, 3 * hidden_size)
-        self.out = nn.Linear(hidden_size, hidden_size)
+        super().__init__(
+            hidden_size,
+            num_heads,
+            dropout,
+            num_key_value_heads=num_key_value_heads,
+            architecture_profile=architecture_profile,
+            layer_index=layer_index,
+        )
         self.window_size = int(window_size)
         if self.window_size > 0:
             table_size = (2 * self.window_size - 1) ** 2
@@ -88,31 +91,22 @@ class _SpatialSelfAttention(nn.Module):
         self,
         tokens: torch.Tensor,
         key_mask: torch.Tensor | None = None,
+        route_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        batch, length, width = tokens.shape
-        qkv = self.qkv(tokens).view(batch, length, 3, self.num_heads, self.head_dim)
-        query, key, value = qkv.unbind(dim=2)
-        query, key, value = (tensor.transpose(1, 2) for tensor in (query, key, value))
+        batch, length, _ = tokens.shape
         attention_mask = None
         if self.relative_position_bias_table is not None and length == self.window_size**2:
-            attention_mask = self._relative_position_bias(query.dtype, query.device).expand(
+            attention_mask = self._relative_position_bias(tokens.dtype, tokens.device).expand(
                 batch, -1, -1, -1
             )
             if key_mask is not None:
                 additive = torch.zeros(
-                    key_mask.shape, dtype=attention_mask.dtype, device=key_mask.device
+                    key_mask.shape, dtype=tokens.dtype, device=tokens.device
                 ).masked_fill(~key_mask, float("-inf"))
                 attention_mask = attention_mask + additive[:, None, None, :]
         elif key_mask is not None:
             attention_mask = key_mask[:, None, None, :]
-        output = F.scaled_dot_product_attention(
-            query,
-            key,
-            value,
-            attn_mask=attention_mask,
-            dropout_p=self.dropout if self.training else 0.0,
-        )
-        return self.out(output.transpose(1, 2).reshape(batch, length, width))
+        return super().forward(tokens, route_ids, attention_mask)
 
 
 def _window_partition(
@@ -222,47 +216,57 @@ class HierarchicalTRHashBlock(nn.Module):
         layer_norm_eps: float,
         window_size: int,
         shifted: bool,
+        architecture_profile: str = "source67",
+        num_key_value_heads: int | None = None,
     ):
         super().__init__()
         self.window_size = int(window_size)
         self.shift = self.window_size // 2 if shifted and self.window_size > 1 else 0
         self.norm1 = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
         self.attention = _SpatialSelfAttention(
-            hidden_size, num_heads, dropout, window_size=self.window_size
+            hidden_size,
+            num_heads,
+            dropout,
+            window_size=self.window_size,
+            architecture_profile=architecture_profile,
+            num_key_value_heads=num_key_value_heads,
+            layer_index=layer_index,
         )
         self.norm2 = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
-        self.mlp = TRHashEngine(
-            TRHashEngineConfig(
-                hidden_size=hidden_size,
-                vocab_size=route_vocab_size,
-                num_experts=num_experts,
-                top_k=top_k,
-                shared_width=shared_width,
-                expert_width=expert_width,
-                routing_strategy=TRHashStrategy.BALANCED_HASH,
-                layer_index=layer_index,
-                route_seed=route_seed,
-                precision=precision,
-                backend=TRHashBackend.AUTO,
-            )
+        self.mlp = make_domain_mlp(
+            hidden_size=hidden_size,
+            vocab_size=route_vocab_size,
+            num_experts=num_experts,
+            top_k=top_k,
+            shared_width=shared_width,
+            expert_width=expert_width,
+            layer_index=layer_index,
+            route_seed=route_seed,
+            precision=precision,
+            architecture_profile=architecture_profile,
         )
 
-    def _attention(self, values: torch.Tensor) -> torch.Tensor:
+    def _attention(self, values: torch.Tensor, route_ids: torch.Tensor) -> torch.Tensor:
         batch, height, width, channels = values.shape
         normalized = self.norm1(values)
         if self.window_size <= 0 or max(height, width) <= self.window_size:
             tokens = normalized.reshape(batch, height * width, channels)
-            return self.attention(tokens).reshape(batch, height, width, channels)
+            return self.attention(tokens, route_ids=route_ids).reshape(
+                batch, height, width, channels
+            )
         windows, masks, metadata = _window_partition(
             normalized,
             self.window_size,
             self.shift,
         )
-        attended = self.attention(windows, masks)
+        route_windows, _, _ = _window_partition(
+            route_ids.reshape(batch, height, width, 1), self.window_size, self.shift
+        )
+        attended = self.attention(windows, masks, route_windows.squeeze(-1))
         return _window_unpartition(attended, self.window_size, metadata)
 
     def forward(self, values: torch.Tensor, route_ids: torch.Tensor) -> torch.Tensor:
-        values = values + self._attention(values)
+        values = values + self._attention(values, route_ids)
         batch, height, width, channels = values.shape
         tokens = values.reshape(batch, height * width, channels)
         tokens = tokens + self.mlp(self.norm2(tokens), route_ids)
@@ -326,6 +330,8 @@ class HierarchicalTRHashVisionTower(nn.Module):
             for block_index in range(depth):
                 blocks.append(
                     HierarchicalTRHashBlock(
+                        architecture_profile=config.architecture_profile,
+                        num_key_value_heads=config.vision_key_value_heads,
                         hidden_size=config.vision_hidden_size,
                         num_heads=config.vision_heads,
                         num_experts=config.vision_num_experts,

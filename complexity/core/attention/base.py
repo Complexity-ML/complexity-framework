@@ -59,8 +59,14 @@ class AttentionConfig:
     tr_mha_verifier_gate_init: float = 0.1
     tr_mha_verifier_temperature: float = 1.0
     tr_mha_targets: str = "qv"
+    architecture_profile: str = "legacy"
+    rope_fraction: float = 1.0
 
     def __post_init__(self):
+        if self.architecture_profile not in {"legacy", "source67"}:
+            raise ValueError("attention architecture_profile must be legacy or source67")
+        if self.architecture_profile == "source67" and self.hidden_size % 4:
+            raise ValueError("source67 value binding requires hidden_size divisible by 4")
         if self.head_dim is None:
             self.head_dim = self.hidden_size // self.num_attention_heads
 

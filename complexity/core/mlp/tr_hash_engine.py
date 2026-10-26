@@ -33,6 +33,7 @@ def _route_weights(top_k: int, primary_weight: float | None) -> tuple[float, ...
 
 def _strategy(value: str) -> TRHashStrategy:
     aliases = {
+        "token_id_composed_modulo": TRHashStrategy.COMPOSED_MODULO,
         "modulo": TRHashStrategy.MODULO_CYCLIC,
         "modulo_cyclic": TRHashStrategy.MODULO_CYCLIC,
         "token_id_balanced_hash": TRHashStrategy.BALANCED_HASH,
@@ -43,7 +44,7 @@ def _strategy(value: str) -> TRHashStrategy:
         return aliases[str(value).lower()]
     except KeyError as exc:
         raise ValueError(
-            "tr_hash_engine supports modulo_cyclic, token_id_balanced_hash, "
+            "tr_hash_engine supports token_id_composed_modulo, modulo_cyclic, token_id_balanced_hash, "
             "token_id_multi_hash, or token_id_hierarchical_hash; "
             f"got {value!r}"
         ) from exc
@@ -70,13 +71,18 @@ class TRHashEngineMLP(MLPBase):
 
     def __init__(self, config: MLPConfig):
         super().__init__(config)
+        strategy = _strategy(config.routing_strategy)
         if config.intermediate_size % config.num_experts:
             raise ValueError("TR-Hash routed width must be divisible by num_experts")
         shared_width = (
             int(
                 config.shared_intermediate_size
                 if config.shared_intermediate_size is not None
-                else config.intermediate_size
+                else (
+                    2 * config.hidden_size
+                    if strategy is TRHashStrategy.COMPOSED_MODULO
+                    else config.intermediate_size
+                )
             )
             if config.shared_expert
             else 0
@@ -100,7 +106,7 @@ class TRHashEngineMLP(MLPBase):
                 shared_width=shared_width,
                 expert_width=config.intermediate_size // config.num_experts,
                 initializer_range=float(config.initializer_range),
-                routing_strategy=_strategy(config.routing_strategy),
+                routing_strategy=strategy,
                 layer_index=int(config.layer_idx),
                 route_hash_count=int(config.route_hash_count),
                 route_weights=_route_weights(
@@ -124,9 +130,17 @@ class TRHashEngineMLP(MLPBase):
     def forward(self, hidden_states, token_ids=None, **kwargs):
         if token_ids is None:
             raise ValueError("tr_hash_engine requires token_ids")
-        return self.engine(hidden_states, token_ids)
+        return self.engine(
+            hidden_states,
+            token_ids,
+            previous_token_ids=kwargs.get("previous_token_ids"),
+        )
 
     def set_top_k_primary_weight(self, weight: float) -> None:
+        if self.engine.config.routing_strategy is TRHashStrategy.COMPOSED_MODULO:
+            if float(weight) != 0.5:
+                raise ValueError("source67 requires a fixed top_k_primary_weight of 0.5")
+            return
         if self.top_k == 1:
             self._primary_weight = 1.0
             return
@@ -135,6 +149,11 @@ class TRHashEngineMLP(MLPBase):
             self.engine.config,
             route_weights=_route_weights(self.top_k, self._primary_weight),
         )
+        # All execution paths must observe the same changed mixture policy.
+        self.engine._route_weights.copy_(
+            self.engine._route_weights.new_tensor(self.engine.config.route_weights)
+        )
+        self.engine._graph_pool.clear()
 
     def set_active_experts(self, num_experts: int) -> None:
         """Shrink to a smaller deterministic ID/hash-routed expert pool at runtime."""
@@ -145,6 +164,8 @@ class TRHashEngineMLP(MLPBase):
         self.engine.set_active_capacity(expert_width=width)
 
     def training_control_capabilities(self) -> frozenset[str]:
+        if self.engine.config.routing_strategy is TRHashStrategy.COMPOSED_MODULO:
+            return frozenset({"active_expert_width"})
         return frozenset({"topk_primary_weight", "active_num_experts", "active_expert_width"})
 
     def training_telemetry(self) -> dict[str, float]:

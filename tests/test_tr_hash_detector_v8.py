@@ -229,6 +229,7 @@ def test_v8_position_grids_transfer_across_resolutions(tmp_path):
         {name: value.detach().contiguous() for name, value in source.tower.state_dict().items()},
         str(checkpoint / "tower.safetensors"),
     )
+    (checkpoint / "config.json").write_text(__import__("json").dumps(source.config.to_dict()))
     target = TRHashObjectDetector(_config(64))
 
     load_pretrained_tower(target, checkpoint)

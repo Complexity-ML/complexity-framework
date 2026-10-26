@@ -425,6 +425,8 @@ class ComplexityModel(nn.Module):
         batch_size, seq_len = hidden_states.shape[:2]
         token_ids = routing_ids if routing_ids is not None else input_ids
         if token_ids is None:
+            if self.config.architecture_profile == "source67":
+                raise ValueError("source67 requires explicit routing_ids with inputs_embeds")
             token_ids = torch.zeros(
                 batch_size,
                 seq_len,
@@ -433,6 +435,11 @@ class ComplexityModel(nn.Module):
             )
         if token_ids.shape != (batch_size, seq_len):
             raise ValueError("routing_ids must match the embedded sequence shape")
+        if self.config.architecture_profile == "source67":
+            if token_ids.dtype != torch.long or token_ids.device != hidden_states.device:
+                raise ValueError("source67 requires same-device torch.long routing_ids")
+            if torch.any(token_ids < 0) or torch.any(token_ids >= self.config.vocab_size):
+                raise ValueError("routing_ids must lie within the configured vocabulary")
 
         # Store hidden states if requested
         all_hidden_states = [hidden_states] if return_hidden_states else None

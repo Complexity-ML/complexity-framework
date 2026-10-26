@@ -51,6 +51,7 @@ class AttentionBackbone(str, Enum):
 class TRHashStrategy(str, Enum):
     """Deterministic token-ID route families implemented by the engine."""
 
+    COMPOSED_MODULO = "token_id_composed_modulo"
     MODULO_CYCLIC = "modulo_cyclic"
     BALANCED_HASH = "token_id_balanced_hash"
     AFFINE_HASH = "token_id_affine_hash"
@@ -98,16 +99,16 @@ class TRHashEngineConfig:
     vocab_size: int
     num_experts: int = 4
     top_k: int = 2
-    shared_width: int = 128
-    expert_width: int = 48
+    shared_width: int | None = None
+    expert_width: int | None = None
     initializer_range: float = 0.02
-    routing_strategy: TRHashStrategy = TRHashStrategy.BALANCED_HASH
+    routing_strategy: TRHashStrategy | str | None = None
     layer_index: int = 0
     route_seed: int = 0x71D5A17
     route_hash_count: int = 2
     route_weights: Tuple[float, ...] = ()
     shared_output_scale: float = 1.0
-    routed_output_scale: float = 1.0
+    routed_output_scale: float | None = None
     attention_backbone: AttentionBackbone = AttentionBackbone.GQA
     phase: TRHashPhase = TRHashPhase.TRAINING
     precision: TRHashPrecision = TRHashPrecision.BF16
@@ -116,11 +117,27 @@ class TRHashEngineConfig:
     graph_buckets: Tuple[GraphBucket, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
+        strategy = self.routing_strategy
+        if strategy is None or strategy == "auto":
+            strategy = (
+                TRHashStrategy.COMPOSED_MODULO
+                if self.num_experts == 4 and self.top_k == 2
+                else TRHashStrategy.BALANCED_HASH
+            )
         object.__setattr__(
             self,
             "routing_strategy",
-            TRHashStrategy(self.routing_strategy),
+            TRHashStrategy(strategy),
         )
+        source67 = self.routing_strategy is TRHashStrategy.COMPOSED_MODULO
+        if source67 and (self.num_experts != 4 or self.top_k != 2):
+            raise ValueError("source67 composed modulo requires num_experts=4 and top_k=2")
+        if self.shared_width is None:
+            object.__setattr__(self, "shared_width", 2 * self.hidden_size if source67 else 128)
+        if self.expert_width is None:
+            object.__setattr__(self, "expert_width", self.hidden_size // 4 if source67 else 48)
+        if self.routed_output_scale is None:
+            object.__setattr__(self, "routed_output_scale", 2.0 if source67 else 1.0)
         object.__setattr__(
             self,
             "attention_backbone",
@@ -174,12 +191,20 @@ class TRHashEngineConfig:
             raise ValueError("route_weights must be non-negative")
         if abs(sum(weights) - 1.0) > 1e-6:
             raise ValueError("route_weights must sum to 1")
+        if source67 and tuple(weights) != (0.5, 0.5):
+            raise ValueError("source67 requires fixed equal route_weights=(0.5, 0.5)")
+        if source67 and (self.shared_output_scale != 1.0 or self.routed_output_scale != 2.0):
+            raise ValueError("source67 requires shared_output_scale=1 and routed_output_scale=2")
 
         if self.backend is TRHashBackend.CUDA_GRAPH:
             if self.phase is not TRHashPhase.INFERENCE:
                 raise ValueError("CUDA Graph execution is inference-only")
             if not self.graph_buckets:
                 raise ValueError("CUDA Graph execution requires at least one graph bucket")
+
+    @property
+    def baseline_profile(self) -> str:
+        return "source67" if self.routing_strategy is TRHashStrategy.COMPOSED_MODULO else "legacy"
 
     @property
     def stored_routed_width(self) -> int:

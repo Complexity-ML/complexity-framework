@@ -17,7 +17,7 @@ Usage:
     features = encoder(video)   # [B, C, T, H, W]
 
     # Robot — perception multimodale par fusion de capteurs
-    model = Robot.model(num_classes=40, num_experts=8, top_k=2)
+    model = Robot.model(num_classes=40, num_experts=4, top_k=2)
 
     # Omni — image + text -> text
     model = Omni.model(hidden_size=1024, vocab_size=32000)
@@ -69,18 +69,25 @@ from complexity.multimodal import (
 )
 
 
+def _rename_factory_kwargs(kwargs, aliases):
+    """Accept config or wrapper dimension names without silent conflicts."""
+    values = dict(kwargs)
+    for source, target in aliases.items():
+        if source in values:
+            if target in values and values[target] != values[source]:
+                raise ValueError(f"conflicting factory arguments: {source} and {target}")
+            values[target] = values.pop(source)
+    return values
+
+
 class Vision:
     """
     Factory pour créer des encodeurs vision.
 
-    ATTENTION : ces encodeurs routent par ``position % num_experts`` (voir
-    ``complexity.multimodal``), pas par table de hachage déterministe par ID
-    -- ils ne respectent pas le contrat de routing TR-Hash du reste du
-    framework. Pour un encodeur vision conforme, utiliser
-    ``complexity.generative.vision_language.vision_tower.TRHashVisionTower``
-    (ou ``Omni.model(...)`` pour un modèle image+texte->texte complet) --
-    attention, son contrat de sortie diffère (features par patch, pas de
-    pooling CLS).
+    Les nouveaux encodeurs utilisent Source67 : IDs de patches originaux,
+    MLP contextuel à deux lags et attention GQA avec têtes routées et V0.
+    ``architecture_profile="legacy"`` conserve le précédent contrat top1/MHA.
+    Ces extensions vision n'héritent pas du score mesuré sur texte.
 
     Usage:
         # Encoder basique
@@ -117,12 +124,15 @@ class Vision:
 
         vision_cls = cls.TYPES[vision_type]
 
-        # Build config si nécessaire
-        if vision_type in ["vit", "transformer"]:
-            config = VisionConfig(**kwargs)
-            return vision_cls(config)
-        else:
-            return vision_cls(**kwargs)
+        if vision_type == "transformer":
+            values = _rename_factory_kwargs(
+                kwargs, {"num_layers": "num_hidden_layers", "num_heads": "num_attention_heads"}
+            )
+            return vision_cls(VisionConfig(**values))
+        values = _rename_factory_kwargs(
+            kwargs, {"num_hidden_layers": "num_layers", "num_attention_heads": "num_heads"}
+        )
+        return vision_cls(**values)
 
     @classmethod
     def encoder(
@@ -180,15 +190,11 @@ class Audio:
     """
     Factory pour créer des encodeurs audio.
 
-    ATTENTION : ces encodeurs routent par ``position % num_experts``, pas par
-    table de hachage déterministe -- non conformes au routing TR-Hash du
-    reste du framework. Ils attendent aussi un spectrogramme mel déjà
-    calculé ``[B, n_mels, frames]``. Pour un encodeur conforme qui calcule le
-    mel lui-même à partir d'une waveform brute ``[B, samples]``, utiliser
-    ``complexity.generative.audio.encoder.AudioEncoder`` (ou
-    ``complexity.generative.audio.TRHashSpeechToText`` pour un pipeline
-    complet) -- ce n'est pas un remplacement direct, le format d'entrée
-    diffère.
+    Les nouveaux encodeurs utilisent Source67 avec les positions de frames
+    originales ; le profil legacy reste explicite. Ils attendent un mel déjà
+    calculé ``[B, n_mels, frames]``. L'encodeur
+    ``complexity.generative.audio.encoder.AudioEncoder`` accepte au contraire
+    une waveform ``[B, samples]`` et calcule lui-même le mel.
 
     Usage:
         # Encoder basique
@@ -221,12 +227,15 @@ class Audio:
 
         audio_cls = cls.TYPES[audio_type]
 
-        # Build config si nécessaire
-        if audio_type in ["standard", "whisper"]:
-            config = AudioConfig(**kwargs)
-            return audio_cls(config)
-        else:
-            return audio_cls(**kwargs)
+        if audio_type == "mel":
+            values = _rename_factory_kwargs(
+                kwargs, {"num_layers": "num_hidden_layers", "num_heads": "num_attention_heads"}
+            )
+            return audio_cls(AudioConfig(**values))
+        values = _rename_factory_kwargs(
+            kwargs, {"num_hidden_layers": "num_layers", "num_attention_heads": "num_heads"}
+        )
+        return audio_cls(**values)
 
     @classmethod
     def encoder(
@@ -275,14 +284,9 @@ class Fusion:
     """
     Factory pour créer des modules de fusion multimodal.
 
-    ATTENTION : le MLP interne de ces modules de fusion route par
-    ``query_position % num_experts``, pas par table de hachage déterministe
-    -- non conforme au routing TR-Hash du reste du framework. Il n'existe
-    pas de remplacement direct : dans le chemin conforme, la fusion se fait
-    en assignant des routes déterministes aux tokens image/audio puis en les
-    faisant passer par le même décodeur TR-Hash MoE que le texte -- voir
-    ``Omni`` (``complexity.generative.vision_language.TRHashImageTextToText``)
-    plutôt qu'un module de fusion séparé.
+    Cross-attention et Perceiver utilisent le MLP Source67 avec les IDs de
+    requêtes originaux. Leurs cross-attentions restent spécifiques à la tâche.
+    Les modules gated et concat gardent leurs projections dédiées.
 
     Usage:
         # Cross-attention
@@ -321,12 +325,10 @@ class Fusion:
 
         fusion_cls = cls.TYPES[fusion_type]
 
-        # Build config si nécessaire
-        if fusion_type in ["cross_attention", "multimodal"]:
-            config = FusionConfig(**kwargs)
-            return fusion_cls(config)
-        else:
-            return fusion_cls(**kwargs)
+        values = _rename_factory_kwargs(
+            kwargs, {"num_attention_heads": "num_heads", "num_hidden_layers": "num_layers"}
+        )
+        return fusion_cls(**values)
 
     @classmethod
     def cross_attention(
@@ -385,11 +387,9 @@ class Video:
     """
     Factory pour créer des encodeurs vidéo (ViViT + token-routed MLP).
 
-    ATTENTION : route par ``position % num_experts``, pas par table de
-    hachage déterministe -- non conforme au routing TR-Hash du reste du
-    framework. Pour un encodeur vidéo conforme, utiliser
-    ``complexity.generative.video.TRHashVideoTower`` -- son contrat de
-    sortie diffère (pas de pooling intégré).
+    Le profil Source67 utilise les positions de tubelets originales pour le
+    MLP contextuel et les attentions GQA spatiale/temporelle. Le profil legacy
+    conserve l'ancien contrat. Aucun score vidéo n'est déduit du score texte.
 
     Usage:
         # Encoder basique
@@ -412,6 +412,9 @@ class Video:
         num_heads: int = 12,
         num_experts: int = 4,
         output_dim: Optional[int] = None,
+        *,
+        architecture_profile: str = "source67",
+        num_key_value_heads: Optional[int] = None,
     ) -> nn.Module:
         """
         Video encoder (ViViT Factorised + token-routed MLP).
@@ -424,7 +427,9 @@ class Video:
             hidden_size: Dimension hidden
             num_layers: Nombre de layers
             num_heads: Nombre de heads
-            num_experts: Experts par bloc MLP (routing par position spatiale)
+            num_experts: Experts par bloc MLP (4 pour Source67).
+            architecture_profile: Source67 par défaut, legacy pour les anciens modèles.
+            num_key_value_heads: Têtes KV explicites ; défaut 1 en Source67.
             output_dim: Projection de sortie optionnelle
         """
         return VideoEncoder(
@@ -437,6 +442,8 @@ class Video:
             num_heads=num_heads,
             num_experts=num_experts,
             output_dim=output_dim,
+            architecture_profile=architecture_profile,
+            num_key_value_heads=num_key_value_heads,
         )
 
     @classmethod
@@ -498,12 +505,9 @@ class Omni:
     """
     Factory pour créer des modèles multimodaux (image + texte -> texte).
 
-    Remplace l'ancien ``OmniModel`` (routing par position de séquence,
-    ``pos % num_experts`` — non conforme au routing TR-Hash par ID de
-    token / table de hachage). ``TRHashImageTextToText`` assigne des routes
-    déterministes fixes par patch d'image et les fait passer par le même
-    décodeur TR-Hash MoE que les tokens de texte — voir
-    ``complexity.generative.vision_language``.
+    Le modèle complet Source67 assigne des IDs aux préfixes visuels et aux
+    tokens texte dans le même décodeur. La tour vision utilise également le
+    profil commun ; le connecteur croisé garde sa capacité dédiée.
 
     Portée actuelle : image + texte -> texte uniquement (pas encore audio ni
     vidéo).
@@ -514,7 +518,7 @@ class Omni:
         logits = out["logits"]
 
         # Avec config complète
-        config = Omni.config(hidden_size=2048, num_experts=8)
+        config = Omni.config(hidden_size=768, num_experts=4)
         model = Omni.from_config(config)
     """
 
@@ -528,7 +532,7 @@ class Omni:
 
         Exemples:
             model = Omni.model(hidden_size=768, vocab_size=32000)
-            model = Omni.model(hidden_size=1024, num_experts=8, top_k=2)
+            model = Omni.model(hidden_size=768, num_experts=4, top_k=2)
         """
         return TRHashImageTextToText(TRHashVisionLanguageConfig(**kwargs))
 

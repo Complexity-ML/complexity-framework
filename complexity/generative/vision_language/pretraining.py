@@ -75,9 +75,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden-size", type=int, default=128)
     parser.add_argument("--layers", type=int, default=4)
     parser.add_argument("--heads", type=int, default=4)
+    parser.add_argument(
+        "--architecture-profile", choices=("source67", "legacy"), default="source67"
+    )
+    parser.add_argument("--key-value-heads", type=int, default=None)
     parser.add_argument("--num-experts", type=int, default=4)
     parser.add_argument("--top-k", type=int, default=2)
-    parser.add_argument("--expert-width", type=int, default=48)
+    parser.add_argument("--expert-width", type=int, default=None)
     parser.add_argument("--stage-depths", type=int, nargs="+", default=(1, 1, 2))
     parser.add_argument("--window-size", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=20)
@@ -407,6 +411,8 @@ def main() -> None:
     )
     precision = "fp32" if device.type == "mps" else "bf16"
     config = TRHashDetectorConfig(
+        architecture_profile=args.architecture_profile,
+        vision_key_value_heads=args.key_value_heads,
         architecture_version=args.architecture_version,
         image_size=args.image_size,
         patch_size=args.patch_size,
@@ -415,7 +421,11 @@ def main() -> None:
         vision_heads=args.heads,
         vision_num_experts=args.num_experts,
         vision_top_k=args.top_k,
-        vision_expert_width=args.expert_width,
+        vision_expert_width=(
+            args.expert_width
+            if args.expert_width is not None
+            else (48 if args.architecture_profile == "legacy" else None)
+        ),
         vision_stage_depths=tuple(args.stage_depths),
         vision_window_size=args.window_size,
         vision_precision=precision,
@@ -423,9 +433,10 @@ def main() -> None:
     )
     model = HierarchicalTRHashVisionClassifier(config, num_classes).to(device)
     if args.resume is not None:
-        saved_config = json.loads((args.resume / "config.json").read_text())["tower"]
-        current_config = json.loads(json.dumps(_config_values(config)))
-        if saved_config != current_config:
+        saved_config = TRHashDetectorConfig.from_dict(
+            json.loads((args.resume / "config.json").read_text())["tower"]
+        )
+        if saved_config != config:
             raise ValueError("exact resume requires an unchanged vision model config")
         model.load_state_dict(load_file(str(args.resume / "model.safetensors")))
     if distributed.is_main:

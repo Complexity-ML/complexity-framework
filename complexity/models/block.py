@@ -15,6 +15,7 @@ from ..config import ModelConfig
 from ..core.attention import AttentionConfig
 from ..core.mlp import MLPConfig
 from ..core.registry import ATTENTION_REGISTRY, MLP_REGISTRY, NORMALIZATION_REGISTRY
+from ..tr_hash.baseline import update_routing_history
 
 
 class TransformerBlock(nn.Module):
@@ -44,6 +45,7 @@ class TransformerBlock(nn.Module):
             hidden_size=config.hidden_size,
             num_attention_heads=config.num_attention_heads,
             num_key_value_heads=config.num_key_value_heads,
+            architecture_profile=config.architecture_profile,
             max_position_embeddings=config.max_position_embeddings,
             rope_theta=config.rope_theta,
             attention_dropout=config.attention_dropout,
@@ -52,6 +54,7 @@ class TransformerBlock(nn.Module):
             use_sdpa=config.use_sdpa,
             is_causal=getattr(config, "is_causal", True),
             rope_type=config.rope_type,
+            rope_fraction=config.rope_fraction,
             use_mup_attn_scale=getattr(config, "use_mup_attn_scale", False),
             causal_conv_kernel_size=getattr(config, "causal_conv_kernel_size", 4),
             causal_conv_dilation=2 ** (
@@ -233,15 +236,35 @@ class TransformerBlock(nn.Module):
         """
         residual = hidden_states
 
+        previous_token_ids = None
+        attention_past = past_key_value
+        contextual_routing = self.config.routing_strategy == "token_id_composed_modulo"
+        if contextual_routing and past_key_value is not None:
+            if (
+                isinstance(past_key_value, (tuple, list))
+                and len(past_key_value) == 2
+                and past_key_value[0].shape[2] == 0
+            ):
+                # An empty legacy allocation has no missing history.
+                attention_past = past_key_value
+            elif isinstance(past_key_value, (tuple, list)) and len(past_key_value) == 3:
+                attention_past = past_key_value[:2]
+                previous_token_ids = past_key_value[2]
+            else:
+                raise ValueError(
+                    "Source67 cached routing requires (key, value, previous_token_ids); "
+                    "a legacy KV cache cannot reconstruct the two previous routing IDs"
+                )
+
         # Self Attention
         hidden_states = self.input_layernorm(hidden_states)
 
         attn_kwargs = dict(
             attention_mask=attention_mask,
-            past_key_value=past_key_value,
+            past_key_value=attention_past,
             use_cache=use_cache,
         )
-        if self.config.attention_type in {
+        if self.config.architecture_profile == "source67" or self.config.attention_type in {
             "causal_fast_weight_conv",
             "lexical_gqa",
             "lexical_bias_gqa",
@@ -274,7 +297,11 @@ class TransformerBlock(nn.Module):
             hidden_states,
             token_ids=token_ids,
             lexical_token_scale_values=lexical_token_scale_values,
+            previous_token_ids=previous_token_ids,
         )
         hidden_states = residual + hidden_states
+
+        if use_cache and contextual_routing:
+            new_kv = (*new_kv, update_routing_history(token_ids, previous_token_ids))
 
         return hidden_states, new_kv, None

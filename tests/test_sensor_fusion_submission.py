@@ -55,6 +55,7 @@ def _tiny_config() -> TRHashSensorFusionConfig:
         num_hidden_layers=1,
         num_attention_heads=4,
         num_experts=8,
+        architecture_profile="legacy",
         top_k=2,
         shared_width=16,
         expert_width=4,
@@ -104,9 +105,7 @@ def test_official_test_index_and_dataset_preserve_csv_order(tmp_path):
 
 def test_test_index_rejects_any_populated_prediction(tmp_path):
     data_root, test_csv = _write_test_tree(tmp_path, count=1)
-    test_csv.write_text(
-        "path,prediction\nsmall_model_track_test/SM_test_0001/,17\n"
-    )
+    test_csv.write_text("path,prediction\nsmall_model_track_test/SM_test_0001/,17\n")
     try:
         build_cuhkx_test_records(data_root, test_csv)
     except ValueError as error:

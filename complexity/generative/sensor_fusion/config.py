@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields
+from complexity.tr_hash.attention import (
+    resolve_domain_heads,
+    resolve_domain_widths,
+    validate_domain_profile,
+)
+
+from dataclasses import asdict, dataclass, fields, field
 from typing import Any, Dict, Tuple
 
 from complexity.tr_hash import TRHashPrecision
@@ -25,18 +31,21 @@ class TRHashSensorFusionConfig:
     skeleton sequences) are tokenized, fused through TR-Hash blocks routed
     by ``(modality, local token position)``, and pooled into a
     classification head. Visual streams share one TR-Hash MoE vision tower.
-    Every capability below is always active -- there is no reduced/legacy
-    variant.
+    The architecture profile is serialized: new models use Source67, while
+    legacy reconstructs the previous eight-expert checkpoint contract.
     """
 
+    architecture_profile: str = field(default="source67", kw_only=True)
+    architecture_profile_version: int = field(default=1, kw_only=True)
     num_classes: int = 40
     hidden_size: int = 256
     num_hidden_layers: int = 6
     num_attention_heads: int = 8
-    num_experts: int = 8
+    num_key_value_heads: int | None = field(default=None, kw_only=True)
+    num_experts: int | None = None
     top_k: int = 2
-    shared_width: int = 256
-    expert_width: int = 128
+    shared_width: int | None = None
+    expert_width: int | None = None
     route_seed: int = 0x71D5A17
     precision: str = "bf16"
     attention_dropout: float = 0.0
@@ -55,10 +64,11 @@ class TRHashSensorFusionConfig:
     vision_hidden_size: int = 128
     vision_layers: int = 4
     vision_heads: int = 4
+    vision_key_value_heads: int | None = field(default=None, kw_only=True)
     vision_num_experts: int = 4
     vision_top_k: int = 2
-    vision_shared_width: int = 112
-    vision_expert_width: int = 32
+    vision_shared_width: int | None = None
+    vision_expert_width: int | None = None
     vision_stage_depths: Tuple[int, ...] = (1, 1, 2)
     vision_window_size: int = 8
 
@@ -78,11 +88,45 @@ class TRHashSensorFusionConfig:
     # Residual classifier capacity. Every class identity follows a fixed
     # balanced top-k route while the ordinary dense head remains the primary
     # prediction path.
-    class_hash_shared_width: int = 96
-    class_hash_expert_width: int = 24
+    class_hash_shared_width: int | None = None
+    class_hash_expert_width: int | None = None
     class_hash_initial_scale: float = 0.05
 
     def __post_init__(self) -> None:
+        validate_domain_profile(self.architecture_profile, self.architecture_profile_version)
+        if self.num_experts is None:
+            object.__setattr__(
+                self, "num_experts", 4 if self.architecture_profile == "source67" else 8
+            )
+        resolve_domain_heads(self, heads="num_attention_heads", kv="num_key_value_heads")
+        resolve_domain_heads(self, heads="vision_heads", kv="vision_key_value_heads")
+        resolve_domain_widths(
+            self,
+            hidden="hidden_size",
+            shared="shared_width",
+            expert="expert_width",
+            legacy_shared=256,
+            legacy_expert=128,
+        )
+        resolve_domain_widths(
+            self,
+            hidden="vision_hidden_size",
+            shared="vision_shared_width",
+            expert="vision_expert_width",
+            legacy_shared=112,
+            legacy_expert=32,
+        )
+        resolve_domain_widths(
+            self,
+            hidden="hidden_size",
+            shared="class_hash_shared_width",
+            expert="class_hash_expert_width",
+            legacy_shared=96,
+            legacy_expert=24,
+        )
+        if self.architecture_profile == "source67":
+            if self.num_experts != 4 or self.top_k != 2:
+                raise ValueError("source67 requires four experts and top_k=2")
         object.__setattr__(self, "visual_channels", tuple(self.visual_channels))
         object.__setattr__(self, "visual_token_grid", tuple(self.visual_token_grid))
         object.__setattr__(self, "vision_stage_depths", tuple(self.vision_stage_depths))
@@ -93,8 +137,8 @@ class TRHashSensorFusionConfig:
             raise ValueError("hidden_size must be positive and divisible by num_attention_heads")
         if self.num_hidden_layers <= 0:
             raise ValueError("num_hidden_layers must be positive")
-        if self.num_experts != 8:
-            raise ValueError("this model contract requires exactly 8 experts")
+        if self.architecture_profile == "legacy" and self.num_experts != 8:
+            raise ValueError("the legacy model contract requires exactly 8 experts")
         if self.top_k <= 0 or self.top_k > self.num_experts:
             raise ValueError("top_k must be positive and cannot exceed num_experts")
         if self.shared_width < 0 or self.expert_width <= 0:
@@ -169,4 +213,8 @@ class TRHashSensorFusionConfig:
         unknown = sorted(set(values) - allowed)
         if unknown:
             raise ValueError(f"unknown sensor-fusion config fields: {unknown}")
+        values = dict(values)
+        values.setdefault("architecture_profile", "legacy")
+        if values["architecture_profile"] == "legacy":
+            values.setdefault("num_experts", 8)
         return cls(**values)

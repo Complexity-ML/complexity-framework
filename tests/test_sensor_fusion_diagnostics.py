@@ -117,6 +117,7 @@ def test_hash_route_diagnostics_covers_class_modality_routes():
         num_hidden_layers=1,
         num_attention_heads=4,
         num_experts=8,
+        architecture_profile="legacy",
         top_k=2,
         shared_width=32,
         expert_width=8,
@@ -150,7 +151,4 @@ def test_hash_route_diagnostics_covers_class_modality_routes():
         "skeleton",
     }
     assert len(gate["expert_assignments_by_class"]) == config.num_classes
-    assert all(
-        sum(counts) == config.top_k * 6
-        for counts in gate["expert_assignments_by_class"]
-    )
+    assert all(sum(counts) == config.top_k * 6 for counts in gate["expert_assignments_by_class"])

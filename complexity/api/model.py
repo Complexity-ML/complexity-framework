@@ -5,8 +5,9 @@ Model API - Flexible avec defaults.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Union, Dict, Any
 
 import torch
 
@@ -22,11 +23,11 @@ class Model:
 
     Examples:
         # Simple
-        model = Model.load("llama-7b")
+        model = Model.load("complexity-tiny")
 
         # Override
-        model = Model.load("llama-7b", device="cuda", dtype=torch.bfloat16)
-        model = Model.create(hidden_size=2048, num_layers=32, mlp_type="gated")
+        model = Model.load("complexity-tiny", device="cuda", dtype=torch.bfloat16)
+        model = Model.create(hidden_size=2048, num_hidden_layers=32, mlp_type="tr_hash_engine")
 
         # Accès direct au nn.Module
         model.module.parameters()
@@ -71,17 +72,16 @@ class Model:
 
         # Preset?
         if path in PRESET_CONFIGS:
-            config = get_preset(path)
-            # kwargs override config
-            for k, v in kwargs.items():
-                if hasattr(config, k):
-                    setattr(config, k, v)
+            # Reconstruct to validate overrides without mutating the preset.
+            config = replace(get_preset(path), **kwargs)
 
             model = ComplexityModel(config)
             if dtype:
                 model = model.to(dtype)
 
-            print(f"[Model] Loaded preset '{path}' ({sum(p.numel() for p in model.parameters()):,} params)")
+            print(
+                f"[Model] Loaded preset '{path}' ({sum(p.numel() for p in model.parameters()):,} params)"
+            )
 
             result = cls(model, config, device=device or "cpu")
             if device:
@@ -97,9 +97,9 @@ class Model:
 
         with open(config_file) as f:
             cfg = json.load(f)
-        # kwargs override
-        cfg.update(kwargs)
-        config = ModelConfig(**cfg)
+        # Unversioned saved dictionaries retain their historical architecture.
+        # User overrides are validated separately and cannot disappear silently.
+        config = replace(ModelConfig.from_dict(cfg), **kwargs)
 
         model = ComplexityModel(config)
 
@@ -125,17 +125,13 @@ class Model:
 
         Args:
             config: Config (optionnel)
-            **kwargs: Override tout (hidden_size, num_layers, device, ...)
+            **kwargs: Overrides validés (hidden_size, num_hidden_layers, device, ...).
+                La configuration fournie reste intacte ; ses largeurs explicites sont conservées.
         """
         device = kwargs.pop("device", None)
         dtype = kwargs.pop("dtype", None)
 
-        if config:
-            for k, v in kwargs.items():
-                if hasattr(config, k):
-                    setattr(config, k, v)
-        else:
-            config = ModelConfig(**kwargs)
+        config = replace(config, **kwargs) if config is not None else ModelConfig(**kwargs)
 
         model = ComplexityModel(config)
         if dtype:
@@ -165,15 +161,12 @@ class Model:
         generation/serving must run through vLLM or SGLang.
         """
         raise RuntimeError(
-            "Model.generate is disabled: use a vLLM or SGLang serving backend "
-            "for generation."
+            "Model.generate is disabled: use a vLLM or SGLang serving backend " "for generation."
         )
 
     def chat(self, messages: List[Dict], max_tokens: int = 500, **kwargs) -> Dict[str, Any]:
         """Disabled: chat generation must run through vLLM or SGLang."""
-        raise RuntimeError(
-            "Model.chat is disabled: use a vLLM or SGLang serving backend for chat."
-        )
+        raise RuntimeError("Model.chat is disabled: use a vLLM or SGLang serving backend for chat.")
 
     # ==================== Utils ====================
 
@@ -206,7 +199,7 @@ class Model:
         path.mkdir(parents=True, exist_ok=True)
         torch.save(self._model.state_dict(), path / "model.pt")
         with open(path / "config.json", "w") as f:
-            json.dump(self._config.__dict__, f, indent=2, default=str)
+            json.dump(self._config.to_dict(), f, indent=2, default=str)
         print(f"[Model] Saved to {path}")
 
     def __repr__(self):

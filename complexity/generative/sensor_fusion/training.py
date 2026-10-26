@@ -77,13 +77,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden-size", type=int, default=256)
     parser.add_argument("--layers", type=int, default=6)
     parser.add_argument("--heads", type=int, default=8)
-    parser.add_argument("--num-experts", type=int, choices=(8,), default=8)
+    parser.add_argument(
+        "--architecture-profile", choices=("source67", "legacy"), default="source67"
+    )
+    parser.add_argument("--key-value-heads", type=int, default=None)
+    parser.add_argument("--num-experts", type=int, choices=(4, 8), default=None)
     parser.add_argument("--top-k", type=int, default=2)
-    parser.add_argument("--shared-width", type=int, default=256)
-    parser.add_argument("--expert-width", type=int, default=128)
+    parser.add_argument("--shared-width", type=int, default=None)
+    parser.add_argument("--expert-width", type=int, default=None)
     parser.add_argument("--sequence-tokens", type=int, default=32)
-    parser.add_argument("--class-hash-shared-width", type=int, default=96)
-    parser.add_argument("--class-hash-expert-width", type=int, default=24)
+    parser.add_argument("--class-hash-shared-width", type=int, default=None)
+    parser.add_argument("--class-hash-expert-width", type=int, default=None)
     parser.add_argument("--class-hash-initial-scale", type=float, default=0.05)
     parser.add_argument("--late-fusion-weight", type=float, default=0.5)
     parser.add_argument("--auxiliary-loss-weight", type=float, default=0.0)
@@ -1062,10 +1066,16 @@ def main() -> None:
             raise ValueError("batch size is larger than the per-rank training split")
 
         model_config = TRHashSensorFusionConfig(
+            architecture_profile=args.architecture_profile,
+            num_key_value_heads=args.key_value_heads,
             hidden_size=args.hidden_size,
             num_hidden_layers=args.layers,
             num_attention_heads=args.heads,
-            num_experts=args.num_experts,
+            num_experts=(
+                args.num_experts
+                if args.num_experts is not None
+                else (4 if args.architecture_profile == "source67" else 8)
+            ),
             top_k=args.top_k,
             shared_width=args.shared_width,
             expert_width=args.expert_width,
@@ -1237,9 +1247,11 @@ def main() -> None:
                     "Epoch %d augmentation scale: %.3f%s",
                     epoch + 1,
                     aug_scale,
-                    f" (dataset-side augmentation={train_dataset.training_augmentation})"
-                    if in_clean_finetune_window
-                    else "",
+                    (
+                        f" (dataset-side augmentation={train_dataset.training_augmentation})"
+                        if in_clean_finetune_window
+                        else ""
+                    ),
                 )
             if hasattr(train_sampler, "set_epoch"):
                 train_sampler.set_epoch(epoch)

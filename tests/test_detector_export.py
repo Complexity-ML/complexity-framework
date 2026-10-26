@@ -41,6 +41,7 @@ def tiny_config(*, end_to_end: bool) -> TRHashDetectorConfig:
         vision_layers=3,
         vision_heads=4,
         vision_num_experts=2,
+        architecture_profile="legacy",
         vision_top_k=1,
         vision_expert_width=8,
         vision_stage_depths=(1, 1, 1),
@@ -203,8 +204,7 @@ def test_decoded_box_gate_catches_drift_the_raw_gate_tolerates() -> None:
 
     tolerances = ParityTolerances(raw=5e-3, decoded_box=1.3e-4, decoded_score=4e-5)
     results = {
-        result.name: result
-        for result in evaluate_gates(baseline, drifted, tolerances, context)
+        result.name: result for result in evaluate_gates(baseline, drifted, tolerances, context)
     }
 
     assert results[RAW_GATE].passed, "raw drift must stay inside its tolerance"

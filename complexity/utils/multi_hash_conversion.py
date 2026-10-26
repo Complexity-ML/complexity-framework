@@ -29,6 +29,13 @@ def multi_hash_config(
 ) -> ModelConfig:
     """Return a separate four-expert/top-2 multi-hash model config."""
 
+    if (
+        raw_config.get("architecture_profile") == "source67"
+        or raw_config.get("routing_strategy") == "token_id_composed_modulo"
+    ):
+        raise ValueError(
+            "Source67 contextual routing cannot be converted by the legacy multi-hash helper"
+        )
     patched = dict(raw_config)
     if patched.get("mlp_type") in _CONVERTIBLE_MLP_TYPES:
         patched["mlp_type"] = "tr_hash_engine"

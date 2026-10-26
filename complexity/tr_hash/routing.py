@@ -7,6 +7,7 @@ from dataclasses import replace
 import torch
 
 from .config import TRHashEngineConfig, TRHashStrategy
+from .baseline import source67_mlp_routes
 
 
 def _layer_permutation(num_experts: int, layer_index: int, seed: int) -> torch.Tensor:
@@ -235,7 +236,12 @@ def _hierarchical_hash_routes(config: TRHashEngineConfig) -> torch.Tensor:
 def build_route_table(config: TRHashEngineConfig) -> torch.Tensor:
     """Return a CPU ``[top_k, vocab_size]`` route table."""
 
-    if config.routing_strategy is TRHashStrategy.BALANCED_HASH:
+    if config.routing_strategy is TRHashStrategy.COMPOSED_MODULO:
+        # Persist the zero-history anchor only. Effective routes must be
+        # computed from the actual causal token sequence at runtime.
+        token_ids = torch.arange(config.vocab_size, dtype=torch.long, device="cpu").unsqueeze(1)
+        routes = source67_mlp_routes(token_ids, config.layer_index).squeeze(-1)
+    elif config.routing_strategy is TRHashStrategy.BALANCED_HASH:
         routes = _balanced_hash_routes(config)
     elif config.routing_strategy is TRHashStrategy.MODULO_CYCLIC:
         routes = _modulo_cyclic_routes(config)

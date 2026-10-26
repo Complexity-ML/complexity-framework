@@ -33,11 +33,17 @@ PRODUCTION_CONFIGS = (
     ("detector", TRHashDetectorConfig()),
     ("audio encoder", AudioEncoderConfig()),
     ("speech to text", TRHashSpeechToTextConfig()),
-    ("text to audio", TRHashAudioConfig()),
+    (
+        "text to audio",
+        TRHashAudioConfig(),
+    ),
     ("video tower", TRHashVideoTowerConfig()),
     ("vision language", TRHashVisionLanguageConfig()),
     ("text to image", TRHashImageConfig()),
-    ("sensor fusion", TRHashSensorFusionConfig()),
+    (
+        "sensor fusion",
+        TRHashSensorFusionConfig(),
+    ),
 )
 
 TEXT_DECODER_CONFIG = ModelConfig(
@@ -227,30 +233,30 @@ def test_text_runtime_resolves_default_shared_width_instead_of_disabling_it() ->
         ),
         (
             "legacy multimodal vision",
-            VisionConfig(intermediate_size=64).intermediate_size,
-            VisionConfig(intermediate_size=64).intermediate_size
-            // VisionConfig(intermediate_size=64).num_experts,
+            VisionConfig(architecture_profile="legacy", intermediate_size=64).intermediate_size,
+            VisionConfig(architecture_profile="legacy", intermediate_size=64).intermediate_size
+            // VisionConfig(architecture_profile="legacy", intermediate_size=64).num_experts,
             1,
         ),
         (
             "legacy multimodal audio",
-            AudioConfig(intermediate_size=64).intermediate_size,
-            AudioConfig(intermediate_size=64).intermediate_size
-            // AudioConfig(intermediate_size=64).num_experts,
+            AudioConfig(architecture_profile="legacy", intermediate_size=64).intermediate_size,
+            AudioConfig(architecture_profile="legacy", intermediate_size=64).intermediate_size
+            // AudioConfig(architecture_profile="legacy", intermediate_size=64).num_experts,
             1,
         ),
         (
             "legacy multimodal video",
-            VideoConfig(intermediate_size=64).intermediate_size,
-            VideoConfig(intermediate_size=64).intermediate_size
-            // VideoConfig(intermediate_size=64).num_experts,
+            VideoConfig(architecture_profile="legacy", intermediate_size=64).intermediate_size,
+            VideoConfig(architecture_profile="legacy", intermediate_size=64).intermediate_size
+            // VideoConfig(architecture_profile="legacy", intermediate_size=64).num_experts,
             1,
         ),
         (
             "legacy multimodal fusion",
-            FusionConfig(hidden_size=16).hidden_size * 4,
-            (FusionConfig(hidden_size=16).hidden_size * 4)
-            // FusionConfig(hidden_size=16).num_experts,
+            FusionConfig(architecture_profile="legacy", hidden_size=16).hidden_size * 4,
+            (FusionConfig(architecture_profile="legacy", hidden_size=16).hidden_size * 4)
+            // FusionConfig(architecture_profile="legacy", hidden_size=16).num_experts,
             1,
         ),
     ),
@@ -278,10 +284,26 @@ def test_production_routed_experts_are_smaller_than_the_shared_path(
 @pytest.mark.parametrize(
     "mlp",
     (
-        VisionTokenRoutedMLP(VisionConfig(hidden_size=16, intermediate_size=64, num_experts=4)),
-        AudioTokenRoutedMLP(AudioConfig(hidden_size=16, intermediate_size=64, num_experts=4)),
-        VideoTokenRoutedMLP(VideoConfig(hidden_size=16, intermediate_size=64, num_experts=4)),
-        FusionTokenRoutedMLP(FusionConfig(hidden_size=16, num_attention_heads=4, num_experts=4)),
+        VisionTokenRoutedMLP(
+            VisionConfig(
+                architecture_profile="legacy", hidden_size=16, intermediate_size=64, num_experts=4
+            )
+        ),
+        AudioTokenRoutedMLP(
+            AudioConfig(
+                architecture_profile="legacy", hidden_size=16, intermediate_size=64, num_experts=4
+            )
+        ),
+        VideoTokenRoutedMLP(
+            VideoConfig(
+                architecture_profile="legacy", hidden_size=16, intermediate_size=64, num_experts=4
+            )
+        ),
+        FusionTokenRoutedMLP(
+            FusionConfig(
+                architecture_profile="legacy", hidden_size=16, num_attention_heads=4, num_experts=4
+            )
+        ),
     ),
 )
 def test_legacy_multimodal_routed_mlp_keeps_shared_swiglu_and_gradients(mlp) -> None:

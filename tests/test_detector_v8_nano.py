@@ -41,7 +41,7 @@ def _tiny_v8(**overrides) -> TRHashDetectorConfig:
 
 
 def test_v8_nano_budget_and_contract() -> None:
-    config = coco_v8_nano_config()
+    config = coco_v8_nano_config(architecture_profile="legacy")
     model = TRHashObjectDetector(config)
 
     assert config.architecture_version == 8
@@ -118,6 +118,8 @@ def test_v8_launchers_encode_the_controlled_recipe(launcher: str) -> None:
     command = result.stdout
     expected = coco_v8_nano_config()
     assert "--architecture-version 8" in command
+    assert "--architecture-profile source67" in command
+    assert "--key-value-heads 1" in command
     assert f"--vision-hidden-size {expected.vision_hidden_size}" in command
     assert f"--vision-layers {expected.vision_layers}" in command
     assert f"--vision-num-experts {expected.vision_num_experts}" in command
@@ -152,3 +154,15 @@ def test_v8_launcher_closes_mosaic_for_the_final_ten_epochs() -> None:
     assert 'CLOSE_MOSAIC_EPOCHS="${CLOSE_MOSAIC_EPOCHS:-0}"' not in launcher
     assert 'PACKED_EPOCHS="${PACKED_EPOCHS:-2}"' in launcher
     assert 'MOSAIC_CANVAS_SIZE="${MOSAIC_CANVAS_SIZE:-1280}"' in launcher
+
+
+def test_v8_nano_new_default_uses_source67_without_claiming_the_legacy_score():
+    config = coco_v8_nano_config()
+    model = TRHashObjectDetector(config)
+    assert config.architecture_profile == "source67"
+    assert config.vision_num_experts == 4
+    assert config.vision_key_value_heads == 1
+    assert model.num_parameters() < 2_500_000
+    for block in model.tower.blocks:
+        assert block.mlp.config.baseline_profile == "source67"
+        assert block.mlp.config.routed_output_scale == 2

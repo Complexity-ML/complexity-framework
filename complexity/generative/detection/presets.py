@@ -10,42 +10,25 @@ COCO_V8_NANO_NAME = "coco-v8-nano"
 
 
 def coco_v8_nano_config(**overrides: Any) -> TRHashDetectorConfig:
-    """Return the competitive v8 COCO configuration, ~2.3-2.5M parameters.
+    """Build the compact v8 detector with Source67 routing by default.
 
-    Every routed-MoE stage stays TR-Hash: deterministic position-keyed
-    routing, never learned or contextual. Within that constraint, v8 spends
-    its budget differently from a routed-only tower:
-
-    - A dominant dense shared branch plus finer-grained routed specialization:
-      ``vision_num_experts=8`` with ``vision_top_k=2`` (25% of routed capacity
-      fires per token) and a narrow ``vision_expert_width=27`` -- each expert
-      is a small position-keyed correction on top of ``vision_shared_width=216``
-      of capacity every token gets unconditionally (shared:expert = 8:1).
-    - Extra depth: ``vision_stage_depths=(2, 2, 3)``, one more block than the
-      previous 5-layer shallow tower. Narrow experts make additional layers
-      cheap relative to the capacity they add, and depth generally helps
-      dense prediction more than raw width at a fixed budget.
-    - A progressive stride-2 conv stem (``patch_size`` factored into
-      ``log2(patch_size)`` depthwise-separable stages) instead of one
-      non-overlapping large-stride conv, preserving more fine detail into
-      the first tower stage.
-    - Windowed attention now carries a learned relative position bias
-      (Swin-style) instead of relying on absolute position embeddings alone
-      to encode local structure inside a window.
-    - ``p2_head`` enabled by default: the stride-4 prediction level is the
-      single biggest lever for small-object AP, the weakest of the three
-      COCO size buckets on the earlier (P2-disabled) checkpoint.
+    The existing explicit 216/27 shared/private widths, feature pyramid,
+    progressive stem and task heads are retained. This is an unmeasured
+    vision adaptation of the text recipe. ``architecture_profile="legacy"``
+    reconstructs the former eight-expert, MHA preset and its capacity budget.
     """
 
     values: dict[str, Any] = {
         "architecture_version": 8,
+        "architecture_profile": "source67",
+        "architecture_profile_version": 1,
         "image_size": 640,
         "patch_size": 8,
         "num_classes": 80,
         "vision_hidden_size": 128,
         "vision_layers": 7,
         "vision_heads": 4,
-        "vision_num_experts": 8,
+        "vision_num_experts": 4,
         "vision_top_k": 2,
         "vision_shared_width": 216,
         "vision_expert_width": 27,
@@ -75,6 +58,8 @@ def coco_v8_nano_config(**overrides: Any) -> TRHashDetectorConfig:
         "object_contrastive_loss_weight": 0.05,
         "object_contrastive_temperature": 0.10,
     }
+    if overrides.get("architecture_profile") == "legacy":
+        values["vision_num_experts"] = 8
     values.update(overrides)
     return TRHashDetectorConfig(**values)
 

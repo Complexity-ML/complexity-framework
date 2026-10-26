@@ -6,12 +6,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from complexity.tr_hash.attention import make_domain_mlp
 from complexity.tr_hash import (
-    TRHashBackend,
-    TRHashEngine,
-    TRHashEngineConfig,
     TRHashPrecision,
-    TRHashStrategy,
 )
 
 from .config import TRHashDetectorConfig
@@ -43,9 +40,7 @@ class MultiScaleLevelAdapters(nn.Module):
 
     def __init__(self, channels: int, levels: int, ratio: float):
         super().__init__()
-        self.adapters = nn.ModuleList(
-            ResidualLevelAdapter(channels, ratio) for _ in range(levels)
-        )
+        self.adapters = nn.ModuleList(ResidualLevelAdapter(channels, ratio) for _ in range(levels))
 
     def forward(self, feature_maps: list[torch.Tensor]) -> list[torch.Tensor]:
         if len(feature_maps) != len(self.adapters):
@@ -64,20 +59,17 @@ class ClassLevelHashGate(nn.Module):
         self.class_embedding = nn.Parameter(torch.empty(config.num_classes, hidden_size))
         self.level_embedding = nn.Parameter(torch.empty(self.num_levels, hidden_size))
         self.norm = nn.LayerNorm(hidden_size, eps=config.layer_norm_eps)
-        self.mlp = TRHashEngine(
-            TRHashEngineConfig(
-                hidden_size=hidden_size,
-                vocab_size=self.num_levels * config.num_classes,
-                num_experts=config.vision_num_experts,
-                top_k=config.vision_top_k,
-                shared_width=config.vision_shared_width,
-                expert_width=config.vision_expert_width,
-                routing_strategy=TRHashStrategy.BALANCED_HASH,
-                layer_index=config.vision_layers + 1,
-                route_seed=config.route_seed,
-                precision=TRHashPrecision(config.vision_precision),
-                backend=TRHashBackend.AUTO,
-            )
+        self.mlp = make_domain_mlp(
+            hidden_size=hidden_size,
+            vocab_size=self.num_levels * config.num_classes,
+            num_experts=config.vision_num_experts,
+            top_k=config.vision_top_k,
+            shared_width=config.vision_shared_width,
+            expert_width=config.vision_expert_width,
+            layer_index=config.vision_layers + 1,
+            route_seed=config.route_seed,
+            precision=TRHashPrecision(config.vision_precision),
+            architecture_profile=config.architecture_profile,
         )
         self.score = nn.Linear(hidden_size, 1)
         self.register_buffer(
@@ -151,9 +143,7 @@ class TemporalMotionPyramid(nn.Module):
         if pixel_values.ndim == 4:
             return pixel_values
         if pixel_values.ndim != 5:
-            raise ValueError(
-                "detector input must be [B,C,H,W] or video [B,T,C,H,W]"
-            )
+            raise ValueError("detector input must be [B,C,H,W] or video [B,T,C,H,W]")
         if pixel_values.size(1) < 2:
             raise ValueError("video detection requires at least two frames")
         if pixel_values.size(2) != 3:

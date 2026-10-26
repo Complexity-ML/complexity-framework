@@ -1,3 +1,5 @@
+architecture_profile: source67
+architecture_profile_version: 1
 image_size: 256
 vae_downsample_factor: 8
 latent_channels: 4
@@ -20,3 +22,5 @@ caption_dropout: 0.1
 source_dropout: 0.05
 attention_dropout: 0.0
 layer_norm_eps: 1.0e-6
+num_key_value_heads: 1
+text_key_value_heads: 1

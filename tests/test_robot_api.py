@@ -16,6 +16,7 @@ def _tiny_robot_config() -> TRHashSensorFusionConfig:
         num_hidden_layers=2,
         num_attention_heads=4,
         num_experts=8,
+        architecture_profile="legacy",
         top_k=2,
         shared_width=32,
         expert_width=8,
