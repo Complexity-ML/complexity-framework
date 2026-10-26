@@ -1,7 +1,7 @@
 import numpy as np
 
-from scripts.benchmark_onnx_artifacts import _benchmark_session, summarize_latency_ms
-from scripts.check_onnx_quantized_artifacts import check_quantized_benchmark_report
+from complexity.vision.detection.onnx_benchmark import _benchmark_session, summarize_latency_ms
+from complexity.vision.detection.quantized_artifacts import check_quantized_benchmark_report
 
 
 def test_benchmark_report_uses_distribution_not_single_shot() -> None:
@@ -73,7 +73,7 @@ def test_benchmark_session_reports_observed_peak_memory(
         session = Session()
 
     monkeypatch.setattr(
-        "scripts.benchmark_onnx_artifacts._current_memory_mb",
+        "complexity.vision.detection.onnx_benchmark._current_memory_mb",
         lambda: next(memory_samples),
     )
 

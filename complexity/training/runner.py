@@ -55,6 +55,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, IterableDataset
 
+from complexity._optional import require_optional
+
 from ..config import ModelConfig
 from ..models import ComplexityModel
 from ..parallel import (
@@ -114,8 +116,7 @@ def format_optimizer_update_contract(
         f"  phase: {phase}",
         f"  planned optimizer updates: {max_updates:,}",
         f"  tokens per optimizer update: {tokens_per_update:,}",
-        f"  scheduled token exposure: {scheduled_tokens:,} "
-        f"(~{scheduled_tokens / 1e9:.3f}B)",
+        f"  scheduled token exposure: {scheduled_tokens:,} (~{scheduled_tokens / 1e9:.3f}B)",
         "=" * 72,
     ]
 
@@ -136,33 +137,16 @@ def require_cuda_available(required: bool) -> None:
 
 
 def routing_diagnostic(config: ModelConfig) -> dict[str, object]:
-    """Describe the effective route family without changing model policy."""
-
-    strategy_value = getattr(config.routing_strategy, "value", config.routing_strategy)
-    strategy = str(strategy_value)
-    is_multi_hash = strategy == "token_id_multi_hash"
-    configured_hashes = int(config.route_hash_count)
-    return {
-        "strategy": strategy,
-        "multi_hash": is_multi_hash,
-        "configured_hashes": configured_hashes,
-        "effective_hashes": configured_hashes if is_multi_hash else 1,
-    }
+    """Describe the single TR-HASH routing contract."""
+    if config.routing_strategy != "token_id_composed_modulo":
+        raise ValueError("TR-HASH requires composed modulo routing")
+    return {"strategy": "token_id_composed_modulo", "context_tokens": 2,
+            "num_experts": 4, "top_k": 2, "routed_heads": True}
 
 
 def log_routing_diagnostic(config: ModelConfig) -> dict[str, object]:
-    """Emit an unambiguous startup banner and return its structured values."""
-
     routing = routing_diagnostic(config)
-    logger.info(
-        "TR-Hash routing: strategy=%s multi_hash=%s "
-        "effective_hashes=%d configured_route_hash_count=%d top_k=%d",
-        routing["strategy"],
-        str(routing["multi_hash"]).lower(),
-        routing["effective_hashes"],
-        routing["configured_hashes"],
-        config.top_k,
-    )
+    logger.info("TR-HASH: composed modulo, two previous token IDs, four experts, top-2, routed GQA heads")
     return routing
 
 
@@ -192,7 +176,9 @@ class FineWebStreamingDataset(IterableDataset):
     packing_contract = "text-pretraining"
 
     def __init__(self, tokenizer, seq_len: int, rank: int = 0, world_size: int = 1):
+        require_optional("datasets", "data")
         from datasets import load_dataset
+
         self.tokenizer = tokenizer
         self.seq_len = seq_len
         self.rank = rank
@@ -213,7 +199,7 @@ class FineWebStreamingDataset(IterableDataset):
                 buffer.append(self.tokenizer.eos_token_id)
             while len(buffer) >= self.seq_len + 1:
                 chunk = buffer[: self.seq_len + 1]
-                buffer = buffer[self.seq_len:]
+                buffer = buffer[self.seq_len :]
                 yield {
                     "input_ids": torch.tensor(chunk[:-1], dtype=torch.long),
                     "labels": torch.tensor(chunk[1:], dtype=torch.long),
@@ -268,13 +254,16 @@ class TrainRunner:
     def build_dataset(self, tokenizer, args, rank: int, world_size: int) -> IterableDataset:
         """Default: FineWeb-Edu streaming, sharded per rank."""
         return FineWebStreamingDataset(
-            tokenizer=tokenizer, seq_len=args.seq_len,
-            rank=rank, world_size=world_size,
+            tokenizer=tokenizer,
+            seq_len=args.seq_len,
+            rank=rank,
+            world_size=world_size,
         )
 
     def build_compute_loss(self, trainer: Trainer, model: nn.Module) -> Callable:
         """Default: fused linear + cross-entropy (Liger Triton kernel)."""
         from ..core.losses import fused_linear_causal_lm_loss
+
         label_smoothing = self.label_smoothing
         z_loss = self.z_loss
 
@@ -286,12 +275,14 @@ class TrainRunner:
             base = m
             while hasattr(base, "model") or hasattr(base, "module"):
                 base = getattr(base, "model", None) or getattr(base, "module", None)
-            weight = base.embed_tokens.weight
-            shift_hidden = hidden[:, :-1, :].contiguous()
-            shift_labels = labels[:, :shift_hidden.size(1)].contiguous()
+            weight = base.lm_head.weight
             loss, _ = fused_linear_causal_lm_loss(
-                shift_hidden, weight, shift_labels,
-                label_smoothing=label_smoothing, z_loss_coef=z_loss,
+                hidden,
+                weight,
+                labels,
+                label_smoothing=label_smoothing,
+                z_loss_coef=z_loss,
+                shift=False,
             )
             return loss
 
@@ -309,18 +300,35 @@ class TrainRunner:
         p.add_argument("--target-tokens", type=int, default=self.default_target_tokens)
         p.add_argument("--batch-size", type=int, default=self.default_batch_size)
         p.add_argument("--seq-len", type=int, default=self.default_seq_len)
-        p.add_argument("--gradient-accumulation", type=int,
-                       default=self.default_gradient_accumulation)
+        p.add_argument(
+            "--gradient-accumulation", type=int, default=self.default_gradient_accumulation
+        )
         p.add_argument("--lr", type=float, default=self.default_lr)
         p.add_argument("--weight-decay", type=float, default=0.1)
-        p.add_argument("--warmup-steps", type=int, default=None,
-                       help="Optimizer-step warmup. Mutually exclusive with --warmup-tokens.")
-        p.add_argument("--warmup-tokens", type=int, default=None,
-                       help="Warm up for this many globally trained tokens.")
-        p.add_argument("--lr-scheduler", type=str, default="auto",
-                       choices=["auto", "cosine", "linear", "constant", "wsd"])
-        p.add_argument("--max-steps", type=int, default=None,
-                       help="Override max_steps (bypasses --target-tokens)")
+        p.add_argument(
+            "--warmup-steps",
+            type=int,
+            default=None,
+            help="Optimizer-step warmup. Mutually exclusive with --warmup-tokens.",
+        )
+        p.add_argument(
+            "--warmup-tokens",
+            type=int,
+            default=None,
+            help="Warm up for this many globally trained tokens.",
+        )
+        p.add_argument(
+            "--lr-scheduler",
+            type=str,
+            default="auto",
+            choices=["auto", "cosine", "linear", "constant", "wsd"],
+        )
+        p.add_argument(
+            "--max-steps",
+            type=int,
+            default=None,
+            help="Override max_steps (bypasses --target-tokens)",
+        )
         p.add_argument("--save-steps", type=int, default=self.default_save_steps)
         p.add_argument(
             "--token-packs",
@@ -357,20 +365,35 @@ class TrainRunner:
             help="FSDP shards the model; DDP replicates it and is faster for small models.",
         )
         p.add_argument("--wandb", type=str, default=None)
-        p.add_argument("--precision", type=str, default="bf16",
-                       choices=["fp32", "fp16", "bf16"])
-        p.add_argument("--gradient-checkpointing", action="store_true",
-                       default=self.default_gradient_checkpointing)
-        p.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing",
-                       action="store_false")
-        p.add_argument("--optimizer", type=str, default=self.optimizer_type,
-                       choices=["adamw", "adamw_mup", "muon", "muon_tr", "adam_tr"],
-                       help="Overrides the script's default optimizer (e.g. adam_tr for MoE ablations)")
-        p.add_argument("--top-k", type=int, default=None,
-                       help="Token-Routed deterministic top-K (overrides config.top_k).")
-        p.add_argument("--use-custom-kernels", type=str, default="auto",
-                       choices=["auto", "true", "false"],
-                       help="Custom Triton/CUDA kernels. auto enables NVIDIA CUDA, disables ROCm by default.")
+        p.add_argument("--precision", type=str, default="bf16", choices=["fp32", "fp16", "bf16"])
+        p.add_argument(
+            "--gradient-checkpointing",
+            action="store_true",
+            default=self.default_gradient_checkpointing,
+        )
+        p.add_argument(
+            "--no-gradient-checkpointing", dest="gradient_checkpointing", action="store_false"
+        )
+        p.add_argument(
+            "--optimizer",
+            type=str,
+            default=self.optimizer_type,
+            choices=["adamw", "adamw_mup", "muon", "muon_tr", "adam_tr"],
+            help="Overrides the script's default optimizer (e.g. adam_tr for MoE ablations)",
+        )
+        p.add_argument(
+            "--top-k",
+            type=int,
+            default=None,
+            help="Token-Routed deterministic top-K (overrides config.top_k).",
+        )
+        p.add_argument(
+            "--use-custom-kernels",
+            type=str,
+            default="auto",
+            choices=["auto", "true", "false"],
+            help="Custom Triton/CUDA kernels. auto enables NVIDIA CUDA, disables ROCm by default.",
+        )
         p.add_argument(
             "--require-cuda",
             action="store_true",
@@ -380,7 +403,9 @@ class TrainRunner:
         return p
 
     def _load_tokenizer(self, path: str):
+        require_optional("transformers", "hf")
         from transformers import PreTrainedTokenizerFast
+
         if not os.path.exists(path):
             raise FileNotFoundError(
                 f"Tokenizer not found: {path}\n"
@@ -412,8 +437,10 @@ class TrainRunner:
         is_main = is_main_process()
 
         custom_kernel_policy = (
-            True if args.use_custom_kernels == "true"
-            else False if args.use_custom_kernels == "false"
+            True
+            if args.use_custom_kernels == "true"
+            else False
+            if args.use_custom_kernels == "false"
             else "auto"
         )
         configure_torch_acceleration(kernel_policy=custom_kernel_policy)
@@ -441,18 +468,20 @@ class TrainRunner:
             model.gradient_checkpointing_enable()
 
         if is_main:
-            logger.info(f"Model: {model.num_parameters():,} params "
-                        f"({model.num_parameters() / 1e6:.1f}M)")
-            logger.info(f"  hidden={config.hidden_size}, layers={config.num_hidden_layers}, "
-                        f"heads={config.num_attention_heads}/{config.num_key_value_heads} (GQA), "
-                        f"inter={config.intermediate_size}, experts={config.num_experts}")
+            logger.info(
+                f"Model: {model.num_parameters():,} params ({model.num_parameters() / 1e6:.1f}M)"
+            )
+            logger.info(
+                f"  hidden={config.hidden_size}, layers={config.num_hidden_layers}, "
+                f"heads={config.num_attention_heads}/{config.num_key_value_heads} (GQA), "
+                f"inter={config.intermediate_size}, experts={config.num_experts}"
+            )
             log_routing_diagnostic(config)
 
         # Steps + warmup
         if args.token_packs < 1:
             raise ValueError("--token-packs must be positive")
-        tokens_per_step = (args.batch_size * world_size
-                           * args.gradient_accumulation * args.seq_len)
+        tokens_per_step = args.batch_size * world_size * args.gradient_accumulation * args.seq_len
         if args.max_steps is not None:
             max_steps = args.max_steps
         else:
@@ -557,11 +586,18 @@ class TrainRunner:
             csv_writer = csv.writer(csv_file)
             n_experts = config.num_experts
             if file_mode == "w":
-                csv_writer.writerow([
-                    "step", "loss", "ppl", "lr", "tokens_trained",
-                    *[f"expert_{e}_share" for e in range(n_experts)],
-                    "expert_dead_count", "elapsed_s",
-                ])
+                csv_writer.writerow(
+                    [
+                        "step",
+                        "loss",
+                        "ppl",
+                        "lr",
+                        "tokens_trained",
+                        *[f"expert_{e}_share" for e in range(n_experts)],
+                        "expert_dead_count",
+                        "elapsed_s",
+                    ]
+                )
             csv_file.flush()
             if file_mode == "w":
                 open(metrics_path, "w", encoding="utf-8").close()
@@ -575,13 +611,18 @@ class TrainRunner:
             lr = trainer_obj.optimizer.param_groups[0]["lr"]
             shares = getattr(tqdm_cb, "last_shares", [float("nan")] * config.num_experts)
             dead = getattr(tqdm_cb, "last_dead", None)
-            csv_writer.writerow([
-                step, f"{loss_val:.6f}", f"{ppl:.2f}",
-                f"{lr:.6e}", step * tokens_per_step,
-                *[f"{s:.4f}" for s in shares],
-                "nan" if dead is None else dead,
-                f"{time.time() - t_start:.1f}",
-            ])
+            csv_writer.writerow(
+                [
+                    step,
+                    f"{loss_val:.6f}",
+                    f"{ppl:.2f}",
+                    f"{lr:.6e}",
+                    step * tokens_per_step,
+                    *[f"{s:.4f}" for s in shares],
+                    "nan" if dead is None else dead,
+                    f"{time.time() - t_start:.1f}",
+                ]
+            )
             if step == 1 or step % args.log_steps == 0 or step == max_steps:
                 csv_file.flush()
                 record = build_training_metric_record(
@@ -597,6 +638,7 @@ class TrainRunner:
                 )
                 with open(metrics_path, "a", encoding="utf-8") as metrics_file:
                     metrics_file.write(json.dumps(record, sort_keys=True) + "\n")
+
         trainer.callbacks.append(csv_callback)
 
         for cb in self.extra_callbacks(trainer, args, is_main):
@@ -609,6 +651,7 @@ class TrainRunner:
                 trainer.stop_requested = True
             else:
                 raise KeyboardInterrupt
+
         signal.signal(signal.SIGTERM, request_stop)
         if trainer.checkpoint_manager.resume_contract is not None:
             signal.signal(signal.SIGINT, request_stop)
@@ -625,7 +668,9 @@ class TrainRunner:
                 csv_file.close()
 
         if is_main and summary is not None:
-            logger.info(f"Training stopped at update {trainer.global_step}/{train_config.max_steps}: {summary}")
+            logger.info(
+                f"Training stopped at update {trainer.global_step}/{train_config.max_steps}: {summary}"
+            )
 
         # save_pretrained must run on ALL ranks (internal full_tensor() collective).
         if summary is not None and trainer.global_step >= train_config.max_steps:
@@ -638,7 +683,9 @@ class TrainRunner:
             if hasattr(base, "save_pretrained"):
                 final_dir = os.path.join(args.checkpoint_dir, "final")
                 strict = trainer.checkpoint_manager.resume_contract is not None
-                export_dir = os.path.join(args.checkpoint_dir, '.final.pending') if strict else final_dir
+                export_dir = (
+                    os.path.join(args.checkpoint_dir, ".final.pending") if strict else final_dir
+                )
                 base.save_pretrained(export_dir)
                 if is_main:
                     config.save(os.path.join(export_dir, "model_config.yaml"))
@@ -649,5 +696,6 @@ class TrainRunner:
 
         if distributed:
             import torch.distributed as dist
+
             dist.barrier()
             cleanup()

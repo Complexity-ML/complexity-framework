@@ -30,7 +30,7 @@ def _small_moe_config():
     from complexity.config import ModelConfig
     return ModelConfig(
         hidden_size=128, num_hidden_layers=2, num_attention_heads=4,
-        num_key_value_heads=2, intermediate_size=256, vocab_size=1024,
+        num_key_value_heads=1, intermediate_size=256, vocab_size=1024,
         max_position_embeddings=128, attention_type="gqa",
         mlp_type="tr_hash_engine", num_experts=4, shared_expert=True,
         norm_type="rmsnorm", use_qk_norm=True,

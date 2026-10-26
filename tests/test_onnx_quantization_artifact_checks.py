@@ -1,6 +1,6 @@
 import pytest
 
-from scripts.check_onnx_quantized_artifacts import (
+from complexity.vision.detection.quantized_artifacts import (
     check_provider_precision_supported,
     check_unexpected_fp32_nodes,
 )

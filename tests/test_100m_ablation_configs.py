@@ -5,9 +5,7 @@ import torch
 
 
 def test_routed_expert_initialization_respects_initializer_range():
-    """TRHashEngineMLP (unlike the removed TokenRoutedMLP) has no
-    expert_initialization="legacy_kaiming" ablation-replay mode — it always
-    inits gpt_normal-style, scaled by initializer_range."""
+    """Shared and routed normal initialization both follow initializer_range."""
     from complexity.config.model_config import ModelConfig
     from complexity.models.builder import ComplexityModel
 
@@ -19,7 +17,7 @@ def test_routed_expert_initialization_respects_initializer_range():
                 hidden_size=64,
                 num_hidden_layers=2,
                 num_attention_heads=4,
-                num_key_value_heads=2,
+                num_key_value_heads=1,
                 intermediate_size=32,
                 num_experts=4,
                 mlp_type="tr_hash_engine",
@@ -56,20 +54,15 @@ def test_expert_initialization_rejects_unknown_mode():
 
 
 def test_non_hash_routing_strategies_are_rejected():
-    """zipf/round_robin/random/lsh_hidden are not token-ID/hash-table routing
-    and were removed to keep this framework TR-Hash-only (see base.py's
-    ``_removed_routing_strategies`` guard)."""
+    """Only the composed token-ID routing law is accepted."""
     from complexity.core.mlp.base import MLPConfig
 
     for removed in ("zipf", "round_robin", "random", "lsh_hidden"):
-        with pytest.raises(ValueError, match="was removed"):
+        with pytest.raises(ValueError, match="Only token_id_composed_modulo routing is supported"):
             MLPConfig(
                 hidden_size=8,
                 intermediate_size=16,
                 num_experts=4,
                 vocab_size=8,
                 routing_strategy=removed,
-                shared_expert=False,
             )
-
-

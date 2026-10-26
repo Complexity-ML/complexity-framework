@@ -8,13 +8,14 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from complexity.generative.detection import (
+from complexity.vision.detection import (
     TRHashDetectorConfig,
     TRHashObjectDetector,
     load_detector_checkpoint,
 )
-from complexity.generative.detection.exporting import RawDetectorExport
-from scripts.check_onnx_parity import (
+from complexity.vision.detection.exporting import RawDetectorExport
+from complexity.vision.detection.onnx_export import export_onnx
+from complexity.vision.detection.onnx_parity import (
     DECODED_BOX_GATE,
     DECODED_SCORE_GATE,
     DEFAULT_PARITY_TOLERANCE,
@@ -29,7 +30,6 @@ from scripts.check_onnx_parity import (
     decode_context,
     evaluate_gates,
 )
-from scripts.export_onnx import export_onnx
 
 
 def tiny_config(*, end_to_end: bool) -> TRHashDetectorConfig:
@@ -40,9 +40,9 @@ def tiny_config(*, end_to_end: bool) -> TRHashDetectorConfig:
         vision_hidden_size=16,
         vision_layers=3,
         vision_heads=4,
-        vision_num_experts=2,
-        architecture_profile="legacy",
-        vision_top_k=1,
+        vision_key_value_heads=1,
+        vision_num_experts=4,
+        vision_top_k=2,
         vision_expert_width=8,
         vision_stage_depths=(1, 1, 1),
         vision_window_size=2,
@@ -93,7 +93,7 @@ def test_auto_export_selects_the_production_branch() -> None:
 
 
 def sidecar_mapping(config: TRHashDetectorConfig, branch: str) -> dict:
-    """Mirror the metadata sidecar written by scripts/export_onnx.py."""
+    """Mirror the metadata sidecar written by complexity.vision.detection.onnx_export."""
 
     return {
         "architecture_version": config.architecture_version,

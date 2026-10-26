@@ -90,7 +90,9 @@ four runs. The learned control is slightly behind Dense in three runs and
 ahead of Dense by 0.060878 NLL for MHA seed 43. These controls isolate the
 routing signal more directly than a fixed-versus-dense comparison, but remain
 short two-seed pilots on one small data sample. Machine-readable values are in
-[`results/matched_gqa_mha_mps_100m.csv`](results/matched_gqa_mha_mps_100m.csv).
+`results/matched_gqa_mha_mps_100m.csv` in the original experiment archive. That CSV is
+not included in this checkout; the tables above preserve the reported values,
+and raw-artifact reproduction remains unverified here.
 
 ## Interpretation limits
 

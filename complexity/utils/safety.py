@@ -24,13 +24,14 @@ Usage:
     trainer = Trainer(callbacks=[SafetyCallback(model)])
 """
 
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Dict, List, Any, Union, Callable
-from dataclasses import dataclass
-from pathlib import Path
-import logging
 
 logger = logging.getLogger(__name__)
 

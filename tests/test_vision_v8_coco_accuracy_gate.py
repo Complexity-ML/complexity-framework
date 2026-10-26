@@ -1,4 +1,10 @@
-from scripts.check_vision_v8_coco_report import (
+import json
+from pathlib import Path
+
+import pytest
+
+from complexity.vision.detection import accuracy_gate
+from complexity.vision.detection.accuracy_gate import (
     check_report,
     compare_repeated_reports,
     determinism_tolerance,
@@ -246,3 +252,41 @@ def test_determinism_tolerance_uses_actual_onnx_provider() -> None:
     report["environment"]["actual_provider"] = "CUDAExecutionProvider"
 
     assert determinism_tolerance(report, _config()) == 1e-6
+
+
+def test_packaged_accuracy_gate_uses_default_config_outside_checkout(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    config_path = Path(accuracy_gate.__file__).with_name("accuracy_gate.json")
+    config = accuracy_gate.load_json(config_path)
+    report = _report()
+    report["dataset"] = {
+        **config["dataset"],
+        "evaluated_images": config["dataset"]["required_image_count"],
+    }
+    report_path = tmp_path / "evaluation.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    accuracy_gate.main([str(report_path), "--repeat-report", str(report_path)])
+
+    assert "accuracy report passed" in capsys.readouterr().out
+
+
+def test_packaged_accuracy_gate_returns_failure_for_regression(
+    tmp_path, capsys
+) -> None:
+    config_path = tmp_path / "accuracy.json"
+    report_path = tmp_path / "evaluation.json"
+    config_path.write_text(json.dumps(_config()), encoding="utf-8")
+    report_path.write_text(
+        json.dumps(_report(_metrics(map50_95=0.18))), encoding="utf-8"
+    )
+
+    with pytest.raises(SystemExit) as error:
+        accuracy_gate.main([str(report_path), "--config", str(config_path)])
+
+    assert error.value.code == 1
+    messages = capsys.readouterr().out
+    assert "absolute_floor" in messages
+    assert "baseline_regression" in messages

@@ -11,7 +11,7 @@ import time
 import warnings
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
 import torch.distributed as dist
@@ -39,6 +39,31 @@ warnings.filterwarnings("ignore", message=".*epoch parameter in.*scheduler.step.
 logger = logging.getLogger(__name__)
 
 
+def _accumulation_batches(dataloader, accumulation_steps):
+    """Look ahead within an update so an unsized loader's final batch syncs.
+
+    Never consume a batch from the next update before yielding a boundary:
+    checkpoint callbacks must see the data cursor at that exact boundary.
+    """
+    iterator = iter(dataloader)
+    while True:
+        try:
+            batch = next(iterator)
+        except StopIteration:
+            return
+        count = 1
+        while count < accumulation_steps:
+            try:
+                next_batch = next(iterator)
+            except StopIteration:
+                yield batch, count, True
+                return
+            yield batch, count, False
+            batch = next_batch
+            count += 1
+        yield batch, count, True
+
+
 def _format_moe_routing_summary(model_cfg: Any) -> str:
     """Return the effective deterministic routing weights shown at startup."""
     top_k = int(getattr(model_cfg, "top_k", 1))
@@ -47,9 +72,7 @@ def _format_moe_routing_summary(model_cfg: Any) -> str:
 
     configured_primary_weight = getattr(model_cfg, "top_k_primary_weight", None)
     primary_weight = (
-        1.0 / top_k
-        if configured_primary_weight is None
-        else float(configured_primary_weight)
+        1.0 / top_k if configured_primary_weight is None else float(configured_primary_weight)
     )
     secondary_weight = (1.0 - primary_weight) / (top_k - 1)
     return (
@@ -77,6 +100,7 @@ class Trainer:
         scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
         compute_loss: Optional[Callable] = None,
         callbacks: Optional[List[Callable]] = None,
+        device: Optional[Union[str, torch.device]] = None,
     ):
         self.config = config
         self.train_dataloader = train_dataloader
@@ -89,19 +113,50 @@ class Trainer:
         self.world_size = get_world_size()
         self.is_main = is_main_process()
 
-        # Device
-        if torch.cuda.is_available():
+        # An explicit device never silently falls back. Omitting it retains
+        # the historical CUDA-when-available / CPU selection.
+        if device is not None:
+            self.device = torch.device(device)
+            if self.device.type == "mps":
+                if self.device.index is not None:
+                    raise ValueError("MPS device must be specified as 'mps'")
+                if not torch.backends.mps.is_available():
+                    raise RuntimeError(
+                        "MPS was requested but is unavailable; refusing CPU fallback"
+                    )
+                if config.precision != "fp32":
+                    raise ValueError("Explicit MPS Trainer currently requires precision='fp32'")
+                if self.distributed:
+                    raise ValueError("Explicit MPS training supports a single process only")
+            elif self.device.type == "cuda":
+                if not torch.cuda.is_available():
+                    raise RuntimeError(
+                        "CUDA was requested but is unavailable; refusing CPU fallback"
+                    )
+                index = (
+                    self.device.index
+                    if self.device.index is not None
+                    else self.rank % torch.cuda.device_count()
+                )
+                if index >= torch.cuda.device_count():
+                    raise ValueError("Requested CUDA device index is unavailable")
+                self.device = torch.device("cuda", index)
+            elif self.device.type != "cpu":
+                raise ValueError("Trainer device must be cpu, mps or cuda")
+        elif torch.cuda.is_available():
             self.device = torch.device(f"cuda:{self.rank % torch.cuda.device_count()}")
         else:
             self.device = torch.device("cpu")
 
         # Wrap model with FSDP if enabled
         if config.use_fsdp and self.distributed:
-            precision = PrecisionMode.BF16 if config.precision == "bf16" else (
-                PrecisionMode.FP16 if config.precision == "fp16" else PrecisionMode.FP32
+            precision = (
+                PrecisionMode.BF16
+                if config.precision == "bf16"
+                else (PrecisionMode.FP16 if config.precision == "fp16" else PrecisionMode.FP32)
             )
             sharding = ShardingMode(config.sharding_mode)
-            gc_enabled = getattr(model, '_gradient_checkpointing', False)
+            gc_enabled = getattr(model, "_gradient_checkpointing", False)
             self.model = wrap_model_fsdp(
                 model,
                 sharding_mode=sharding,
@@ -121,30 +176,52 @@ class Trainer:
         # multiplied the user's --lr by up to 3× on multi-GPU, causing
         # instability on MoE models. The user now controls the actual LR.
         if self.is_main:
-            effective_batch = config.batch_size * self.world_size * config.gradient_accumulation_steps
+            effective_batch = (
+                config.batch_size * self.world_size * config.gradient_accumulation_steps
+            )
             logger.info("=" * 70)
             logger.info("TRAINING CONFIG")
             logger.info("=" * 70)
             logger.info(f"  optimizer       : {config.optimizer_type}")
-            logger.info(f"  learning_rate   : {config.learning_rate:.2e}  (NO auto-scaling — value is used as-is)")
+            logger.info(
+                f"  learning_rate   : {config.learning_rate:.2e}  (NO auto-scaling — value is used as-is)"
+            )
             if config.optimizer_type in ("muon", "muon_tr"):
                 logger.info(f"  muon_lr         : {config.muon_lr:.2e}")
             if config.optimizer_type in ("muon_tr", "adam_tr") or (
                 config.optimizer_type == "adamw" and config.expert_lr_pack
             ):
-                logger.info(f"  expert_lr_scale : ×{config.expert_lr_scale}  "
-                            f"(effective expert LR: {config.learning_rate * config.expert_lr_scale:.2e})")
+                logger.info(
+                    f"  expert_lr_scale : ×{config.expert_lr_scale}  "
+                    f"(effective expert LR: {config.learning_rate * config.expert_lr_scale:.2e})"
+                )
             logger.info(f"  weight_decay    : {config.weight_decay}")
-            logger.info(f"  warmup_steps    : {config.warmup_steps}   max_steps: {config.max_steps}")
-            logger.info(f"  scheduler       : {config.lr_scheduler}   min_lr_ratio: {config.min_lr_ratio}")
+            logger.info(
+                f"  warmup_steps    : {config.warmup_steps}   max_steps: {config.max_steps}"
+            )
+            logger.info(
+                f"  scheduler       : {config.lr_scheduler}   min_lr_ratio: {config.min_lr_ratio}"
+            )
             logger.info(f"  precision       : {config.precision}    grad_clip: {config.grad_clip}")
-            logger.info(f"  batch (per rank): {config.batch_size}    grad_accum: {config.gradient_accumulation_steps}")
-            logger.info(f"  world_size      : {self.world_size}    effective_batch: {effective_batch}")
-            distributed_mode = "fsdp" if config.use_fsdp else ("ddp" if self.distributed else "single")
-            logger.info(f"  distributed     : {distributed_mode}    sharding: {config.sharding_mode}")
-            logger.info(f"  save_steps      : {config.save_steps}   save_total_limit: {config.save_total_limit}")
+            logger.info(
+                f"  batch (per rank): {config.batch_size}    grad_accum: {config.gradient_accumulation_steps}"
+            )
+            logger.info(
+                f"  world_size      : {self.world_size}    effective_batch: {effective_batch}"
+            )
+            distributed_mode = (
+                "fsdp" if config.use_fsdp else ("ddp" if self.distributed else "single")
+            )
+            logger.info(
+                f"  distributed     : {distributed_mode}    sharding: {config.sharding_mode}"
+            )
+            logger.info(
+                f"  save_steps      : {config.save_steps}   save_total_limit: {config.save_total_limit}"
+            )
             logger.info(f"  checkpoint_dir  : {config.checkpoint_dir}")
-            model_cfg = getattr(self.model, "config", None) or getattr(getattr(self.model, "module", None), "config", None)
+            model_cfg = getattr(self.model, "config", None) or getattr(
+                getattr(self.model, "module", None), "config", None
+            )
             if model_cfg is not None and getattr(model_cfg, "num_experts", 1) > 1:
                 logger.info(f"  MoE top_k       : {_format_moe_routing_summary(model_cfg)}")
             logger.info("=" * 70)
@@ -159,7 +236,10 @@ class Trainer:
         num_training_steps = config.max_steps
         if scheduler is None:
             self.scheduler = get_lr_scheduler(
-                self.optimizer, config, num_training_steps, model=model,
+                self.optimizer,
+                config,
+                num_training_steps,
+                model=model,
             )
             resolved = resolve_scheduler_name(config, model)
             if config.lr_scheduler == "auto":
@@ -185,9 +265,7 @@ class Trainer:
         self.metrics = MetricsTracker(config.log_dir)
 
         # Audit logging
-        self.audit = AuditLogger(
-            log_path=str(Path(config.log_dir) / "audit.log")
-        )
+        self.audit = AuditLogger(log_path=str(Path(config.log_dir) / "audit.log"))
 
         # Training state
         self.state = TrainingState()
@@ -217,6 +295,7 @@ class Trainer:
 
         if config.optimizer_type == "muon":
             from .muon import MuonWithAdamW, split_params_for_muon
+
             muon_groups, adam_groups = split_params_for_muon(self.model)
             optimizer = MuonWithAdamW(
                 muon_params=muon_groups,
@@ -226,14 +305,17 @@ class Trainer:
                 weight_decay=config.weight_decay,
             )
             if self.is_main:
-                muon_p = sum(p.numel() for g in muon_groups for p in g['params'])
-                adam_p = sum(p.numel() for g in adam_groups for p in g['params'])
-                logger.info(f"Muon optimizer: {muon_p/1e6:.0f}M orthogonalized, {adam_p/1e6:.0f}M AdamW")
+                muon_p = sum(p.numel() for g in muon_groups for p in g["params"])
+                adam_p = sum(p.numel() for g in adam_groups for p in g["params"])
+                logger.info(
+                    f"Muon optimizer: {muon_p / 1e6:.0f}M orthogonalized, {adam_p / 1e6:.0f}M AdamW"
+                )
             return optimizer
 
         if config.optimizer_type == "muon_tr":
             from .muon_tr import MuonTRWithAdamW, split_params_for_muon_tr
-            num_experts = getattr(getattr(self.model, 'config', None), 'num_experts', 4)
+
+            num_experts = getattr(getattr(self.model, "config", None), "num_experts", 4)
             muon_groups, adam_groups = split_params_for_muon_tr(self.model, num_experts=num_experts)
             optimizer = MuonTRWithAdamW(
                 muon_params=muon_groups,
@@ -246,19 +328,39 @@ class Trainer:
                 num_experts=num_experts,
             )
             if self.is_main:
-                expert_p = sum(p.numel() for g in muon_groups for p in g['params'] if g.get('param_type') == 'expert')
-                shared_p = sum(p.numel() for g in muon_groups for p in g['params'] if g.get('param_type') == 'shared')
-                dense_p = sum(p.numel() for g in muon_groups for p in g['params'] if g.get('param_type') == 'dense')
-                adam_p = sum(p.numel() for g in adam_groups for p in g['params'])
-                logger.info(f"MuonTR optimizer: {expert_p/1e6:.0f}M expert, {shared_p/1e6:.0f}M shared, "
-                            f"{dense_p/1e6:.0f}M dense (NS), {adam_p/1e6:.0f}M AdamW")
-                logger.info(f"  expert_lr_scale={config.expert_lr_scale}, "
-                            f"expert_wd={config.expert_weight_decay}, adaptive_ns={config.adaptive_ns}")
+                expert_p = sum(
+                    p.numel()
+                    for g in muon_groups
+                    for p in g["params"]
+                    if g.get("param_type") == "expert"
+                )
+                shared_p = sum(
+                    p.numel()
+                    for g in muon_groups
+                    for p in g["params"]
+                    if g.get("param_type") == "shared"
+                )
+                dense_p = sum(
+                    p.numel()
+                    for g in muon_groups
+                    for p in g["params"]
+                    if g.get("param_type") == "dense"
+                )
+                adam_p = sum(p.numel() for g in adam_groups for p in g["params"])
+                logger.info(
+                    f"MuonTR optimizer: {expert_p / 1e6:.0f}M expert, {shared_p / 1e6:.0f}M shared, "
+                    f"{dense_p / 1e6:.0f}M dense (NS), {adam_p / 1e6:.0f}M AdamW"
+                )
+                logger.info(
+                    f"  expert_lr_scale={config.expert_lr_scale}, "
+                    f"expert_wd={config.expert_weight_decay}, adaptive_ns={config.adaptive_ns}"
+                )
             return optimizer
 
         if config.optimizer_type == "adam_tr":
             from .adam_tr import AdamTR, adamtr_param_groups
-            num_experts = getattr(getattr(self.model, 'config', None), 'num_experts', 4)
+
+            num_experts = getattr(getattr(self.model, "config", None), "num_experts", 4)
             param_groups = adamtr_param_groups(
                 self.model,
                 lr=config.learning_rate,
@@ -276,9 +378,11 @@ class Trainer:
                 spectral_conditioning=True,
             )
             if self.is_main:
-                total_p = sum(p.numel() for g in param_groups for p in g['params'])
-                logger.info(f"AdamTR optimizer: {total_p/1e6:.0f}M params, "
-                            f"expert_lr_scale={config.expert_lr_scale}, spectral_conditioning=True")
+                total_p = sum(p.numel() for g in param_groups for p in g["params"])
+                logger.info(
+                    f"AdamTR optimizer: {total_p / 1e6:.0f}M params, "
+                    f"expert_lr_scale={config.expert_lr_scale}, spectral_conditioning=True"
+                )
             return optimizer
 
         # Split params: decay vs no-decay, and optionally muP scaling
@@ -287,9 +391,9 @@ class Trainer:
         no_decay_params = []
         expert_params = []
 
-        base_width = getattr(config, 'mup_base_width', 256)
-        model_width = getattr(self.model, 'config', None)
-        model_width = getattr(model_width, 'hidden_size', base_width) if model_width else base_width
+        base_width = getattr(config, "mup_base_width", 256)
+        model_width = getattr(self.model, "config", None)
+        model_width = getattr(model_width, "hidden_size", base_width) if model_width else base_width
         width_ratio = model_width / base_width
 
         # Plain "adamw" can also get an expert LR pack (like muon_tr/adam_tr):
@@ -298,7 +402,7 @@ class Trainer:
         # dense hidden group's settings. Opt-in only (expert_lr_pack) — it
         # changes the optimizer's param-group count, which breaks resume for
         # a run that already checkpointed under the old (unpacked) grouping.
-        num_experts = getattr(getattr(self.model, 'config', None), 'num_experts', 4)
+        num_experts = getattr(getattr(self.model, "config", None), "num_experts", 4)
         classify_experts = config.optimizer_type == "adamw" and config.expert_lr_pack
         if classify_experts:
             from .adam_tr import _classify_param
@@ -306,9 +410,9 @@ class Trainer:
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
-            if 'bias' in name or 'norm' in name or '.mu' in name:
+            if "bias" in name or "norm" in name or ".mu" in name:
                 no_decay_params.append(param)
-            elif 'embed' in name or 'lm_head' in name:
+            elif "embed" in name or "lm_head" in name:
                 embed_params.append(param)
             elif classify_experts and _classify_param(name, param, num_experts) == "expert":
                 expert_params.append(param)
@@ -319,13 +423,27 @@ class Trainer:
             # muP: scale LR by 1/width_ratio for hidden layers,
             # keep base LR for embeddings. Ref: Yang et al. 2022
             param_groups = [
-                {"params": embed_params, "lr": config.learning_rate, "weight_decay": config.weight_decay},
-                {"params": hidden_params, "lr": config.learning_rate / width_ratio, "weight_decay": config.weight_decay},
-                {"params": no_decay_params, "lr": config.learning_rate / width_ratio, "weight_decay": 0.0},
+                {
+                    "params": embed_params,
+                    "lr": config.learning_rate,
+                    "weight_decay": config.weight_decay,
+                },
+                {
+                    "params": hidden_params,
+                    "lr": config.learning_rate / width_ratio,
+                    "weight_decay": config.weight_decay,
+                },
+                {
+                    "params": no_decay_params,
+                    "lr": config.learning_rate / width_ratio,
+                    "weight_decay": 0.0,
+                },
             ]
             if self.is_main:
-                logger.info(f"muP AdamW: base_width={base_width}, model_width={model_width}, "
-                            f"embed_lr={config.learning_rate:.2e}, hidden_lr={config.learning_rate/width_ratio:.2e}")
+                logger.info(
+                    f"muP AdamW: base_width={base_width}, model_width={model_width}, "
+                    f"embed_lr={config.learning_rate:.2e}, hidden_lr={config.learning_rate / width_ratio:.2e}"
+                )
         else:
             # Standard AdamW
             param_groups = [
@@ -334,15 +452,19 @@ class Trainer:
             ]
             if expert_params:
                 expert_lr = config.learning_rate * config.expert_lr_scale
-                param_groups.append({
-                    "params": expert_params,
-                    "lr": expert_lr,
-                    "weight_decay": config.expert_weight_decay,
-                })
+                param_groups.append(
+                    {
+                        "params": expert_params,
+                        "lr": expert_lr,
+                        "weight_decay": config.expert_weight_decay,
+                    }
+                )
                 if self.is_main:
-                    logger.info(f"AdamW expert LR pack: {sum(p.numel() for p in expert_params)/1e6:.1f}M expert "
-                                f"params @ lr={expert_lr:.2e} (×{config.expert_lr_scale}), "
-                                f"wd={config.expert_weight_decay}")
+                    logger.info(
+                        f"AdamW expert LR pack: {sum(p.numel() for p in expert_params) / 1e6:.1f}M expert "
+                        f"params @ lr={expert_lr:.2e} (×{config.expert_lr_scale}), "
+                        f"wd={config.expert_weight_decay}"
+                    )
 
         return torch.optim.AdamW(
             param_groups,
@@ -352,7 +474,7 @@ class Trainer:
         )
 
     def _default_loss(self, model: nn.Module, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Default loss computation (cross-entropy for LM)."""
+        """Score pre-shifted labels, or derive next-token labels from inputs."""
         input_ids = batch["input_ids"].to(self.device)
         labels = batch.get("labels", input_ids[:, 1:]).to(self.device)
 
@@ -367,8 +489,13 @@ class Trainer:
                 )
 
         if outputs.dim() == 3:
-            shift_logits = outputs[:, :-1, :].contiguous()
-            shift_labels = labels[:, :shift_logits.size(1)].contiguous()
+            if labels.shape[:-1] != outputs.shape[:-2] or labels.size(-1) not in {
+                outputs.size(-2),
+                outputs.size(-2) - 1,
+            }:
+                raise ValueError("LM labels must be pre-shifted with sequence length S or S-1")
+            shift_logits = outputs[:, : labels.size(-1), :].contiguous()
+            shift_labels = labels.contiguous()
         else:
             shift_logits = outputs
             shift_labels = labels
@@ -425,22 +552,39 @@ class Trainer:
         try:
             while self.global_step < self.config.max_steps:
                 self.epoch += 1
+                had_batches = False
+                update_loss = None
 
-                for batch_idx, batch in enumerate(self.train_dataloader):
-                    step_start = time.time()
+                for batch, microbatch_count, should_sync in _accumulation_batches(
+                    self.train_dataloader, accumulation_steps
+                ):
+                    had_batches = True
+                    if microbatch_count == 1:
+                        step_start = time.time()
+                        update_loss = None
 
-                    should_sync = (batch_idx + 1) % accumulation_steps == 0
                     with self._gradient_sync_context(should_sync=should_sync):
                         loss = self._training_step(batch)
+                    detached_loss = loss.detach()
+                    update_loss = (
+                        detached_loss if update_loss is None else update_loss + detached_loss
+                    )
 
                     if should_sync:
+                        # Backward divides by the configured accumulation size.
+                        # A short final group must instead average its actual size.
+                        if microbatch_count != accumulation_steps:
+                            factor = accumulation_steps / microbatch_count
+                            for param in self.model.parameters():
+                                if param.grad is not None:
+                                    param.grad.mul_(factor)
                         self._update_expert_token_counts(batch)
                         self._optimizer_step()
                         self.global_step += 1
 
                         step_time = time.time() - step_start
                         self.metrics.log_step_time(step_time)
-                        loss_value = float(loss.detach().item())
+                        loss_value = float((update_loss / microbatch_count).item())
                         lr = self.scheduler.get_last_lr()[0]
                         self.metrics.update(
                             {
@@ -467,12 +611,16 @@ class Trainer:
                         for callback in self.callbacks:
                             callback(self, self.global_step, loss_value)
 
-                        if getattr(self, 'stop_requested', False):
+                        if getattr(self, "stop_requested", False):
                             raise KeyboardInterrupt
 
                         if self.global_step >= self.config.max_steps:
                             break
 
+                if not had_batches:
+                    raise RuntimeError(
+                        "Training dataloader yielded no batches; cannot advance updates"
+                    )
                 if self.config.max_epochs and self.epoch >= self.config.max_epochs:
                     break
 
@@ -529,18 +677,18 @@ class Trainer:
 
     def _update_expert_token_counts(self, batch):
         """Update per-expert token counts for MuonTR/AdamTR optimizers."""
-        if not hasattr(self.optimizer, 'update_token_counts'):
+        if not hasattr(self.optimizer, "update_token_counts"):
             return
         input_ids = batch.get("input_ids")
         if input_ids is None:
             return
-        num_experts = getattr(getattr(self.model, 'config', None), 'num_experts', 1)
+        num_experts = getattr(getattr(self.model, "config", None), "num_experts", 1)
         if num_experts <= 1:
             return
         # Find the token_to_expert mapping from the model
         token_to_expert = None
         for module in self.model.modules():
-            if hasattr(module, 'token_to_expert'):
+            if hasattr(module, "token_to_expert"):
                 token_to_expert = module.token_to_expert
                 break
         if token_to_expert is None:
@@ -727,28 +875,27 @@ class Trainer:
             return
 
         old_decay_start = milestones[1]
-        if self.global_step >= old_decay_start:
-            raise RuntimeError(
-                f"Cannot resync WSD schedule bounds: global_step={self.global_step} "
-                f"is already at/past the loaded decay-start milestone "
-                f"({old_decay_start}). Extending --max-steps this late requires "
-                f"manually replaying the cosine sub-scheduler's trajectory, not "
-                f"just overwriting T_max -- do that by hand instead of relying "
-                f"on this auto-resync."
-            )
-
         warmup_steps = min(self.config.warmup_steps, max(self.config.max_steps - 1, 0))
         remaining = max(self.config.max_steps - warmup_steps, 1)
         decay_ratio = getattr(self.config, "wsd_decay_ratio", 0.2)
         stable_steps = int(remaining * (1 - decay_ratio))
         decay_steps = remaining - stable_steps
         new_decay_start = warmup_steps + stable_steps
+        new_t_max = max(decay_steps, 1)
 
-        if new_decay_start == old_decay_start:
+        if list(milestones) == [warmup_steps, new_decay_start] and schedulers[2].T_max == new_t_max:
             return  # max_steps unchanged (or resolves to the same bounds) -- no-op
 
+        if self.global_step >= old_decay_start:
+            raise RuntimeError(
+                f"Cannot resync WSD schedule bounds: global_step={self.global_step} "
+                f"is already at/past the loaded decay-start milestone "
+                f"({old_decay_start}). Changing the schedule this late requires "
+                f"manually replaying the cosine sub-scheduler's trajectory."
+            )
+
         self.scheduler._milestones = [warmup_steps, new_decay_start]
-        schedulers[2].T_max = max(decay_steps, 1)
+        schedulers[2].T_max = new_t_max
         if self.is_main:
             logger.info(
                 f"Resynced WSD schedule for extended max_steps={self.config.max_steps}: "

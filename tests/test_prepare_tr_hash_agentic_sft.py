@@ -1,19 +1,30 @@
-from scripts.prepare_tr_hash_agentic_sft import (
-    EVAL_QUOTAS,
-    TRAIN_QUOTAS,
+from pathlib import Path
+
+from complexity.training.sft_preparation import (
     direct_completion,
+    load_sft_recipe,
     mini_projected_record,
     normalize_tool,
     parse_when2call_response,
     tool_completion,
 )
 
+RECIPE = load_sft_recipe(
+    Path(__file__).resolve().parents[1] / "configs/examples/agentic_sft_balanced_100k.json"
+)
+TRAIN_QUOTAS = RECIPE["quotas"]["train"]
+EVAL_QUOTAS = RECIPE["quotas"]["validation"]
 
-def test_production_quotas_build_200k_train_and_10k_validation():
-    assert sum(TRAIN_QUOTAS.values()) == 200_000
-    assert sum(EVAL_QUOTAS.values()) == 10_000
-    assert TRAIN_QUOTAS["smol_smoltalk"] == 182_000
-    assert EVAL_QUOTAS["smol_smoltalk"] == 9_000
+
+def test_balanced_recipe_preserves_verified_historical_allocations():
+    # The archived source has 100K/5K. The former 200K assertion was added in
+    # the commit deleting that source, without a corresponding 200K recipe.
+    assert sum(TRAIN_QUOTAS.values()) == 100_000
+    assert sum(EVAL_QUOTAS.values()) == 5_000
+    assert TRAIN_QUOTAS["smol_smoltalk"] == 90_000
+    assert EVAL_QUOTAS["smol_smoltalk"] == 4_500
+    assert RECIPE["source_revision"] == "749c9a2:scripts/prepare_tr_hash_agentic_sft.py"
+    assert RECIPE["release_eligible"] is False
 
 
 def test_native_targets_never_add_reasoning_markers():
@@ -52,7 +63,10 @@ def test_tool_mini_projection_uses_native_markers():
             {
                 "role": "assistant",
                 "tool_calls": [
-                    {"type": "function", "function": {"name": "weather", "arguments": {"city": "Paris"}}}
+                    {
+                        "type": "function",
+                        "function": {"name": "weather", "arguments": {"city": "Paris"}},
+                    }
                 ],
             },
             {"role": "tool", "content": "Sunny"},

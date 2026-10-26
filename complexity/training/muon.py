@@ -11,10 +11,10 @@ Reference: https://github.com/KellerJordan/Muon
 Blog: https://kellerjordan.github.io/posts/muon/
 """
 
+from typing import Callable, Optional, Tuple
+
 import torch
-import torch.distributed as dist
 from torch.optim import Optimizer
-from typing import Optional, Callable, Tuple
 
 
 def newton_schulz(M: torch.Tensor, steps: int = 5) -> torch.Tensor:

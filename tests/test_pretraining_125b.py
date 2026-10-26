@@ -4,29 +4,43 @@ import queue
 import shutil
 import threading
 from collections import Counter
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 from tokenizers import Tokenizer, models, pre_tokenizers
 
+from complexity.tokenizer.training import pin_tokenizer_contract, validate_tokenizer_contract
 from complexity.training import PretokenizedCorpusMixtureDataset
-from scripts.audit_tr_hash_pretraining_125b_release import audit_release_documents
-from scripts.build_agentic_pretraining_50b import (
-    _direct_parallel_source_groups,
-    _mixture_manifest,
-    _parallel_source_groups,
-    _phase_boundaries,
-    _prepare_source_batches,
-    _replay_plan,
+from complexity.training.agentic_plans import (
+    audit_release_documents,
+    validate_curriculum,
+)
+from complexity.training.agentic_plans import (
+    curriculum_plan as _replay_plan,
+)
+from complexity.training.agentic_plans import (
+    mixture_manifest as _mixture_manifest,
+)
+from complexity.training.agentic_plans import (
+    phase_boundaries as _phase_boundaries,
+)
+from complexity.training.agentic_sharding import (
     allocate_rows,
     build,
     make_direct_source_curated_config,
     row_text,
     validate_config,
-    validate_curriculum,
-    validate_tokenizer_contract,
 )
-from scripts.pin_tr_hash_pretraining_tokenizer import pin_tokenizer_contract
+from complexity.training.agentic_sharding import (
+    direct_parallel_source_groups as _direct_parallel_source_groups,
+)
+from complexity.training.agentic_sharding import (
+    parallel_source_groups as _parallel_source_groups,
+)
+from complexity.training.agentic_sharding import (
+    prepare_source_batches as _prepare_source_batches,
+)
 
 CONFIG_PATH = Path("configs/agentic_pretraining/tr_hash_pretraining_125b.json")
 CURRICULUM_PATH = Path("configs/agentic_pretraining/tr_hash_pretraining_125b_curriculum.json")
@@ -151,11 +165,7 @@ def test_stack_edu_is_permissive_only_and_language_balanced() -> None:
     java = next(source for source in stack if source["config_name"] == "Java")
     assert java["min_int_score"] == 2
     assert "recommended Java threshold of 2" in java["license_audit"]
-    assert all(
-        source["min_int_score"] >= 3
-        for source in stack
-        if source["config_name"] != "Java"
-    )
+    assert all(source["min_int_score"] >= 3 for source in stack if source["config_name"] != "Java")
 
 
 def test_agentic_sources_are_consumed_before_overlapping_foundation_sources() -> None:
@@ -524,8 +534,34 @@ def test_small_curriculum_build_loads_in_the_runtime_without_replay(tmp_path: Pa
     assert report["source_count"] == 2
     assert report["shard_count"] == 6
 
-    # Parallel producers may finish at different times, but the fixed
-    # round-robin merger must produce byte-identical shards on a clean rebuild.
+    documents = {
+        "config": json.loads((hub / "_metadata/config.json").read_text()),
+        "curriculum": curriculum,
+        "mixture": json.loads((hub / "mixture_manifest.json").read_text()),
+        "plan": json.loads((hub / "pretrain_plan.json").read_text()),
+        "state": completed_state,
+        "source_manifests": {
+            name: json.loads((hub / f"corpora/{name}/manifest.json").read_text())
+            for name in ("agentic", "foundation")
+        },
+    }
+    for mutation in ("replay", "rows", "state_hash", "escape"):
+        invalid = deepcopy(documents)
+        if mutation == "replay":
+            invalid["plan"]["phases"][1]["sources"]["agentic"].append(
+                invalid["plan"]["phases"][0]["sources"]["agentic"][0]
+            )
+        elif mutation == "rows":
+            invalid["plan"]["phases"][0]["sources"]["agentic"][0]["rows"] += 1
+        elif mutation == "state_hash":
+            invalid["state"]["sources"][0]["shards"][0]["sha256"] = "0" * 64
+        else:
+            invalid["source_manifests"]["agentic"]["shards"][0]["file"] = "../../escape.bin"
+        with pytest.raises(ValueError):
+            audit_release_documents(**invalid)
+
+    # The native sequential executor keeps deterministic bytes regardless of
+    # the archived recipe's parallel-producer settings.
     second_hub = tmp_path / "hub-second"
     build(
         config=config,
@@ -596,7 +632,7 @@ def test_125b_build_is_gated_until_the_tokenizer_manifest_is_pinned(tmp_path: Pa
 
 
 def test_pin_tokenizer_contract_validates_vocab_markers_and_hashes(tmp_path: Path) -> None:
-    from scripts.train_tr_hash_agentic_tokenizer import train_tokenizer_from_iterator
+    from complexity.tokenizer.training import train_tokenizer_from_iterator
 
     tokenizer_dir = tmp_path / "tokenizer"
     train_tokenizer_from_iterator(
@@ -647,3 +683,109 @@ def test_protected_benchmark_contract_covers_public_evals() -> None:
         "truthfulqa",
         "winogrande",
     } == indexed
+
+
+@pytest.mark.parametrize("changed", ["revision", "license", "boolean_target", "negative_bucket"])
+def test_recipe_validation_rejects_unsafe_or_inexact_provenance(changed: str) -> None:
+    config = _config()
+    if changed == "revision":
+        config["sources"][0]["revision"] = "main"
+    elif changed == "license":
+        config["sources"][0]["license_audit"] = ""
+    elif changed == "boolean_target":
+        config["sources"][0]["target_tokens"] = True
+    else:
+        config["bucket_targets"]["foundation"] = -1
+    with pytest.raises(ValueError):
+        validate_config(config)
+
+
+def test_curriculum_validation_refuses_replay_and_negative_phase_quotas() -> None:
+    config = _config()
+    curriculum = json.loads(CURRICULUM_PATH.read_text())
+    curriculum["invariants"]["replay"] = True
+    with pytest.raises(ValueError, match="no-replay"):
+        validate_curriculum(config, curriculum)
+    curriculum["invariants"]["replay"] = False
+    curriculum["phases"][0]["bucket_tokens"]["agentic"] = -1
+    with pytest.raises(ValueError, match="nonnegative"):
+        validate_curriculum(config, curriculum)
+
+
+def test_tokenizer_pin_rejects_missing_markers_without_rewriting_config(tmp_path: Path) -> None:
+    tokenizer_dir = tmp_path / "tokenizer"
+    tokenizer_dir.mkdir()
+    tokenizer = Tokenizer(models.WordLevel({"<unk>": 0}, unk_token="<unk>"))
+    tokenizer.save(str(tokenizer_dir / "tokenizer.json"))
+    (tokenizer_dir / "agentic_tokenizer_manifest.json").write_text('{"vocab_size":1}\n')
+    config = {"tokenizer_contract": {"vocab_size": 1}}
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config))
+    before = config_path.read_bytes()
+    with pytest.raises(ValueError, match="special markers"):
+        pin_tokenizer_contract(config_path, tokenizer_dir, "a" * 40)
+    assert config_path.read_bytes() == before
+    config["tokenizer_contract"]["required_manifest"] = "../agentic_tokenizer_manifest.json"
+    config_path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="contained relative"):
+        pin_tokenizer_contract(config_path, tokenizer_dir, "a" * 40)
+
+
+def test_native_direct_materialization_discloses_and_keeps_duplicates(tmp_path: Path) -> None:
+    tokenizer = Tokenizer(models.WordLevel({"<unk>": 0, "same": 1}, unk_token="<unk>"))
+    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer_path = tmp_path / "tokenizer.json"
+    tokenizer.save(str(tokenizer_path))
+    data = tmp_path / "source.jsonl"
+    data.write_text('{"text":"same same"}\n' * 5)
+    config = {
+        "version": 1,
+        "target_tokens": 8,
+        "seq_len": 2,
+        "global_batch_sequences": 1,
+        "shard_trained_tokens": 4,
+        "sources": [
+            {
+                "name": "fixture",
+                "bucket": "foundation",
+                "weight": 1.0,
+                "target_tokens": 8,
+                "selection": "quality",
+                "license_audit": "fixture",
+                "path": str(data),
+            }
+        ],
+    }
+    direct = make_direct_source_curated_config(config)
+
+    class Publisher:
+        def __init__(self):
+            self.files = {}
+
+        def publish_file(self, path, relative):
+            payload = path.read_bytes()
+            self.files[relative] = payload
+            return {
+                "repo_path": relative,
+                "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+
+        def publish_json(self, payload, relative, work_dir):
+            self.files[relative] = json.dumps(payload).encode()
+
+    publisher = Publisher()
+    state = build(
+        config=direct,
+        tokenizer_path=tokenizer_path,
+        work_dir=tmp_path / "work",
+        publisher=publisher,
+    )
+    assert state["sources"][0]["counters"]["retained"] == 5
+    assert state["sources"][0]["counters"].get("exact_duplicate", 0) == 0
+    manifest = json.loads(publisher.files["mixture_manifest.json"])
+    assert manifest["actual_tokens"] == 8
+    assert manifest["materialization_mode"] == "direct_source_curated"
+    assert manifest["exact_document_deduplication"] is False
+    assert manifest["benchmark_decontamination"] is False
+    assert manifest["agentic_signal_filtering"] is False

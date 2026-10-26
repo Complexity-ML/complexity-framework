@@ -4,16 +4,18 @@ Base attention class for framework-complexity.
 All attention implementations must inherit from this class.
 """
 
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
-from abc import ABC, abstractmethod
-from typing import Optional, Tuple
-from dataclasses import dataclass
 
 
 @dataclass
 class AttentionConfig:
     """Configuration for attention modules."""
+
     hidden_size: int
     num_attention_heads: int
     num_key_value_heads: int  # For GQA/MQA
@@ -59,14 +61,9 @@ class AttentionConfig:
     tr_mha_verifier_gate_init: float = 0.1
     tr_mha_verifier_temperature: float = 1.0
     tr_mha_targets: str = "qv"
-    architecture_profile: str = "legacy"
     rope_fraction: float = 1.0
 
     def __post_init__(self):
-        if self.architecture_profile not in {"legacy", "source67"}:
-            raise ValueError("attention architecture_profile must be legacy or source67")
-        if self.architecture_profile == "source67" and self.hidden_size % 4:
-            raise ValueError("source67 value binding requires hidden_size divisible by 4")
         if self.head_dim is None:
             self.head_dim = self.hidden_size // self.num_attention_heads
 
@@ -91,7 +88,7 @@ class AttentionConfig:
         if self.hidden_size != self.num_attention_heads * self.head_dim:
             raise ValueError("hidden_size must equal num_attention_heads * head_dim")
         if self.scale is None:
-            self.scale = self.head_dim ** -0.5
+            self.scale = self.head_dim**-0.5
         if not 0.0 <= self.attention_dropout < 1.0:
             raise ValueError("attention_dropout must be in [0, 1)")
         if self.sliding_window is not None and self.sliding_window <= 0:
@@ -110,9 +107,7 @@ class AttentionConfig:
         if self.tr_mha_adapter_rank <= 0:
             raise ValueError("tr_mha_adapter_rank must be positive")
         if not 0 < self.tr_mha_top_k <= self.tr_mha_num_experts:
-            raise ValueError(
-                "tr_mha_top_k must be between 1 and tr_mha_num_experts"
-            )
+            raise ValueError("tr_mha_top_k must be between 1 and tr_mha_num_experts")
         if not 0.0 < self.tr_mha_verifier_gate_init < 1.0:
             raise ValueError("tr_mha_verifier_gate_init must be in (0, 1)")
         if self.tr_mha_verifier_temperature <= 0.0:

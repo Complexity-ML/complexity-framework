@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from scripts import prepare_arc_eval_samples as module
+from complexity.evaluation import arc_samples as module
 
 
 def test_materialize_writes_pinned_complete_arc_samples(tmp_path, monkeypatch) -> None:

@@ -13,7 +13,8 @@ Example:
     config = ModelConfig(attention_type="my_custom_attention", ...)
 """
 
-from typing import Dict, Type, TypeVar, Callable, Optional
+from typing import Callable, Dict, Type, TypeVar
+
 import torch.nn as nn
 
 T = TypeVar('T', bound=nn.Module)

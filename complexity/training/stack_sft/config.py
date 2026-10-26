@@ -134,6 +134,11 @@ class StackSFTConfig:
     lora_alpha: float = 128.0
     lora_dropout: float = 0.05
     lora_targets: str = "q_proj,v_proj,o_proj,shared_gate,shared_up,shared_down"
+    source_stage: str | None = None
+    device: str = "cpu"
+    precision: str = "fp32"
+    micro_batch_size: int = 1
+    seed: int = 42
     stages: list[StageConfig] = field(default_factory=list)
 
     @classmethod
@@ -168,6 +173,11 @@ class StackSFTConfig:
                     "q_proj,v_proj,o_proj,shared_gate,shared_up,shared_down",
                 )
             ),
+            source_stage=data.get("source_stage"),
+            device=str(data.get("device", "cpu")),
+            precision=str(data.get("precision", "bf16" if data.get("bf16", False) else "fp32")),
+            micro_batch_size=int(data.get("micro_batch_size", 1)),
+            seed=int(data.get("seed", 42)),
             stages=stages,
         )
 
@@ -178,3 +188,20 @@ class StackSFTConfig:
         if not isinstance(data, dict):
             raise ValueError(f"invalid stack config: {path}")
         return cls.from_dict(data)
+
+    @classmethod
+    def from_file(cls, path: str | Path) -> "StackSFTConfig":
+        """Read JSON or YAML, resolving local paths beside the authored config."""
+        path = Path(path).resolve()
+        config = cls.from_yaml(path)
+        for name in ("base_checkpoint", "tokenizer", "output_dir", "data_dir", "run_dir"):
+            setattr(config, name, str((path.parent / getattr(config, name)).resolve()))
+        for stage in config.stages:
+            if stage.checkpoint:
+                stage.checkpoint = str((path.parent / stage.checkpoint).resolve())
+            if stage.mix.out:
+                stage.mix.out = str((path.parent / stage.mix.out).resolve())
+            for source in stage.mix.sources:
+                if source.path:
+                    source.path = str((path.parent / source.path).resolve())
+        return config

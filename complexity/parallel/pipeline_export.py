@@ -8,6 +8,7 @@ split specs, validate layer/stage layouts, and trace a model into a Pipe.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 import torch
@@ -62,11 +63,12 @@ class LastHiddenStateWrapper(nn.Module):
 
 
 def enable_pipeline_export_mode(model: nn.Module) -> None:
-    """Switch Token-Routed MLPs to export-friendly dispatch in-place."""
+    """Select reference execution without changing the routing architecture."""
+    from complexity.tr_hash import TRHashBackend, TRHashEngine
+
     for module in model.modules():
-        config = getattr(module, "config", None)
-        if config is not None and hasattr(config, "static_expert_capacity"):
-            config.static_expert_capacity = True
+        if isinstance(module, TRHashEngine):
+            module.config = replace(module.config, backend=TRHashBackend.PYTORCH)
 
 
 def trace_pipeline(

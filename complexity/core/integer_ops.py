@@ -12,9 +12,10 @@ Works on CPU (via fallback) and CUDA (via torch._int_mm).
 Ported from complexity-i64 (INL 2025).
 """
 
+from typing import Optional, Tuple
+
 import torch
 import torch.nn.functional as F
-from typing import Tuple, Optional
 
 # =========================================================================
 # Native INT8 matmul detection

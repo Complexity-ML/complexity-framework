@@ -16,7 +16,7 @@ from safetensors.torch import load_file
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from ..detection.distributed import DistributedContext
+from ...vision.detection.distributed import DistributedContext
 from .config import TRHashSensorFusionConfig
 from .data import CUHKXSmallTrackTestDataset, collate_cuhkx_test
 from .model import TRHashSensorFusionClassifier

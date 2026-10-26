@@ -19,9 +19,9 @@
   "first_checkpoint": 10,
   "cache_gib": 64,
   "keep_checkpoints": 3,
-  "model_sha256": "a614a990ddd587dcda3a4ec0cf0b998c3de18ea0806892fe5e9c29f9300c3a8d",
+  "model_sha256": "5bced3865382136a932387de0c18f847b209173a8c5a9b2429103b1b0f5ed54d",
   "data_plan_sha256": "b16c633b8f17e66db37a04858dd1995216b0ef827e8a5f36e0ce9590689c5c85",
   "precision": "FP32 sharded master weights and AdamW state; BF16 compute",
   "attention": "full causal SDPA Flash Attention",
-  "kernels": "TR-HASH fused_cuda and Liger"
+  "kernels": "TR-HASH composed routing with automatic backend selection and Liger CE"
 }

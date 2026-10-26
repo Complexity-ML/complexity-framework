@@ -7,8 +7,9 @@ for stable GPU training across PyTorch versions and GPU architectures.
 Complexity-ML — 2026
 """
 
-import torch
 import logging
+
+import torch
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +27,9 @@ def patch_triton_heuristics() -> bool:
     Returns True if patched, False if already patched or not needed.
     """
     try:
-        import pathlib
         import inspect
+        import pathlib
+
         import torch._inductor.runtime.triton_heuristics as _th
 
         f = pathlib.Path(inspect.getfile(_th))

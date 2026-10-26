@@ -2,11 +2,12 @@
 Inference commands for the Complexity framework.
 """
 
-import typer
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
-from ..utils import console, spinner, print_panel, print_code, success, error, warning, info
+import typer
+
+from ..utils import console, error, info, spinner, success
 
 inference = typer.Typer(name="inference", help="Inference and generation commands")
 
@@ -17,12 +18,18 @@ def generate(
     prompt: str = typer.Option(None, "--prompt", "-p", help="Text prompt"),
     prompt_file: Optional[Path] = typer.Option(None, "--file", "-f", help="File containing prompt"),
     backend: str = typer.Option("vllm", "--backend", help="Serving backend: vllm or sglang"),
-    base_url: str = typer.Option("http://localhost:8000", "--base-url", help="OpenAI-compatible server URL"),
-    api_key: Optional[str] = typer.Option(None, "--api-key", help="Bearer token for the serving endpoint"),
+    base_url: str = typer.Option(
+        "http://localhost:8000", "--base-url", help="OpenAI-compatible server URL"
+    ),
+    api_key: Optional[str] = typer.Option(
+        None, "--api-key", help="Bearer token for the serving endpoint"
+    ),
     max_tokens: int = typer.Option(256, "--max-tokens", "-m", help="Maximum tokens to generate"),
     temperature: float = typer.Option(0.7, "--temperature", "-t", help="Sampling temperature"),
     top_p: float = typer.Option(0.9, "--top-p", help="Top-p sampling"),
-    top_k: Optional[int] = typer.Option(None, "--top-k", help="Top-k sampling if supported by backend"),
+    top_k: Optional[int] = typer.Option(
+        None, "--top-k", help="Top-k sampling if supported by backend"
+    ),
     timeout: float = typer.Option(60.0, "--timeout", help="Request timeout in seconds"),
 ):
     """
@@ -66,7 +73,9 @@ def generate(
             top_k=top_k,
         )
 
-        console.print(f"\n[bold cyan]Prompt:[/bold cyan] {prompt[:100]}{'...' if len(prompt) > 100 else ''}\n")
+        console.print(
+            f"\n[bold cyan]Prompt:[/bold cyan] {prompt[:100]}{'...' if len(prompt) > 100 else ''}\n"
+        )
         console.print(f"[bold green]Generation via {backend}:[/bold green]")
 
         with spinner(f"Calling {backend} at {base_url}..."):
@@ -83,227 +92,192 @@ def generate(
 
 @inference.command("chat")
 def chat_interactive(
-    model_path: Path = typer.Argument(..., help="Path to model checkpoint"),
+    model_path: str = typer.Argument(..., help="Model name/id served by vLLM or SGLang"),
     system_prompt: Optional[str] = typer.Option(None, "--system", "-s", help="System prompt"),
-    max_tokens: int = typer.Option(512, "--max-tokens", "-m", help="Max tokens per response"),
-    temperature: float = typer.Option(0.7, "--temperature", "-t", help="Temperature"),
-    device: str = typer.Option("cuda", "--device", "-d", help="Device"),
-    quantize: Optional[str] = typer.Option(None, "--quantize", "-q", help="Quantization"),
+    max_tokens: int = typer.Option(
+        512, "--max-tokens", "-m", min=1, help="Max tokens per response"
+    ),
+    temperature: float = typer.Option(0.7, "--temperature", "-t", min=0.0, help="Temperature"),
+    device: Optional[str] = typer.Option(
+        None, "--device", "-d", help="Legacy local option; configure on the serving host"
+    ),
+    quantize: Optional[str] = typer.Option(
+        None, "--quantize", "-q", help="Legacy local option; configure on the serving host"
+    ),
+    backend: str = typer.Option("vllm", "--backend", help="Serving backend: vllm or sglang"),
+    base_url: str = typer.Option(
+        "http://localhost:8000", "--base-url", help="OpenAI-compatible server URL"
+    ),
+    api_key: Optional[str] = typer.Option(
+        None, "--api-key", help="Bearer token for the serving endpoint"
+    ),
+    timeout: float = typer.Option(60.0, "--timeout", min=0.001, help="Request timeout in seconds"),
 ):
+    """Chat through an existing vLLM/SGLang endpoint with conversation history.
+
+    Device selection and quantization belong to the external server. Historical
+    local flags are still recognized and explain how to migrate their usage.
     """
-    Interactive chat with a model.
-
-    Example:
-        complexity inference chat model.pt --system "You are a helpful assistant"
-    """
-    try:
-        with spinner("Loading model..."):
-            from complexity.inference import InferenceEngine, GenerationConfig
-            from complexity.data import ComplexityTokenizer, ComplexityTemplate
-
-            engine = InferenceEngine.from_checkpoint(model_path, device=device)
-            template = ComplexityTemplate(format="complexity")
-
-        console.print(success("Model loaded"))
-        console.print(info("Type 'quit' or 'exit' to end, 'clear' to reset history"))
-        console.print()
-
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-
-        gen_config = GenerationConfig(
-            max_new_tokens=max_tokens,
-            temperature=temperature,
-            top_p=0.9,
-            stop_strings=["<|end|>", "<|user|>"],
+    if device is not None or quantize is not None:
+        console.print(
+            error(
+                "--device and --quantize are server-side settings. Configure them when "
+                "starting vLLM/SGLang and omit these flags from this client."
+            )
         )
+        raise typer.Exit(2)
+    try:
+        from complexity.inference import ExternalGenerationConfig, create_external_backend
 
+        client = create_external_backend(
+            backend,
+            base_url=base_url,
+            model=str(model_path),
+            api_key=api_key,
+            timeout=timeout,
+        )
+        gen_config = ExternalGenerationConfig(max_tokens=max_tokens, temperature=temperature)
+        messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
+        console.print(info(f"Chat via {backend} at {base_url}"))
+        console.print(info("Type 'quit' or 'exit' to end, 'clear' to reset history"))
         while True:
             try:
                 user_input = console.input("[bold cyan]You:[/bold cyan] ")
             except (KeyboardInterrupt, EOFError):
-                console.print("\n" + info("Goodbye!"))
-                break
-
-            if user_input.lower() in ('quit', 'exit'):
                 console.print(info("Goodbye!"))
                 break
-
-            if user_input.lower() == 'clear':
-                messages = []
-                if system_prompt:
-                    messages.append({"role": "system", "content": system_prompt})
+            command = user_input.strip().lower()
+            if command in {"quit", "exit"}:
+                console.print(info("Goodbye!"))
+                break
+            if command == "clear":
+                messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
                 console.print(info("History cleared"))
                 continue
-
             if not user_input.strip():
                 continue
-
-            messages.append({"role": "user", "content": user_input})
-
-            # Format with template
-            prompt = template.format_messages(messages)
-            prompt += template.format_header("assistant")
-
-            console.print("[bold green]Assistant:[/bold green] ", end="")
-
-            response_text = ""
-            for token in engine.generate_stream(prompt, gen_config):
-                console.print(token, end="")
-                response_text += token
-
-            console.print("\n")
-            messages.append({"role": "assistant", "content": response_text})
-
-    except ImportError as e:
-        console.print(error(f"Missing dependency: {e}"))
-        raise typer.Exit(1)
-    except Exception as e:
-        console.print(error(f"Chat failed: {e}"))
-        raise typer.Exit(1)
+            request = messages + [{"role": "user", "content": user_input}]
+            response = client.chat(request, gen_config)
+            console.print("[bold green]Assistant:[/bold green]", response)
+            messages = request + [{"role": "assistant", "content": response}]
+    except (ImportError, ValueError, RuntimeError) as exc:
+        console.print(error(f"Chat failed: {exc}"))
+        raise typer.Exit(1) from exc
 
 
 @inference.command("batch")
 def batch_inference(
-    model_path: Path = typer.Argument(..., help="Model checkpoint"),
-    input_file: Path = typer.Argument(..., help="Input JSONL file"),
+    model_path: str = typer.Argument(..., help="Model name/id served by vLLM or SGLang"),
+    input_file: Path = typer.Argument(..., help="Input JSONL file with prompt or text fields"),
     output_file: Path = typer.Argument(..., help="Output JSONL file"),
-    max_tokens: int = typer.Option(256, "--max-tokens", "-m"),
-    batch_size: int = typer.Option(8, "--batch-size", "-b", help="Batch size"),
-    device: str = typer.Option("cuda", "--device", "-d"),
-    quantize: Optional[str] = typer.Option(None, "--quantize", "-q"),
+    max_tokens: int = typer.Option(256, "--max-tokens", "-m", min=1),
+    batch_size: int = typer.Option(
+        8, "--batch-size", "-b", min=1, help="Client chunk size; requests are sequential"
+    ),
+    device: Optional[str] = typer.Option(
+        None, "--device", "-d", help="Legacy local option; configure on the serving host"
+    ),
+    quantize: Optional[str] = typer.Option(
+        None, "--quantize", "-q", help="Legacy local option; configure on the serving host"
+    ),
+    backend: str = typer.Option("vllm", "--backend", help="Serving backend: vllm or sglang"),
+    base_url: str = typer.Option(
+        "http://localhost:8000", "--base-url", help="OpenAI-compatible server URL"
+    ),
+    api_key: Optional[str] = typer.Option(
+        None, "--api-key", help="Bearer token for the serving endpoint"
+    ),
+    timeout: float = typer.Option(60.0, "--timeout", min=0.001, help="Request timeout in seconds"),
+    force: bool = typer.Option(False, "--force", help="Replace an existing output file"),
 ):
-    """
-    Batch inference on a JSONL file.
+    """Generate JSONL results through an existing external serving endpoint.
 
-    Input format: {"prompt": "text"} per line
-    Output format: {"prompt": "text", "output": "generated"} per line
-
-    Example:
-        complexity inference batch model.pt prompts.jsonl outputs.jsonl
+    Input is validated before requests. The output is published only after all
+    completions succeed; a failed request leaves an existing output unchanged.
     """
     import json
+    import os
+    import tempfile
 
-    if not input_file.exists():
-        console.print(error(f"Input file not found: {input_file}"))
-        raise typer.Exit(1)
-
-    # Load prompts
-    prompts = []
-    with open(input_file) as f:
-        for line in f:
-            data = json.loads(line)
-            prompts.append(data.get("prompt", data.get("text", "")))
-
-    console.print(info(f"Loaded {len(prompts)} prompts"))
-
+    if device is not None or quantize is not None:
+        console.print(
+            error("--device and --quantize are server-side settings; omit these client flags.")
+        )
+        raise typer.Exit(2)
     try:
-        with spinner("Loading model..."):
-            from complexity.inference import InferenceEngine, GenerationConfig
-            engine = InferenceEngine.from_checkpoint(model_path, device=device)
+        if output_file.resolve() == input_file.resolve():
+            raise ValueError("Input and output paths must differ")
+        if output_file.exists() and not force:
+            raise ValueError(f"Output already exists: {output_file}. Use --force to replace it.")
+        if not output_file.parent.is_dir():
+            raise ValueError(f"Output directory does not exist: {output_file.parent}")
+        prompts = []
+        with input_file.open(encoding="utf-8") as stream:
+            for number, line in enumerate(stream, 1):
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except ValueError as exc:
+                    raise ValueError(f"Invalid JSON at input line {number}: {exc}") from exc
+                prompt = item.get("prompt", item.get("text")) if isinstance(item, dict) else None
+                if not isinstance(prompt, str):
+                    raise ValueError(f"Input line {number} needs a string prompt or text field")
+                prompts.append(prompt)
+        from complexity.inference import ExternalGenerationConfig, create_external_backend
 
-        console.print(success("Model loaded"))
-
-        gen_config = GenerationConfig(max_new_tokens=max_tokens)
-
-        results = []
-        from rich.progress import Progress
-
-        with Progress(console=console) as progress:
-            task = progress.add_task("Generating...", total=len(prompts))
-
-            for i in range(0, len(prompts), batch_size):
-                batch = prompts[i:i+batch_size]
-                outputs = engine.generate_batch(batch, gen_config)
-
-                for prompt, output in zip(batch, outputs):
-                    results.append({"prompt": prompt, "output": output})
-
-                progress.advance(task, len(batch))
-
-        # Save results
-        with open(output_file, 'w') as f:
-            for r in results:
-                f.write(json.dumps(r) + "\n")
-
-        console.print(success(f"Saved {len(results)} results to {output_file}"))
-
-    except Exception as e:
-        console.print(error(f"Batch inference failed: {e}"))
-        raise typer.Exit(1)
+        client = create_external_backend(
+            backend,
+            base_url=base_url,
+            model=str(model_path),
+            api_key=api_key,
+            timeout=timeout,
+        )
+        config = ExternalGenerationConfig(max_tokens=max_tokens)
+        with tempfile.TemporaryDirectory(
+            prefix=".complexity-batch-", dir=output_file.parent
+        ) as temporary:
+            staged = Path(temporary) / "results.jsonl"
+            with staged.open("w", encoding="utf-8") as stream:
+                for offset in range(0, len(prompts), batch_size):
+                    for prompt in prompts[offset : offset + batch_size]:
+                        output = client.complete(prompt, config)
+                        stream.write(
+                            json.dumps({"prompt": prompt, "output": output}, ensure_ascii=False)
+                            + "\n"
+                        )
+            if force:
+                os.replace(staged, output_file)
+            else:
+                # An exclusive publication also prevents clobbering a file
+                # created by another process while requests were in flight.
+                os.link(staged, output_file)
+        console.print(success(f"Saved {len(prompts)} results to {output_file}"))
+    except (ImportError, ValueError, RuntimeError, OSError) as exc:
+        console.print(error(f"Batch inference failed: {exc}"))
+        raise typer.Exit(1) from exc
 
 
 @inference.command("benchmark")
 def benchmark(
-    model_path: Path = typer.Argument(..., help="Model checkpoint"),
-    prompt_length: int = typer.Option(128, "--prompt-len", help="Input prompt length"),
-    output_length: int = typer.Option(128, "--output-len", help="Output length"),
-    batch_sizes: str = typer.Option("1,2,4,8", "--batch-sizes", help="Batch sizes to test"),
-    warmup: int = typer.Option(3, "--warmup", help="Warmup iterations"),
-    iterations: int = typer.Option(10, "--iterations", "-n", help="Benchmark iterations"),
-    device: str = typer.Option("cuda", "--device", "-d"),
-    quantize: Optional[str] = typer.Option(None, "--quantize", "-q"),
+    model_path: Path = typer.Argument(..., help="Legacy model checkpoint"),
+    prompt_length: int = typer.Option(128, "--prompt-len", help="Legacy input length"),
+    output_length: int = typer.Option(128, "--output-len", help="Legacy output length"),
+    batch_sizes: str = typer.Option("1,2,4,8", "--batch-sizes", help="Legacy native batch sizes"),
+    warmup: int = typer.Option(3, "--warmup", help="Legacy warmup iterations"),
+    iterations: int = typer.Option(10, "--iterations", "-n", help="Legacy benchmark iterations"),
+    device: str = typer.Option("cuda", "--device", "-d", help="Legacy local device"),
+    quantize: Optional[str] = typer.Option(
+        None, "--quantize", "-q", help="Legacy local quantization"
+    ),
 ):
-    """
-    Benchmark inference performance.
-
-    Example:
-        complexity inference benchmark model.pt --batch-sizes 1,4,8,16
-    """
-    import time
-
-    batch_list = [int(b) for b in batch_sizes.split(",")]
-
-    try:
-        with spinner("Loading model..."):
-            from complexity.inference import InferenceEngine, GenerationConfig
-            engine = InferenceEngine.from_checkpoint(model_path, device=device)
-
-        console.print(success("Model loaded"))
-
-        # Create dummy prompt
-        dummy_prompt = "Hello " * (prompt_length // 2)
-        gen_config = GenerationConfig(max_new_tokens=output_length)
-
-        results = []
-
-        for bs in batch_list:
-            prompts = [dummy_prompt] * bs
-
-            # Warmup
-            console.print(info(f"Warming up batch size {bs}..."))
-            for _ in range(warmup):
-                engine.generate_batch(prompts, gen_config)
-
-            # Benchmark
-            times = []
-            for _ in range(iterations):
-                start = time.perf_counter()
-                engine.generate_batch(prompts, gen_config)
-                times.append(time.perf_counter() - start)
-
-            avg_time = sum(times) / len(times)
-            tokens_per_sec = (bs * output_length) / avg_time
-
-            results.append({
-                "batch_size": bs,
-                "avg_time": f"{avg_time:.3f}s",
-                "tokens_per_sec": f"{tokens_per_sec:.1f}",
-            })
-
-        # Print results table
-        from ..utils import print_table
-        print_table(
-            "Inference Benchmark Results",
-            [
-                {"name": "Batch Size", "style": "cyan"},
-                {"name": "Avg Time", "style": "yellow"},
-                {"name": "Tokens/sec", "style": "green"},
-            ],
-            [[r["batch_size"], r["avg_time"], r["tokens_per_sec"]] for r in results]
+    """Explain migration from removed native benchmarking to endpoint metrics."""
+    console.print(
+        error(
+            "Native checkpoint benchmarking is not supported. Benchmark an existing "
+            "endpoint with complexity serve benchmark-server URL --model SERVED_MODEL. "
+            "That command measures successful requests and latency; token throughput "
+            "requires the serving backend's token-usage metrics."
         )
-
-    except Exception as e:
-        console.print(error(f"Benchmark failed: {e}"))
-        raise typer.Exit(1)
+    )
+    raise typer.Exit(2)

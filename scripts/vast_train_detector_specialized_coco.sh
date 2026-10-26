@@ -19,7 +19,6 @@ YOLO_VALIDATION_IMAGES="${YOLO_VALIDATION_IMAGES:-datasets/coco/images/val2017}"
 YOLO_VALIDATION_LABELS="${YOLO_VALIDATION_LABELS:-datasets/coco/labels/val2017}"
 WORKERS="${WORKERS:-6}"
 ARCHITECTURE_VERSION="${ARCHITECTURE_VERSION:-8}"
-ARCHITECTURE_PROFILE="${ARCHITECTURE_PROFILE:-source67}"
 KEY_VALUE_HEADS="${KEY_VALUE_HEADS:-1}"
 VISION_HIDDEN_SIZE="${VISION_HIDDEN_SIZE:-128}"
 VISION_LAYERS="${VISION_LAYERS:-4}"
@@ -168,7 +167,6 @@ COMMAND=(torchrun --standalone --nproc_per_node "$NPROC_PER_NODE"
   --training-purpose "$TRAINING_PURPOSE"
   --provenance-dataset coco-2017
   --architecture-version "$ARCHITECTURE_VERSION"
-  --architecture-profile "$ARCHITECTURE_PROFILE"
   --key-value-heads "$KEY_VALUE_HEADS"
   --image-size 640
   --patch-size 8

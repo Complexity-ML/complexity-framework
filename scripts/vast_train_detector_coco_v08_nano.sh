@@ -1,12 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-# Source67 v8 adaptation: four contextual experts, routed GQA heads and V0.
+# TR-HASH v8: four contextual experts, routed GQA heads and V0.
 # Explicit 216/27 widths and task-specific pyramid/heads are retained.
 # The text result does not establish a vision accuracy score.
-export OUTPUT="${OUTPUT:-artifacts/detector_coco_v08_nano_source67_o2m}"
+export OUTPUT="${OUTPUT:-artifacts/detector_coco_v08_nano_o2m}"
 export ARCHITECTURE_VERSION=8
-export ARCHITECTURE_PROFILE=source67
 export KEY_VALUE_HEADS=1
 export VISION_HIDDEN_SIZE=128
 export VISION_LAYERS=7

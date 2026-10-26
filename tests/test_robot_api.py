@@ -15,8 +15,8 @@ def _tiny_robot_config() -> TRHashSensorFusionConfig:
         hidden_size=32,
         num_hidden_layers=2,
         num_attention_heads=4,
-        num_experts=8,
-        architecture_profile="legacy",
+        num_key_value_heads=1,
+        num_experts=4,
         top_k=2,
         shared_width=32,
         expert_width=8,
@@ -52,7 +52,12 @@ def test_robot_model_preserves_shared_plus_sparse_tr_hash_contract() -> None:
     for block in model.blocks:
         assert block.mlp.config.shared_width > 0
         assert block.mlp.config.expert_width > 0
-        assert block.mlp.config.top_k < block.mlp.config.num_experts
+        assert (block.mlp.config.num_experts, block.mlp.config.top_k) == (4, 2)
+        assert block.mlp.config.route_weights == (0.5, 0.5)
+        assert block.mlp.config.shared_output_scale == 1
+        assert block.mlp.config.routed_output_scale == 2
+        assert model.config.num_attention_heads == 4
+        assert model.config.num_key_value_heads == 1
 
 
 def test_robot_factory_accepts_multimodal_inputs() -> None:

@@ -1,66 +1,40 @@
-"""
-Audio encoders for multi-modal models.
-
-Implements:
-- Mel-spectrogram encoding
-- Whisper-style audio encoder
-- Convolutional audio feature extraction
-
-v2: AudioTokenRoutedMLP — time-step position routing (t % num_experts).
-    Position-only, precomputed where length is fixed; computed on-the-fly
-    otherwise. Same fused BMM pattern as TokenRoutedMLPParallel.
-"""
+"""Canonical TR-HASH modality blocks and task-specific connector components. Original position IDs are preserved for head/value routing and contextual expert assignment."""
 
 import math
 from dataclasses import asdict, dataclass, fields, field
 from typing import Optional
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from complexity.tr_hash.attention import (
-    DomainSelfAttention,
-    make_domain_mlp,
-    resolve_domain_heads,
-    validate_domain_profile,
-)
+from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp, resolve_domain_heads
 
 
 @dataclass
 class AudioConfig:
     """Configuration for audio encoder."""
 
-    n_mels: int = 80  # Number of mel filterbank channels
-    n_fft: int = 400  # FFT size
-    hop_length: int = 160  # Hop length for STFT
-    sample_rate: int = 16000  # Audio sample rate
-    architecture_profile: str = field(default="source67", kw_only=True)
-    architecture_profile_version: int = field(default=1, kw_only=True)
+    n_mels: int = 80
+    n_fft: int = 400
+    hop_length: int = 160
+    sample_rate: int = 16000
     hidden_size: int = 768
     num_hidden_layers: int = 12
-    num_attention_heads: int = 12
+    num_attention_heads: int = 4
     num_key_value_heads: int | None = field(default=None, kw_only=True)
     intermediate_size: int | None = None
     shared_intermediate_size: Optional[int] = None
     dropout: float = 0.0
-    max_length: int = 3000  # Maximum spectrogram length
-    layer_norm_eps: float = 1e-5
-    # Token-routed MLP: 1 = standard, >1 = time-step position routing
+    max_length: int = 3000
+    layer_norm_eps: float = 1e-05
     num_experts: int = 4
 
     def __post_init__(self):
-        validate_domain_profile(self.architecture_profile, self.architecture_profile_version)
         resolve_domain_heads(self)
-        if self.architecture_profile == "source67" and self.num_experts != 4:
-            raise ValueError(
-                "source67 requires four experts; use architecture_profile='legacy' for earlier models"
-            )
+        if self.num_experts != 4:
+            raise ValueError("TR-HASH requires exactly four experts")
         if self.intermediate_size is None:
-            self.intermediate_size = (
-                self.hidden_size if self.architecture_profile == "source67" else 3072
-            )
-        if self.shared_intermediate_size is None and self.architecture_profile == "source67":
+            self.intermediate_size = self.hidden_size
+        if self.shared_intermediate_size is None:
             self.shared_intermediate_size = 2 * self.hidden_size
 
     def to_dict(self):
@@ -69,7 +43,6 @@ class AudioConfig:
     @classmethod
     def from_dict(cls, values):
         values = dict(values)
-        values.setdefault("architecture_profile", "legacy")
         unknown = set(values) - {item.name for item in fields(cls)}
         if unknown:
             raise ValueError(f"unknown multimodal config fields: {sorted(unknown)}")
@@ -83,13 +56,8 @@ class AudioConvStack(nn.Module):
     Downsamples mel-spectrograms and projects to hidden dimension.
     """
 
-    def __init__(
-        self,
-        n_mels: int = 80,
-        hidden_size: int = 768,
-    ):
+    def __init__(self, n_mels: int = 80, hidden_size: int = 768):
         super().__init__()
-
         self.conv1 = nn.Conv1d(n_mels, hidden_size, kernel_size=3, padding=1)
         self.conv2 = nn.Conv1d(hidden_size, hidden_size, kernel_size=3, stride=2, padding=1)
         self.gelu = nn.GELU()
@@ -104,7 +72,7 @@ class AudioConvStack(nn.Module):
         """
         x = self.gelu(self.conv1(mel_spectrogram))
         x = self.gelu(self.conv2(x))
-        return x.transpose(1, 2)  # [B, T/2, H]
+        return x.transpose(1, 2)
 
 
 class AudioAttention(nn.Module):
@@ -112,28 +80,13 @@ class AudioAttention(nn.Module):
 
     def __init__(self, config: AudioConfig, layer_index: int = 0):
         super().__init__()
-        self.architecture_profile = config.architecture_profile
-        if config.architecture_profile == "source67":
-            self.source_attention = DomainSelfAttention(
-                config.hidden_size,
-                config.num_attention_heads,
-                config.dropout,
-                num_key_value_heads=config.num_key_value_heads,
-                architecture_profile=config.architecture_profile,
-                layer_index=layer_index,
-            )
-            return
-
-        self.num_heads = config.num_attention_heads
-        self.head_dim = config.hidden_size // config.num_attention_heads
-        self.scale = self.head_dim**-0.5
-
-        self.q_proj = nn.Linear(config.hidden_size, config.hidden_size)
-        self.k_proj = nn.Linear(config.hidden_size, config.hidden_size)
-        self.v_proj = nn.Linear(config.hidden_size, config.hidden_size)
-        self.out_proj = nn.Linear(config.hidden_size, config.hidden_size)
-
-        self.dropout = nn.Dropout(config.dropout)
+        self.source_attention = DomainSelfAttention(
+            config.hidden_size,
+            config.num_attention_heads,
+            config.dropout,
+            num_key_value_heads=config.num_key_value_heads,
+            layer_index=layer_index,
+        )
 
     def forward(
         self,
@@ -141,175 +94,44 @@ class AudioAttention(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         route_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if self.architecture_profile == "source67":
-            if route_ids is None:
-                route_ids = torch.arange(hidden_states.size(1), device=hidden_states.device)
-            if route_ids.ndim == 1:
-                route_ids = route_ids.unsqueeze(0).expand(hidden_states.size(0), -1)
-            return self.source_attention(hidden_states, route_ids, attention_mask)
-        batch_size, seq_len, _ = hidden_states.shape
-
-        q = (
-            self.q_proj(hidden_states)
-            .view(batch_size, seq_len, self.num_heads, self.head_dim)
-            .transpose(1, 2)
-        )
-        k = (
-            self.k_proj(hidden_states)
-            .view(batch_size, seq_len, self.num_heads, self.head_dim)
-            .transpose(1, 2)
-        )
-        v = (
-            self.v_proj(hidden_states)
-            .view(batch_size, seq_len, self.num_heads, self.head_dim)
-            .transpose(1, 2)
-        )
-
-        attn_weights = torch.matmul(q, k.transpose(-2, -1)) * self.scale
-        if attention_mask is not None:
-            attn_weights = attn_weights + attention_mask
-        attn_weights = F.softmax(attn_weights, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-
-        attn_output = torch.matmul(attn_weights, v)
-        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
-        return self.out_proj(attn_output)
-
-
-# =============================================================================
-# Token-Routed MLP (time-step position routing)
-# =============================================================================
+        if route_ids is None:
+            route_ids = torch.arange(hidden_states.size(1), device=hidden_states.device)
+        if route_ids.ndim == 1:
+            route_ids = route_ids.unsqueeze(0).expand(hidden_states.size(0), -1)
+        return self.source_attention(hidden_states, route_ids, attention_mask)
 
 
 class AudioTokenRoutedMLP(nn.Module):
-    """
-    Token-Routed MLP for audio tokens.
-
-    Routing key: time-step position t in [0, seq_len)
-    Expert assignment: t % num_experts
-
-    Pass `expert_ids` precomputed ([seq_len]) for fixed-length encoders
-    (e.g. Whisper after conv downsampling) or compute on-the-fly for
-    variable-length inputs. Both paths are deterministic and
-    fullgraph=True safe.
-
-    Fused BMM: gate+up → SwiGLU → down.
-    """
+    """Shared SwiGLU plus two of four experts. Routes use original position IDs and their two preceding IDs; no learned gate."""
 
     def __init__(self, config: AudioConfig, layer_index: int = 0):
         super().__init__()
-        if config.architecture_profile == "source67":
-            self.engine = make_domain_mlp(
-                hidden_size=config.hidden_size,
-                vocab_size=config.max_length,
-                num_experts=4,
-                top_k=2,
-                shared_width=config.shared_intermediate_size,
-                expert_width=config.intermediate_size // 4,
-                layer_index=layer_index,
-                route_seed=0x71D5A17,
-                architecture_profile=config.architecture_profile,
-            )
-            return
-        self.hidden_size = config.hidden_size
-        self.num_experts = config.num_experts
-        self.expert_intermediate_size = config.intermediate_size // config.num_experts
-        self.shared_intermediate_size = (
-            config.intermediate_size
-            if config.shared_intermediate_size is None
-            else config.shared_intermediate_size
-        )
-        if self.shared_intermediate_size <= self.expert_intermediate_size:
-            raise ValueError("audio shared MLP must be wider than each routed expert")
-
-        self.shared_gate_up_proj = nn.Linear(
-            config.hidden_size,
-            2 * self.shared_intermediate_size,
-            bias=False,
-        )
-        self.shared_down_proj = nn.Linear(
-            self.shared_intermediate_size,
-            config.hidden_size,
-            bias=False,
+        self.engine = make_domain_mlp(
+            hidden_size=config.hidden_size,
+            vocab_size=config.max_length,
+            num_experts=4,
+            top_k=2,
+            shared_width=config.shared_intermediate_size,
+            expert_width=config.intermediate_size // 4,
+            layer_index=layer_index,
         )
 
-        self.gate_up_proj = nn.Parameter(
-            torch.randn(config.num_experts, config.hidden_size, self.expert_intermediate_size * 2)
-            * 0.02
-        )
-        self.down_proj = nn.Parameter(
-            torch.randn(config.num_experts, self.expert_intermediate_size, config.hidden_size)
-            * 0.02
-        )
-
-    def forward(
-        self,
-        x: torch.Tensor,  # [B, T, H]
-        expert_ids: Optional[torch.Tensor] = None,  # [T] or None
-    ) -> torch.Tensor:
-        if hasattr(self, "engine"):
-            if expert_ids is None:
-                expert_ids = torch.arange(x.size(1), device=x.device)
-            route_ids = (
-                expert_ids.unsqueeze(0).expand(x.size(0), -1)
-                if expert_ids.ndim == 1
-                else expert_ids
-            )
-            return self.engine(x, route_ids)
-        B, T, H = x.shape
-        flat = x.view(B * T, H)
-        shared_gate, shared_up = self.shared_gate_up_proj(flat).chunk(2, dim=-1)
-        shared = self.shared_down_proj(F.silu(shared_gate) * shared_up)
-
+    def forward(self, x: torch.Tensor, expert_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
         if expert_ids is None:
-            expert_ids = torch.arange(T, device=x.device) % self.num_experts
-
-        eids = expert_ids.unsqueeze(0).expand(B, -1).reshape(B * T)
-
-        gu_w = self.gate_up_proj[eids]  # [B*T, H, 2*I_e]
-        down_w = self.down_proj[eids]  # [B*T, I_e, H]
-
-        gu = torch.bmm(flat.unsqueeze(1), gu_w).squeeze(1)
-        gate, up = gu.split(self.expert_intermediate_size, dim=-1)
-        inter = F.silu(gate) * up
-        out = torch.bmm(inter.unsqueeze(1), down_w).squeeze(1)
-
-        return (shared + out).view(B, T, H)
-
-
-class AudioMLP(nn.Module):
-    """Standard MLP block (fallback when num_experts == 1)."""
-
-    def __init__(self, config: AudioConfig):
-        super().__init__()
-        self.fc1 = nn.Linear(config.hidden_size, config.intermediate_size)
-        self.fc2 = nn.Linear(config.intermediate_size, config.hidden_size)
-        self.act = nn.GELU()
-        self.dropout = nn.Dropout(config.dropout)
-
-    def forward(
-        self, hidden_states: torch.Tensor, _expert_ids: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        hidden_states = self.act(self.fc1(hidden_states))
-        hidden_states = self.dropout(hidden_states)
-        hidden_states = self.fc2(hidden_states)
-        hidden_states = self.dropout(hidden_states)
-        return hidden_states
+            expert_ids = torch.arange(x.size(1), device=x.device)
+        route_ids = (
+            expert_ids.unsqueeze(0).expand(x.size(0), -1) if expert_ids.ndim == 1 else expert_ids
+        )
+        return self.engine(x, route_ids)
 
 
 class AudioTransformerBlock(nn.Module):
-    """Single transformer block for audio (with optional token-routed MLP)."""
+    """Single transformer block for audio (with contextual TR-HASH MLP)."""
 
     def __init__(self, config: AudioConfig, layer_index: int = 0):
         super().__init__()
-
         self.self_attn = AudioAttention(config, layer_index)
-
-        if config.num_experts > 1:
-            self.mlp: nn.Module = AudioTokenRoutedMLP(config, layer_index)
-        else:
-            self.mlp = AudioMLP(config)
-
+        self.mlp: nn.Module = AudioTokenRoutedMLP(config, layer_index)
         self.norm1 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.norm2 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
@@ -319,18 +141,14 @@ class AudioTransformerBlock(nn.Module):
         expert_ids: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        # Pre-norm self-attention
         residual = hidden_states
         hidden_states = self.norm1(hidden_states)
         hidden_states = self.self_attn(hidden_states, attention_mask, expert_ids)
         hidden_states = residual + hidden_states
-
-        # Token-routed (or plain) MLP
         residual = hidden_states
         hidden_states = self.norm2(hidden_states)
         hidden_states = self.mlp(hidden_states, expert_ids)
         hidden_states = residual + hidden_states
-
         return hidden_states
 
 
@@ -343,29 +161,19 @@ class MelSpectrogramEncoder(nn.Module):
 
     def __init__(self, config: AudioConfig):
         super().__init__()
-
         self.config = config
-
         self.conv_stack = AudioConvStack(config.n_mels, config.hidden_size)
         self.position_embedding = nn.Embedding(config.max_length, config.hidden_size)
-
         self.blocks = nn.ModuleList(
             [AudioTransformerBlock(config, index) for index in range(config.num_hidden_layers)]
         )
-
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-
-        # Precompute expert_ids for time steps after conv downsampling (stride=2)
         max_t = config.max_length // 2
         expert_ids = torch.arange(max_t)
-        if config.architecture_profile == "legacy":
-            expert_ids = expert_ids % config.num_experts
-        self.register_buffer("expert_ids_table", expert_ids)  # [max_T]
+        self.register_buffer("expert_ids_table", expert_ids)
 
     def forward(
-        self,
-        mel_spectrogram: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
+        self, mel_spectrogram: torch.Tensor, attention_mask: Optional[torch.Tensor] = None
     ) -> dict:
         """
         Args:
@@ -375,31 +183,20 @@ class MelSpectrogramEncoder(nn.Module):
         Returns:
             Dictionary with encoder outputs
         """
-        hidden_states = self.conv_stack(mel_spectrogram)  # [B, T, H]
+        hidden_states = self.conv_stack(mel_spectrogram)
         seq_len = hidden_states.size(1)
         max_frames = self.expert_ids_table.numel()
         if seq_len > max_frames:
             raise ValueError(
-                f"mel spectrogram produced {seq_len} encoder frames after "
-                f"downsampling, exceeding max_length={self.config.max_length} "
-                f"({max_frames} frames after stride-2 conv); truncate the input "
-                "or construct this encoder with a larger max_length"
+                f"mel spectrogram produced {seq_len} encoder frames after downsampling, exceeding max_length={self.config.max_length} ({max_frames} frames after stride-2 conv); truncate the input or construct this encoder with a larger max_length"
             )
-
         positions = torch.arange(seq_len, device=hidden_states.device)
         hidden_states = hidden_states + self.position_embedding(positions)
-
         expert_ids = self.expert_ids_table[:seq_len]
-
         for block in self.blocks:
             hidden_states = block(hidden_states, expert_ids, attention_mask)
-
         hidden_states = self.norm(hidden_states)
-
-        return {
-            "last_hidden_state": hidden_states,
-            "pooler_output": hidden_states.mean(dim=1),
-        }
+        return {"last_hidden_state": hidden_states, "pooler_output": hidden_states.mean(dim=1)}
 
 
 class WhisperEncoder(nn.Module):
@@ -414,47 +211,34 @@ class WhisperEncoder(nn.Module):
         n_mels: int = 80,
         hidden_size: int = 768,
         num_layers: int = 12,
-        num_heads: int = 12,
+        num_heads: int = 4,
         max_length: int = 1500,
         num_experts: int = 4,
         *,
-        architecture_profile: str = "source67",
         num_key_value_heads: int | None = None,
     ):
         super().__init__()
-
         config = AudioConfig(
-            architecture_profile=architecture_profile,
             num_key_value_heads=num_key_value_heads,
             n_mels=n_mels,
             hidden_size=hidden_size,
             num_hidden_layers=num_layers,
             num_attention_heads=num_heads,
-            intermediate_size=(
-                hidden_size if architecture_profile == "source67" else hidden_size * 4
-            ),
+            intermediate_size=hidden_size,
             max_length=max_length,
             num_experts=num_experts,
         )
-
         self.conv1 = nn.Conv1d(n_mels, hidden_size, kernel_size=3, padding=1)
         self.conv2 = nn.Conv1d(hidden_size, hidden_size, kernel_size=3, stride=2, padding=1)
-
         self.register_buffer(
             "positional_embedding", self._create_sinusoidal_embeddings(max_length, hidden_size)
         )
-
         self.blocks = nn.ModuleList(
             [AudioTransformerBlock(config, index) for index in range(num_layers)]
         )
-
         self.norm = nn.LayerNorm(hidden_size)
-
-        # Precompute expert routing (fixed Whisper output length after conv)
         expert_ids = torch.arange(max_length)
-        if config.architecture_profile == "legacy":
-            expert_ids = expert_ids % config.num_experts
-        self.register_buffer("expert_ids_table", expert_ids)  # [max_length]
+        self.register_buffer("expert_ids_table", expert_ids)
 
     def _create_sinusoidal_embeddings(self, max_length: int, hidden_size: int) -> torch.Tensor:
         position = torch.arange(max_length).unsqueeze(1)
@@ -465,9 +249,7 @@ class WhisperEncoder(nn.Module):
         return pe
 
     def forward(
-        self,
-        mel_spectrogram: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
+        self, mel_spectrogram: torch.Tensor, attention_mask: Optional[torch.Tensor] = None
     ) -> dict:
         """
         Args:
@@ -479,22 +261,14 @@ class WhisperEncoder(nn.Module):
         """
         x = F.gelu(self.conv1(mel_spectrogram))
         x = F.gelu(self.conv2(x))
-        x = x.permute(0, 2, 1)  # [B, T, H]
-
+        x = x.permute(0, 2, 1)
         seq_len = x.size(1)
         x = x + self.positional_embedding[:seq_len]
-
         expert_ids = self.expert_ids_table[:seq_len]
-
         for block in self.blocks:
             x = block(x, expert_ids, attention_mask)
-
         x = self.norm(x)
-
-        return {
-            "last_hidden_state": x,
-            "pooler_output": x.mean(dim=1),
-        }
+        return {"last_hidden_state": x, "pooler_output": x.mean(dim=1)}
 
 
 class AudioEncoder(nn.Module):
@@ -509,16 +283,14 @@ class AudioEncoder(nn.Module):
         n_mels: int = 80,
         hidden_size: int = 768,
         num_layers: int = 12,
-        num_heads: int = 12,
+        num_heads: int = 4,
         output_dim: Optional[int] = None,
         encoder_type: str = "whisper",
         num_experts: int = 4,
         *,
-        architecture_profile: str = "source67",
         num_key_value_heads: int | None = None,
     ):
         super().__init__()
-
         if encoder_type == "whisper":
             self.encoder = WhisperEncoder(
                 n_mels=n_mels,
@@ -526,12 +298,10 @@ class AudioEncoder(nn.Module):
                 num_layers=num_layers,
                 num_heads=num_heads,
                 num_experts=num_experts,
-                architecture_profile=architecture_profile,
                 num_key_value_heads=num_key_value_heads,
             )
         else:
             config = AudioConfig(
-                architecture_profile=architecture_profile,
                 num_key_value_heads=num_key_value_heads,
                 n_mels=n_mels,
                 hidden_size=hidden_size,
@@ -540,16 +310,13 @@ class AudioEncoder(nn.Module):
                 num_experts=num_experts,
             )
             self.encoder = MelSpectrogramEncoder(config)
-
         if output_dim is not None and output_dim != hidden_size:
             self.proj = nn.Linear(hidden_size, output_dim)
         else:
             self.proj = None
 
     def forward(
-        self,
-        mel_spectrogram: torch.Tensor,
-        return_all_features: bool = False,
+        self, mel_spectrogram: torch.Tensor, return_all_features: bool = False
     ) -> torch.Tensor:
         """
         Args:
@@ -560,12 +327,9 @@ class AudioEncoder(nn.Module):
             Audio features
         """
         outputs = self.encoder(mel_spectrogram)
-
         features = outputs["last_hidden_state"] if return_all_features else outputs["pooler_output"]
-
         if self.proj is not None:
             features = self.proj(features)
-
         return features
 
 
@@ -585,13 +349,11 @@ class AudioPreprocessor(nn.Module):
         normalize: bool = True,
     ):
         super().__init__()
-
         self.sample_rate = sample_rate
         self.n_mels = n_mels
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.normalize = normalize
-
         self.register_buffer("mel_filters", self._create_mel_filters(sample_rate, n_fft, n_mels))
 
     def _create_mel_filters(self, sample_rate: int, n_fft: int, n_mels: int) -> torch.Tensor:
@@ -605,21 +367,17 @@ class AudioPreprocessor(nn.Module):
 
         min_mel = hz_to_mel(0)
         max_mel = hz_to_mel(sample_rate / 2)
-
         mel_points = torch.linspace(min_mel, max_mel, n_mels + 2)
         hz_points = torch.tensor([mel_to_hz(m.item()) for m in mel_points])
-
         fft_bins = torch.linspace(0, sample_rate / 2, n_fft // 2 + 1)
         filters = torch.zeros(n_mels, n_fft // 2 + 1)
-
         for i in range(n_mels):
-            left, center, right = hz_points[i], hz_points[i + 1], hz_points[i + 2]
+            left, center, right = (hz_points[i], hz_points[i + 1], hz_points[i + 2])
             for j, freq in enumerate(fft_bins):
                 if left <= freq <= center:
                     filters[i, j] = (freq - left) / (center - left)
                 elif center <= freq <= right:
                     filters[i, j] = (right - freq) / (right - center)
-
         return filters
 
     def forward(self, waveform: torch.Tensor) -> torch.Tensor:
@@ -634,7 +392,6 @@ class AudioPreprocessor(nn.Module):
         """
         if waveform.dim() == 3:
             waveform = waveform.squeeze(1)
-
         window = torch.hann_window(self.n_fft, device=waveform.device)
         stft = torch.stft(
             waveform,
@@ -643,12 +400,9 @@ class AudioPreprocessor(nn.Module):
             window=window,
             return_complex=True,
         )
-
         power = stft.abs() ** 2
         mel_spec = torch.matmul(self.mel_filters.to(power.device), power)
         mel_spec = torch.log(mel_spec.clamp(min=1e-10))
-
         if self.normalize:
-            mel_spec = (mel_spec - mel_spec.mean()) / (mel_spec.std() + 1e-8)
-
+            mel_spec = (mel_spec - mel_spec.mean()) / (mel_spec.std() + 1e-08)
         return mel_spec

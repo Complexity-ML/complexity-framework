@@ -10,16 +10,16 @@ Provides a unified interface for:
 Integrates KV caching, speculative decoding, and continuous batching.
 """
 
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, Iterator, List, Optional
+
 import torch
 import torch.nn as nn
-from typing import Optional, List, Dict, Any, Union, Iterator, Callable
-from dataclasses import dataclass, field
-from enum import Enum
-import time
 
+from .batching import BatchConfig, ContinuousBatcher, Request
 from .kv_cache import KVCache, PagedKVCache, SlidingWindowCache
 from .speculative import SpeculativeDecoder
-from .batching import ContinuousBatcher, BatchConfig, Request, RequestStatus
 
 
 class DecodingStrategy(Enum):
@@ -165,8 +165,9 @@ class InferenceEngine:
             return
 
         num_layers = getattr(model_config, 'num_hidden_layers', 12)
-        num_heads = getattr(model_config, 'num_attention_heads', 12)
-        head_dim = getattr(model_config, 'hidden_size', 768) // num_heads
+        query_heads = getattr(model_config, 'num_attention_heads', 12)
+        num_heads = getattr(model_config, 'num_key_value_heads', None) or query_heads
+        head_dim = getattr(model_config, 'hidden_size', 768) // query_heads
 
         if self.config.cache_type == "paged":
             self.cache = PagedKVCache(
@@ -250,7 +251,8 @@ class InferenceEngine:
         if self.cache is not None:
             self.cache.reset()
 
-        # Track generated tokens
+        # Keep the complete model cache, including contextual routing history.
+        past_key_values = None
         generated = input_ids.clone()
         all_logits = [] if config.return_logits else None
 
@@ -261,23 +263,22 @@ class InferenceEngine:
         # Generate tokens
         for _ in range(config.max_new_tokens):
             # Get model input (use cache if available)
-            if self.cache is not None and generated.size(1) > seq_len:
+            if past_key_values is not None:
                 model_input = generated[:, -1:]
-                position_ids = torch.tensor([[generated.size(1) - 1]], device=device)
             else:
                 model_input = generated
-                position_ids = None
 
             # Forward pass
             outputs = self.model(
                 model_input,
                 attention_mask=attention_mask,
-                position_ids=position_ids,
+                past_key_values=past_key_values,
                 use_cache=self.cache is not None,
             )
 
             if isinstance(outputs, dict):
                 logits = outputs['logits']
+                past_key_values = outputs.get('past_key_values') if self.cache is not None else None
             else:
                 logits = outputs
 
@@ -555,6 +556,7 @@ class InferenceEngine:
         if self.cache is not None:
             self.cache.reset()
 
+        past_key_values = None
         generated = input_ids.clone()
 
         if attention_mask is None:
@@ -562,16 +564,23 @@ class InferenceEngine:
 
         for _ in range(config.max_new_tokens):
             # Get model input
-            if self.cache is not None and generated.size(1) > seq_len:
+            if past_key_values is not None:
                 model_input = generated[:, -1:]
             else:
                 model_input = generated
 
             # Forward pass
-            outputs = self.model(model_input, attention_mask=attention_mask)
+            with torch.no_grad():
+                outputs = self.model(
+                    model_input,
+                    attention_mask=attention_mask,
+                    past_key_values=past_key_values,
+                    use_cache=self.cache is not None,
+                )
 
             if isinstance(outputs, dict):
                 logits = outputs['logits']
+                past_key_values = outputs.get('past_key_values') if self.cache is not None else None
             else:
                 logits = outputs
 

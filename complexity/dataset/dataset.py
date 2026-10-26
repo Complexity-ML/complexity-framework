@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List, Optional, Union, Dict, Any, Iterator, Callable
+from typing import Callable, Dict, Iterator, List, Union
 
 import torch
-from torch.utils.data import Dataset as TorchDataset, DataLoader, IterableDataset
+from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import Dataset as TorchDataset
 
 from .config import DataConfig
 
@@ -257,11 +258,11 @@ class Dataset:
         if "labels" in batch[0]:
             labels = []
             for x in batch:
-                l = x["labels"]
-                pad = max_len - l.shape[0]
+                targets = x["labels"]
+                pad = max_len - targets.shape[0]
                 if pad > 0:
-                    l = torch.cat([l, torch.full((pad,), -100, dtype=l.dtype)])
-                labels.append(l)
+                    targets = torch.cat([targets, torch.full((pad,), -100, dtype=targets.dtype)])
+                labels.append(targets)
             result["labels"] = torch.stack(labels)
 
         return result

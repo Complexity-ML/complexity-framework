@@ -15,7 +15,7 @@ import pytest
 import torch
 
 from complexity.multimodal.audio import AudioConfig, MelSpectrogramEncoder
-from complexity.multimodal.fusion import FusionConfig, GatedFusion, MultimodalFusion
+from complexity.multimodal.fusion import GatedFusion, MultimodalFusion
 
 
 def test_gated_fusion_raises_a_clear_error_on_modality_count_mismatch():
@@ -48,14 +48,13 @@ def test_multimodal_fusion_raises_instead_of_returning_none_for_unknown_type():
 
 def test_mel_spectrogram_encoder_rejects_input_exceeding_configured_capacity():
     config = AudioConfig(
-        architecture_profile="legacy",
         n_mels=8,
         hidden_size=16,
         num_hidden_layers=1,
         num_attention_heads=4,
         intermediate_size=32,
         max_length=32,
-        num_experts=2,
+        num_experts=4,
     )
     encoder = MelSpectrogramEncoder(config)
     # After the encoder's stride-2 conv stack, this input produces more
@@ -68,14 +67,13 @@ def test_mel_spectrogram_encoder_rejects_input_exceeding_configured_capacity():
 
 def test_mel_spectrogram_encoder_accepts_input_within_configured_capacity():
     config = AudioConfig(
-        architecture_profile="legacy",
         n_mels=8,
         hidden_size=16,
         num_hidden_layers=1,
         num_attention_heads=4,
         intermediate_size=32,
         max_length=32,
-        num_experts=2,
+        num_experts=4,
     )
     encoder = MelSpectrogramEncoder(config)
     mel = torch.randn(2, config.n_mels, config.max_length)

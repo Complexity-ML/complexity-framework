@@ -8,12 +8,13 @@ Provides:
 - Memory estimation before allocation
 """
 
+import gc
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Any, List, Callable
-from dataclasses import dataclass, field
-from contextlib import contextmanager
-import gc
 
 
 @dataclass
@@ -261,13 +262,13 @@ class MemoryProfiler:
         lines = ["=" * 60, "Memory Profiling Report", "=" * 60]
 
         # Overall stats
-        lines.append(f"\nOverall Memory:")
+        lines.append("\nOverall Memory:")
         lines.append(f"  Peak: {self.tracker.peak_memory_gb:.2f} GB")
         lines.append(f"  Delta: {self.tracker.allocated_memory_gb:.2f} GB")
 
         # Per-layer breakdown
         if self.layer_memory:
-            lines.append(f"\nPer-Layer Memory (top 10):")
+            lines.append("\nPer-Layer Memory (top 10):")
             sorted_layers = sorted(
                 self.layer_memory.items(),
                 key=lambda x: x[1],

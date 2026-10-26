@@ -17,11 +17,11 @@ References:
 - Muon: https://github.com/KellerJordan/Muon
 """
 
+import math
+from typing import Callable, Optional, Tuple
+
 import torch
 from torch.optim import Optimizer
-from typing import Callable, Optional, Tuple, List
-import math
-
 
 # =============================================================================
 # LION Optimizer
@@ -563,10 +563,6 @@ class AdaLomo(Optimizer):
 
     def _init_layer_lrs(self):
         """Initialize layer-wise learning rate multipliers."""
-        total_params = sum(
-            p.numel() for group in self.param_groups for p in group['params']
-        )
-
         param_idx = 0
         for group in self.param_groups:
             for p in group['params']:

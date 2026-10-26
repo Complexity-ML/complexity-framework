@@ -26,15 +26,15 @@ Usage:
 """
 
 from .base import AttentionBase, AttentionConfig
+from .causal_conv import CausalConvMixer
+from .causal_fast_weight_conv import CausalFastWeightConvMixer
+from .causal_state_conv import CausalStateConvMixer
 from .gqa import GroupedQueryAttention, MultiHeadAttention, MultiQueryAttention
 from .lexical_gqa import LexicalBiasGQA
 from .lexical_key_gqa import LexicalKeyGQA, ProjectedLexicalKeyGQA
+from .routed_gqa import RoutedGQA
 from .token_routed_mha import TokenRoutedMultiHeadAttention
 from .token_routed_mha_v2 import TokenRoutedMultiHeadAttentionV2
-from .routed_gqa import RoutedGQA
-from .causal_conv import CausalConvMixer
-from .causal_state_conv import CausalStateConvMixer
-from .causal_fast_weight_conv import CausalFastWeightConvMixer
 
 __all__ = [
     "AttentionBase",

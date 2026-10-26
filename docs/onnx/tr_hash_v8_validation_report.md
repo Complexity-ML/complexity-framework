@@ -4,6 +4,11 @@ Validation was run from commit `0fcf05c146f84a857d392b7da7d2947a41eb6d62`
 (`Make Vision v8 the only detector architecture`) with the native checkpoint
 `AETHORIA-AI/TR-HASH-Vision-v8-2M-COCO-SFT`.
 
+This is a historical validation report. The measurements below were collected
+with the recorded checkpoints, runtimes and hardware. The reproduction commands
+use the current integrated framework CLI; the CLI migration does not establish
+new GPU performance or full COCO accuracy measurements.
+
 The generated ONNX binaries are intentionally not committed to the source
 repository — `*.onnx` is ignored — and are published as GitHub Release assets
 instead.
@@ -15,7 +20,8 @@ publishes them. It is triggered manually, or by pushing a tag matching
 `onnx-v8-*`, and it aborts before uploading anything if the export fails, a
 parity gate fails, or a checksum does not match the manifest.
 
-Every input is pinned by [`release.json`](release.json): checkpoint repository
+Every input is pinned by the bundled
+[`release.json`](../../complexity/vision/detection/release.json): checkpoint repository
 and revision, opset, and the export toolchain. The toolchain pin is what makes
 the artifacts reproducible from a repository commit — a commit and a checkpoint
 revision alone do not determine the digest.
@@ -44,14 +50,18 @@ framework commit, the opset, the parity depth, the input/output contract, and
 the size and SHA-256 of every asset. Verify a download against it:
 
 ```bash
-python scripts/build_onnx_release.py --verify manifest.json
+complexity vision release onnx -- --verify manifest.json
 ```
 
 Rebuild the same artifacts locally with:
 
 ```bash
-PYTHONPATH=. python scripts/build_onnx_release.py --output-dir dist/onnx
+complexity vision release onnx -- --output-dir dist/onnx
 ```
+
+The release configuration and quantization thresholds are installed with the
+framework. A separately reviewed release configuration can be selected with
+`--config /path/to/release.json`.
 
 The historical artifacts below predate this workflow. Use the following hashes
 and sizes to verify them:
@@ -79,25 +89,23 @@ python -c "from huggingface_hub import snapshot_download; snapshot_download(repo
 Export both raw prediction branches:
 
 ```powershell
-$env:PYTHONPATH='.'
-python scripts/export_onnx.py models\TR-HASH-Vision-v8-2M-COCO-SFT --output tr_hash_v8_o2m.onnx --branch o2m --opset 17 --check
-python scripts/export_onnx.py models\TR-HASH-Vision-v8-2M-COCO-SFT\best_nms_free --output tr_hash_v8_nms_free.onnx --branch nms-free --opset 17 --check
+complexity vision export detector -- models\TR-HASH-Vision-v8-2M-COCO-SFT --output tr_hash_v8_o2m.onnx --branch o2m --opset 17 --check
+complexity vision export detector -- models\TR-HASH-Vision-v8-2M-COCO-SFT\best_nms_free --output tr_hash_v8_nms_free.onnx --branch nms-free --opset 17 --check
 ```
 
 Validate parity with the calibrated v8 defaults:
 
 ```powershell
-$env:PYTHONPATH='.'
-python scripts/check_onnx_parity.py models\TR-HASH-Vision-v8-2M-COCO-SFT tr_hash_v8_o2m.onnx --branch auto --num-tests 5 --batch-size 1
-python scripts/check_onnx_parity.py models\TR-HASH-Vision-v8-2M-COCO-SFT\best_nms_free tr_hash_v8_nms_free.onnx --branch auto --num-tests 5 --batch-size 1
+complexity vision check onnx-parity -- models\TR-HASH-Vision-v8-2M-COCO-SFT tr_hash_v8_o2m.onnx --branch auto --num-tests 5 --batch-size 1
+complexity vision check onnx-parity -- models\TR-HASH-Vision-v8-2M-COCO-SFT\best_nms_free tr_hash_v8_nms_free.onnx --branch auto --num-tests 5 --batch-size 1
 ```
 
-To reproduce the exact historical parity commands, pass the thresholds
-explicitly:
+To reproduce the historical parity settings through the current CLI, pass the
+thresholds explicitly:
 
 ```powershell
-python scripts/check_onnx_parity.py models\TR-HASH-Vision-v8-2M-COCO-SFT tr_hash_v8_o2m.onnx --branch auto --tolerance 0.002 --num-tests 5 --batch-size 1
-python scripts/check_onnx_parity.py models\TR-HASH-Vision-v8-2M-COCO-SFT\best_nms_free tr_hash_v8_nms_free.onnx --branch auto --tolerance 0.0035 --num-tests 5 --batch-size 1
+complexity vision check onnx-parity -- models\TR-HASH-Vision-v8-2M-COCO-SFT tr_hash_v8_o2m.onnx --branch auto --tolerance 0.002 --num-tests 5 --batch-size 1
+complexity vision check onnx-parity -- models\TR-HASH-Vision-v8-2M-COCO-SFT\best_nms_free tr_hash_v8_nms_free.onnx --branch auto --tolerance 0.0035 --num-tests 5 --batch-size 1
 ```
 
 ## Contract
@@ -192,7 +200,7 @@ growing with the seed count. Re-measured on the same checkpoint:
 | NMS-free | `2.990723e-03` | `4.793882e-03` | `+60.3%` | `3.5e-03` |
 
 Both branches exceed their original threshold well before 50 seeds, so
-`check_onnx_parity.py --num-tests 20` failed on an otherwise healthy export.
+the parity check with `--num-tests 20` failed on an otherwise healthy export.
 The thresholds are therefore twice the maximum observed over 50 seeds:
 
 | Branch | Observed max (50 seeds) | Threshold | Headroom |
@@ -211,7 +219,7 @@ originates in graph operation ordering rather than in the runtime build.
 ## Decoded Parity Gates
 
 Raw-logit tolerance is only a proxy for deployment behaviour, and the section
-above shows it is also the least stable quantity to gate on. `check_onnx_parity.py`
+above shows it is also the least stable quantity to gate on. `complexity vision check onnx-parity`
 therefore evaluates three independent gates on the same deterministic inputs:
 
 | Gate | Compares | Role |
@@ -266,8 +274,8 @@ export.
 ### Full gate output
 
 ```bash
-PYTHONPATH=. python scripts/check_onnx_parity.py models/TR-HASH-Vision-v8-2M-COCO-SFT tr_hash_v8_o2m.onnx --num-tests 50
-PYTHONPATH=. python scripts/check_onnx_parity.py models/TR-HASH-Vision-v8-2M-COCO-SFT/best_nms_free tr_hash_v8_nms_free.onnx --num-tests 50
+complexity vision check onnx-parity -- models/TR-HASH-Vision-v8-2M-COCO-SFT tr_hash_v8_o2m.onnx --num-tests 50
+complexity vision check onnx-parity -- models/TR-HASH-Vision-v8-2M-COCO-SFT/best_nms_free tr_hash_v8_nms_free.onnx --num-tests 50
 ```
 
 ```text

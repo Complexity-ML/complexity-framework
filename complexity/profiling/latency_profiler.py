@@ -8,12 +8,13 @@ Provides:
 - Batch size optimization
 """
 
+import statistics
+import time
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
+
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Any, List, Callable, Tuple
-from dataclasses import dataclass, field
-import time
-import statistics
 
 
 @dataclass
@@ -99,7 +100,7 @@ class LatencyProfiler:
                     torch.cuda.synchronize()
 
                 start = time.perf_counter()
-                output = model(input_tensor)
+                model(input_tensor)
 
                 if self.sync_cuda and torch.cuda.is_available():
                     torch.cuda.synchronize()

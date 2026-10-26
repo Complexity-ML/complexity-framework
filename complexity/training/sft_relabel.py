@@ -12,7 +12,6 @@ from typing import Any, Iterable
 
 import numpy as np
 
-
 SHARD_FORMAT_V2 = "complexity-sft-token-shard-v2"
 ALL_ASSISTANT_PROJECTION = "naturalize_card_hand_supervise_all_assistant_turns"
 

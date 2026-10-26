@@ -27,14 +27,13 @@ Usage:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
-from typing import Optional, Tuple, Union, Dict, Any, List
-from dataclasses import dataclass
-from contextlib import contextmanager
-
 
 # =============================================================================
 # Quantization
@@ -507,12 +506,9 @@ class SmallModels:
         # Nano LLM (~10M params)
         model = SmallModels.nano(vocab_size=32000)
 
-        # Custom efficient
-        model = SmallModels.efficient(
-            vocab_size=32000,
-            hidden_size=512,
-            num_layers=8,
-            num_heads=8,
+        # Custom dimensions retain the canonical four-query/one-KV attention.
+        model = SmallModels.create(
+            "tiny", vocab_size=32000, hidden_size=512, num_hidden_layers=8
         )
     """
 
@@ -522,35 +518,35 @@ class SmallModels:
             "hidden_size": 256,
             "num_hidden_layers": 4,
             "num_attention_heads": 4,
-            "intermediate_size": 512,
+            "intermediate_size": 256,
             "max_position_embeddings": 1024,
         },
         "micro": {
             "hidden_size": 384,
             "num_hidden_layers": 6,
-            "num_attention_heads": 6,
-            "intermediate_size": 1024,
+            "num_attention_heads": 4,
+            "intermediate_size": 384,
             "max_position_embeddings": 2048,
         },
         "tiny": {
             "hidden_size": 512,
             "num_hidden_layers": 8,
-            "num_attention_heads": 8,
-            "intermediate_size": 1408,
+            "num_attention_heads": 4,
+            "intermediate_size": 512,
             "max_position_embeddings": 2048,
         },
         "small": {
             "hidden_size": 768,
             "num_hidden_layers": 12,
-            "num_attention_heads": 12,
-            "intermediate_size": 2048,
+            "num_attention_heads": 4,
+            "intermediate_size": 768,
             "max_position_embeddings": 4096,
         },
         "medium": {
             "hidden_size": 1024,
             "num_hidden_layers": 16,
-            "num_attention_heads": 16,
-            "intermediate_size": 2816,
+            "num_attention_heads": 4,
+            "intermediate_size": 1024,
             "max_position_embeddings": 4096,
         },
     }
@@ -572,14 +568,20 @@ class SmallModels:
         config["vocab_size"] = vocab_size
         config.update(kwargs)
 
-        # Optimizations for efficiency
-        if use_gqa:
-            config["num_key_value_heads"] = max(1, config["num_attention_heads"] // 4)
-        if use_flash:
-            config["attention_type"] = "flash"
+        config.setdefault("mlp_type", "tr_hash_engine")
+        if config["mlp_type"] in {"tr_hash_engine", "tr_hash_moe"}:
+            if not use_gqa:
+                raise ValueError("TR-HASH requires GQA attention")
+            config.setdefault("num_key_value_heads", 1)
+            config.setdefault("attention_type", "gqa")
+            config.setdefault("use_sdpa", use_flash)
+        else:
+            if use_gqa:
+                config.setdefault("num_key_value_heads", max(1, config["num_attention_heads"] // 4))
+            if use_flash:
+                config.setdefault("attention_type", "flash")
 
         # Use efficient defaults
-        config.setdefault("mlp_type", "tr_hash_engine")
         config.setdefault("norm_type", "rmsnorm")
         config.setdefault("tie_word_embeddings", True)
 
@@ -643,13 +645,13 @@ class SmallModels:
 
         config = cls.CONFIGS[size]
         h = config["hidden_size"]
-        l = config["num_hidden_layers"]
+        layers = config["num_hidden_layers"]
         v = 32000  # Assume vocab
 
         # Rough estimate: embed + layers + head
         embed = v * h * 2  # Embed + LM head (tied = /2)
         per_layer = 4 * h * h + 3 * h * config["intermediate_size"]  # Attn + MLP
-        total = embed / 2 + l * per_layer
+        total = embed / 2 + layers * per_layer
 
         if total >= 1e9:
             return f"~{total / 1e9:.1f}B"

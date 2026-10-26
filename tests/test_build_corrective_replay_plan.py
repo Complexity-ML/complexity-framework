@@ -14,8 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.build_corrective_replay_plan import build_corrective_replay_plan
-from scripts.build_tr_hash_70b_replay_plan import build_replay_plan
+from complexity.training.replay import build_corrective_replay_plan, build_replay_plan
 
 
 def _fake_dataset(shards_by_source: dict[str, list[dict]]):

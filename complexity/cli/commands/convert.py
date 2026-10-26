@@ -2,11 +2,14 @@
 Model conversion commands for the Complexity framework.
 """
 
-import typer
 from pathlib import Path
 from typing import Optional
 
-from ..utils import console, spinner, print_panel, success, error, warning, info
+import typer
+
+from complexity._optional import require_optional
+
+from ..utils import console, error, info, print_panel, spinner, success, warning
 
 convert = typer.Typer(name="convert", help="Model conversion commands")
 
@@ -104,8 +107,9 @@ def convert_from_huggingface(
         complexity convert from-hf meta-llama/Llama-2-7b ./llama2-7b
     """
     try:
-        from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
         import torch
+        require_optional("transformers", "hf")
+        from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -164,67 +168,39 @@ def convert_from_huggingface(
 
     except ImportError as e:
         console.print(error(f"Missing dependency: {e}"))
-        console.print(info("Install with: pip install transformers"))
+        console.print(info("Install with: pip install \"complexity-framework[hf]\""))
         raise typer.Exit(1)
 
 
 @convert.command("to-hf")
 def convert_to_huggingface(
-    input_dir: Path = typer.Argument(..., help="Complexity model directory"),
-    output_dir: Path = typer.Argument(..., help="Output HuggingFace directory"),
+    input_dir: Path = typer.Argument(..., help="Native config.json + model.safetensors directory"),
+    output_dir: Path = typer.Argument(..., help="Standalone Transformers bundle directory"),
+    tokenizer_dir: Optional[Path] = typer.Option(None, "--tokenizer", help="Tokenizer assets to copy"),
+    force: bool = typer.Option(False, "--force", help="Replace files in an existing output bundle"),
 ):
+    """Export the supported TR-HASH top-2 GQA family through its own adapter.
+
+    This copies native weights and includes model code; it does not translate
+    the architecture into a different model family or publish to the Hub.
     """
-    Convert Complexity model to HuggingFace format.
-
-    Example:
-        complexity convert to-hf ./my-model ./hf-model
-    """
-    import yaml
-    import torch
-
-    if not input_dir.exists():
-        console.print(error(f"Input not found: {input_dir}"))
-        raise typer.Exit(1)
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Load our config
-    config_path = input_dir / "config.yaml"
-    if not config_path.exists():
-        console.print(error("No config.yaml found"))
-        raise typer.Exit(1)
-
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f)
-
-    model_cfg = cfg.get("model", cfg)
+    from complexity.export.transformers import export_bundle
 
     try:
-        from transformers import LlamaConfig
-
-        with spinner("Creating HuggingFace model..."):
-            hf_config = LlamaConfig(
-                hidden_size=model_cfg["hidden_size"],
-                num_hidden_layers=model_cfg["num_layers"],
-                num_attention_heads=model_cfg["num_heads"],
-                num_key_value_heads=model_cfg.get("num_kv_heads", model_cfg["num_heads"]),
-                vocab_size=model_cfg["vocab_size"],
-                max_position_embeddings=model_cfg.get("max_seq_length", 4096),
-                rope_theta=model_cfg.get("rope_theta", 10000),
-            )
-
-            console.print(error(
-                "HuggingFace weight export requires an explicit architecture-specific "
-                "weight mapping. Use save_pretrained() for native checkpoints until "
-                "a mapping for this model type is registered."
-            ))
-            raise typer.Exit(2)
-
-        console.print(success(f"Converted to: {output_dir}"))
-
-    except ImportError as e:
-        console.print(error(f"Missing dependency: {e}"))
-        raise typer.Exit(1)
+        if output_dir.exists() and any(output_dir.iterdir()) and not force:
+            raise ValueError("Output directory is not empty; choose a new directory or use --force")
+        if tokenizer_dir is None and (input_dir / "tokenizer.json").is_file():
+            tokenizer_dir = input_dir
+        export_bundle(
+            config_path=input_dir / "config.json",
+            weights_path=input_dir / "model.safetensors",
+            output=output_dir,
+            tokenizer_dir=tokenizer_dir,
+        )
+    except (OSError, ValueError, ImportError) as exc:
+        console.print(error(str(exc)))
+        raise typer.Exit(1) from exc
+    console.print(success(f"Transformers bundle written to: {output_dir}"))
 
 
 @convert.command("quantize")
@@ -250,6 +226,7 @@ def quantize_model(
 
     try:
         import torch
+
         from complexity.quantization import quantize_model as do_quantize
 
         with spinner("Loading model..."):

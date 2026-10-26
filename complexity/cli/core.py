@@ -2,10 +2,8 @@
 Core CLI utilities and state management.
 """
 
-import torch
-from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
-from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -76,6 +74,13 @@ class ComplexityCLI:
         if self.state.model is not None and self.state.name == model_name:
             return True
 
+        try:
+            import torch
+        except ImportError as exc:
+            if self._verbose:
+                print(f"Model loading requires the selected PyTorch backend: {exc}")
+            return False
+
         # Determine device
         if device == "auto":
             if torch.cuda.is_available():
@@ -100,7 +105,7 @@ class ComplexityCLI:
         torch_dtype = dtype_map.get(dtype, torch.float32)
 
         try:
-            from complexity import ComplexityModel, get_preset, ModelConfig
+            from complexity import ComplexityModel, ModelConfig, get_preset
 
             # Load config
             if model_name.startswith("complexity-"):
@@ -145,7 +150,7 @@ class ComplexityCLI:
         temperature: float = 0.7,
     ) -> Dict[str, Any]:
         """
-        Chat with the model.
+        Historical native chat entry point; use an external serving endpoint.
 
         Args:
             message: User message
@@ -157,48 +162,11 @@ class ComplexityCLI:
         Returns:
             Dict with response, reasoning, steps, etc.
         """
-        from complexity.data import ComplexityTemplate, ComplexityTokens, Message
-
-        # Update history
-        if system and system != self.history.system:
-            self.history.system = system
-            self.history.clear()
-
-        # Build messages
-        messages = []
-        if self.history.system:
-            messages.append(Message(role="system", content=self.history.system))
-
-        for msg in self.history.messages:
-            messages.append(Message(role=msg["role"], content=msg["content"]))
-
-        messages.append(Message(role="user", content=message))
-
-        # Format
-        template = ComplexityTemplate(
-            tokens=ComplexityTokens(),
-            enable_reasoning=reasoning,
-            enable_steps=reasoning,
+        raise RuntimeError(
+            "ComplexityCLI.chat does not run native text generation. Use "
+            "complexity inference chat SERVED_MODEL --backend vllm --base-url URL "
+            "or complexity.inference.create_external_backend."
         )
-        prompt = template.apply(messages, add_generation_prompt=True)
-
-        # Generate
-        output_text = self._generate(prompt, max_tokens, temperature)
-
-        # Parse
-        parsed = template.parse_response(output_text)
-
-        # Update history
-        self.history.add_user(message)
-        self.history.add_assistant(parsed.content)
-
-        return {
-            "content": parsed.content,
-            "reasoning": parsed.reasoning,
-            "steps": parsed.steps,
-            "conclusion": parsed.conclusion,
-            "tool_calls": parsed.tool_calls,
-        }
 
     def generate(
         self,
@@ -207,7 +175,7 @@ class ComplexityCLI:
         temperature: float = 0.8,
     ) -> str:
         """
-        Generate text completion.
+        Historical native completion entry point; use an external serving endpoint.
 
         Args:
             prompt: Text prompt
@@ -226,24 +194,11 @@ class ComplexityCLI:
         temperature: float,
     ) -> str:
         """Internal generation method."""
-        if self.state.model is None:
-            return "[Model not loaded]"
-
-        try:
-            from complexity.inference import InferenceEngine, GenerationConfig
-
-            engine = InferenceEngine(self.state.model)
-            config = GenerationConfig(
-                max_new_tokens=max_tokens,
-                temperature=temperature,
-                do_sample=temperature > 0,
-            )
-            return engine.generate_text(prompt, config)
-
-        except Exception as e:
-            if self._verbose:
-                return f"[Error: {e}]"
-            return f"[Generation error - model: {self.state.name}]"
+        raise RuntimeError(
+            "ComplexityCLI.generate does not run native text generation. Use "
+            "complexity inference generate SERVED_MODEL --backend vllm --base-url URL "
+            "or complexity.inference.create_external_backend."
+        )
 
     def format_tokens(
         self,
@@ -294,6 +249,8 @@ class ComplexityCLI:
             return {"error": f"Unknown model: {name}. Available: {list(PRESET_CONFIGS)}"}
 
         config = PRESET_CONFIGS[name]()
+        import torch
+
         with torch.device("meta"):
             from complexity.models import ComplexityModel
 

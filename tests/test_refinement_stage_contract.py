@@ -162,9 +162,9 @@ def test_every_text_sft_launcher_declares_checkpoint_source_stage() -> None:
 
 def test_non_vision_modality_trainers_wire_source_stage_into_the_guard() -> None:
     trainers = (
-        PROJECT_ROOT / "complexity/generative/image/training.py",
-        PROJECT_ROOT / "complexity/generative/image/edit_training.py",
-        PROJECT_ROOT / "complexity/generative/vision_language/training.py",
+        PROJECT_ROOT / "complexity/vision/image/training.py",
+        PROJECT_ROOT / "complexity/vision/image/edit_training.py",
+        PROJECT_ROOT / "complexity/vision/vision_language/training.py",
     )
     for trainer in trainers:
         source = trainer.read_text(encoding="utf-8")

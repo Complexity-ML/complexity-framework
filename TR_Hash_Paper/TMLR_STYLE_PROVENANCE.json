@@ -1,0 +1,37 @@
+{
+  "repository": "https://github.com/JmlrOrg/tmlr-style-file",
+  "commit": "7bf90efe3a0debbba703c05c43f3ff7e4d4a2992",
+  "retrieved_utc": "2026-10-26T20:47:34.516051+00:00",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "original_name": "tmlr.sty",
+      "local_name": "tmlr.sty",
+      "url": "https://raw.githubusercontent.com/JmlrOrg/tmlr-style-file/7bf90efe3a0debbba703c05c43f3ff7e4d4a2992/tmlr.sty",
+      "sha256": "816214ff5919aa457b6b443bee52b15d9561421417b7f8a50cc84651519f0002",
+      "bytes": 6560
+    },
+    {
+      "original_name": "tmlr.bst",
+      "local_name": "tmlr.bst",
+      "url": "https://raw.githubusercontent.com/JmlrOrg/tmlr-style-file/7bf90efe3a0debbba703c05c43f3ff7e4d4a2992/tmlr.bst",
+      "sha256": "306fd454cf40771bee01293eeb98d2c1cd5f4e11ed0cd7296b335f354fc45206",
+      "bytes": 26969
+    },
+    {
+      "original_name": "LICENSE",
+      "local_name": "TMLR_STYLE_LICENSE",
+      "url": "https://raw.githubusercontent.com/JmlrOrg/tmlr-style-file/7bf90efe3a0debbba703c05c43f3ff7e4d4a2992/LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "bytes": 11357
+    },
+    {
+      "original_name": "README.md",
+      "local_name": "TMLR_STYLE_UPSTREAM_README.md",
+      "url": "https://raw.githubusercontent.com/JmlrOrg/tmlr-style-file/7bf90efe3a0debbba703c05c43f3ff7e4d4a2992/README.md",
+      "sha256": "91310b3f169ecd2d48f6c62ca8b2c9fb3f537d432d8e5d6aa4b6ac88f5c064f9",
+      "bytes": 81
+    }
+  ],
+  "modifications": "none"
+}

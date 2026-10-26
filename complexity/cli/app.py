@@ -2,13 +2,14 @@
 Complexity Framework CLI - Main Application Entry Point.
 
 Usage:
-    complexity train run config.yaml
-    complexity inference generate model.pt --prompt "Hello"
-    complexity inference chat model.pt
+    complexity train validate configs/examples/tr_gqa_cpu.json
+    complexity train inspect scripts/pretrain_1b_fsdp/recipe.json
+    complexity checkpoint inspect /path/to/checkpoint --verify
+    complexity inference generate served-model --prompt "Hello"
+    complexity inference chat served-model
     complexity tokenize encode "Hello world"
-    complexity profile model --hidden 2048 --layers 24
-    complexity convert to-safetensors model.pt
-    complexity serve start model.pt --port 8000
+    complexity profile model config.json
+    complexity vision list
     complexity jobs list
     complexity info version
 """
@@ -25,12 +26,25 @@ except ImportError:
 
 
 if HAS_TYPER:
-    from .commands import convert, inference, info, jobs, profile, serve, tokenize, train
+    from .commands import (
+        checkpoint,
+        convert,
+        data,
+        evaluate,
+        inference,
+        info,
+        jobs,
+        profile,
+        serve,
+        tokenize,
+        train,
+        vision,
+    )
 
     # Create main app
     app = typer.Typer(
         name="complexity",
-        help="Complexity Framework - language-model training and inference",
+        help="Complexity Framework - TR-Hash language and vision model research",
         add_completion=False,
         no_args_is_help=True,
     )
@@ -44,16 +58,20 @@ if HAS_TYPER:
     app.add_typer(serve, name="serve")
     app.add_typer(info, name="info")
     app.add_typer(jobs, name="jobs")
+    app.add_typer(checkpoint, name="checkpoint")
+    app.add_typer(vision, name="vision")
+    app.add_typer(data, name="data")
+    app.add_typer(evaluate, name="eval")
 
-    @app.callback()
+    @app.callback(invoke_without_command=True)
     def main_callback(
         version: bool = typer.Option(False, "--version", "-v", help="Show version"),
     ):
         """
         Complexity Framework CLI.
 
-        A comprehensive deep learning framework for training and deploying
-        large language models with advanced attention mechanisms.
+        Inspect configurations and checkpoints, build explicit training
+        workflows, and use external text-serving runtimes.
         """
         if version:
             try:
@@ -74,85 +92,80 @@ if HAS_TYPER:
         guide = """
 # Complexity Framework - Quickstart
 
-## Installation
+Run these commands from the repository root. Install PyTorch separately for the
+intended backend; the helper installs the framework afterwards:
+
 ```bash
-pip install complexity
-# or with all extras
-pip install complexity[all]
+python3 -m venv .venv
+source .venv/bin/activate
+./scripts/install_backend.sh cpu
+complexity --version
 ```
 
-## Training a Model
+Use `cuda` or `rocm` instead of `cpu` on the corresponding training host.
 
-1. Create a config:
+## Check the complete local workflow
+
 ```bash
-complexity train create-config my_config.yaml --size small
+complexity train demo --output artifacts/demo-cpu --device cpu
 ```
 
-2. Start training:
+The packaged demo uses a tiny native model and local synthetic data, pauses and
+resumes optimization, evaluates, then exports and reloads the model. It requires
+a new or empty output directory and downloads no models or datasets. On a
+compatible Mac, use `--device mps` with a separate output directory.
+
+Optional integrations use `[hf]`, `[tokenizers]`, `[data]` or `[tracking]` extras.
+
+## Validate an architecture without training
+
 ```bash
-complexity train run my_config.yaml --gpus 1
+complexity train validate configs/examples/tr_gqa_cpu.json
+complexity train inspect configs/examples/tr_gqa_cpu.json --json
 ```
 
-## Inference
+Create a separate Trainer template if you need one:
 
-Generate text:
 ```bash
-complexity inference generate model.pt --prompt "Hello, world"
+complexity train create-config my_config.yaml --size tiny
+complexity train validate my_config.yaml
 ```
 
-Interactive chat:
+Templates need explicit dataloaders through `complexity.training.Trainer`.
+Generic `train run` and `train resume` cannot reconstruct those dataloaders;
+`train run CONFIG --dry-run` validates only.
+
+## Inspect the pinned TR-HASH 1B pretraining recipe
+
 ```bash
-complexity inference chat model.pt --system "You are a helpful assistant"
+complexity train inspect scripts/pretrain_1b_fsdp/recipe.json
+complexity checkpoint inspect /path/to/step_0051000 --verify \
+  --recipe scripts/pretrain_1b_fsdp/recipe.json
 ```
 
-## Serving
+Inspection reads local files only. Follow `scripts/pretrain_1b_fsdp/TRAINING.md`
+for original-script resume and evaluation. The pinned recipe stays separate from
+new experiments. File integrity alone does not establish successful restore.
 
-Start an API server:
+## Generate through an existing serving endpoint
+
 ```bash
-complexity serve start model.pt --port 8000
+complexity inference generate my-served-model --backend vllm \
+  --base-url http://localhost:8000 --prompt "Hello"
+complexity inference chat my-served-model --backend vllm \
+  --base-url http://localhost:8000
 ```
 
-## Tokenization
+vLLM/SGLang runs separately; these commands send requests to its existing server.
+A training checkpoint must be exported for the serving backend before use.
 
-Encode text:
-```bash
-complexity tokenize encode "Hello, world!" --show
-```
-
-## Model Conversion
-
-To safetensors:
-```bash
-complexity convert to-safetensors model.pt
-```
-
-From HuggingFace:
-```bash
-complexity convert from-hf meta-llama/Llama-2-7b ./llama2
-```
-
-## Profiling
-
-Profile model:
-```bash
-complexity profile model --hidden 2048 --layers 24 --heads 16
-```
-
-## More Info
+## Discover other tools
 
 ```bash
-complexity info version      # Show version & deps
-complexity info model model.pt  # Inspect model
-complexity info tokens       # Show special tokens
-```
-
-## Managed Jobs
-
-Long-running framework commands can share the same secure job lifecycle:
-```bash
-complexity jobs list
-complexity jobs status my-job
-complexity jobs restart my-job
+complexity --help
+complexity tokenize --help
+complexity jobs --help
+complexity info version
 ```
 """
         print_markdown(guide)

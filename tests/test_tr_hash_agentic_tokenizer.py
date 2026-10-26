@@ -5,7 +5,7 @@ import pytest
 
 from complexity.cli.commands.tokenize import _get_format_special_tokens
 from complexity.tokenizer import get_special_tokens
-from scripts.train_tr_hash_agentic_tokenizer import AGENTIC_SPECIAL_TOKENS, train_tokenizer
+from complexity.tokenizer.training import AGENTIC_SPECIAL_TOKENS, train_tokenizer
 
 
 def _write_training_corpus(root: Path) -> None:

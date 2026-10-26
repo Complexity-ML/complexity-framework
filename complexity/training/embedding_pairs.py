@@ -17,6 +17,8 @@ from typing import Iterator, Mapping, Optional, Sequence
 import torch
 from torch.utils.data import IterableDataset, get_worker_info
 
+from complexity._optional import require_optional
+
 
 def _tokenize_pair(
     tokenizer, anchor_text: str, positive_text: str, max_seq_len: int
@@ -67,6 +69,7 @@ class AllNLIPairDataset(IterableDataset):
         self.world_size = world_size
 
     def __iter__(self) -> Iterator[dict[str, torch.Tensor]]:
+        require_optional("datasets", "data")
         from datasets import load_dataset
 
         stream = load_dataset(
@@ -118,6 +121,7 @@ class MSMarcoPairDataset(IterableDataset):
     def _ensure_lookups_loaded(self) -> None:
         if self._query_text_by_id is not None:
             return
+        require_optional("datasets", "data")
         from datasets import load_dataset
 
         queries = load_dataset("sentence-transformers/msmarco", "queries", split=self.split)
@@ -125,6 +129,7 @@ class MSMarcoPairDataset(IterableDataset):
         self._corpus = load_dataset("sentence-transformers/msmarco", "corpus", split=self.split)
 
     def __iter__(self) -> Iterator[dict[str, torch.Tensor]]:
+        require_optional("datasets", "data")
         from datasets import load_dataset
 
         self._ensure_lookups_loaded()
@@ -214,6 +219,7 @@ class WeightedPairMixtureDataset(IterableDataset):
     def _open_stream(self, name: str) -> Iterator:
         if self._provided_streams is not None:
             return iter(self._provided_streams[name])
+        require_optional("datasets", "data")
         from datasets import load_dataset
 
         stream = load_dataset(self.dataset_id, split=name, streaming=True)

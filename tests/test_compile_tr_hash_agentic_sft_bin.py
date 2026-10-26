@@ -4,8 +4,8 @@ from pathlib import Path
 import pytest
 
 from complexity.tokenizer import Tokenizer
-from scripts.compile_tr_hash_agentic_sft_bin import encode_agentic_trajectory
-from scripts.train_tr_hash_agentic_tokenizer import train_tokenizer
+from complexity.tokenizer.training import train_tokenizer
+from complexity.training.sft_preparation import encode_agentic_trajectory
 
 
 @pytest.fixture()

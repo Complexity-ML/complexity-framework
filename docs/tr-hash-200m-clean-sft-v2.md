@@ -47,14 +47,19 @@ history. The aggregate is multi-license; row provenance is retained in
 ## Published dataset
 
 The public dataset is
-[`AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K`](https://huggingface.co/datasets/AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K).
-The historical revision contained two equivalent representations:
+[`AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-32K-300K`](https://huggingface.co/datasets/AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-32K-300K).
+This is the explicit **32K v2** reference. The former short repository name
+`AETHORIA-AI/TR-HASH-MoE-200M-SFT-v2-300K` now redirects to the separate v3
+32,004-token dataset and must not be used as an unpinned 32K reference.
+The historical run used two equivalent representations:
 
 1. `train.jsonl` / `eval.jsonl`, for inspection and independent processing;
 2. `tokenized/tr-hash-32k-v2-2048/`, pre-encoded with the former TR-HASH
    **32,000-entry** tokenizer.
 
-The tokenized representation is directly readable by `scripts.sft_tr`:
+The archived `scripts.sft_tr` reader consumed the tokenized representation
+with the following contract; that historical runner is absent from this
+checkout:
 
 - `input_ids.bin`: little-endian unsigned 32-bit token IDs;
 - `labels.bin`: little-endian signed 32-bit labels, with prompt/history labels
@@ -72,7 +77,14 @@ separator during SFT and Hugging Face/Space inference; the historical literal
 
 The published source revision and its immutable manifest remain the provenance
 record for the released 32,000-token run. The manifest pins tokenizer assets,
-split sizes, source identities, hashes and the no-truncation contract.
+split sizes, source identities, hashes and the no-truncation contract. Before
+a new run, pin a revision of the explicit 32K repository and verify its hashes
+against the intended contract; the current repository name alone does not
+prove identity with the historical release assets.
+
+The [refinement ablation](experiments/tr-hash-200m-refinement-ablation.md)
+compares direct base-to-SFT with the published refinement-to-SFT branch using
+this exact 32K v2 dataset contract.
 
 ## Completed training
 

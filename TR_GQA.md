@@ -107,4 +107,6 @@ The next useful controls are:
    persists.
 
 Machine-readable final values are in
-[`results/tr_gqa_mps_100m.csv`](results/tr_gqa_mps_100m.csv).
+`results/tr_gqa_mps_100m.csv` in the original experiment archive. That CSV is
+not included in this checkout; the tables above preserve the reported values,
+and raw-artifact reproduction remains unverified here.

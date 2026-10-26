@@ -17,7 +17,7 @@ def _tiny_config() -> TRHashSpeechToTextConfig:
         hidden_size=32,
         decoder_layers=2,
         attention_heads=4,
-        key_value_heads=2,
+        key_value_heads=1,
         max_position_embeddings=64,
         num_experts=4,
         top_k=2,
@@ -72,6 +72,9 @@ def test_audio_routes_are_stable_and_text_routes_remain_token_ids():
     _, first = model.prepare_multimodal_inputs(waveform, input_ids)
     _, second = model.prepare_multimodal_inputs(waveform, input_ids)
     assert torch.equal(first, second)
+    assert torch.equal(
+        first[:, : config.num_audio_tokens], torch.arange(config.num_audio_tokens).unsqueeze(0)
+    )
     assert torch.equal(first[:, config.num_audio_tokens :], input_ids)
     assert int(first.min()) >= 0
     assert int(first.max()) < config.vocab_size
@@ -87,6 +90,4 @@ def test_different_waveforms_produce_different_audio_prefixes():
     torch.manual_seed(2)
     embeddings_b, _ = model.prepare_multimodal_inputs(torch.randn(1, 4_000), input_ids)
     audio_tokens = config.num_audio_tokens
-    assert not torch.allclose(
-        embeddings_a[:, :audio_tokens], embeddings_b[:, :audio_tokens]
-    )
+    assert not torch.allclose(embeddings_a[:, :audio_tokens], embeddings_b[:, :audio_tokens])

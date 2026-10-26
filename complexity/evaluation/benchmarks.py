@@ -13,16 +13,17 @@ Reference implementations aligned with:
 - EleutherAI/lm-eval
 """
 
+import json
+import logging
+import os
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, List, Dict, Any, Tuple
-from dataclasses import dataclass
-from abc import ABC, abstractmethod
 from tqdm import tqdm
-import json
-import os
-import logging
 
 logger = logging.getLogger(__name__)
 

@@ -1,0 +1,141 @@
+name: Training reliability
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/training.yml"
+      - "complexity/**"
+      - "scripts/pretrain_1b/**"
+      - "scripts/pretrain_1b_fsdp/**"
+      - "scripts/sync_checkpoints_to_hf.py"
+      - "tests/**"
+      - "pyproject.toml"
+      - "README.md"
+      - "docs/**"
+      - "Makefile"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/training.yml"
+      - "complexity/**"
+      - "scripts/pretrain_1b/**"
+      - "scripts/pretrain_1b_fsdp/**"
+      - "scripts/sync_checkpoints_to_hf.py"
+      - "tests/**"
+      - "pyproject.toml"
+      - "README.md"
+      - "docs/**"
+      - "Makefile"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-training:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    env:
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      GLOO_SOCKET_IFNAME: lo
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install CPU training environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e ".[dev,hf,tokenizers,data,tracking]"
+          python -m pip check
+      - name: Lint the complete framework package
+        run: make lint PYTHON=python
+      - name: Check the complete local framework suite
+        run: make test PYTHON=python
+
+  installed-wheel:
+    name: Installed wheel / Python ${{ matrix.python }} / ${{ matrix.profile }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.10"
+            profile: base
+          - python: "3.11"
+            profile: base
+          - python: "3.12"
+            profile: base
+          - python: "3.11"
+            profile: full
+          - python: "3.12"
+            profile: full
+          - python: "3.11"
+            profile: vision
+    env:
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      GLOO_SOCKET_IFNAME: lo
+      CUDA_VISIBLE_DEVICES: ""
+      PYTHONPATH: ""
+      PYTHONNOUSERSITE: "1"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      WANDB_MODE: disabled
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir "$RUNNER_TEMP/wheel-dist"
+      - name: Install wheel into a fresh CPU environment
+        env:
+          ACCEPTANCE_PROFILE: ${{ matrix.profile }}
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-venv"
+          python_env="$RUNNER_TEMP/wheel-venv/bin/python"
+          "$python_env" -m pip install --upgrade pip
+          "$python_env" -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          wheel_path=$(find "$RUNNER_TEMP/wheel-dist" -name '*.whl' -type f)
+          if [ "$ACCEPTANCE_PROFILE" = full ]; then
+            "$python_env" -m pip install "${wheel_path}[dev,hf,tokenizers,data,tracking]"
+          elif [ "$ACCEPTANCE_PROFILE" = vision ]; then
+            "$python_env" -m pip install "${wheel_path}[export]"
+          else
+            "$python_env" -m pip install "$wheel_path"
+          fi
+          "$python_env" -m pip check
+          mkdir -p "$RUNNER_TEMP/wheel-acceptance"
+          "$python_env" -m pip freeze > "$RUNNER_TEMP/wheel-acceptance/dependencies.txt"
+          cp tests/test_installed_wheel_acceptance.py "$RUNNER_TEMP/wheel-acceptance/"
+      - name: Check installed package and offline CPU demo outside checkout
+        working-directory: ${{ runner.temp }}/wheel-acceptance
+        env:
+          COMPLEXITY_WHEEL_ACCEPTANCE: "1"
+          COMPLEXITY_ACCEPTANCE_PROFILE: ${{ matrix.profile }}
+          COMPLEXITY_ACCEPTANCE_OUTPUT: ${{ runner.temp }}/wheel-acceptance/reports
+        run: |
+          export PATH="$RUNNER_TEMP/wheel-venv/bin:$PATH"
+          "$RUNNER_TEMP/wheel-venv/bin/python" -I test_installed_wheel_acceptance.py -v
+      - name: Retain installation and demo evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: installed-wheel-py${{ matrix.python }}-${{ matrix.profile }}
+          path: |
+            ${{ runner.temp }}/wheel-dist/*.whl
+            ${{ runner.temp }}/wheel-acceptance/dependencies.txt
+            ${{ runner.temp }}/wheel-acceptance/reports/
+          if-no-files-found: warn

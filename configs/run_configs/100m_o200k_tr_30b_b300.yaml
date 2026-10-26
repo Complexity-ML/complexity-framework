@@ -13,6 +13,16 @@ run:
   save_steps: 200
   save_total_limit: 3
   loss_chunk_tokens: 1024
-  routing_strategy: modulo_cyclic
+  routing_strategy: token_id_composed_modulo
   run_name: 30b-100m-o200k-tr-8b300-b256
   save_dir: checkpoints/30b-100m-o200k-tr-8b300-b256
+  mlp_type: tr_hash_engine
+  num_attention_heads: 4
+  num_key_value_heads: 1
+  num_experts: 4
+  top_k: 2
+  top_k_primary_weight: 0.5
+  shared_expert: true
+  shared_output_scale: 1.0
+  routed_output_scale: 2.0
+  use_qk_norm: true

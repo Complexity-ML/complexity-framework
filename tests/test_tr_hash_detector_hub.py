@@ -56,9 +56,8 @@ def _checkpoint(path: Path) -> Path:
         vision_stage_depths=(1, 1, 1),
         vision_window_size=2,
         vision_heads=4,
-        vision_num_experts=2,
-        architecture_profile="legacy",
-        vision_top_k=1,
+        vision_num_experts=4,
+        vision_top_k=2,
         vision_expert_width=8,
         vision_precision="fp32",
         num_classes=len(VOC_CLASS_NAMES),
@@ -145,7 +144,10 @@ def test_export_and_strict_reload_hub_folder(tmp_path: Path):
     checkpoint = _checkpoint(tmp_path / "checkpoint")
     raw_state = load_file(str(checkpoint / "model.safetensors"))
     save_file(
-        {name: torch.zeros_like(value) for name, value in raw_state.items()},
+        {
+            name: torch.zeros_like(value) if value.is_floating_point() else value
+            for name, value in raw_state.items()
+        },
         str(checkpoint / "ema.safetensors"),
     )
     output = export_detector_for_hub(

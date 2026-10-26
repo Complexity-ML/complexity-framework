@@ -116,17 +116,17 @@ def test_windowed_attention_applies_bias_and_respects_padding_mask():
         num_heads=4,
         dropout=0.0,
         window_size=window_size,
-        architecture_profile="legacy",
     )
     tokens = torch.randn(2, window_size**2, 16)
 
-    unmasked = attention(tokens)
+    route_ids = torch.zeros(2, window_size**2, dtype=torch.long)
+    unmasked = attention(tokens, route_ids=route_ids)
     assert torch.isfinite(unmasked).all()
 
     # Invalidate every key but the first: every query must collapse onto it.
     key_mask = torch.zeros(2, window_size**2, dtype=torch.bool)
     key_mask[:, 0] = True
-    masked = attention(tokens, key_mask=key_mask)
+    masked = attention(tokens, key_mask=key_mask, route_ids=route_ids)
     assert torch.isfinite(masked).all()
     # Every query attends entirely to the single valid key, so the attended
     # value collapses to that key's value projection regardless of query.

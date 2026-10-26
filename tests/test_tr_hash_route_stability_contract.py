@@ -1,12 +1,9 @@
-"""Global regression contract: TR-Hash route tables must be deterministic.
+"""Canonical TR-HASH route anchors and contextual routes are deterministic.
 
-Routing is supposed to be config-derived only (``route_seed`` / ``layer_index``
-/ ``vocab_size`` / expert count) -- never learned, never dependent on global
-random state. This file builds every production TR-Hash path twice, under
-different global RNG seeds, and checks that every route table it exposes
-comes out bit-identical both times. It also checks that routing genuinely
-spreads across more than one expert, so a broken hash that silently always
-resolves to the same expert would fail here too.
+Routes depend on the layer and original input identities, including the two
+preceding identities. They are neither learned nor functions of global RNG
+state. Each production path must preserve its anchor and actual contextual
+assignments across independent constructions and use multiple experts.
 """
 
 from __future__ import annotations
@@ -105,7 +102,7 @@ def _speech_to_text_factory() -> nn.Module:
             hidden_size=32,
             decoder_layers=2,
             attention_heads=4,
-            key_value_heads=2,
+            key_value_heads=1,
             max_position_embeddings=64,
             num_experts=4,
             top_k=2,
@@ -168,7 +165,7 @@ def _vision_language_factory() -> nn.Module:
             hidden_size=32,
             decoder_layers=2,
             attention_heads=4,
-            key_value_heads=2,
+            key_value_heads=1,
             max_position_embeddings=64,
             num_experts=4,
             top_k=2,
@@ -208,7 +205,7 @@ def _sensor_fusion_factory() -> nn.Module:
             hidden_size=32,
             num_hidden_layers=2,
             num_attention_heads=4,
-            num_experts=8,
+            num_experts=4,
             top_k=2,
             expert_width=16,
             precision="fp32",
@@ -246,11 +243,17 @@ PRODUCTION_FACTORIES = (
 
 
 def _route_tables(model: nn.Module) -> dict[str, torch.Tensor]:
-    return {
-        name: submodule.route_table.clone()
-        for name, submodule in model.named_modules()
-        if torch.is_tensor(getattr(submodule, "route_table", None))
-    }
+    evidence = {}
+    for name, submodule in model.named_modules():
+        table = getattr(submodule, "route_table", None)
+        if torch.is_tensor(table):
+            evidence[f"{name}.anchor"] = table.clone()
+        if isinstance(submodule, TRHashEngine):
+            vocab = submodule.config.vocab_size
+            ids = torch.arange(min(vocab, 32), dtype=torch.long).unsqueeze(0)
+            history = torch.tensor([[max(vocab - 2, 0), vocab - 1]], dtype=torch.long)
+            evidence[f"{name}.contextual_routes"] = submodule._routes(ids, history).clone()
+    return evidence
 
 
 @pytest.mark.parametrize("architecture,factory", PRODUCTION_FACTORIES)
@@ -269,7 +272,7 @@ def test_route_tables_are_deterministic_across_independent_constructions(
         assert torch.equal(first[key], second[key]), (
             f"{architecture}.{key}: route table changed across independent "
             "constructions built under different global RNG seeds -- routing "
-            "must depend only on config (route_seed/layer_index/vocab_size), "
+            "must depend only on layer and original identity history, "
             "never on global randomness"
         )
 

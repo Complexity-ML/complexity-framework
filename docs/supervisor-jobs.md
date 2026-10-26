@@ -63,3 +63,23 @@ complexity jobs restart tr_hash_100m_pretraining
 Generated files are private (`0600`), logs are written to real files with
 bounded rotation, and commands use process-group termination so distributed
 workers do not survive a stop or restart.
+
+## Log freshness
+
+Log-age observation is available without controlling a job:
+
+```python
+from pathlib import Path
+from complexity.training.supervisor import seconds_since_last_write
+
+age = seconds_since_last_write(Path("artifacts/my-run/metrics.jsonl"))
+print(age)  # None before the file exists; otherwise seconds since its last write.
+```
+
+`watch_once(log_file, program, stall_seconds)` explicitly attempts a Supervisor
+restart when the log age is strictly above a positive finite threshold.
+`restart_program(program)` returns whether Supervisor accepted the request;
+`watch_once` returns whether it attempted one. Callers own polling and cooldown
+and must account for expected quiet evaluation/checkpoint intervals. No watcher
+starts on import. Log freshness or a successful restart request does not prove
+optimizer progress, checkpoint recovery or distributed health.

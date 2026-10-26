@@ -5,7 +5,7 @@ run:
   steps: 20000
   batch_size: 8
   seq_len: 512
-  lr: 3.0e-4
+  lr: 0.0003
   optimizer: adamw
   bf16: true
   grad_ckpt: false
@@ -15,10 +15,18 @@ run:
   save_steps: 5000
   save_total_limit: 3
   loss_chunk_tokens: 1024
-  routing_strategy: modulo_cyclic
+  routing_strategy: token_id_composed_modulo
   top_k: 2
   top_k_primary_weight: 0.5
   use_custom_kernels: auto
   empty_cache_every: 0
   run_name: rocm-50m-o200k-tr
   save_dir: checkpoints/rocm-50m-o200k-tr
+  mlp_type: tr_hash_engine
+  num_attention_heads: 4
+  num_key_value_heads: 1
+  num_experts: 4
+  shared_expert: true
+  shared_output_scale: 1.0
+  routed_output_scale: 2.0
+  use_qk_norm: true

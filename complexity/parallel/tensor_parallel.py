@@ -13,12 +13,11 @@ References:
 - Tensor Parallelism: https://pytorch.org/tutorials/intermediate/TP_tutorial.html
 """
 
-import torch
-import torch.nn as nn
-import torch.distributed as dist
-from typing import Optional, Tuple, Any
-from functools import wraps
+from typing import Any, Optional, Tuple
 
+import torch
+import torch.distributed as dist
+import torch.nn as nn
 
 # Global TP state — set by init_tensor_parallel_group()
 _TP_GROUP: Optional[Any] = None
@@ -461,8 +460,8 @@ def _shard_expert_weights(module: nn.Module, rank: int, world_size: int) -> None
     with torch.no_grad():
         if hasattr(module, 'gate_proj_w'):
             # Separate gate/up/down weights
-            I = module.gate_proj_w.shape[2]
-            shard = I // world_size
+            intermediate_width = module.gate_proj_w.shape[2]
+            shard = intermediate_width // world_size
             module.gate_proj_w = nn.Parameter(
                 module.gate_proj_w[:, :, rank * shard:(rank + 1) * shard].contiguous()
             )
@@ -476,11 +475,11 @@ def _shard_expert_weights(module: nn.Module, rank: int, world_size: int) -> None
 
         elif hasattr(module, 'gate_up_proj'):
             # Fused gate+up: [E, H, 2I]
-            I = module.expert_intermediate_size
-            shard = I // world_size
+            intermediate_width = module.expert_intermediate_size
+            shard = intermediate_width // world_size
             # Split gate and up portions separately, then re-fuse
-            gate = module.gate_up_proj[:, :, :I]
-            up = module.gate_up_proj[:, :, I:]
+            gate = module.gate_up_proj[:, :, :intermediate_width]
+            up = module.gate_up_proj[:, :, intermediate_width:]
             gate_shard = gate[:, :, rank * shard:(rank + 1) * shard]
             up_shard = up[:, :, rank * shard:(rank + 1) * shard]
             module.gate_up_proj = nn.Parameter(

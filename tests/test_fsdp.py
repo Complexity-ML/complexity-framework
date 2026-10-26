@@ -9,7 +9,6 @@ Single-GPU / CPU tests (no torchrun needed):
     pytest tests/test_fsdp.py -v -k "not multigpu"
 """
 
-import os
 import json
 import tempfile
 from pathlib import Path
@@ -43,14 +42,15 @@ def small_config():
         hidden_size=128,
         num_hidden_layers=2,
         num_attention_heads=4,
-        num_key_value_heads=2,
+        num_key_value_heads=1,
         intermediate_size=256,
         vocab_size=1000,
         attention_type="gqa",
         mlp_type="tr_hash_engine",
-        num_experts=2,
+        num_experts=4,
+        top_k=2,
         norm_type="rmsnorm",
-        use_qk_norm=False,
+        use_qk_norm=True,
     )
 
 
@@ -103,6 +103,7 @@ class TestCheckpointHelpers:
         model = ComplexityModel(small_config())
         with tempfile.TemporaryDirectory() as tmp:
             mgr = CheckpointManager(tmp, model)
+            assert mgr.model is model
             assert Path(tmp).exists()
 
     def test_checkpoint_manager_save_load_cpu(self):
@@ -261,11 +262,11 @@ def _is_dtensor_name(v):
 # ── Convert checkpoint helper (CPU) ───────────────────────────────────────────
 
 class TestConvertCheckpoint:
-    """Test the detensor logic used in convert_checkpoint.py."""
+    """Test the packaged checkpoint tensor-tree conversion helper."""
 
     def test_detensor_nested(self):
         """detensor() handles nested dicts and lists."""
-        from scripts.convert_checkpoint import detensor
+        from complexity.utils.checkpointing import detensor
 
         sd = {
             "a": torch.randn(4, 4),
@@ -276,7 +277,7 @@ class TestConvertCheckpoint:
         assert out["nested"]["b"].shape == (2,)
 
     def test_detensor_list(self):
-        from scripts.convert_checkpoint import detensor
+        from complexity.utils.checkpointing import detensor
 
         lst = [torch.randn(3), torch.ones(5)]
         out = detensor(lst)
@@ -285,15 +286,15 @@ class TestConvertCheckpoint:
 
     def test_config_json_written(self):
         """convert_checkpoint writes a valid config.json."""
-        import json, importlib, sys
         # We can't run the full script, but we can test the config dict directly
         config_json = {
             "model_type": "complexity",
             "hidden_size": 1792,
             "num_hidden_layers": 24,
-            "num_attention_heads": 28,
-            "num_key_value_heads": 4,
-            "intermediate_size": 4608,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 1,
+            "intermediate_size": 1792,
+            "routing_strategy": "token_id_composed_modulo",
             "vocab_size": 32000,
             "torch_dtype": "bfloat16",
         }
@@ -408,7 +409,7 @@ class TestFSDPv2:
                 state_file = Path(ckpt_path) / "training_state.json"
                 assert state_file.exists()
                 with open(state_file) as f:
-                    d = json.load(d)
+                    d = json.load(f)
                 assert d["step"] == 1
 
             dist.barrier()

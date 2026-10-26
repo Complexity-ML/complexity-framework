@@ -8,9 +8,9 @@ import torch.nn as nn
 
 from complexity.core import (
     NORMALIZATION_REGISTRY,
-    RMSNorm,
-    LayerNorm,
     IdentityNorm,
+    LayerNorm,
+    RMSNorm,
     build_norm,
 )
 

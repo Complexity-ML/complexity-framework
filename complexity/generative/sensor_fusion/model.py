@@ -1,28 +1,21 @@
-"""Source67 TR-Hash fusion model for multimodal robot perception."""
+"""TR-HASH TR-Hash fusion model for multimodal robot perception."""
 
 from __future__ import annotations
-
 from typing import Mapping, Optional
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from complexity.generative.detection.config import TRHashDetectorConfig
-from complexity.generative.detection.hierarchical_tower import (
-    HierarchicalTRHashVisionTower,
-)
 from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
-from complexity.tr_hash import (
-    TRHashPrecision,
-)
-
+from complexity.tr_hash import TRHashPrecision
+from complexity.vision.detection.config import TRHashDetectorConfig
+from complexity.vision.detection.hierarchical_tower import HierarchicalTRHashVisionTower
 from .config import SENSOR_MODALITIES, TRHashSensorFusionConfig
 from .encoders import SequenceTokenizerV2
 from .structured_encoders import IMUDeviceGraphTokenizer, SkeletonGraphTokenizer
 
 
 class _GradientReverse(torch.autograd.Function):
+
     @staticmethod
     def forward(ctx, values: torch.Tensor, scale: float) -> torch.Tensor:
         ctx.scale = float(scale)
@@ -30,21 +23,22 @@ class _GradientReverse(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, gradient: torch.Tensor) -> tuple[torch.Tensor, None]:
-        return -ctx.scale * gradient, None
+        return (-ctx.scale * gradient, None)
 
 
 def gradient_reverse(values: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
     """Keep the forward value and reverse its encoder gradient."""
-
     return _GradientReverse.apply(values, scale)
 
 
 class _FusionSelfAttention(DomainSelfAttention):
+
     def forward(self, tokens, token_mask, route_ids=None):
         return super().forward(tokens, route_ids, token_mask[:, None, None, :])
 
 
 class TRHashSensorFusionBlock(nn.Module):
+
     def __init__(self, config: TRHashSensorFusionConfig, layer_index: int):
         super().__init__()
         self.norm1 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
@@ -53,7 +47,6 @@ class TRHashSensorFusionBlock(nn.Module):
             config.num_attention_heads,
             config.attention_dropout,
             num_key_value_heads=config.num_key_value_heads,
-            architecture_profile=config.architecture_profile,
             layer_index=layer_index,
         )
         self.norm2 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
@@ -65,16 +58,11 @@ class TRHashSensorFusionBlock(nn.Module):
             shared_width=config.shared_width,
             expert_width=config.expert_width,
             layer_index=layer_index,
-            route_seed=config.route_seed,
             precision=TRHashPrecision(config.precision),
-            architecture_profile=config.architecture_profile,
         )
 
     def forward(
-        self,
-        tokens: torch.Tensor,
-        route_ids: torch.Tensor,
-        token_mask: torch.Tensor,
+        self, tokens: torch.Tensor, route_ids: torch.Tensor, token_mask: torch.Tensor
     ) -> torch.Tensor:
         tokens = tokens + self.attention(self.norm1(tokens), token_mask, route_ids)
         tokens = tokens + self.mlp(self.norm2(tokens), route_ids)
@@ -100,9 +88,7 @@ class _ClassModalityHashGate(nn.Module):
             shared_width=config.shared_width,
             expert_width=config.expert_width,
             layer_index=config.num_hidden_layers + config.vision_layers,
-            route_seed=config.route_seed,
             precision=TRHashPrecision(config.precision),
-            architecture_profile=config.architecture_profile,
         )
         self.score = nn.Linear(config.hidden_size, 1)
         self.register_buffer(
@@ -117,8 +103,7 @@ class _ClassModalityHashGate(nn.Module):
         expected = (self.num_modalities, self.class_embedding.size(1))
         if features.ndim != 3 or tuple(features.shape[1:]) != expected:
             raise ValueError(
-                "class-modality gate features must have shape "
-                f"[batch, {self.num_modalities}, {self.class_embedding.size(1)}]"
+                f"class-modality gate features must have shape [batch, {self.num_modalities}, {self.class_embedding.size(1)}]"
             )
         batch = features.size(0)
         tokens = (
@@ -147,16 +132,12 @@ class _ClassHashResidualHead(nn.Module):
             shared_width=config.class_hash_shared_width,
             expert_width=config.class_hash_expert_width,
             layer_index=config.num_hidden_layers + config.vision_layers + 1,
-            route_seed=config.route_seed ^ 0xC1A55,
             precision=TRHashPrecision(config.precision),
-            architecture_profile=config.architecture_profile,
         )
         self.score = nn.Linear(config.hidden_size, 1, bias=False)
         self.scale = nn.Parameter(torch.tensor(config.class_hash_initial_scale))
         self.register_buffer(
-            "route_ids",
-            torch.arange(config.num_classes, dtype=torch.long),
-            persistent=True,
+            "route_ids", torch.arange(config.num_classes, dtype=torch.long), persistent=True
         )
         nn.init.normal_(self.class_embedding, std=0.02)
 
@@ -179,7 +160,7 @@ class _ResidualModalityAdapter(nn.Module):
         self.norm = nn.LayerNorm(hidden_size)
         self.down = nn.Linear(hidden_size, inner, bias=False)
         self.up = nn.Linear(inner, hidden_size, bias=False)
-        self.scale = nn.Parameter(torch.full((hidden_size,), 1e-3))
+        self.scale = nn.Parameter(torch.full((hidden_size,), 0.001))
 
     def forward(self, values: torch.Tensor) -> torch.Tensor:
         adapted = self.up(F.gelu(self.down(self.norm(values))))
@@ -189,33 +170,17 @@ class _ResidualModalityAdapter(nn.Module):
 class _VisualMotionTokenizer(nn.Module):
     """Encode frame differences into the same token lattice as the tower."""
 
-    def __init__(
-        self,
-        hidden_size: int,
-        token_grid: tuple[int, int, int],
-    ):
+    def __init__(self, hidden_size: int, token_grid: tuple[int, int, int]):
         super().__init__()
         width = max(32, hidden_size // 8)
         self.token_grid = token_grid
         self.stem = nn.Sequential(
             nn.Conv3d(
-                3,
-                width,
-                kernel_size=(3, 5, 5),
-                stride=(1, 4, 4),
-                padding=(1, 2, 2),
-                bias=False,
+                3, width, kernel_size=(3, 5, 5), stride=(1, 4, 4), padding=(1, 2, 2), bias=False
             ),
             nn.GroupNorm(1, width),
             nn.GELU(),
-            nn.Conv3d(
-                width,
-                width,
-                kernel_size=3,
-                padding=1,
-                groups=width,
-                bias=False,
-            ),
+            nn.Conv3d(width, width, kernel_size=3, padding=1, groups=width, bias=False),
             nn.GroupNorm(1, width),
             nn.GELU(),
             nn.Conv3d(width, hidden_size, kernel_size=1, bias=False),
@@ -235,7 +200,7 @@ class TRHashSensorFusionClassifier(nn.Module):
     """Fuse six sensor modalities and predict one of ``num_classes`` states.
 
     Routing IDs encode ``(modality, local token position)``. The assignment to
-    experts uses the Source67 two-lag identity context. Raw sensor values do
+    experts uses the TR-HASH two-lag identity context. Raw sensor values do
     not select the expert. A sample-level modality mask allows clips with absent sensors.
 
     This is the perception front-end of a robot stack: sensors -> encoders ->
@@ -250,13 +215,7 @@ class TRHashSensorFusionClassifier(nn.Module):
         config = self.config
         depth_channels, ir_channels, thermal_channels = config.visual_channels
         del depth_channels, ir_channels, thermal_channels
-
-        # The three visual streams (depth, IR, thermal) share one compact
-        # TR-Hash MoE vision tower; modality embeddings keep their identities
-        # distinct after the shared visual representation is formed.
         tower_config = TRHashDetectorConfig(
-            architecture_profile=config.architecture_profile,
-            architecture_profile_version=config.architecture_profile_version,
             vision_key_value_heads=config.vision_key_value_heads,
             image_size=config.vision_image_size,
             patch_size=config.vision_patch_size,
@@ -270,34 +229,22 @@ class TRHashSensorFusionClassifier(nn.Module):
             vision_stage_depths=config.vision_stage_depths,
             vision_window_size=config.vision_window_size,
             vision_precision=config.precision,
-            route_seed=config.route_seed,
             num_classes=config.num_classes,
-            scale_factors=tuple(2**index for index in range(len(config.vision_stage_depths))),
+            scale_factors=tuple((2**index for index in range(len(config.vision_stage_depths)))),
         )
         self.vision_tower = HierarchicalTRHashVisionTower(tower_config)
         self.visual_projection = nn.Linear(
-            config.vision_hidden_size,
-            config.hidden_size,
-            bias=False,
+            config.vision_hidden_size, config.hidden_size, bias=False
         )
         self.visual_motion_encoder = _VisualMotionTokenizer(
-            config.hidden_size,
-            config.visual_token_grid,
+            config.hidden_size, config.visual_token_grid
         )
         self.visual_motion_scale = nn.Parameter(torch.tensor(0.1))
 
         def sequence_encoder(features: int) -> nn.Module:
             if features == config.imu_features:
-                return IMUDeviceGraphTokenizer(
-                    features,
-                    config.hidden_size,
-                    config.sequence_tokens,
-                )
-            return SequenceTokenizerV2(
-                features,
-                config.hidden_size,
-                config.sequence_tokens,
-            )
+                return IMUDeviceGraphTokenizer(features, config.hidden_size, config.sequence_tokens)
+            return SequenceTokenizerV2(features, config.hidden_size, config.sequence_tokens)
 
         skeleton_encoder = SkeletonGraphTokenizer(
             config.skeleton_joints,
@@ -341,13 +288,14 @@ class TRHashSensorFusionClassifier(nn.Module):
             }
         )
         self.blocks = nn.ModuleList(
-            TRHashSensorFusionBlock(config, layer_index=index)
-            for index in range(config.num_hidden_layers)
+            (
+                TRHashSensorFusionBlock(config, layer_index=index)
+                for index in range(config.num_hidden_layers)
+            )
         )
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.head = nn.Sequential(
-            nn.Dropout(config.classifier_dropout),
-            nn.Linear(config.hidden_size, config.num_classes),
+            nn.Dropout(config.classifier_dropout), nn.Linear(config.hidden_size, config.num_classes)
         )
         self.class_hash_head = _ClassHashResidualHead(config)
         self.subject_head = nn.Sequential(
@@ -361,9 +309,7 @@ class TRHashSensorFusionClassifier(nn.Module):
         )
         self.class_modality_gate = _ClassModalityHashGate(config)
         self.register_buffer(
-            "route_ids",
-            torch.arange(config.route_vocab_size, dtype=torch.long),
-            persistent=True,
+            "route_ids", torch.arange(config.route_vocab_size, dtype=torch.long), persistent=True
         )
         nn.init.normal_(self.modality_embedding, std=0.02)
         for parameter in (*self.position_embeddings.values(), *self.missing_tokens.values()):
@@ -404,20 +350,11 @@ class TRHashSensorFusionClassifier(nn.Module):
         batch, channels, frames, height, width = values.shape
         if channels == 1:
             values = values.expand(-1, 3, -1, -1, -1)
-        frame_batch = values.permute(0, 2, 1, 3, 4).reshape(
-            batch * frames,
-            3,
-            height,
-            width,
-        )
+        frame_batch = values.permute(0, 2, 1, 3, 4).reshape(batch * frames, 3, height, width)
         features = self.vision_tower(frame_batch)[-1]
         _, feature_width, feature_height, feature_columns = features.shape
         features = features.reshape(
-            batch,
-            frames,
-            feature_width,
-            feature_height,
-            feature_columns,
+            batch, frames, feature_width, feature_height, feature_columns
         ).permute(0, 2, 1, 3, 4)
         features = F.adaptive_avg_pool3d(features, self.config.visual_token_grid)
         tokens = features.flatten(2).transpose(1, 2)
@@ -436,13 +373,7 @@ class TRHashSensorFusionClassifier(nn.Module):
         chunks = [self.cls_token.expand(batch_size, -1, -1)]
         masks = [torch.ones(batch_size, 1, dtype=torch.bool, device=device)]
         presence_by_name = {
-            name: self._presence(
-                name,
-                batch_size,
-                device,
-                modality_mask,
-                name in inputs,
-            )
+            name: self._presence(name, batch_size, device, modality_mask, name in inputs)
             for name in SENSOR_MODALITIES
         }
         encoded_by_name: dict[str, torch.Tensor] = {}
@@ -478,17 +409,15 @@ class TRHashSensorFusionClassifier(nn.Module):
         token_mask = torch.cat(masks, dim=1)
         if not token_mask.any(dim=1).all():
             raise ValueError("every sample must contain at least one sensor modality")
-        return torch.cat(chunks, dim=1), token_mask
+        return (torch.cat(chunks, dim=1), token_mask)
 
     def _late_fusion(
-        self,
-        tokens: torch.Tensor,
-        token_mask: torch.Tensor,
+        self, tokens: torch.Tensor, token_mask: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         modality_logits = []
         modality_features = []
         presence = []
-        offset = 1  # skip the fusion CLS token
+        offset = 1
         for name, count in zip(SENSOR_MODALITIES, self.config.modality_token_counts):
             end = offset + count
             mask = token_mask[:, offset:end]
@@ -503,10 +432,10 @@ class TRHashSensorFusionClassifier(nn.Module):
         available = torch.stack(presence, dim=1)
         scores = self.class_modality_gate(torch.stack(modality_features, dim=1))
         score_mask = available if scores.ndim == 2 else available.unsqueeze(-1)
-        scores = scores.masked_fill(~score_mask, -1.0e4)
+        scores = scores.masked_fill(~score_mask, -10000.0)
         gates = scores.softmax(dim=1)
         weighted_logits = logits * (gates.unsqueeze(-1) if gates.ndim == 2 else gates)
-        return weighted_logits.sum(dim=1), logits, gates
+        return (weighted_logits.sum(dim=1), logits, gates)
 
     def forward(
         self,
@@ -555,7 +484,7 @@ class TRHashSensorFusionClassifier(nn.Module):
         parameters = self.parameters()
         if trainable_only:
             parameters = (value for value in parameters if value.requires_grad)
-        return sum(value.numel() for value in parameters)
+        return sum((value.numel() for value in parameters))
 
     @property
     def tr_hash_blocks(self) -> list[nn.Module]:

@@ -1,0 +1,29 @@
+{
+  "format": "complexity-sft-experiment-v1",
+  "checkpoint": "/workspace/tr-hash-200m-direct-sft-20261009/inputs/base",
+  "data": "/workspace/tr-hash-200m-direct-sft-20261009/inputs/dataset/tokenized/tr-hash-32k-v2-2048",
+  "experiment": "no_refinement_ablation",
+  "batch_size": 16,
+  "world_size": 4,
+  "expert_lr_scale": 1.0,
+  "sequence_length": 2048,
+  "epochs": 3,
+  "seed": 42,
+  "learning_rate": 2e-05,
+  "weight_decay": 0.1,
+  "betas": [
+    0.9,
+    0.95
+  ],
+  "warmup_ratio": 0.03,
+  "min_lr_ratio": 0.1,
+  "execution": {
+    "output": "/workspace/tr-hash-200m-direct-sft-20261009/diagnostic",
+    "device": "cuda",
+    "precision": "bf16",
+    "micro_batch_size": 16,
+    "save_every": 100,
+    "gradient_checkpointing": true,
+    "eval_max_batches": 8
+  }
+}

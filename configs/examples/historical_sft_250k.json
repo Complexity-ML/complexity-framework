@@ -1,0 +1,62 @@
+{
+  "format": "complexity-historical-sft-recipe-v1",
+  "historical_reference": true,
+  "release_eligible": false,
+  "sequence_length": 2048,
+  "max_tokens_including_eos": 2049,
+  "name": "historical-agentic-sft-250k",
+  "implementation_revision": "21dac5856deb43ec9da1dfda3d0a2e31d88c2629",
+  "repository": "AETHORIA-AI/TR-HASH-Agentic-SFT-32K-250K",
+  "tokenizer": {
+    "repository": "AETHORIA-AI/TR-HASH-Tokenizer-32K-Agentic",
+    "revision": "2fcbc2c5359ded0244ca14531f1b3806eebac55e"
+  },
+  "sources": {
+    "general": {
+      "repository": "AETHORIA-AI/TR-HASH-Agentic-SFT-32K-21K",
+      "revision": "c768cbb398f3c406721f06b2af6ee7edd09aeb2c"
+    },
+    "agentic": {
+      "repository": "nvidia/Nemotron-Agentic-v1",
+      "revision": "650d590978ca35c8f1ecea2faf136e5fac421b62"
+    }
+  },
+  "train_quotas": {
+    "direct": 100000,
+    "tool_call": 90000,
+    "no_call": 35000,
+    "tool_final": 25000
+  },
+  "eval_quotas": {
+    "direct": 5000,
+    "tool_call": 4500,
+    "no_call": 1750,
+    "tool_final": 1250
+  },
+  "train_think_quotas": {
+    "tool_call": 20000,
+    "no_call": 2000,
+    "tool_final": 3000
+  },
+  "eval_think_quotas": {
+    "tool_call": 1000,
+    "no_call": 100,
+    "tool_final": 150
+  },
+  "special_token_ids": {
+    "<|system|>": 4,
+    "<|user|>": 5,
+    "<|assistant|>": 6,
+    "<|end_of_turn|>": 7,
+    "<|tool_call_start|>": 8,
+    "<|tool_call_end|>": 9,
+    "<|tool_result_start|>": 10,
+    "<|tool_result_end|>": 11,
+    "<|think_start|>": 16,
+    "<|think_end|>": 17,
+    "<|final_start|>": 18,
+    "<|final_end|>": 19
+  },
+  "max_thinking_chars": 2000,
+  "historical_implementation_path": "scripts/prepare_tr_hash_agentic_sft_250k.py"
+}

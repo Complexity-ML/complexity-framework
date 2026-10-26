@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,17 @@ def _curriculum() -> SFTCurriculum:
             ),
         ),
     )
+
+
+@pytest.mark.parametrize("suffix", [".json", ".JSON"])
+def test_json_curriculum_preserves_standard_exponent_learning_rate(tmp_path, suffix):
+    path = tmp_path / f"curriculum{suffix}"
+    path.write_text(json.dumps({"version": 1, "stages": [
+        {"name": "full", "epochs": 1, "lr": 1e-6},
+    ]}))
+    stage = load_curriculum(path).stage("full")
+    assert stage.lr == 1e-6
+    assert type(stage.lr) is float
 
 
 def test_curriculum_selection_is_deterministic_and_balanced() -> None:

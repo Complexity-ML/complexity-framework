@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
+import json
+from dataclasses import replace
 from pathlib import Path
 
 from .config import StackSFTConfig, StageConfig
@@ -20,9 +20,15 @@ class StackSFTRunner:
 
     @classmethod
     def from_yaml(cls, path: str | Path, *, dry_run: bool = False) -> "StackSFTRunner":
-        return cls(StackSFTConfig.from_yaml(path), dry_run=dry_run)
+        return cls(StackSFTConfig.from_file(path), dry_run=dry_run)
 
     def run(self, *, start_stage: str | None = None, stop_after: str | None = None) -> str:
+        names = [stage.name for stage in self.config.stages]
+        if len(set(names)) != len(names):
+            raise ValueError("Stack SFT stage names must be unique")
+        for selected in (start_stage, stop_after):
+            if selected is not None and selected not in names:
+                raise ValueError(f"Unknown stack stage: {selected}")
         checkpoint = self.config.base_checkpoint
         active = start_stage is None
         for stage in self.config.stages:
@@ -31,21 +37,58 @@ class StackSFTRunner:
             if not active:
                 checkpoint = self._stage_checkpoint(stage)
                 continue
-            checkpoint = self.run_stage(stage, checkpoint)
+            checkpoint = self.run_stage(
+                stage,
+                checkpoint,
+                source_stage=self.config.source_stage
+                if stage is self.config.stages[0] or stage.checkpoint
+                else "supervised-finetuning",
+            )
             if stage.name == stop_after:
                 break
         return checkpoint
 
-    def run_stage(self, stage: StageConfig, input_checkpoint: str) -> str:
+    def run_stage(
+        self, stage: StageConfig, input_checkpoint: str, *, source_stage=None, resume=None
+    ) -> str:
+        from .stage import run_lora_stage, validate_stack_execution
+
+        config = replace(self.config, source_stage=source_stage or self.config.source_stage)
+        validate_stack_execution(config, stage)
         checkpoint = stage.checkpoint or input_checkpoint
         dataset_path = self._stage_dataset_path(stage)
-        self.dataset_builder.build(stage.mix, dataset_path)
-        cmd = self._stage_command(stage, checkpoint, dataset_path)
         if self.dry_run:
-            print(" ".join(cmd))
-        else:
-            subprocess.run(cmd, check=True)
-        return self._stage_checkpoint(stage)
+            print(
+                json.dumps(
+                    {
+                        "workflow": "staged_lora_sft",
+                        "stage": stage.name,
+                        "checkpoint": checkpoint,
+                        "dataset": str(dataset_path),
+                        "output": str(self._stage_save_dir(stage)),
+                        "source_stage": config.source_stage,
+                        "training_started": False,
+                        "device": config.device,
+                        "precision": config.precision,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return self._stage_checkpoint(stage)
+        if not (Path(checkpoint) / "model.safetensors").is_file():
+            raise FileNotFoundError(f"Stack SFT local checkpoint not found: {checkpoint}")
+        output = self._stage_save_dir(stage)
+        if resume is None and output.exists() and any(output.iterdir()):
+            raise FileExistsError(
+                "Stack stage output already exists; explicitly resume or use a fresh directory"
+            )
+        if resume is None:
+            self.dataset_builder.build(stage.mix, dataset_path)
+        elif not dataset_path.is_file():
+            raise FileNotFoundError("Stack SFT resume requires the original mixed JSONL dataset")
+        return run_lora_stage(
+            config, stage, checkpoint, dataset_path, self._stage_save_dir(stage), resume=resume
+        )
 
     def _stage_dataset_path(self, stage: StageConfig) -> Path:
         if stage.mix.out:
@@ -57,58 +100,3 @@ class StackSFTRunner:
 
     def _stage_checkpoint(self, stage: StageConfig) -> str:
         return str(self._stage_save_dir(stage) / f"step_{stage.steps:06d}")
-
-    def _stage_command(self, stage: StageConfig, checkpoint: str, dataset_path: Path) -> list[str]:
-        batch_size = stage.batch_size or self.config.batch_size
-        seq_len = stage.seq_len or self.config.seq_len
-        save_steps = stage.save_steps or self.config.save_steps
-        save_total_limit = stage.save_total_limit or self.config.save_total_limit
-        grad_ckpt = self.config.grad_ckpt if stage.grad_ckpt is None else stage.grad_ckpt
-        loss_chunk_tokens = stage.loss_chunk_tokens or self.config.loss_chunk_tokens
-        run_name = f"{self.config.name}-{stage.name}"
-
-        cmd = [
-            sys.executable,
-            "-m",
-            "scripts.sft_500m_32k_tr",
-            "--checkpoint",
-            checkpoint,
-            "--tokenizer",
-            self.config.tokenizer,
-            "--jsonl",
-            str(dataset_path),
-            "--steps",
-            str(stage.steps),
-            "--batch-size",
-            str(batch_size),
-            "--seq-len",
-            str(seq_len),
-            "--lr",
-            str(stage.lr),
-            "--lora-rank",
-            str(self.config.lora_rank),
-            "--lora-alpha",
-            str(self.config.lora_alpha),
-            "--lora-dropout",
-            str(self.config.lora_dropout),
-            "--lora-targets",
-            self.config.lora_targets,
-            "--use-custom-kernels",
-            self.config.use_custom_kernels,
-            "--loss-chunk-tokens",
-            str(loss_chunk_tokens),
-            "--save-steps",
-            str(save_steps),
-            "--save-total-limit",
-            str(save_total_limit),
-            "--save-dir",
-            str(self._stage_save_dir(stage)),
-            "--run-name",
-            run_name,
-        ]
-        if self.config.bf16:
-            cmd.append("--bf16")
-        if grad_ckpt:
-            cmd.append("--grad-ckpt")
-        cmd.extend(stage.extra_args)
-        return cmd

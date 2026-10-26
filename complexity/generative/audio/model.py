@@ -1,22 +1,18 @@
 """TR-Hash speech-to-text (ASR) and text-to-speech (TTS) models."""
 
 from __future__ import annotations
-
 from typing import Any, Dict, Optional
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
-
-from complexity.generative.image.model import (
-    _TextEncoder,
-    _TRHashDiTBlock,
-    _modulate,
-    _timestep_embedding,
-)
 from complexity.models import ComplexityModel
-
+from complexity.vision.image.model import (
+    _modulate,
+    _TextEncoder,
+    _timestep_embedding,
+    _TRHashDiTBlock,
+)
 from .config import TRHashAudioConfig, TRHashSpeechToTextConfig
 from .encoder import AudioEncoder
 
@@ -33,11 +29,7 @@ class TokenResampler(nn.Module):
         self.queries = nn.Parameter(torch.empty(1, num_tokens, hidden_size))
         self.query_norm = nn.LayerNorm(hidden_size)
         self.context_norm = nn.LayerNorm(hidden_size)
-        self.cross_attention = nn.MultiheadAttention(
-            hidden_size,
-            num_heads,
-            batch_first=True,
-        )
+        self.cross_attention = nn.MultiheadAttention(hidden_size, num_heads, batch_first=True)
         self.output_norm = nn.LayerNorm(hidden_size)
         self.mlp = nn.Sequential(
             nn.Linear(hidden_size, hidden_size * 4),
@@ -77,9 +69,7 @@ class TRHashSpeechToText(nn.Module):
         self.config = config or TRHashSpeechToTextConfig()
         self.audio_encoder = AudioEncoder(self.config.audio_encoder_config())
         self.resampler = TokenResampler(
-            self.config.audio_hidden_size,
-            self.config.audio_heads,
-            self.config.num_audio_tokens,
+            self.config.audio_hidden_size, self.config.audio_heads, self.config.num_audio_tokens
         )
         self.audio_projection = nn.Sequential(
             nn.LayerNorm(self.config.audio_hidden_size),
@@ -88,15 +78,10 @@ class TRHashSpeechToText(nn.Module):
         self.decoder = decoder or ComplexityModel(self.config.decoder_config())
         if self.decoder.config.hidden_size != self.config.hidden_size:
             raise ValueError("decoder hidden size does not match ASR configuration")
-        if self.decoder.config.architecture_profile != self.config.architecture_profile:
-            raise ValueError("decoder architecture profile does not match ASR configuration")
         if self.decoder.config.vocab_size != self.config.vocab_size:
             raise ValueError("decoder vocabulary does not match ASR configuration")
-
         positions = torch.arange(self.config.num_audio_tokens, dtype=torch.long)
-        audio_route_ids = (
-            positions * 2_654_435_761 + int(self.config.route_seed)
-        ) % self.config.vocab_size
+        audio_route_ids = positions
         self.register_buffer("audio_route_ids", audio_route_ids, persistent=True)
 
     def encode_audio(self, waveform: torch.Tensor) -> torch.Tensor:
@@ -104,9 +89,7 @@ class TRHashSpeechToText(nn.Module):
         return self.audio_projection(self.resampler(features))
 
     def prepare_multimodal_inputs(
-        self,
-        waveform: torch.Tensor,
-        input_ids: torch.Tensor,
+        self, waveform: torch.Tensor, input_ids: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if input_ids.ndim != 2:
             raise ValueError("input_ids must have shape [batch, text_seq]")
@@ -117,7 +100,7 @@ class TRHashSpeechToText(nn.Module):
         embeddings = torch.cat((audio, text), dim=1)
         audio_routes = self.audio_route_ids.unsqueeze(0).expand(input_ids.size(0), -1)
         routing_ids = torch.cat((audio_routes, input_ids), dim=1)
-        return embeddings, routing_ids
+        return (embeddings, routing_ids)
 
     def forward(
         self,
@@ -156,7 +139,7 @@ class TRHashSpeechToText(nn.Module):
         parameters = self.parameters()
         if trainable_only:
             parameters = (parameter for parameter in parameters if parameter.requires_grad)
-        return sum(parameter.numel() for parameter in parameters)
+        return sum((parameter.numel() for parameter in parameters))
 
 
 class TRHashTextToSpeech(nn.Module):
@@ -184,14 +167,14 @@ class TRHashTextToSpeech(nn.Module):
             nn.Linear(4 * config.hidden_size, config.hidden_size),
         )
         self.blocks = nn.ModuleList(
-            _TRHashDiTBlock(config, layer_index=index) for index in range(config.num_layers)
+            (_TRHashDiTBlock(config, layer_index=index) for index in range(config.num_layers))
         )
         self.final_condition = nn.Linear(config.hidden_size, 2 * config.hidden_size)
         self.latent_out = nn.Linear(config.hidden_size, config.latent_patch_features)
         nn.init.normal_(self.position_embedding, std=0.02)
 
     def num_parameters(self) -> int:
-        return sum(parameter.numel() for parameter in self.parameters())
+        return sum((parameter.numel() for parameter in self.parameters()))
 
     def _patchify(self, mel: torch.Tensor) -> torch.Tensor:
         config = self.config
@@ -241,13 +224,7 @@ class TRHashTextToSpeech(nn.Module):
         for block in self.blocks:
             if self.gradient_checkpointing and self.training:
                 x = torch.utils.checkpoint.checkpoint(
-                    block,
-                    x,
-                    condition,
-                    text,
-                    text_mask,
-                    route_ids,
-                    use_reentrant=False,
+                    block, x, condition, text, text_mask, route_ids, use_reentrant=False
                 )
             else:
                 x = block(x, condition, text, text_mask, route_ids)
@@ -265,10 +242,7 @@ class TRHashTextToSpeech(nn.Module):
     ) -> torch.Tensor:
         batch = clean_mel.size(0)
         noise = torch.randn(
-            clean_mel.shape,
-            dtype=clean_mel.dtype,
-            device=clean_mel.device,
-            generator=generator,
+            clean_mel.shape, dtype=clean_mel.dtype, device=clean_mel.device, generator=generator
         )
         timesteps = torch.rand(
             batch, dtype=clean_mel.dtype, device=clean_mel.device, generator=generator

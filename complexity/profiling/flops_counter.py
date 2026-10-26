@@ -8,12 +8,13 @@ Computes:
 - Model complexity analysis
 """
 
-import torch
-import torch.nn as nn
-from typing import Optional, Dict, Any, List, Tuple, Union
+import operator
 from dataclasses import dataclass
 from functools import reduce
-import operator
+from typing import Any, Dict, Optional, Tuple
+
+import torch
+import torch.nn as nn
 
 
 @dataclass
@@ -370,7 +371,7 @@ def estimate_transformer_flops(
     Returns:
         Dictionary with FLOPs breakdown
     """
-    B, S, H, I = batch_size, sequence_length, hidden_size, intermediate_size
+    B, S, H, intermediate_width = batch_size, sequence_length, hidden_size, intermediate_size
 
     # Embedding (lookup, essentially free)
     embedding_flops = 0
@@ -393,7 +394,7 @@ def estimate_transformer_flops(
     # Up projection: 2BSHI
     # Gate projection: 2BSHI
     # Down projection: 2BSIH
-    mlp_flops = 2 * B * S * H * I * 3
+    mlp_flops = 2 * B * S * H * intermediate_width * 3
 
     # LayerNorms: 2 per layer
     layernorm_flops = 2 * 7 * B * S * H

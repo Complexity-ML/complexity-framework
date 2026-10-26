@@ -1,0 +1,14 @@
+{
+  "sources": [
+    {
+      "name": "local_text",
+      "weight": 1.0,
+      "data_files": "data/train.jsonl",
+      "text_field": "text"
+    }
+  ],
+  "target_tokens": 65536,
+  "seq_len": 1024,
+  "global_batch_sequences": 8,
+  "rows_per_shard": 32
+}

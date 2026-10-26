@@ -5,13 +5,16 @@ MLP API - Factories pour créer des MLP layers.
 from __future__ import annotations
 
 from typing import Type
+
 import torch.nn as nn
 
 from complexity.core import (
     MLP_REGISTRY,
-    register_mlp,
     MLPBase,
     MLPConfig,
+    register_mlp,
+)
+from complexity.core import (
     TRHashEngineMLP as CoreTRHashEngineMLP,
 )
 
@@ -21,23 +24,15 @@ class TokenRoutedMLP(nn.Module):
 
     The public API returns ``(output, aux_loss)`` for compatibility with other
     MoE layers. Core model code should use ``complexity.core.mlp.TRHashEngineMLP``
-    directly. Named ``TokenRoutedMLP`` for API stability — the underlying
-    implementation is ``TRHashEngineMLP`` (the historical TokenRoutedMLP
-    dispatch class was removed; see
-    ``complexity.utils.token_routed_conversion`` for migrating old
-    ``token_routed`` checkpoints).
+    directly. This wrapper uses that same TR-HASH implementation.
 
-    Unlike the removed implementation, ``token_ids`` is required: TR-Hash MoE
-    always routes deterministically by token ID, there is no dense fallback.
+    ``token_ids`` is required for composed routing with its two causal lags.
     """
 
     def __init__(self, **kwargs):
         super().__init__()
         if "intermediate_size" not in kwargs:
-            num_experts = kwargs.get("num_experts", 1)
-            raw_width = int(kwargs["hidden_size"] * 8 / 3)
-            # TR-Hash routed width must divide evenly across experts.
-            kwargs["intermediate_size"] = -(-raw_width // num_experts) * num_experts
+            kwargs["intermediate_size"] = kwargs["hidden_size"]
         self.config = MLPConfig(**kwargs)
         self.mlp = CoreTRHashEngineMLP(self.config)
 
@@ -53,14 +48,12 @@ class MLP:
     """
     Factory pour créer des MLP layers.
 
-    Ce framework est recentré sur TR-Hash MoE (routing déterministe par ID de
-    token / table de hachage) : les MLP denses autonomes (swiglu/geglu/standard)
-    ont été retirés et seront réintroduits plus tard comme comparaisons
-    explicites contre TR-Hash.
+    TR-HASH utilise un routage composé causal, quatre experts et deux routes
+    fixes de même poids, avec une branche partagée.
 
     Usage:
-        mlp = MLP.create("moe", hidden_size=4096, num_experts=8)
-        mlp = MLP.moe(hidden_size=4096, num_experts=8, top_k=2)
+        mlp = MLP.create("moe", hidden_size=4096, num_experts=4)
+        mlp = MLP.moe(hidden_size=4096, num_experts=4, top_k=2)
     """
 
     TYPES = {
@@ -83,10 +76,7 @@ class MLP:
             hidden_size = kwargs.get("hidden_size")
             if hidden_size is None:
                 raise ValueError("hidden_size is required when intermediate_size is omitted")
-            num_experts = kwargs.get("num_experts", 1)
-            raw_width = int(hidden_size * 8 / 3)
-            # TR-Hash routed width must divide evenly across experts.
-            kwargs["intermediate_size"] = -(-raw_width // num_experts) * num_experts
+            kwargs["intermediate_size"] = hidden_size
         if mlp_type == "moe":
             return TokenRoutedMLP(**kwargs)
         if mlp_type in MLP_REGISTRY._registry:
@@ -102,8 +92,8 @@ class MLP:
         return mlp_cls(config)
 
     @classmethod
-    def moe(cls, hidden_size: int, num_experts: int = 8, **kwargs) -> nn.Module:
-        """Token-Routed MoE."""
+    def moe(cls, hidden_size: int, num_experts: int = 4, **kwargs) -> nn.Module:
+        """TR-HASH à quatre experts et deux routes fixes."""
         return cls.create("moe", hidden_size=hidden_size, num_experts=num_experts, **kwargs)
 
     @classmethod

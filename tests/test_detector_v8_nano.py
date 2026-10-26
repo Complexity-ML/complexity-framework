@@ -41,12 +41,12 @@ def _tiny_v8(**overrides) -> TRHashDetectorConfig:
 
 
 def test_v8_nano_budget_and_contract() -> None:
-    config = coco_v8_nano_config(architecture_profile="legacy")
+    config = coco_v8_nano_config()
     model = TRHashObjectDetector(config)
 
     assert config.architecture_version == 8
     assert config.grid_sizes == (160, 80, 40, 20)
-    assert config.vision_num_experts == 8
+    assert config.vision_num_experts == 4
     assert config.vision_top_k == 2
     assert config.vision_shared_width > 0
     assert config.p2_head
@@ -63,9 +63,9 @@ def test_v8_nano_budget_and_contract() -> None:
         summary = block.mlp.capability_summary("cpu")
         assert summary["shared_width"] == config.vision_shared_width
         assert summary["expert_width"] == config.vision_expert_width
-        assert summary["stored_width"] == 432
+        assert summary["stored_width"] == 324
         assert summary["active_width"] == 270
-    assert 2_300_000 <= model.num_parameters() <= 2_500_000
+    assert 1_900_000 <= model.num_parameters() <= 2_100_000
     assert TRHashDetectorConfig.from_dict(config.to_dict()) == config
 
 
@@ -118,7 +118,7 @@ def test_v8_launchers_encode_the_controlled_recipe(launcher: str) -> None:
     command = result.stdout
     expected = coco_v8_nano_config()
     assert "--architecture-version 8" in command
-    assert "--architecture-profile source67" in command
+    assert "--architecture-profile" not in command
     assert "--key-value-heads 1" in command
     assert f"--vision-hidden-size {expected.vision_hidden_size}" in command
     assert f"--vision-layers {expected.vision_layers}" in command
@@ -156,13 +156,11 @@ def test_v8_launcher_closes_mosaic_for_the_final_ten_epochs() -> None:
     assert 'MOSAIC_CANVAS_SIZE="${MOSAIC_CANVAS_SIZE:-1280}"' in launcher
 
 
-def test_v8_nano_new_default_uses_source67_without_claiming_the_legacy_score():
+def test_v8_nano_uses_only_the_canonical_routing_contract():
     config = coco_v8_nano_config()
     model = TRHashObjectDetector(config)
-    assert config.architecture_profile == "source67"
     assert config.vision_num_experts == 4
     assert config.vision_key_value_heads == 1
     assert model.num_parameters() < 2_500_000
     for block in model.tower.blocks:
-        assert block.mlp.config.baseline_profile == "source67"
         assert block.mlp.config.routed_output_scale == 2

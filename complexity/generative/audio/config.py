@@ -1,18 +1,10 @@
 """Configuration for TR-Hash speech-to-text and text-to-speech models."""
 
 from __future__ import annotations
-
 from dataclasses import asdict, dataclass, fields, field
 from typing import Any, Dict
-
-from complexity.tr_hash.attention import (
-    resolve_domain_heads,
-    resolve_domain_widths,
-    validate_domain_profile,
-)
-
+from complexity.tr_hash.attention import resolve_domain_heads, resolve_domain_widths
 from complexity.config import ModelConfig
-
 from .encoder import AudioEncoderConfig
 
 
@@ -20,67 +12,52 @@ from .encoder import AudioEncoderConfig
 class TRHashSpeechToTextConfig:
     """A compact ASR model: audio encoder prefix + a canonical TR-Hash decoder."""
 
-    architecture_profile: str = field(default="source67", kw_only=True)
-    architecture_profile_version: int = field(default=1, kw_only=True)
-    sample_rate: int = 16_000
+    sample_rate: int = 16000
     n_mels: int = 80
     n_fft: int = 400
     hop_length: int = 160
     audio_hidden_size: int = 384
     audio_layers: int = 6
-    audio_heads: int = 6
+    audio_heads: int = 4
     audio_key_value_heads: int | None = field(default=None, kw_only=True)
     audio_num_experts: int = 4
     audio_top_k: int = 2
     audio_shared_width: int | None = None
     audio_expert_width: int | None = None
-    audio_max_frames: int = 1_500
+    audio_max_frames: int = 1500
     num_audio_tokens: int = 64
-    vocab_size: int = 32_000
+    vocab_size: int = 32000
     hidden_size: int = 768
     decoder_layers: int = 16
-    attention_heads: int = 12
+    attention_heads: int = 4
     key_value_heads: int | None = None
-    max_position_embeddings: int = 2_048
+    max_position_embeddings: int = 2048
     num_experts: int = 4
     top_k: int = 2
     shared_width: int | None = None
     routed_width: int | None = None
-    route_seed: int = 179_424_673
     dropout: float = 0.0
 
     def __post_init__(self) -> None:
-        validate_domain_profile(self.architecture_profile, self.architecture_profile_version)
+        resolve_domain_heads(self, heads="attention_heads", kv="key_value_heads")
         resolve_domain_heads(self, heads="audio_heads", kv="audio_key_value_heads")
         resolve_domain_widths(
             self,
             hidden="audio_hidden_size",
             shared="audio_shared_width",
             expert="audio_expert_width",
-            legacy_shared=224,
-            legacy_expert=64,
         )
         if self.key_value_heads is None:
-            object.__setattr__(
-                self, "key_value_heads", 1 if self.architecture_profile == "source67" else 4
-            )
+            object.__setattr__(self, "key_value_heads", 1)
         if self.shared_width is None:
-            object.__setattr__(
-                self,
-                "shared_width",
-                2 * self.hidden_size if self.architecture_profile == "source67" else 1536,
-            )
+            object.__setattr__(self, "shared_width", 2 * self.hidden_size)
         if self.routed_width is None:
-            object.__setattr__(
-                self,
-                "routed_width",
-                self.hidden_size if self.architecture_profile == "source67" else 2048,
-            )
-        if self.architecture_profile == "source67" and (self.num_experts != 4 or self.top_k != 2):
-            raise ValueError("source67 requires four experts and top_k=2")
+            object.__setattr__(self, "routed_width", self.hidden_size)
+        if self.num_experts != 4 or self.top_k != 2:
+            raise ValueError("TR-HASH requires four experts and top_k=2")
         if self.audio_hidden_size % self.audio_heads:
             raise ValueError("audio_hidden_size must be divisible by audio_heads")
-        if self.audio_top_k > self.audio_num_experts:
+        if self.audio_top_k != 2 or self.audio_num_experts != 4:
             raise ValueError("audio_top_k cannot exceed audio_num_experts")
         if self.hidden_size % self.attention_heads:
             raise ValueError("hidden_size must be divisible by attention_heads")
@@ -95,10 +72,7 @@ class TRHashSpeechToTextConfig:
 
     def audio_encoder_config(self) -> AudioEncoderConfig:
         """Build the TR-Hash MoE audio encoder configuration."""
-
         return AudioEncoderConfig(
-            architecture_profile=self.architecture_profile,
-            architecture_profile_version=self.architecture_profile_version,
             num_key_value_heads=self.audio_key_value_heads,
             sample_rate=self.sample_rate,
             n_mels=self.n_mels,
@@ -111,15 +85,12 @@ class TRHashSpeechToTextConfig:
             top_k=self.audio_top_k,
             shared_width=self.audio_shared_width,
             expert_width=self.audio_expert_width,
-            route_seed=self.route_seed,
             max_frames=self.audio_max_frames,
             dropout=self.dropout,
         )
 
     def decoder_config(self) -> ModelConfig:
         return ModelConfig(
-            architecture_profile=self.architecture_profile,
-            architecture_profile_version=self.architecture_profile_version,
             vocab_size=self.vocab_size,
             hidden_size=self.hidden_size,
             num_hidden_layers=self.decoder_layers,
@@ -132,11 +103,7 @@ class TRHashSpeechToTextConfig:
             num_experts=self.num_experts,
             top_k=self.top_k,
             top_k_primary_weight=0.5,
-            routing_strategy=(
-                "token_id_composed_modulo"
-                if self.architecture_profile == "source67"
-                else "token_id_balanced_hash"
-            ),
+            routing_strategy="token_id_composed_modulo",
             shared_expert=True,
             shared_intermediate_size=self.shared_width,
             attention_dropout=self.dropout,
@@ -155,7 +122,6 @@ class TRHashSpeechToTextConfig:
         if unknown:
             raise ValueError(f"unknown speech-to-text config fields: {unknown}")
         values = dict(values)
-        values.setdefault("architecture_profile", "legacy")
         return cls(**values)
 
 
@@ -170,41 +136,37 @@ class TRHashAudioConfig:
     isn't needed to make the flow-matching sequence length tractable.
     """
 
-    architecture_profile: str = field(default="source67", kw_only=True)
-    architecture_profile_version: int = field(default=1, kw_only=True)
-    sample_rate: int = 16_000
+    sample_rate: int = 16000
     n_mels: int = 80
     n_fft: int = 400
     hop_length: int = 160
     frame_patch_size: int = 4
-    max_audio_frames: int = 1_600
-    vocab_size: int = 32_000
+    max_audio_frames: int = 1600
+    vocab_size: int = 32000
     max_text_length: int = 128
     text_hidden_size: int = 384
     text_layers: int = 4
-    text_heads: int = 6
+    text_heads: int = 4
     text_key_value_heads: int | None = field(default=None, kw_only=True)
     hidden_size: int = 768
     num_layers: int = 14
-    num_attention_heads: int = 12
+    num_attention_heads: int = 4
     num_key_value_heads: int | None = field(default=None, kw_only=True)
     num_experts: int = 4
     top_k: int = 2
     shared_width: int | None = None
     expert_width: int | None = None
     time_buckets: int = 256
-    route_seed: int = 0x71D5A17
     caption_dropout: float = 0.1
     attention_dropout: float = 0.0
-    layer_norm_eps: float = 1e-6
+    layer_norm_eps: float = 1e-06
 
     def __post_init__(self) -> None:
-        validate_domain_profile(self.architecture_profile, self.architecture_profile_version)
         resolve_domain_heads(self)
         resolve_domain_heads(self, heads="text_heads", kv="text_key_value_heads")
-        resolve_domain_widths(self, legacy_shared=1536, legacy_expert=96)
-        if self.architecture_profile == "source67" and (self.num_experts != 4 or self.top_k != 2):
-            raise ValueError("source67 requires four experts and top_k=2")
+        resolve_domain_widths(self)
+        if self.num_experts != 4 or self.top_k != 2:
+            raise ValueError("TR-HASH requires four experts and top_k=2")
         positive = (
             "sample_rate",
             "n_mels",
@@ -258,5 +220,4 @@ class TRHashAudioConfig:
     @classmethod
     def from_dict(cls, values: Dict[str, Any]) -> "TRHashAudioConfig":
         values = dict(values)
-        values.setdefault("architecture_profile", "legacy")
         return cls(**values)

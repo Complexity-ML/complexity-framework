@@ -17,10 +17,11 @@ import torch.nn.functional as F
 from ...utils.device import sdpa_kernel_context
 from ..position.rotary import PartialRoPE, RotaryEmbedding
 from ..registry import register_attention
-from ...tr_hash.baseline import bind_source67_values, source67_head_routes
+from ...tr_hash.composed_routing import bind_value_channels, composed_head_routes
 from .base import AttentionBase, AttentionConfig
 
 HAS_SDPA = hasattr(F, "scaled_dot_product_attention")
+
 
 @register_attention("gqa")
 @register_attention("grouped_query")
@@ -53,6 +54,7 @@ class GroupedQueryAttention(AttentionBase):
         self.use_qk_norm = config.use_qk_norm
         if self.use_qk_norm:
             from ..normalization.norms import RMSNorm as _RMSNorm
+
             self.q_norm = _RMSNorm(self.head_dim, eps=1e-6)
             self.k_norm = _RMSNorm(self.head_dim, eps=1e-6)
 
@@ -76,7 +78,6 @@ class GroupedQueryAttention(AttentionBase):
         self.sliding_window = config.sliding_window
         self.use_sdpa = config.use_sdpa and HAS_SDPA
         self.is_causal = getattr(config, "is_causal", True)
-        self.source67 = config.architecture_profile == "source67"
 
         # Attention logit scale. Default = 1/√d_head (standard).
         # μP variant = 1/d_head (Yang et al. 2022) for hyper-parameter
@@ -110,8 +111,6 @@ class GroupedQueryAttention(AttentionBase):
                 - past_key_value: Updated (key, value) cache if use_cache=True, else None.
         """
         batch_size, seq_len, _ = hidden_states.shape
-        if self.source67 and kwargs.get("token_ids") is None:
-            raise ValueError("source67 attention requires original token_ids")
         k, q, v = self._project_kqv(
             hidden_states,
             token_ids=kwargs.get("token_ids"),
@@ -141,8 +140,8 @@ class GroupedQueryAttention(AttentionBase):
 
         # For cached generation, only rotate the new positions
         if past_key_value is not None:
-            cos = cos[kv_seq_len - seq_len:]
-            sin = sin[kv_seq_len - seq_len:]
+            cos = cos[kv_seq_len - seq_len :]
+            sin = sin[kv_seq_len - seq_len :]
 
         q, k = self.rotary_emb.rotate(q, k, cos, sin)
 
@@ -163,11 +162,7 @@ class GroupedQueryAttention(AttentionBase):
         else:
             attn_output = self._standard_attention(q, k, v, attention_mask, seq_len, kv_seq_len)
 
-        if self.source67:
-            routes = source67_head_routes(kwargs.get("token_ids"), self.config.layer_idx, self.num_heads)
-            selection = F.one_hot(routes, num_classes=self.num_heads).sum(dim=-2)
-            mask = selection.permute(0, 2, 1).unsqueeze(-1).to(attn_output.dtype)
-            attn_output = attn_output * mask * math.sqrt(self.num_heads / routes.shape[-1])
+        attn_output = self._select_output_heads(attn_output, kwargs.get("token_ids"))
 
         # Reshape and project output
         attn_output = attn_output.transpose(1, 2).contiguous()
@@ -175,6 +170,9 @@ class GroupedQueryAttention(AttentionBase):
         attn_output = self.o_proj(attn_output)
 
         return attn_output, new_past_key_value
+
+    def _select_output_heads(self, output, token_ids):
+        return output
 
     def _project_kqv(
         self,
@@ -188,15 +186,9 @@ class GroupedQueryAttention(AttentionBase):
         RoPE, cache, masking and SDPA implementation.
         """
 
-        if self.source67:
-            # V0 binds the original IDs to the input channels of V only.
-            # Preserve separate projections as in the pinned Source67 model.
-            value_input = bind_source67_values(hidden_states, token_ids, self.config.layer_idx)
-            return self.k_proj(hidden_states), self.q_proj(hidden_states), self.v_proj(value_input)
         projections = (self.k_proj, self.q_proj, self.v_proj)
         lora_projections = tuple(
-            getattr(projection, "is_lora_adapter", False)
-            for projection in projections
+            getattr(projection, "is_lora_adapter", False) for projection in projections
         )
         if any(lora_projections) and not all(lora_projections):
             # Mixed adapter/base configurations are supported for older
@@ -217,8 +209,7 @@ class GroupedQueryAttention(AttentionBase):
             kqv = F.linear(hidden_states, w_kqv)
             base_k, base_q, base_v = kqv.split([k_dim, q_dim, v_dim], dim=-1)
             residual_k, residual_q, residual_v = (
-                projection.lora_residual(hidden_states)
-                for projection in projections
+                projection.lora_residual(hidden_states) for projection in projections
             )
             return (
                 base_k + residual_k,
@@ -260,7 +251,9 @@ class GroupedQueryAttention(AttentionBase):
         use_causal = self.is_causal and (attn_mask is None) and (q.shape[2] == k.shape[2])
         with sdpa_kernel_context():
             attn_output = F.scaled_dot_product_attention(
-                q, k, v,
+                q,
+                k,
+                v,
                 attn_mask=attn_mask,
                 dropout_p=dropout_p,
                 is_causal=use_causal,
@@ -324,7 +317,9 @@ class GroupedQueryAttention(AttentionBase):
         mask = attention_mask.to(device=q.device)
         if mask.ndim == 2:
             if mask.shape != (q.shape[0], kv_seq_len):
-                raise ValueError("2D attention_mask must have shape [batch, cached_sequence_length]")
+                raise ValueError(
+                    "2D attention_mask must have shape [batch, cached_sequence_length]"
+                )
             mask = mask.to(torch.bool)[:, None, None, :]
         elif mask.ndim == 3:
             mask = mask.unsqueeze(1)
@@ -385,3 +380,27 @@ class MultiQueryAttention(GroupedQueryAttention):
         # Force num_kv_heads = 1 for MQA
         config.num_key_value_heads = 1
         super().__init__(config)
+
+
+@register_attention("tr_hash_gqa")
+class TRHashAttention(GroupedQueryAttention):
+    """Canonical four-query/one-KV attention with deterministic output heads."""
+
+    def __init__(self, config: AttentionConfig):
+        if config.num_attention_heads != 4 or config.num_key_value_heads != 1:
+            raise ValueError("TR-HASH requires four query heads and one key/value head")
+        if config.hidden_size % 4 or not config.use_qk_norm:
+            raise ValueError("TR-HASH requires quarter-channel binding and Q/K RMSNorm")
+        super().__init__(config)
+
+    def _project_kqv(self, hidden_states, *, token_ids=None):
+        if token_ids is None:
+            raise ValueError("TR-HASH attention requires original token_ids")
+        values = bind_value_channels(hidden_states, token_ids, self.config.layer_idx)
+        return self.k_proj(hidden_states), self.q_proj(hidden_states), self.v_proj(values)
+
+    def _select_output_heads(self, output, token_ids):
+        routes = composed_head_routes(token_ids, self.config.layer_idx, self.num_heads)
+        selection = F.one_hot(routes, num_classes=4).sum(dim=-2)
+        mask = selection.permute(0, 2, 1).unsqueeze(-1).to(output.dtype)
+        return output * mask * math.sqrt(2)

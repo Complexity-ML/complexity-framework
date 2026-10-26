@@ -3,10 +3,27 @@ from __future__ import annotations
 import pytest
 
 
-def test_cluster_plan_8b_32t_gb300_math():
+def test_cluster_plan_generic_token_arithmetic(tmp_path):
     from complexity.training.cluster_plan import load_cluster_run_plan
 
-    plan = load_cluster_run_plan("configs/run_configs/8b_o200k_tr_32t_gb300_4608.yaml")
+    path = tmp_path / "generic-budget.yaml"
+    path.write_text(
+        """
+world_size: 4608
+model:
+  params: 8201527360
+parallel:
+  tp_size: 8
+  pp_size: 8
+  dp_size: 72
+  micro_batch_size: 2
+  gradient_accumulation: 64
+run:
+  target_tokens: 32806109440000
+  seq_len: 2048
+"""
+    )
+    plan = load_cluster_run_plan(path)
 
     assert plan.parallel.tp_size == 8
     assert plan.parallel.pp_size == 8

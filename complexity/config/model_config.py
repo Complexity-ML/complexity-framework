@@ -6,7 +6,10 @@ Users can define any architecture by setting these parameters.
 """
 
 import json
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
@@ -15,37 +18,21 @@ import yaml
 
 @dataclass
 class ModelConfig:
-    """
-    Unified configuration for TR-Hash MoE architectures. New models use the
-    Source67 shared-plus-four-expert recipe, causal two-ID routing history,
-    routed GQA heads and layer-zero value binding. Other head counts, deeper
-    models and explicit widths extend the small measured reference.
-    Unversioned checkpoint dictionaries retain their historical architecture.
-    Dense and learned-router baselines were removed and will return later as
-    explicit comparisons against TR-Hash.
+    """Architecture settings for the canonical TR-HASH model.
 
-    Example:
-        config = ModelConfig(
-            hidden_size=4096,
-            num_hidden_layers=32,
-            num_attention_heads=32,
-            num_key_value_heads=8,  # GQA
-            attention_type="gqa",
-            mlp_type="tr_hash_engine",
-            num_experts=4,
-            norm_type="rmsnorm",
-        )
+    Four query heads share one key/value head. Four routed SwiGLU experts
+    use two fixed equal routes alongside the dense shared expert.
     """
 
     # === Model Architecture ===
     hidden_size: int = 768
     num_hidden_layers: int = 12
-    intermediate_size: Optional[int] = None  # Source67: hidden_size; legacy: rounded 8/3 width.
+    intermediate_size: Optional[int] = None  # TR-HASH: hidden_size; generic: 4x width.
     vocab_size: int = 32000
 
     # === Attention ===
-    num_attention_heads: Optional[int] = None  # Source67: 4; historical profile: 12.
-    num_key_value_heads: Optional[int] = None  # Source67 default: 1; legacy depends on attention_type.
+    num_attention_heads: Optional[int] = None  # TR-HASH: 4; four query heads.
+    num_key_value_heads: Optional[int] = None  # One key/value head for TR-HASH.
     attention_type: str = "gqa"  # gqa, mha, mqa
     attention_dropout: float = 0.0
     use_qk_norm: bool = True
@@ -81,42 +68,66 @@ class ModelConfig:
     rope_fraction: float = 1.0  # Fraction of head_dim to apply RoPE to (1.0 = full, 0.5 = partial)
 
     # === MLP / FFN ===
-    mlp_type: str = "tr_hash_engine"  # tr_hash_engine (default) or tr_hash_moe; num_experts in {1,2,4,8,16}
+    mlp_type: str = "tr_hash_engine"  # tr_hash_engine (default) or tr_hash_moe; four routed experts
     hidden_act: str = "silu"  # silu, gelu, relu
 
     # === MoE (Token-Routed) ===
-    num_experts: Optional[int] = None  # Source67: four routed experts plus the shared expert.
-    expert_initialization: str = "gpt_normal"  # gpt_normal or legacy_kaiming
-    # Frequency tables are accepted only for reproducing historical ablations.
-    # Source67 routes use the original ID and its two causal predecessors.
+    num_experts: Optional[int] = None  # TR-HASH: four routed experts plus the shared expert.
+    expert_initialization: str = "gpt_normal"  # TR-HASH requires gpt_normal; other initializers apply only to generic components.
+    # Frequency tables are generic component settings and are rejected by TR-HASH.
+    # TR-HASH routes use the original ID and its two causal predecessors.
     token_frequencies: Optional[torch.Tensor] = None
-    routing_strategy: Optional[str] = None  # Source67: token_id_composed_modulo.
-    route_hash_count: int = 2  # Independent hashes used by token_id_multi_hash.
-    lsh_routing: bool = False  # Route on a fixed random-hyperplane hash of h (semantic), not the token id
+    routing_strategy: Optional[str] = None  # TR-HASH: token_id_composed_modulo.
+    # Generic-only routing/gate options below cannot alter the canonical TR-HASH recipe.
+    lsh_routing: bool = (
+        False  # Route on a fixed random-hyperplane hash of h (semantic), not the token id
+    )
     lsh_bits: int = 0  # Number of hyperplanes (0 = ceil(log2(num_experts)))
-    lsh_from_layer: int = 0  # LSH routing only for layers >= this index; earlier layers stay lexical
-    lsh_threshold_mode: str = "zero"  # zero is stable for inference; batch_median maximises training-batch balance.
+    lsh_from_layer: int = (
+        0  # LSH routing only for layers >= this index; earlier layers stay lexical
+    )
+    lsh_threshold_mode: str = (
+        "zero"  # zero is stable for inference; batch_median maximises training-batch balance.
+    )
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
-    shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
-    shared_expert_chunk_tokens: int = 0  # 0 = one dense pass; >0 chunks token dimension to reduce shared SwiGLU activation peak.
-    use_shared_routed_gates: bool = False  # Learn scalar gates for shared vs routed expert outputs
+    shared_intermediate_size: Optional[int] = (
+        None  # TR-HASH shared width defaults to 2 * hidden_size
+    )
+    shared_expert_chunk_tokens: int = (
+        0  # 0 = one dense pass; >0 chunks token dimension to reduce shared SwiGLU activation peak.
+    )
+    use_shared_routed_gates: bool = (
+        False  # Generic component option; learned branch gates are rejected by TR-HASH.
+    )
     shared_gate_init: float = 1.0  # Initial multiplier for shared expert output
     routed_gate_init: float = 1.0  # Initial multiplier for routed expert output
     shared_output_scale: float = 1.0  # Fixed, non-parameter shared branch multiplier
-    routed_output_scale: Optional[float] = None  # Source67: 2; historical profile: 1.
+    routed_output_scale: Optional[float] = (
+        None  # TR-HASH uses a fixed routed branch multiplier of 2.
+    )
     shared_output_scale_first_layer: Optional[float] = None
     shared_output_scale_last_layer: Optional[float] = None
     routed_output_scale_first_layer: Optional[float] = None
     routed_output_scale_last_layer: Optional[float] = None
-    top_k: Optional[int] = None  # Source67: two deterministic routes.
-    top_k_primary_weight: Optional[float] = None  # Source67 fixes the two weights at 0.5.
+    top_k: Optional[int] = None  # TR-HASH: two deterministic routes.
+    top_k_primary_weight: Optional[float] = None  # TR-HASH fixes the two weights at 0.5.
     learn_hash_pair_gates: bool = False  # Learn one mixture scalar per fixed unordered hash pair
-    hash_pair_gate_init: float = 0.5  # Expert-a weight; 0.5 preserves the equal-route initialization
-    learn_hash_channel_modulation: bool = False  # Fixed token-ID hash selects signs for learned expert/channel gains
+    hash_pair_gate_init: float = (
+        0.5  # Expert-a weight; 0.5 preserves the equal-route initialization
+    )
+    learn_hash_channel_modulation: bool = (
+        False  # Fixed token-ID hash selects signs for learned expert/channel gains
+    )
     hash_channel_scale_init: float = 0.0  # Zero preserves the baseline exactly at initialization
-    static_expert_capacity: bool = False  # Use fixed per-expert dispatch capacity for torch.export / pipeline tracing
-    use_custom_kernels: Any = "auto"  # "auto", True, or False. ROCm defaults to PyTorch fallback in auto mode.
-    collect_moe_telemetry: bool = False  # Per-layer expert/RMS diagnostics. Disabled by default for throughput.
+    static_expert_capacity: bool = (
+        False  # Use fixed per-expert dispatch capacity for torch.export / pipeline tracing
+    )
+    use_custom_kernels: Any = (
+        "auto"  # "auto", True, or False. ROCm defaults to PyTorch fallback in auto mode.
+    )
+    collect_moe_telemetry: bool = (
+        False  # Per-layer expert/RMS diagnostics. Disabled by default for throughput.
+    )
     use_cggr: Any = "auto"  # "auto", True, or False. CGGR grouped-GEMM Triton path for TR-Hash MoE when custom Triton is available.
     # Dynamic TR-Hash capacity (tr_hash_engine/tr_hash_moe only): start already
     # shrunk to a smaller deterministic ID/hash-routed sub-network of the
@@ -124,6 +135,9 @@ class ModelConfig:
     # afterwards at runtime via the MLP's set_active_experts()/set_active_expert_width().
     active_num_experts: Optional[int] = None
     active_expert_width: Optional[int] = None
+    # Native exports record non-uniform runtime controls without adding model
+    # tensors or changing historical checkpoint layouts.
+    layer_mlp_controls: Optional[list[Dict[str, Any]]] = None
 
     # === Lexical feature-modulated residual ===
     lexical_object_rank: int = 16
@@ -166,14 +180,12 @@ class ModelConfig:
     # transfer from a small proxy width (mup_base_width) to wider
     # variants without re-tuning.
     use_mup_init: bool = False
-    use_mup_attn_scale: bool = False     # Attention logits / d_head (vs / √d_head)
-    use_mup_output_mult: bool = False    # Divide lm_head output by width_mult
-    mup_base_width: int = 256            # Reference width (proxy size)
+    use_mup_attn_scale: bool = False  # Attention logits / d_head (vs / √d_head)
+    use_mup_output_mult: bool = False  # Divide lm_head output by width_mult
+    mup_base_width: int = 256  # Reference width (proxy size)
 
     # === Extra (for custom extensions) ===
     extra_config: Dict[str, Any] = field(default_factory=dict)
-    architecture_profile: str = "auto"  # Resolved to source67 or legacy before serialization.
-    architecture_profile_version: int = 1
 
     _removed_mlp_types = {
         "standard",
@@ -195,98 +207,77 @@ class ModelConfig:
         "deterministic_moe",
         "complexity",
     }
-    _token_routed_mlp_types = {
-        "token_routed",
-        "sort_split",
-        "sort_split_moe",
-        "deterministic_moe",
-        "complexity",
-    }
 
     def __post_init__(self):
         """Validate and set defaults."""
-        if self.architecture_profile not in {"auto", "source67", "legacy"}:
-            raise ValueError("architecture_profile must be source67, legacy, or auto")
-        if type(self.architecture_profile_version) is not int or self.architecture_profile_version != 1:
-            raise ValueError("unsupported architecture_profile_version; expected 1")
-        composed = "token_id_composed_modulo"
-        if self.architecture_profile == "auto":
-            self.architecture_profile = (
-                "source67"
-                if self.routing_strategy in {None, composed}
-                and self.num_experts in {None, 4}
-                and self.top_k in {None, 2}
-                and self.attention_type == "gqa"
-                and self.mlp_type in {"tr_hash_engine", "tr_hash_moe"}
-                else "legacy"
-            )
-        source67 = self.architecture_profile == "source67"
+        tr_hash = self.mlp_type in {"tr_hash_engine", "tr_hash_moe"}
         if self.num_experts is None:
-            self.num_experts = 4 if source67 else 1
+            self.num_experts = 4 if tr_hash else 1
         if self.top_k is None:
-            self.top_k = 2 if source67 else 1
+            self.top_k = 2 if tr_hash else 1
         if self.routing_strategy is None:
-            self.routing_strategy = composed if source67 else "modulo_cyclic"
+            self.routing_strategy = "token_id_composed_modulo"
         if self.num_attention_heads is None:
-            self.num_attention_heads = 4 if source67 else 12
+            self.num_attention_heads = 4
         if self.routed_output_scale is None:
-            self.routed_output_scale = 2.0 if source67 else 1.0
-        if source67:
-            if self.num_experts != 4 or self.top_k != 2 or self.routing_strategy != composed:
-                raise ValueError("source67 requires four experts, top_k=2 and token_id_composed_modulo routing")
-            if self.attention_type != "gqa" or self.mlp_type not in {"tr_hash_engine", "tr_hash_moe"}:
-                raise ValueError("source67 requires gqa attention and a TR-Hash engine MLP")
+            self.routed_output_scale = 2.0 if tr_hash else 1.0
+        if tr_hash:
+            if (self.num_experts, self.top_k) != (4, 2):
+                raise ValueError("TR-HASH requires four experts and top_k=2")
+            if self.attention_type != "gqa":
+                raise ValueError("TR-HASH requires GQA attention")
+            if self.num_attention_heads != 4 or self.num_key_value_heads not in {None, 1}:
+                raise ValueError("TR-HASH requires four query heads and one key/value head")
             if self.hidden_size % 4:
-                raise ValueError("source67 value binding requires hidden_size divisible by 4")
+                raise ValueError("TR-HASH value binding requires hidden_size divisible by four")
             if self.top_k_primary_weight is None:
                 self.top_k_primary_weight = 0.5
             if self.shared_intermediate_size is None:
                 self.shared_intermediate_size = 2 * self.hidden_size
+            if not self.shared_expert or not self.use_qk_norm or self.norm_type != "rmsnorm":
+                raise ValueError("TR-HASH requires a shared expert and RMS normalization")
+            if self.expert_initialization != "gpt_normal" or self.hidden_act != "silu":
+                raise ValueError("TR-HASH requires normal initialization and SwiGLU")
             if (
                 self.top_k_primary_weight != 0.5
                 or self.shared_output_scale != 1.0
                 or self.routed_output_scale != 2.0
-                or any(value is not None for value in (
-                    self.shared_output_scale_first_layer, self.shared_output_scale_last_layer,
-                    self.routed_output_scale_first_layer, self.routed_output_scale_last_layer,
-                ))
             ):
-                raise ValueError("source67 requires fixed 50/50 routing and shared/routed scales 1/2")
-        if self.mlp_type in self._removed_mlp_types:
-            if self.mlp_type in self._token_routed_mlp_types:
-                raise ValueError(
-                    f"mlp_type={self.mlp_type!r} was removed: the historical "
-                    "TokenRoutedMLP dispatch implementation is gone. Loading an "
-                    "existing token_routed checkpoint? Use "
-                    "complexity.utils.token_routed_conversion."
-                    "convert_token_routed_checkpoint_dir(path) to load it as "
-                    "'tr_hash_engine' instead — same trained weights and "
-                    "routing, different execution engine. New models should "
-                    "use 'tr_hash_engine' (default) or 'tr_hash_moe'."
+                raise ValueError("TR-HASH requires fixed 50/50 routing and branch scales 1/2")
+            if any(
+                value is not None
+                for value in (
+                    self.shared_output_scale_first_layer,
+                    self.shared_output_scale_last_layer,
+                    self.routed_output_scale_first_layer,
+                    self.routed_output_scale_last_layer,
                 )
-            raise ValueError(
-                f"mlp_type={self.mlp_type!r} was removed: this framework is "
-                "scoped to TR-Hash MoE (deterministic token-ID / hash-table "
-                "routing) only. Dense and learned-router MLPs will return "
-                "later as explicit comparison baselines. Use 'tr_hash_engine' "
-                "(default) or 'tr_hash_moe'."
-            )
+            ):
+                raise ValueError("TR-HASH branch scales are fixed across layers")
+            if self.active_num_experts not in {None, 4}:
+                raise ValueError("TR-HASH requires four active experts")
+            if (
+                self.lsh_routing
+                or self.learn_hash_pair_gates
+                or self.learn_hash_channel_modulation
+                or self.use_shared_routed_gates
+                or self.token_frequencies is not None
+            ):
+                raise ValueError("TR-HASH uses fixed token-ID routing and fixed branch weights")
+        if self.mlp_type in self._removed_mlp_types:
+            raise ValueError(f"mlp_type={self.mlp_type!r} is unsupported; use tr_hash_engine")
 
         # Auto-compute intermediate_size
         if self.intermediate_size is None:
-            if source67:
+            if tr_hash:
                 self.intermediate_size = self.hidden_size
-            elif self.mlp_type in {"tr_hash_engine", "tr_hash_moe"}:
-                # SwiGLU uses 8/3 ratio (rounded to multiple of 256)
-                self.intermediate_size = int(self.hidden_size * 8 / 3)
-                self.intermediate_size = ((self.intermediate_size + 255) // 256) * 256
             else:
                 # Standard FFN uses 4x
                 self.intermediate_size = self.hidden_size * 4
 
         # Default num_key_value_heads for GQA
         if self.num_key_value_heads is None:
-            if source67 or self.attention_type == "mqa":
+            if tr_hash or self.attention_type == "mqa":
                 self.num_key_value_heads = 1
             elif self.attention_type in {
                 "mha",
@@ -341,7 +332,8 @@ class ModelConfig:
                 f"divisible by num_key_value_heads ({self.num_key_value_heads})"
             )
         if (
-            self.attention_type in {
+            self.attention_type
+            in {
                 "tr_mha",
                 "token_routed_mha",
                 "tr_mha_v2",
@@ -368,46 +360,51 @@ class ModelConfig:
         if self.num_experts <= 0:
             raise ValueError("num_experts must be positive")
         if self.expert_initialization not in {"gpt_normal", "legacy_kaiming"}:
-            raise ValueError(
-                "expert_initialization must be 'gpt_normal' or 'legacy_kaiming'"
-            )
+            raise ValueError("expert_initialization must be 'gpt_normal' or 'legacy_kaiming'")
         if self.top_k <= 0:
             raise ValueError("top_k must be positive")
         if self.top_k > self.num_experts:
             raise ValueError("top_k cannot exceed num_experts")
         if self.top_k_primary_weight is not None and not 0.0 <= self.top_k_primary_weight <= 1.0:
             raise ValueError("top_k_primary_weight must be in [0, 1]")
+        if self.layer_mlp_controls is not None:
+            if self.mlp_type not in {"tr_hash_engine", "tr_hash_moe"}:
+                raise ValueError("layer_mlp_controls requires a TR-Hash engine MLP")
+            if (
+                not isinstance(self.layer_mlp_controls, list)
+                or len(self.layer_mlp_controls) != self.num_hidden_layers
+            ):
+                raise ValueError("layer_mlp_controls must contain one entry per layer")
+            keys = {"top_k_primary_weight", "active_num_experts", "active_expert_width"}
+            for control in self.layer_mlp_controls:
+                if not isinstance(control, dict) or set(control) != keys:
+                    raise ValueError(
+                        "layer_mlp_controls requires exact routing and capacity fields"
+                    )
+                weight = control["top_k_primary_weight"]
+                experts = control["active_num_experts"]
+                width = control["active_expert_width"]
+                if type(weight) not in {float, int} or not math.isfinite(weight) or weight != 0.5:
+                    raise ValueError(
+                        "layer_mlp_controls primary weight must be finite and in [0, 1]"
+                    )
+                if type(experts) is not int or experts != 4:
+                    raise ValueError(
+                        "layer_mlp_controls expert count exceeds allocated routing capacity"
+                    )
+                if (
+                    type(width) is not int
+                    or not 0 < width <= self.intermediate_size // self.num_experts
+                ):
+                    raise ValueError("layer_mlp_controls expert width exceeds allocated capacity")
         if not 0.0 < self.hash_pair_gate_init < 1.0:
             raise ValueError("hash_pair_gate_init must be strictly between 0 and 1")
         if abs(self.hash_channel_scale_init) > 1.0:
             raise ValueError("hash_channel_scale_init must be in [-1, 1]")
-        if self.routing_strategy not in {
-            "token_id_composed_modulo",
-            "zipf",
-            "modulo",
-            "modulo_cyclic",
-            "modulo_balanced_secondary",
-            "modulo_frequency_balanced_secondary",
-            "token_id_balanced_hash",
-            "token_id_pair_coverage_hash",
-            "token_id_multi_hash",
-            "token_id_hierarchical_hash",
-            "round_robin",
-            "random",
-            "lsh_hidden",
-        }:
-            raise ValueError(
-                "routing_strategy must be one of modulo_cyclic, zipf, "
-                "modulo_frequency_balanced_secondary, token_id_balanced_hash, "
-                "token_id_pair_coverage_hash, token_id_multi_hash, "
-                "token_id_hierarchical_hash, "
-                "round_robin, random, lsh_hidden "
-                "(legacy aliases: modulo, modulo_balanced_secondary)"
-            )
+        if self.routing_strategy != "token_id_composed_modulo":
+            raise ValueError("Only token_id_composed_modulo routing is supported")
         if self.lsh_threshold_mode not in {"batch_median", "zero"}:
             raise ValueError("lsh_threshold_mode must be 'batch_median' or 'zero'")
-        if not 2 <= self.route_hash_count <= 8:
-            raise ValueError("route_hash_count must be between 2 and 8")
         if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
             raise ValueError("shared_intermediate_size must be positive when set")
         if self.shared_expert_chunk_tokens < 0:
@@ -423,9 +420,7 @@ class ModelConfig:
         if self.tr_mha_adapter_rank <= 0:
             raise ValueError("tr_mha_adapter_rank must be positive")
         if not 0 < self.tr_mha_top_k <= self.tr_mha_num_experts:
-            raise ValueError(
-                "tr_mha_top_k must be between 1 and tr_mha_num_experts"
-            )
+            raise ValueError("tr_mha_top_k must be between 1 and tr_mha_num_experts")
         if not 0.0 < self.tr_mha_verifier_gate_init < 1.0:
             raise ValueError("tr_mha_verifier_gate_init must be in (0, 1)")
         if self.tr_mha_verifier_temperature <= 0.0:
@@ -444,6 +439,7 @@ class ModelConfig:
                     f"token_frequencies length ({self.token_frequencies.numel()}) "
                     f"must match vocab_size ({self.vocab_size})"
                 )
+
     @property
     def head_dim(self) -> int:
         """Dimension per attention head."""
@@ -471,67 +467,65 @@ class ModelConfig:
         for k, v in self.__dict__.items():
             if k.startswith("_"):
                 continue
+            if k == "layer_mlp_controls" and v is None:
+                continue  # Keep unmodified historical model dictionaries identical.
             if isinstance(v, torch.Tensor):
                 continue  # token_frequencies etc. — not JSON serializable
             result[k] = v
         return result
 
-    def save(self, path: str):
+    def save(self, path: str | Path):
         """Save config to file (JSON or YAML)."""
         data = self.to_dict()
-        with open(path, "w") as f:
-            if path.endswith(".yaml") or path.endswith(".yml"):
-                yaml.dump(data, f, default_flow_style=False)
+        path = Path(path)
+        with path.open("w", encoding="utf-8") as f:
+            if path.suffix.lower() in {".yaml", ".yml"}:
+                yaml.safe_dump(data, f, default_flow_style=False)
             else:
                 json.dump(data, f, indent=2)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ModelConfig":
-        """Read saved settings; unversioned dictionaries retain legacy defaults."""
+    def from_dict(cls, data: Dict[str, Any], *, strict: bool = False) -> "ModelConfig":
+        """Read architecture settings.
+
+        Use ``strict=True`` when authoring a new model to reject misspelled
+        fields and routing strategies. The default retains compatibility with
+        historical exports containing extra Hugging Face metadata.
+        """
         import dataclasses
+
+        if not isinstance(data, Mapping):
+            raise ValueError("Model config must be a mapping")
         valid_keys = {f.name for f in dataclasses.fields(cls)}
+        unknown = set(data) - valid_keys
+        if strict and unknown:
+            raise ValueError("Unknown model config keys: " + ", ".join(sorted(map(str, unknown))))
+        if strict:
+            from complexity._config_utils import validate_field_types
+
+            validate_field_types(cls, data)
         filtered = {k: v for k, v in data.items() if k in valid_keys}
-        # An unversioned dictionary is a historical checkpoint/configuration.
-        # Resolve the old omitted values explicitly before the new constructor
-        # defaults can change its architecture or numerical behavior.
-        if "architecture_profile" not in filtered:
-            historical_defaults = {
-                "architecture_profile": "legacy",
-                "num_attention_heads": 12,
-                "num_experts": 1,
-                "top_k": 1,
-                "routing_strategy": "modulo_cyclic",
-                "routed_output_scale": 1.0,
-            }
-            filtered = {**historical_defaults, **filtered}
-        if filtered.get("routing_strategy") not in {
-            None,
-            "token_id_composed_modulo",
-            "zipf",
-            "modulo",
-            "modulo_cyclic",
-            "modulo_balanced_secondary",
-            "modulo_frequency_balanced_secondary",
-            "token_id_balanced_hash",
-            "token_id_pair_coverage_hash",
-            "token_id_multi_hash",
-            "token_id_hierarchical_hash",
-            "round_robin",
-            "random",
-            "lsh_hidden",
-        }:
-            filtered["routing_strategy"] = "modulo_cyclic"
+        obsolete = {
+            "architecture_profile",
+            "architecture_profile_version",
+            "route_hash_count",
+        } & set(data)
+        if obsolete:
+            raise ValueError(
+                "Obsolete TR-HASH configuration fields: " + ", ".join(sorted(obsolete))
+            )
         return cls(**filtered)
 
     @classmethod
-    def load(cls, path: str) -> "ModelConfig":
+    def load(cls, path: str | Path, *, strict: bool = False) -> "ModelConfig":
         """Load config from file (JSON or YAML)."""
-        with open(path, "r") as f:
-            if path.endswith(".yaml") or path.endswith(".yml"):
+        path = Path(path)
+        with path.open("r", encoding="utf-8") as f:
+            if path.suffix.lower() in {".yaml", ".yml"}:
                 data = yaml.safe_load(f)
             else:
                 data = json.load(f)
-        return cls.from_dict(data)
+        return cls.from_dict(data, strict=strict)
 
     def __repr__(self) -> str:
         params = ", ".join(f"{k}={v}" for k, v in self.to_dict().items() if v is not None)
@@ -545,11 +539,11 @@ class ModelConfig:
 # and the I64 integer-precision presets were removed and will return later as
 # explicit comparison baselines.
 def complexity_7b_config() -> ModelConfig:
-    """Historical 7B size name; Source67 now stores 9,066,917,888 parameters."""
+    """Canonical TR-HASH size preset."""
     return ModelConfig(
         hidden_size=4096,
         num_hidden_layers=32,
-        num_attention_heads=32,
+        num_attention_heads=4,
         num_key_value_heads=1,
         intermediate_size=11008,
         vocab_size=100000,
@@ -564,7 +558,7 @@ def complexity_7b_config() -> ModelConfig:
 
 # === Complexity Size Presets (TR-Hash: GQA + Token-Routed MoE) ===
 def complexity_tiny_config() -> ModelConfig:
-    """Complexity Tiny (14,782,464 params) - for testing and debugging."""
+    """Canonical TR-HASH size preset."""
     return ModelConfig(
         hidden_size=256,
         num_hidden_layers=6,
@@ -582,11 +576,11 @@ def complexity_tiny_config() -> ModelConfig:
 
 
 def complexity_small_config() -> ModelConfig:
-    """Complexity Small (50,996,736 params) - for rapid prototyping."""
+    """Canonical TR-HASH size preset."""
     return ModelConfig(
         hidden_size=512,
         num_hidden_layers=8,
-        num_attention_heads=8,
+        num_attention_heads=4,
         num_key_value_heads=1,
         intermediate_size=1408,
         vocab_size=32000,
@@ -600,11 +594,11 @@ def complexity_small_config() -> ModelConfig:
 
 
 def complexity_100m_config() -> ModelConfig:
-    """Historical 100M size name; Source67 now stores 89,102,720 parameters."""
+    """Canonical TR-HASH size preset."""
     return ModelConfig(
         hidden_size=640,
         num_hidden_layers=10,
-        num_attention_heads=10,
+        num_attention_heads=4,
         num_key_value_heads=1,
         intermediate_size=1824,
         vocab_size=32000,
@@ -618,11 +612,11 @@ def complexity_100m_config() -> ModelConfig:
 
 
 def complexity_base_config() -> ModelConfig:
-    """Complexity Base (139,022,592 parameters)."""
+    """Canonical TR-HASH size preset."""
     return ModelConfig(
         hidden_size=768,
         num_hidden_layers=12,
-        num_attention_heads=12,
+        num_attention_heads=4,
         num_key_value_heads=1,
         intermediate_size=2048,
         vocab_size=32000,
@@ -636,11 +630,11 @@ def complexity_base_config() -> ModelConfig:
 
 
 def complexity_large_config() -> ModelConfig:
-    """Complexity Large (444,911,616 parameters)."""
+    """Canonical TR-HASH size preset."""
     return ModelConfig(
         hidden_size=1024,
         num_hidden_layers=24,
-        num_attention_heads=16,
+        num_attention_heads=4,
         num_key_value_heads=1,
         intermediate_size=2816,
         vocab_size=32000,
@@ -654,11 +648,11 @@ def complexity_large_config() -> ModelConfig:
 
 
 def complexity_xl_config() -> ModelConfig:
-    """Complexity XL (1,714,003,968 parameters)."""
+    """Canonical TR-HASH size preset."""
     return ModelConfig(
         hidden_size=2048,
         num_hidden_layers=24,
-        num_attention_heads=16,
+        num_attention_heads=4,
         num_key_value_heads=1,
         intermediate_size=5632,
         vocab_size=32000,

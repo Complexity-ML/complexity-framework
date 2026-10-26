@@ -1,4 +1,10 @@
-# TR-HASH agentic pretraining lab
+# Historical TR-HASH agentic pretraining lab
+
+> **Archived workflow.** Corpus preparation and tokenization scripts below
+> are absent from this checkout; the complete lab is not a runnable current
+> training path. Reusable tokenizer training now lives in
+> `complexity.tokenizer.training`. Use [current workflows](workflows.md) for
+> the framework interfaces; this lab does not resume the paused 1B run.
 
 This laboratory creates a new TR-HASH lineage. It does not resize or mutate the
 canonical 32K tokenizer or any released model.
@@ -23,7 +29,7 @@ python -m scripts.build_agentic_pretraining_corpus \
   --config configs/agentic_pretraining/tr_hash_small_agentic_50m.json \
   --output-dir artifacts/tr_hash_small_agentic_raw
 
-python -m scripts.train_tr_hash_agentic_tokenizer \
+python -m complexity.tokenizer.training \
   --corpus-dir artifacts/tr_hash_small_agentic_raw \
   --output-dir artifacts/tr_hash_agentic_tokenizer_32k
 

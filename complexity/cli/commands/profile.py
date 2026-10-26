@@ -2,142 +2,139 @@
 Profiling commands for the Complexity framework.
 """
 
-import typer
 from pathlib import Path
 from typing import Optional
 
-from ..utils import console, spinner, print_panel, print_table, success, error, warning, info
+import typer
+
+from ..utils import console, error, info, print_panel, print_table, warning
 
 profile = typer.Typer(name="profile", help="Profiling and benchmarking commands")
 
 
 @profile.command("model")
 def profile_model(
-    config: Path = typer.Argument(None, help="Model config YAML"),
-    hidden_size: int = typer.Option(None, "--hidden", "-h", help="Hidden size (if no config)"),
-    num_layers: int = typer.Option(None, "--layers", "-l", help="Number of layers"),
-    num_heads: int = typer.Option(None, "--heads", help="Number of attention heads"),
-    seq_length: int = typer.Option(2048, "--seq-length", "-s", help="Sequence length"),
-    batch_size: int = typer.Option(1, "--batch-size", "-b", help="Batch size"),
-    vocab_size: int = typer.Option(50304, "--vocab", help="Vocabulary size"),
-    detailed: bool = typer.Option(False, "--detailed", "-d", help="Show detailed breakdown"),
+    config: Optional[Path] = typer.Argument(None, help="Canonical model config JSON/YAML"),
+    hidden_size: Optional[int] = typer.Option(None, "--hidden", "-h", min=1),
+    num_layers: Optional[int] = typer.Option(None, "--layers", "-l", min=1),
+    num_heads: Optional[int] = typer.Option(None, "--heads", min=1),
+    seq_length: int = typer.Option(
+        2048, "--seq-length", "-s", min=1, help="Recorded workload shape; no forward pass"
+    ),
+    batch_size: int = typer.Option(
+        1, "--batch-size", "-b", min=1, help="Recorded workload shape; no forward pass"
+    ),
+    vocab_size: int = typer.Option(50304, "--vocab", min=1),
+    detailed: bool = typer.Option(False, "--detailed", "-d", help="List parameter shapes"),
+    json_output: bool = typer.Option(
+        False, "--json", help="Print machine-readable parameter counts"
+    ),
 ):
-    """
-    Profile model memory and compute.
+    """Count the actual architecture on the meta device without allocating weights.
 
-    Examples:
-        complexity profile model config.yaml
-        complexity profile model --hidden 2048 --layers 24 --heads 16
+    Includes GQA, all routed/shared experts, and tied embeddings. No activation
+    memory, execution speed, FLOPs or GPU requirements are inferred from counts.
     """
-    import yaml
+    import json
+    import sys
+    from contextlib import redirect_stdout
 
-    if config:
-        if not config.exists():
-            console.print(error(f"Config not found: {config}"))
-            raise typer.Exit(1)
-        with open(config) as f:
-            cfg = yaml.safe_load(f)
-        model_cfg = cfg.get('model', cfg)
-        hidden_size = model_cfg.get('hidden_size', 1024)
-        num_layers = model_cfg.get('num_layers', 12)
-        num_heads = model_cfg.get('num_heads', 8)
-        vocab_size = model_cfg.get('vocab_size', 50304)
-    elif not all([hidden_size, num_layers, num_heads]):
-        console.print(error("Provide config file OR --hidden, --layers, --heads"))
-        raise typer.Exit(1)
+    from ..inspection import inspect_config
 
     try:
-        # Calculate parameters
-        head_dim = hidden_size // num_heads
-        ff_dim = hidden_size * 4
+        # Optional kernel import notices belong on stderr so JSON stays parseable.
+        with redirect_stdout(sys.stderr):
+            import torch
 
-        # Parameter counts
-        embed_params = vocab_size * hidden_size * 2  # input + output
-        attn_params = num_layers * (4 * hidden_size * hidden_size)  # qkvo
-        ff_params = num_layers * (2 * hidden_size * ff_dim)  # up + down
-        norm_params = num_layers * (2 * hidden_size)  # 2 norms per layer
-        total_params = embed_params + attn_params + ff_params + norm_params
+            from complexity import ComplexityModel, ModelConfig
 
-        # Memory estimates (in bytes)
-        param_memory = total_params * 2  # fp16
-        grad_memory = total_params * 4  # fp32 grads
-        optimizer_memory = total_params * 8  # Adam states
-
-        # Activation memory (rough estimate)
-        activation_per_layer = batch_size * seq_length * hidden_size * 4 * 2  # ~2 tensors per layer
-        total_activation = activation_per_layer * num_layers
-
-        # KV cache
-        kv_cache_per_layer = 2 * batch_size * seq_length * hidden_size * 2  # K and V
-        total_kv_cache = kv_cache_per_layer * num_layers
-
-        print_panel(
-            f"Model: {hidden_size}d, {num_layers}L, {num_heads}H\n"
-            f"Vocab: {vocab_size:,}\n"
-            f"Seq length: {seq_length}\n"
-            f"Batch size: {batch_size}",
-            title="Model Configuration",
-            style="cyan"
-        )
-
-        print_table(
-            "Parameter Counts",
-            [
-                {"name": "Component", "style": "cyan"},
-                {"name": "Parameters", "style": "green"},
-                {"name": "%", "style": "yellow"},
-            ],
-            [
-                ("Embeddings", f"{embed_params:,}", f"{100*embed_params/total_params:.1f}%"),
-                ("Attention", f"{attn_params:,}", f"{100*attn_params/total_params:.1f}%"),
-                ("FFN", f"{ff_params:,}", f"{100*ff_params/total_params:.1f}%"),
-                ("LayerNorm", f"{norm_params:,}", f"{100*norm_params/total_params:.1f}%"),
-                ("", "", ""),
-                ("TOTAL", f"{total_params:,}", "100%"),
-            ]
-        )
-
-        def format_bytes(b):
-            if b > 1e9:
-                return f"{b/1e9:.2f} GB"
-            return f"{b/1e6:.2f} MB"
-
-        print_table(
-            "Memory Estimates",
-            [
-                {"name": "Component", "style": "cyan"},
-                {"name": "Memory", "style": "green"},
-            ],
-            [
-                ("Parameters (fp16)", format_bytes(param_memory)),
-                ("Gradients (fp32)", format_bytes(grad_memory)),
-                ("Optimizer states", format_bytes(optimizer_memory)),
-                ("Activations", format_bytes(total_activation)),
-                ("KV Cache", format_bytes(total_kv_cache)),
-                ("", ""),
-                ("Training total", format_bytes(param_memory + grad_memory + optimizer_memory + total_activation)),
-                ("Inference total", format_bytes(param_memory + total_kv_cache)),
-            ]
-        )
-
-        # FLOPs estimate
-        flops_per_token = 6 * total_params  # Rough estimate
-        total_flops = flops_per_token * batch_size * seq_length
-
-        console.print(f"\n[bold]Compute:[/bold]")
-        console.print(f"  FLOPs/token: {flops_per_token/1e9:.2f}G")
-        console.print(f"  Total FLOPs: {total_flops/1e12:.2f}T")
-
+            if config is not None:
+                parsed = inspect_config(config)
+                model_config = ModelConfig.from_dict(parsed["model"])
+            else:
+                if None in (hidden_size, num_layers, num_heads):
+                    raise ValueError("Provide a config file or --hidden, --layers and --heads")
+                model_config = ModelConfig(
+                    hidden_size=hidden_size,
+                    num_hidden_layers=num_layers,
+                    num_attention_heads=num_heads,
+                    num_key_value_heads=num_heads,
+                    intermediate_size=hidden_size * 4,
+                    vocab_size=vocab_size,
+                )
+            if model_config.lexical_zipf_mode != "uniform":
+                raise ValueError(
+                    "Meta parameter counting does not load data-dependent lexical Zipf artifacts"
+                )
+            with torch.device("meta"):
+                model = ComplexityModel(model_config)
+            named = list(model.named_parameters())
+            if any(not value.is_meta for _, value in named):
+                raise ValueError(
+                    "This architecture allocated real parameter weights; meta profiling is unsupported"
+                )
+        buffer_bytes = {}
+        for value in model.buffers():
+            device = str(value.device)
+            buffer_bytes[device] = (
+                buffer_bytes.get(device, 0) + value.numel() * value.element_size()
+            )
+        groups = {"embeddings_and_output": 0, "attention": 0, "mlp": 0, "other": 0}
+        for name, value in named:
+            component = (
+                "embeddings_and_output"
+                if "embed_tokens" in name or "lm_head" in name
+                else "attention"
+                if ".self_attn." in name
+                else "mlp"
+                if ".mlp." in name
+                else "other"
+            )
+            groups[component] += value.numel()
+        report = {
+            "format": "meta_parameter_profile",
+            "parameters": sum(value.numel() for _, value in named),
+            "trainable_parameters": sum(value.numel() for _, value in named if value.requires_grad),
+            "components": groups,
+            "model": model_config.to_dict(),
+            "parameter_tensors": len(named),
+            "weights_allocated": False,
+            "execution_measured": False,
+            "memory_measured": False,
+            "buffer_bytes_by_device": buffer_bytes,
+            "requested_workload": {"batch_size": batch_size, "sequence_length": seq_length},
+        }
         if detailed:
-            console.print(f"\n[bold]Per-Layer Breakdown:[/bold]")
-            console.print(f"  Attention params: {attn_params//num_layers:,}")
-            console.print(f"  FFN params: {ff_params//num_layers:,}")
-            console.print(f"  KV cache/layer: {format_bytes(kv_cache_per_layer)}")
-            console.print(f"  Activation/layer: {format_bytes(activation_per_layer)}")
-
-    except Exception as e:
-        console.print(error(f"Profiling failed: {e}"))
-        raise typer.Exit(1)
+            report["parameter_shapes"] = [
+                {"name": name, "shape": list(value.shape), "parameters": value.numel()}
+                for name, value in named
+            ]
+    except (ImportError, ValueError, RuntimeError, TypeError, OSError, NotImplementedError) as exc:
+        if json_output:
+            typer.echo(json.dumps({"error": str(exc)}), err=True)
+        else:
+            console.print(error(f"Parameter profiling failed: {exc}"))
+        raise typer.Exit(1) from exc
+    if json_output:
+        typer.echo(json.dumps(report, indent=2, sort_keys=True))
+        return
+    print_panel(
+        f"Architecture: {model_config.hidden_size}d, {model_config.num_hidden_layers} layers\n"
+        f"MLP: {model_config.mlp_type}, experts: {model_config.num_experts}, top_k: {model_config.top_k}\n"
+        f"Parameters: {report['parameters']:,}\nTrainable parameters: {report['trainable_parameters']:,}\n"
+        f"Parameter tensors: {report['parameter_tensors']}\nWeights allocated: no",
+        title="Architecture parameter count",
+        style="cyan",
+    )
+    print_table(
+        "Parameter components",
+        [{"name": "Component"}, {"name": "Parameters"}],
+        list(groups.items()),
+    )
+    console.print(info("No forward pass, memory measurement or throughput benchmark was run."))
+    if detailed:
+        for item in report["parameter_shapes"]:
+            console.print(f"{item['name']}: {item['shape']}", markup=False)
 
 
 @profile.command("gpu")
@@ -162,14 +159,16 @@ def profile_gpu():
             mem_used = torch.cuda.memory_allocated(i) / 1e9
             mem_cached = torch.cuda.memory_reserved(i) / 1e9
 
-            rows.append((
-                i,
-                props.name,
-                f"{mem_total:.1f} GB",
-                f"{mem_used:.2f} GB",
-                f"{mem_cached:.2f} GB",
-                f"{props.multi_processor_count} SMs",
-            ))
+            rows.append(
+                (
+                    i,
+                    props.name,
+                    f"{mem_total:.1f} GB",
+                    f"{mem_used:.2f} GB",
+                    f"{mem_cached:.2f} GB",
+                    f"{props.multi_processor_count} SMs",
+                )
+            )
 
         print_table(
             "GPU Information",
@@ -181,7 +180,7 @@ def profile_gpu():
                 {"name": "Cached", "style": "magenta"},
                 {"name": "SMs", "style": "blue"},
             ],
-            rows
+            rows,
         )
 
     except ImportError:
@@ -203,66 +202,14 @@ def profile_throughput(
     Example:
         complexity profile throughput model.pt --batch-sizes 1,4,8
     """
-    import time
-    import torch
-
-    batch_list = [int(b) for b in batch_sizes.split(",")]
-    seq_list = [int(s) for s in seq_lengths.split(",")]
-
-    try:
-        with spinner("Loading model..."):
-            from complexity.inference import InferenceEngine
-            engine = InferenceEngine.from_checkpoint(model_path, device=device)
-
-        console.print(success("Model loaded"))
-
-        results = []
-
-        for seq_len in seq_list:
-            for bs in batch_list:
-                # Create dummy input
-                input_ids = torch.randint(0, 50000, (bs, seq_len), device=device)
-
-                # Warmup
-                for _ in range(3):
-                    with torch.no_grad():
-                        engine.model(input_ids)
-
-                # Benchmark
-                torch.cuda.synchronize()
-                start = time.perf_counter()
-
-                for _ in range(iterations):
-                    with torch.no_grad():
-                        engine.model(input_ids)
-
-                torch.cuda.synchronize()
-                elapsed = time.perf_counter() - start
-
-                avg_time = elapsed / iterations
-                tokens_per_sec = (bs * seq_len) / avg_time
-
-                results.append((
-                    bs,
-                    seq_len,
-                    f"{avg_time*1000:.2f} ms",
-                    f"{tokens_per_sec/1000:.1f}k",
-                ))
-
-        print_table(
-            "Throughput Results",
-            [
-                {"name": "Batch", "style": "cyan"},
-                {"name": "Seq Len", "style": "yellow"},
-                {"name": "Latency", "style": "red"},
-                {"name": "Tokens/s", "style": "green"},
-            ],
-            results
+    console.print(
+        error(
+            "Native checkpoint throughput profiling is not supported. Use complexity "
+            "serve benchmark-server URL --model SERVED_MODEL for endpoint request latency, "
+            "or the serving backend's own profiler for actual token throughput."
         )
-
-    except Exception as e:
-        console.print(error(f"Profiling failed: {e}"))
-        raise typer.Exit(1)
+    )
+    raise typer.Exit(2)
 
 
 @profile.command("attention")
@@ -281,6 +228,7 @@ def profile_attention(
         complexity profile attention --seq-lengths 2048,4096,8192 --type flash
     """
     import time
+
     import torch
 
     seq_list = [int(s) for s in seq_lengths.split(",")]
@@ -296,23 +244,37 @@ def profile_attention(
 
     for seq_len in seq_list:
         # Create inputs
-        q = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device, dtype=torch.float16)
-        k = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device, dtype=torch.float16)
-        v = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device, dtype=torch.float16)
+        q = torch.randn(
+            batch_size, num_heads, seq_len, head_dim, device=device, dtype=torch.float16
+        )
+        k = torch.randn(
+            batch_size, num_heads, seq_len, head_dim, device=device, dtype=torch.float16
+        )
+        v = torch.randn(
+            batch_size, num_heads, seq_len, head_dim, device=device, dtype=torch.float16
+        )
 
         if attention_type == "flash":
             try:
                 from flash_attn import flash_attn_func
-                attn_fn = lambda: flash_attn_func(q.transpose(1,2), k.transpose(1,2), v.transpose(1,2))
+
+                def attn_fn():
+                    return flash_attn_func(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2))
             except ImportError:
                 console.print(warning("Flash attention not installed, using SDPA"))
-                attn_fn = lambda: torch.nn.functional.scaled_dot_product_attention(q, k, v)
+
+                def attn_fn():
+                    return torch.nn.functional.scaled_dot_product_attention(q, k, v)
         elif attention_type == "sdpa":
-            attn_fn = lambda: torch.nn.functional.scaled_dot_product_attention(q, k, v)
+
+            def attn_fn():
+                return torch.nn.functional.scaled_dot_product_attention(q, k, v)
         else:
             # Vanilla attention
-            scale = head_dim ** -0.5
-            attn_fn = lambda: torch.softmax(q @ k.transpose(-2, -1) * scale, dim=-1) @ v
+            scale = head_dim**-0.5
+
+            def attn_fn():
+                return torch.softmax(q @ k.transpose(-2, -1) * scale, dim=-1) @ v
 
         # Warmup
         for _ in range(10):
@@ -336,12 +298,14 @@ def profile_attention(
         mem_bytes = batch_size * num_heads * seq_len * seq_len * 2  # Attention weights
         mem_mb = mem_bytes / 1e6
 
-        results.append((
-            seq_len,
-            f"{avg_time*1000:.2f} ms",
-            f"{tflops:.2f} TF/s",
-            f"{mem_mb:.1f} MB",
-        ))
+        results.append(
+            (
+                seq_len,
+                f"{avg_time * 1000:.2f} ms",
+                f"{tflops:.2f} TF/s",
+                f"{mem_mb:.1f} MB",
+            )
+        )
 
     print_table(
         f"Attention Profile ({attention_type})",
@@ -351,5 +315,5 @@ def profile_attention(
             {"name": "TFLOPs/s", "style": "green"},
             {"name": "Mem (attn)", "style": "red"},
         ],
-        results
+        results,
     )

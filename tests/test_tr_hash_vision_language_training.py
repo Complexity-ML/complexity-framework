@@ -62,7 +62,7 @@ def _tiny_config() -> TRHashVisionLanguageConfig:
         hidden_size=32,
         decoder_layers=1,
         attention_heads=4,
-        key_value_heads=2,
+        key_value_heads=1,
         max_position_embeddings=64,
         num_experts=4,
         top_k=2,

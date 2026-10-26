@@ -1,62 +1,25 @@
-# MoE implementations
+# TR-HASH shared and routed experts
 
-The framework is scoped to a single MoE family: TR-Hash (deterministic
-token-ID / hash-table routing). A learned-router MoE (`MixtralMoE`) and the
-historical `TokenRoutedMLP` dispatch implementation existed at earlier points
-and were removed from the code entirely — not just discouraged — to keep the
-canonical path unambiguous. Both are planned to return later as explicit,
-clearly-labeled comparison baselines against TR-Hash, once the framework
-around them has settled.
-
-## TR-Hash MoE
-
-`TRHashEngineMLP` (`mlp_type="tr_hash_engine"` / `"tr_hash_moe"`) combines a
-dense shared SwiGLU branch with deterministically selected narrow experts —
-no learned router, no auxiliary balancing loss. See
-[TR-Hash Engine](tr-hash-engine.md) for the full contract (backend selection,
-CUDA Graph buckets, dynamic capacity) and
-[TokenRoutedMLP (removed) and migrating to TR-Hash](token-routed.md) if
-you're working with an existing checkpoint from before this change.
+TR-HASH combines a dense shared SwiGLU with four narrow experts. Each token
+activates two experts with fixed equal weights; their mixture has output scale
+two, while the shared branch has scale one. Routing is causal, deterministic,
+and based on original IDs, with no learned router or balancing objective.
 
 ```python
 from complexity.core.mlp import MLPConfig, TRHashEngineMLP
 
-mlp = TRHashEngineMLP(
-    MLPConfig(
-        hidden_size=896,
-        intermediate_size=256,  # total routed width: 4 × 64
-        shared_intermediate_size=3072,
-        vocab_size=32_000,
-        num_experts=4,
-        shared_expert=True,
-        routing_strategy="token_id_multi_hash",
-        route_hash_count=2,
-        top_k=2,
-        top_k_primary_weight=0.5,
-        routed_output_scale=2.0,
-    )
-)
+mlp = TRHashEngineMLP(MLPConfig(
+    hidden_size=64, intermediate_size=64, shared_intermediate_size=128,
+    vocab_size=256, routing_strategy="token_id_composed_modulo",
+))
 output = mlp(hidden_states, token_ids=input_ids)
 ```
 
-This is the MLP shape used by the released 200M model. In `MLPConfig`,
-`intermediate_size` is divided across stored experts; it is not the width of
-each expert. See the [release contract](tr-hash-200m-release.md).
+`intermediate_size` is aggregate routed width, so this example has four
+width-16 experts. Full decoder models also include routed GQA attention and
+V channel binding. See [TR-HASH engine](tr-hash-engine.md).
 
-## Fair comparisons
-
-When the learned-router and dense baselines return, an MoE comparison
-against TR-Hash should report:
-
-- total trainable parameters;
-- active parameters per token;
-- token budget and data order;
-- optimizer and learning-rate schedule;
-- number of seeds;
-- training and evaluation NLL;
-- throughput on the same hardware;
-- the realized route distribution;
-- any auxiliary loss and its coefficient.
-
-Historical figures without those fields are not used as headline evidence in
-the current documentation.
+Comparisons report all seeds and metrics, total and active parameters, data
+order, masks, optimizer, update/token budgets and measured runtime. A learned
+MoE control in a research notebook is a comparison model, not another TR-HASH
+mode. Its auxiliary training loss must not be mixed into validation CE.

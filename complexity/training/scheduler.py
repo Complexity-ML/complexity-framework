@@ -1,8 +1,9 @@
 """Learning rate schedulers."""
 
+import logging
+
 import torch
 import torch.nn as nn
-import logging
 
 from .config import TrainingConfig
 
@@ -30,8 +31,10 @@ def get_lr_scheduler(
 ) -> torch.optim.lr_scheduler._LRScheduler:
     """Create learning rate scheduler."""
     from torch.optim.lr_scheduler import (
+        ConstantLR,
         CosineAnnealingLR,
-        LinearLR, ConstantLR, SequentialLR,
+        LinearLR,
+        SequentialLR,
     )
 
     if config is None:

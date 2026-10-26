@@ -62,6 +62,25 @@ def test_resume_guard_allows_volatile_changes(tmp_path):
     write_or_validate_run_config(run_dir, second, resume=True)
 
 
+@pytest.mark.parametrize("content, error", [
+    ("run:\n  steps: true\n", "must be an integer"),
+    ("run:\n  bf16: 'false'\n", "must be a boolean"),
+    ("run:\n  mode: other\n", "must be one of"),
+    ("run:\n  batch-size: 4\n  batch_size: 8\n", "Duplicate YAML config key"),
+])
+def test_yaml_values_are_validated_before_becoming_parser_defaults(tmp_path, content, error):
+    from complexity.training.run_config import parse_args_with_yaml_config
+    path = tmp_path / "run.yaml"
+    path.write_text(content)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--steps", type=int)
+    parser.add_argument("--batch-size", type=int)
+    parser.add_argument("--bf16", action="store_true")
+    parser.add_argument("--mode", choices=["ddp", "fsdp"])
+    with pytest.raises(ValueError, match=error):
+        parse_args_with_yaml_config(parser, ["--config", str(path)])
+
+
 def test_resume_guard_rejects_training_mismatch(tmp_path):
     from complexity.training.run_config import write_or_validate_run_config
 
@@ -79,6 +98,18 @@ def test_resume_guard_rejects_training_mismatch(tmp_path):
     write_or_validate_run_config(run_dir, first, resume=False)
     with pytest.raises(ValueError, match="Resume config mismatch"):
         write_or_validate_run_config(run_dir, second, resume=True)
+
+
+def test_yaml_list_arguments_keep_argparse_shape_and_choices(tmp_path):
+    from complexity.training.run_config import parse_args_with_yaml_config
+    path = tmp_path / "run.yaml"
+    path.write_text("run:\n  layers: [0, 2]\n  modes: [ddp, fsdp]\n")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--layers", nargs="+", type=int)
+    parser.add_argument("--modes", nargs="+", choices=["ddp", "fsdp"])
+    args = parse_args_with_yaml_config(parser, ["--config", str(path)])
+    assert args.layers == [0, 2]
+    assert args.modes == ["ddp", "fsdp"]
 
 
 def test_run_config_summary_includes_backend():

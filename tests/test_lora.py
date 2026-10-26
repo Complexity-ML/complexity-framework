@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 from contextlib import ExitStack
-from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -17,6 +16,7 @@ from complexity.tr_hash import (
     TRHashEngine,
     TRHashEngineConfig,
 )
+from complexity.training.adapter_optimizer import build_finetuning_optimizer
 from complexity.training.lora import (
     LoRALinear,
     adapter_state_dict,
@@ -25,7 +25,6 @@ from complexity.training.lora import (
     merged_model_state_dict,
     unmerge_adapter_from_base,
 )
-from scripts.sft_500m_32k_tr import build_optimizer
 
 
 class TinyModel(nn.Module):
@@ -186,8 +185,7 @@ def test_gqa_fused_lora_kqv_preserves_independent_dropout_streams() -> None:
 
     torch.manual_seed(101)
     expected = tuple(
-        projection(inputs)
-        for projection in (attention.k_proj, attention.q_proj, attention.v_proj)
+        projection(inputs) for projection in (attention.k_proj, attention.q_proj, attention.v_proj)
     )
     torch.manual_seed(101)
     actual = attention._project_kqv(inputs)
@@ -242,7 +240,7 @@ def _tiny_engine() -> TRHashEngine:
             num_experts=4,
             top_k=2,
             expert_width=4,
-            shared_width=0,
+            shared_width=8,
             backend=TRHashBackend.PYTORCH,
             attention_backbone=AttentionBackbone.GQA,
         )
@@ -368,16 +366,12 @@ def test_expert_lora_fuses_delta_materialization_with_baddbmm() -> None:
 
     adapter = engine.parametrizations.expert_gate[0]
     with ExitStack() as stack:
-        baddbmm = stack.enter_context(
-            mock.patch("torch.baddbmm", wraps=torch.baddbmm)
-        )
+        baddbmm = stack.enter_context(mock.patch("torch.baddbmm", wraps=torch.baddbmm))
         stack.enter_context(
             mock.patch.object(
                 adapter,
                 "delta_weight",
-                side_effect=AssertionError(
-                    "dense LoRA delta was materialized separately"
-                ),
+                side_effect=AssertionError("dense LoRA delta was materialized separately"),
             )
         )
         materialized = engine.expert_gate
@@ -393,18 +387,22 @@ def test_fused_cuda_materializes_each_expert_lora_weight_once() -> None:
 
     if not HAS_FUSED_CUDA:
         pytest.skip("hash-native Triton kernels are unavailable")
-    engine = TRHashEngine(
-        TRHashEngineConfig(
-            hidden_size=16,
-            vocab_size=257,
-            num_experts=4,
-            top_k=2,
-            expert_width=8,
-            shared_width=0,
-            backend=TRHashBackend.FUSED_CUDA,
-            attention_backbone=AttentionBackbone.GQA,
+    engine = (
+        TRHashEngine(
+            TRHashEngineConfig(
+                hidden_size=16,
+                vocab_size=257,
+                num_experts=4,
+                top_k=2,
+                expert_width=8,
+                shared_width=8,
+                backend=TRHashBackend.FUSED_CUDA,
+                attention_backbone=AttentionBackbone.GQA,
+            )
         )
-    ).cuda().to(torch.bfloat16)
+        .cuda()
+        .to(torch.bfloat16)
+    )
     apply_lora(
         engine,
         rank=2,
@@ -413,8 +411,7 @@ def test_fused_cuda_materializes_each_expert_lora_weight_once() -> None:
         targets=("expert_gate", "expert_up", "expert_down"),
     )
     adapters = [
-        engine.parametrizations[name][0]
-        for name in ("expert_gate", "expert_up", "expert_down")
+        engine.parametrizations[name][0] for name in ("expert_gate", "expert_up", "expert_down")
     ]
     hidden = torch.randn(
         2,
@@ -428,9 +425,7 @@ def test_fused_cuda_materializes_each_expert_lora_weight_once() -> None:
 
     with ExitStack() as stack:
         gate, up, down = (
-            stack.enter_context(
-                mock.patch.object(adapter, "forward", wraps=adapter.forward)
-            )
+            stack.enter_context(mock.patch.object(adapter, "forward", wraps=adapter.forward))
             for adapter in adapters
         )
         engine(hidden, token_ids).float().square().mean().backward()
@@ -459,9 +454,7 @@ def test_expert_lora_merged_checkpoint_and_resume_are_exact() -> None:
     merged = merged_model_state_dict(engine)
     adapter = adapter_state_dict(engine)
 
-    assert set(merged).issuperset(
-        {"expert_gate", "expert_up", "expert_down", "route_table"}
-    )
+    assert set(merged).issuperset({"expert_gate", "expert_up", "expert_down", "route_table"})
     assert not any("parametrizations" in key or "lora_" in key for key in merged)
 
     restored = _tiny_engine().eval()
@@ -491,16 +484,71 @@ def test_expert_lora_uses_its_optimizer_lr_multiplier() -> None:
         dropout=0,
         targets=("expert_gate",),
     )
-    optimizer = build_optimizer(
-        SimpleNamespace(
-            lr=2e-5,
-            expert_lr_multiplier=1.5,
-            weight_decay=0.0,
-            beta1=0.9,
-            beta2=0.95,
-        ),
+    optimizer = build_finetuning_optimizer(
         engine,
+        learning_rate=2e-5,
+        expert_lr_scale=1.5,
+        weight_decay=0.0,
+        betas=(0.9, 0.95),
     )
 
     assert {group["name"] for group in optimizer.param_groups} == {"expert_decay"}
     assert optimizer.param_groups[0]["lr"] == pytest.approx(3e-5)
+
+
+def test_adapter_optimizer_covers_trainable_parameters_once_and_restores_state() -> None:
+    engine = _tiny_engine()
+    apply_lora(engine, rank=2, alpha=4, dropout=0, targets=("expert_gate",))
+    model = nn.ModuleDict({"engine": engine, "head": nn.Linear(8, 2)})
+    optimizer = build_finetuning_optimizer(
+        model, learning_rate=2e-5, expert_lr_scale=1.5, weight_decay=0.1
+    )
+
+    optimized = [parameter for group in optimizer.param_groups for parameter in group["params"]]
+    trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    assert len({id(parameter) for parameter in optimized}) == len(optimized) == len(trainable)
+    assert {id(parameter) for parameter in optimized} == {id(parameter) for parameter in trainable}
+    assert {
+        group["name"]: (group["lr"], group["weight_decay"]) for group in optimizer.param_groups
+    } == {
+        "base_decay": (2e-5, 0.1),
+        "base_no_decay": (2e-5, 0.0),
+        "expert_decay": (pytest.approx(3e-5), 0.1),
+    }
+    frozen_before = {
+        name: parameter.detach().clone()
+        for name, parameter in model.named_parameters()
+        if not parameter.requires_grad
+    }
+    for parameter in trainable:
+        parameter.grad = torch.ones_like(parameter)
+    optimizer.step()
+    for name, parameter in model.named_parameters():
+        if name in frozen_before:
+            torch.testing.assert_close(parameter, frozen_before[name], rtol=0, atol=0)
+
+    restored = build_finetuning_optimizer(
+        model, learning_rate=2e-5, expert_lr_scale=1.5, weight_decay=0.1
+    )
+    restored.load_state_dict(copy.deepcopy(optimizer.state_dict()))
+    assert [group["name"] for group in restored.param_groups] == [
+        group["name"] for group in optimizer.param_groups
+    ]
+    for parameter in trainable:
+        torch.testing.assert_close(
+            restored.state[parameter]["exp_avg"], optimizer.state[parameter]["exp_avg"]
+        )
+        assert restored.state[parameter]["step"] == optimizer.state[parameter]["step"]
+
+
+def test_adapter_optimizer_rejects_a_frozen_model() -> None:
+    with pytest.raises(ValueError, match="No trainable parameters"):
+        build_finetuning_optimizer(TinyModel().requires_grad_(False))
+
+
+@pytest.mark.parametrize(
+    "settings", [{"expert_lr_scale": 0}, {"learning_rate": float("inf")}, {"weight_decay": -1}]
+)
+def test_adapter_optimizer_rejects_invalid_settings(settings) -> None:
+    with pytest.raises(ValueError):
+        build_finetuning_optimizer(TinyModel(), **settings)

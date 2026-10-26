@@ -161,12 +161,36 @@ def test_v8_vision_sft_launcher_resets_training_with_a_clean_recipe() -> None:
     assert "lora" not in command.lower()
 
 
-def test_text_sft_launchers_require_an_explicit_adaptation_mode() -> None:
-    for path in (
-        Path("scripts/sft_500m_32k_tr.py"),
-        Path("scripts/run_sft_curriculum.py"),
-    ):
-        source = path.read_text(encoding="utf-8")
-        assert "TEXT_SUPERVISED_FINETUNING" in source
-        assert "--lora-rank" in source
-        assert "validate_full_parameter_finetuning" in source
+def test_packaged_text_sft_requires_a_declared_adaptation_mode(tmp_path) -> None:
+    from complexity.training.sft import build_sft_plan
+    from complexity.training.stack_sft.config import StackSFTConfig
+
+    # The direct full-parameter exception must be declared before any files
+    # are read. Normal release stage gates remain covered above.
+    with pytest.raises(ValueError, match="requires explicit experiment"):
+        build_sft_plan(
+            tmp_path / "missing-checkpoint",
+            tmp_path / "missing-data",
+            experiment="",
+            batch_size=1,
+            world_size=1,
+            expert_lr_scale=1.0,
+        )
+    # The staged workflow accepts adapters only; rank zero cannot silently
+    # turn the deleted curriculum launcher's replacement into a full SFT.
+    with pytest.raises(ValueError, match="positive LoRA rank"):
+        StackSFTConfig.from_dict(
+            {
+                "name": "test",
+                "base_checkpoint": "missing",
+                "lora_rank": 0,
+                "stages": [
+                    {
+                        "name": "stage",
+                        "steps": 1,
+                        "lr": 1e-4,
+                        "mix": {"sources": [{"name": "local", "weight": 1, "path": "missing"}]},
+                    }
+                ],
+            }
+        )

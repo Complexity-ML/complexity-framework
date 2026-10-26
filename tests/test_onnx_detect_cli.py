@@ -1,4 +1,4 @@
-from scripts.onnx_detect import provider_names
+from complexity.vision.detection.onnx_inference import provider_names
 
 
 def test_provider_aliases_expand_with_fallbacks() -> None:

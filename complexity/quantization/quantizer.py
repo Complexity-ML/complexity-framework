@@ -7,12 +7,13 @@ Provides basic quantization methods:
 - Mixed precision quantization
 """
 
-import torch
-import torch.nn as nn
-from typing import Optional, Dict, Any, List, Set, Callable
+import logging
 from dataclasses import dataclass
 from enum import Enum
-import logging
+from typing import Any, Dict, List, Optional, Set
+
+import torch
+import torch.nn as nn
 
 logger = logging.getLogger(__name__)
 

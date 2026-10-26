@@ -45,14 +45,13 @@ INL / Complexity-ML — 2026
 
 from __future__ import annotations
 
-import math
 import os
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any
+from typing import Dict
 
 import torch
-import torch.nn as nn
 import torch.distributed as dist
+import torch.nn as nn
 
 
 @dataclass
@@ -142,7 +141,8 @@ class ClusterConfig:
             * 2 / self.tp_size
         )
 
-        to_gb = lambda b: b / 1e9
+        def to_gb(size):
+            return size / 1e9
         return {
             "params_gb": to_gb(param_bytes),
             "optimizer_gb": to_gb(optim_bytes),
@@ -271,7 +271,7 @@ class ClusterModel(nn.Module):
 
         # 2. Apply Pipeline Parallelism (split layers across PP stages)
         if config.pp_size > 1:
-            from .pipeline_parallel import PipelineModel, PipelineConfig
+            from .pipeline_parallel import PipelineConfig, PipelineModel
             pp_config = PipelineConfig(
                 num_stages=config.pp_size,
                 num_micro_batches=config.num_micro_batches,
@@ -303,7 +303,7 @@ class ClusterModel(nn.Module):
             else:
                 # FSDP path (default) — shard params + grads + optimizer state
                 # across DP replicas. Lower memory but incompatible with FP8.
-                from .data_parallel import wrap_model_fsdp, ShardingMode, PrecisionMode
+                from .data_parallel import PrecisionMode, ShardingMode, wrap_model_fsdp
                 precision = PrecisionMode.BF16 if config.precision == "bf16" else PrecisionMode.FP32
                 model = wrap_model_fsdp(
                     model,

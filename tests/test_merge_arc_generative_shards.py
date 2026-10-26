@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from scripts.merge_arc_generative_shards import merge
+from complexity.evaluation.arc import merge
 
 
 def test_merge_arc_shards_is_complete_and_recomputes_metrics(tmp_path) -> None:

@@ -16,7 +16,7 @@ class TestComplexityModel:
             hidden_size=128,
             num_hidden_layers=2,
             num_attention_heads=4,
-            num_key_value_heads=2,
+            num_key_value_heads=1,
             intermediate_size=256,
             vocab_size=1000,
         )
@@ -35,7 +35,7 @@ class TestComplexityModel:
             hidden_size=128,
             num_hidden_layers=2,
             num_attention_heads=4,
-            num_key_value_heads=2,
+            num_key_value_heads=1,
             intermediate_size=256,
             vocab_size=1000,
         )
@@ -56,7 +56,7 @@ class TestComplexityModel:
             hidden_size=128,
             num_hidden_layers=2,
             num_attention_heads=4,
-            num_key_value_heads=2,
+            num_key_value_heads=1,
             intermediate_size=256,
             vocab_size=1000,
         )
@@ -75,7 +75,7 @@ class TestComplexityModel:
             hidden_size=128,
             num_hidden_layers=2,
             num_attention_heads=4,
-            num_key_value_heads=2,
+            num_key_value_heads=1,
             intermediate_size=256,
             vocab_size=1000,
         )
@@ -92,7 +92,7 @@ class TestComplexityModel:
             hidden_size=128,
             num_hidden_layers=2,
             num_attention_heads=4,
-            num_key_value_heads=2,
+            num_key_value_heads=1,
             intermediate_size=256,
             vocab_size=1000,
             mlp_type="tr_hash_engine",
@@ -138,7 +138,7 @@ class TestModelSaveLoad:
             hidden_size=128,
             num_hidden_layers=2,
             num_attention_heads=4,
-            num_key_value_heads=2,
+            num_key_value_heads=1,
             intermediate_size=256,
             vocab_size=1000,
         )

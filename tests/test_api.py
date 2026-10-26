@@ -122,6 +122,36 @@ class TestEfficientNamespace:
         Efficient.enable_checkpointing(model)
         # Should not raise
 
+    @pytest.mark.parametrize("size", ("nano", "micro", "tiny", "small", "medium"))
+    def test_efficient_presets_keep_canonical_tr_hash_attention(self, size):
+        from complexity.api import SmallModels
+        from complexity.core.attention.gqa import TRHashAttention
+
+        with torch.device("meta"):
+            model = SmallModels.create(size, vocab_size=32)
+        config = model.config
+        assert (config.num_attention_heads, config.num_key_value_heads) == (4, 1)
+        assert (config.num_experts, config.top_k) == (4, 2)
+        assert config.intermediate_size == config.hidden_size
+        assert all(isinstance(layer.self_attn, TRHashAttention) for layer in model.layers)
+
+    @pytest.mark.parametrize("use_flash", (False, True))
+    def test_efficient_flash_policy_preserves_gqa(self, use_flash):
+        from complexity.api import SmallModels
+
+        with torch.device("meta"):
+            model = SmallModels.nano(vocab_size=32, use_flash=use_flash)
+        assert model.config.attention_type == "gqa"
+        assert model.config.use_sdpa == use_flash
+
+    def test_efficient_rejects_incompatible_tr_attention(self):
+        from complexity.api import SmallModels
+
+        with pytest.raises(ValueError, match="requires GQA"):
+            SmallModels.nano(vocab_size=32, use_gqa=False)
+        with pytest.raises(ValueError, match="four query heads"):
+            SmallModels.nano(vocab_size=32, num_attention_heads=8)
+
 
 class TestTokenRoutedMLP:
     """Test TokenRoutedMLP (MoE) directly."""
@@ -152,14 +182,16 @@ class TestTokenRoutedMLP:
         moe = TokenRoutedMLP(
             hidden_size=64,
             intermediate_size=128,
-            num_experts=8,
+            num_experts=4,
             top_k=2,
         )
 
-        # With enough diversity, experts should vary
         x = torch.randn(4, 32, 64)
-        token_ids = torch.randint(0, 100000, (4, 32))
+        token_ids = torch.arange(128).reshape(4, 32)
         out, _ = moe(x, token_ids=token_ids)
+        out.square().mean().backward()
 
-        # Output should differ from input (transformation happened)
         assert not torch.allclose(out, x)
+        gradient = moe.mlp.engine.expert_gate.grad
+        assert gradient is not None
+        assert gradient.abs().sum(dim=(1, 2)).gt(0).all()

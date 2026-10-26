@@ -22,7 +22,7 @@ from tqdm import tqdm
 
 from complexity.training.musgd import MuSGD, build_musgd_parameter_groups, named_learning_rates
 
-from ..detection.distributed import DistributedContext
+from ...vision.detection.distributed import DistributedContext
 from .checkpointing import load_sensor_fusion_checkpoint, save_sensor_fusion_checkpoint
 from .config import SENSOR_MODALITIES, TRHashSensorFusionConfig
 from .cuhkx_records import (
@@ -76,11 +76,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--hidden-size", type=int, default=256)
     parser.add_argument("--layers", type=int, default=6)
-    parser.add_argument("--heads", type=int, default=8)
-    parser.add_argument(
-        "--architecture-profile", choices=("source67", "legacy"), default="source67"
-    )
-    parser.add_argument("--key-value-heads", type=int, default=None)
+    parser.add_argument("--heads", type=int, default=4, choices=(4,))
+    parser.add_argument("--key-value-heads", type=int, default=None, choices=(1,))
     parser.add_argument("--num-experts", type=int, choices=(4, 8), default=None)
     parser.add_argument("--top-k", type=int, default=2)
     parser.add_argument("--shared-width", type=int, default=None)
@@ -1066,16 +1063,11 @@ def main() -> None:
             raise ValueError("batch size is larger than the per-rank training split")
 
         model_config = TRHashSensorFusionConfig(
-            architecture_profile=args.architecture_profile,
             num_key_value_heads=args.key_value_heads,
             hidden_size=args.hidden_size,
             num_hidden_layers=args.layers,
             num_attention_heads=args.heads,
-            num_experts=(
-                args.num_experts
-                if args.num_experts is not None
-                else (4 if args.architecture_profile == "source67" else 8)
-            ),
+            num_experts=(args.num_experts if args.num_experts is not None else 4),
             top_k=args.top_k,
             shared_width=args.shared_width,
             expert_width=args.expert_width,

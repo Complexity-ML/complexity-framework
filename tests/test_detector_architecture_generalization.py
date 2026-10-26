@@ -27,19 +27,15 @@ from complexity.tr_hash import (
 
 @pytest.mark.parametrize(
     ("num_experts", "shared_width", "expert_width", "expected_active_width"),
-    (
-        (4, 264, 66, 396),
-        (8, 264, 33, 330),
-        (16, 272, 16, 304),
-    ),
+    ((4, 264, 66, 396),),
 )
-def test_finer_expert_partitions_preserve_the_stored_budget(
+def test_canonical_expert_partition_preserves_the_stored_budget(
     num_experts: int,
     shared_width: int,
     expert_width: int,
     expected_active_width: int,
 ) -> None:
-    """More experts must mean finer specialization, not parameter inflation."""
+    """Explicit shared and expert widths preserve the declared storage budget."""
 
     config = TRHashEngineConfig(
         hidden_size=16,
@@ -76,8 +72,7 @@ def _candidate_config(**overrides) -> TRHashDetectorConfig:
         "vision_hidden_size": 32,
         "vision_layers": 8,
         "vision_heads": 4,
-        "vision_num_experts": 8,
-        "architecture_profile": "legacy",
+        "vision_num_experts": 4,
         "vision_top_k": 2,
         "vision_shared_width": 32,
         "vision_expert_width": 8,

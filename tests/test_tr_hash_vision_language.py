@@ -19,7 +19,7 @@ def _tiny_config() -> TRHashVisionLanguageConfig:
         hidden_size=32,
         decoder_layers=2,
         attention_heads=4,
-        key_value_heads=2,
+        key_value_heads=1,
         max_position_embeddings=64,
         num_experts=4,
         top_k=2,
@@ -86,6 +86,9 @@ def test_visual_routes_are_stable_and_text_routes_remain_token_ids():
     _, first = model.prepare_multimodal_inputs(pixels, input_ids)
     _, second = model.prepare_multimodal_inputs(pixels, input_ids)
     assert torch.equal(first, second)
+    assert torch.equal(
+        first[:, : config.num_visual_tokens], torch.arange(config.num_visual_tokens).unsqueeze(0)
+    )
     assert torch.equal(first[:, config.num_visual_tokens :], input_ids)
     assert int(first.min()) >= 0
     assert int(first.max()) < config.vocab_size

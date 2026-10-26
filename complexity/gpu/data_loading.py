@@ -6,10 +6,11 @@ Prefetch and overlap data loading with compute to hide I/O latency.
 Complexity-ML — 2026
 """
 
+import logging
+import threading
+
 import torch
 from torch.utils.data import DataLoader
-import threading
-import logging
 
 logger = logging.getLogger(__name__)
 

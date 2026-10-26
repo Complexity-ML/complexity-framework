@@ -7,15 +7,16 @@ A block consists of:
 3. Residual connections
 """
 
+from typing import Any, Optional, Tuple
+
 import torch
 import torch.nn as nn
-from typing import Any, Optional, Tuple
 
 from ..config import ModelConfig
 from ..core.attention import AttentionConfig
 from ..core.mlp import MLPConfig
 from ..core.registry import ATTENTION_REGISTRY, MLP_REGISTRY, NORMALIZATION_REGISTRY
-from ..tr_hash.baseline import update_routing_history
+from ..tr_hash.composed_routing import update_routing_history
 
 
 class TransformerBlock(nn.Module):
@@ -32,6 +33,7 @@ class TransformerBlock(nn.Module):
         self.config = config
         self.layer_idx = layer_idx
         self.hidden_size = config.hidden_size
+        self._uses_tr_hash = config.mlp_type in {"tr_hash_engine", "tr_hash_moe"}
 
         # Pre-attention normalization
         self.input_layernorm = NORMALIZATION_REGISTRY.build(
@@ -45,7 +47,6 @@ class TransformerBlock(nn.Module):
             hidden_size=config.hidden_size,
             num_attention_heads=config.num_attention_heads,
             num_key_value_heads=config.num_key_value_heads,
-            architecture_profile=config.architecture_profile,
             max_position_embeddings=config.max_position_embeddings,
             rope_theta=config.rope_theta,
             attention_dropout=config.attention_dropout,
@@ -57,72 +58,44 @@ class TransformerBlock(nn.Module):
             rope_fraction=config.rope_fraction,
             use_mup_attn_scale=getattr(config, "use_mup_attn_scale", False),
             causal_conv_kernel_size=getattr(config, "causal_conv_kernel_size", 4),
-            causal_conv_dilation=2 ** (
-                layer_idx % int(getattr(config, "causal_conv_dilation_cycle", 8))
-            ),
+            causal_conv_dilation=2
+            ** (layer_idx % int(getattr(config, "causal_conv_dilation_cycle", 8))),
             causal_state_rank=getattr(config, "causal_state_rank", 16),
-            causal_context_gate_init=getattr(
-                config, "causal_context_gate_init", 1.0
-            ),
-            causal_contextual_mix_init=getattr(
-                config, "causal_contextual_mix_init", 0.0
-            ),
-            causal_context_fusion_size=getattr(
-                config, "causal_context_fusion_size", 0
-            ),
+            causal_context_gate_init=getattr(config, "causal_context_gate_init", 1.0),
+            causal_contextual_mix_init=getattr(config, "causal_contextual_mix_init", 0.0),
+            causal_context_fusion_size=getattr(config, "causal_context_fusion_size", 0),
             causal_stable_delta=getattr(config, "causal_stable_delta", False),
-            causal_delta_chunk_size=getattr(
-                config, "causal_delta_chunk_size", 512
-            ),
-            causal_delta_timescales=getattr(
-                config, "causal_delta_timescales", 1
-            ),
+            causal_delta_chunk_size=getattr(config, "causal_delta_chunk_size", 512),
+            causal_delta_timescales=getattr(config, "causal_delta_timescales", 1),
             causal_delta_collision_normalized=getattr(
                 config, "causal_delta_collision_normalized", False
             ),
-            causal_delta_lexical_values=getattr(
-                config, "causal_delta_lexical_values", False
-            ),
-            causal_delta_lexical_forge=getattr(
-                config, "causal_delta_lexical_forge", False
-            ),
+            causal_delta_lexical_values=getattr(config, "causal_delta_lexical_values", False),
+            causal_delta_lexical_forge=getattr(config, "causal_delta_lexical_forge", False),
             causal_delta_occurrence_address=getattr(
                 config, "causal_delta_occurrence_address", False
             ),
-
             lexical_object_rank=config.lexical_object_rank,
             lexical_gqa_rank=getattr(config, "lexical_gqa_rank", 16),
             lexical_gqa_gate_init=getattr(config, "lexical_gqa_gate_init", 0.0),
-            lexical_gqa_use_token_code=getattr(
-                config, "lexical_gqa_use_token_code", True
-            ),
+            lexical_gqa_use_token_code=getattr(config, "lexical_gqa_use_token_code", True),
             lexical_key_gate_init=getattr(config, "lexical_key_gate_init", 0.05),
             vocab_size=config.vocab_size,
             layer_idx=layer_idx,
             tr_mha_num_experts=getattr(config, "tr_mha_num_experts", 4),
             tr_mha_adapter_rank=getattr(config, "tr_mha_adapter_rank", 8),
             tr_mha_top_k=getattr(config, "tr_mha_top_k", 2),
-            tr_mha_adapter_gate_init=getattr(
-                config, "tr_mha_adapter_gate_init", 0.1
-            ),
-            tr_mha_id_primary_logit=getattr(
-                config, "tr_mha_id_primary_logit", 2.0
-            ),
-            tr_mha_id_secondary_logit=getattr(
-                config, "tr_mha_id_secondary_logit", 1.0
-            ),
-            tr_mha_id_other_logit=getattr(
-                config, "tr_mha_id_other_logit", -2.0
-            ),
-            tr_mha_verifier_gate_init=getattr(
-                config, "tr_mha_verifier_gate_init", 0.1
-            ),
-            tr_mha_verifier_temperature=getattr(
-                config, "tr_mha_verifier_temperature", 1.0
-            ),
+            tr_mha_adapter_gate_init=getattr(config, "tr_mha_adapter_gate_init", 0.1),
+            tr_mha_id_primary_logit=getattr(config, "tr_mha_id_primary_logit", 2.0),
+            tr_mha_id_secondary_logit=getattr(config, "tr_mha_id_secondary_logit", 1.0),
+            tr_mha_id_other_logit=getattr(config, "tr_mha_id_other_logit", -2.0),
+            tr_mha_verifier_gate_init=getattr(config, "tr_mha_verifier_gate_init", 0.1),
+            tr_mha_verifier_temperature=getattr(config, "tr_mha_verifier_temperature", 1.0),
             tr_mha_targets=getattr(config, "tr_mha_targets", "qv"),
         )
-        self.self_attn = ATTENTION_REGISTRY.build(config.attention_type, attn_config)
+        self.self_attn = ATTENTION_REGISTRY.build(
+            "tr_hash_gqa" if self._uses_tr_hash else config.attention_type, attn_config
+        )
 
         # Post-attention normalization
         self.post_attention_layernorm = NORMALIZATION_REGISTRY.build(
@@ -146,62 +119,55 @@ class TransformerBlock(nn.Module):
             return start + (end - start) * ratio
 
         shared_output_scale = layer_scale(
-            getattr(config, 'shared_output_scale', 1.0),
-            getattr(config, 'shared_output_scale_first_layer', None),
-            getattr(config, 'shared_output_scale_last_layer', None),
+            getattr(config, "shared_output_scale", 1.0),
+            getattr(config, "shared_output_scale_first_layer", None),
+            getattr(config, "shared_output_scale_last_layer", None),
         )
         routed_output_scale = layer_scale(
-            getattr(config, 'routed_output_scale', 1.0),
-            getattr(config, 'routed_output_scale_first_layer', None),
-            getattr(config, 'routed_output_scale_last_layer', None),
+            getattr(config, "routed_output_scale", 1.0),
+            getattr(config, "routed_output_scale_first_layer", None),
+            getattr(config, "routed_output_scale_last_layer", None),
         )
         mlp_config = MLPConfig(
             hidden_size=config.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
             num_experts=config.num_experts,
-            expert_initialization=getattr(
-                config, "expert_initialization", "gpt_normal"
-            ),
+            expert_initialization=getattr(config, "expert_initialization", "gpt_normal"),
             initializer_range=getattr(config, "initializer_range", 0.02),
             vocab_size=config.vocab_size,
-            routing_strategy=getattr(config, 'routing_strategy', 'modulo_cyclic'),
-            route_hash_count=getattr(config, 'route_hash_count', 2),
+            routing_strategy=config.routing_strategy,
             token_frequencies=config.token_frequencies,
-            lsh_routing=getattr(config, 'lsh_routing', False),
-            lsh_bits=getattr(config, 'lsh_bits', 0),
-            lsh_from_layer=getattr(config, 'lsh_from_layer', 0),
-            lsh_threshold_mode=getattr(config, 'lsh_threshold_mode', 'zero'),
-            shared_expert=getattr(config, 'shared_expert', False),
-            shared_intermediate_size=getattr(config, 'shared_intermediate_size', None),
-            shared_expert_chunk_tokens=getattr(config, 'shared_expert_chunk_tokens', 0),
-            use_shared_routed_gates=getattr(config, 'use_shared_routed_gates', False),
-            shared_gate_init=getattr(config, 'shared_gate_init', 1.0),
-            routed_gate_init=getattr(config, 'routed_gate_init', 1.0),
+            lsh_routing=getattr(config, "lsh_routing", False),
+            lsh_bits=getattr(config, "lsh_bits", 0),
+            lsh_from_layer=getattr(config, "lsh_from_layer", 0),
+            lsh_threshold_mode=getattr(config, "lsh_threshold_mode", "zero"),
+            shared_expert=getattr(config, "shared_expert", False),
+            shared_intermediate_size=getattr(config, "shared_intermediate_size", None),
+            shared_expert_chunk_tokens=getattr(config, "shared_expert_chunk_tokens", 0),
+            use_shared_routed_gates=getattr(config, "use_shared_routed_gates", False),
+            shared_gate_init=getattr(config, "shared_gate_init", 1.0),
+            routed_gate_init=getattr(config, "routed_gate_init", 1.0),
             shared_output_scale=shared_output_scale,
             routed_output_scale=routed_output_scale,
-            top_k=getattr(config, 'top_k', 1),
-            top_k_primary_weight=getattr(config, 'top_k_primary_weight', None),
-            learn_hash_pair_gates=getattr(config, 'learn_hash_pair_gates', False),
-            hash_pair_gate_init=getattr(config, 'hash_pair_gate_init', 0.5),
-            learn_hash_channel_modulation=getattr(
-                config, 'learn_hash_channel_modulation', False
-            ),
-            hash_channel_scale_init=getattr(
-                config, 'hash_channel_scale_init', 0.0
-            ),
+            top_k=getattr(config, "top_k", 1),
+            top_k_primary_weight=getattr(config, "top_k_primary_weight", None),
+            learn_hash_pair_gates=getattr(config, "learn_hash_pair_gates", False),
+            hash_pair_gate_init=getattr(config, "hash_pair_gate_init", 0.5),
+            learn_hash_channel_modulation=getattr(config, "learn_hash_channel_modulation", False),
+            hash_channel_scale_init=getattr(config, "hash_channel_scale_init", 0.0),
             layer_idx=layer_idx,
-            static_expert_capacity=getattr(config, 'static_expert_capacity', False),
-            collect_moe_telemetry=getattr(config, 'collect_moe_telemetry', False),
-            use_custom_kernels=getattr(config, 'use_custom_kernels', 'auto'),
-            use_cggr=getattr(config, 'use_cggr', False),
-            lexical_object_rank=getattr(config, 'lexical_object_rank', 16),
-            lexical_object_gate_init=getattr(config, 'lexical_object_gate_init', 0.1),
-            micro_num_experts=getattr(config, 'micro_num_experts', 4),
-            micro_expert_width=getattr(config, 'micro_expert_width', 16),
-            micro_expert_gate_init=getattr(config, 'micro_expert_gate_init', 0.1),
-            active_num_experts=getattr(config, 'active_num_experts', None),
-            active_expert_width=getattr(config, 'active_expert_width', None),
+            static_expert_capacity=getattr(config, "static_expert_capacity", False),
+            collect_moe_telemetry=getattr(config, "collect_moe_telemetry", False),
+            use_custom_kernels=getattr(config, "use_custom_kernels", "auto"),
+            use_cggr=getattr(config, "use_cggr", False),
+            lexical_object_rank=getattr(config, "lexical_object_rank", 16),
+            lexical_object_gate_init=getattr(config, "lexical_object_gate_init", 0.1),
+            micro_num_experts=getattr(config, "micro_num_experts", 4),
+            micro_expert_width=getattr(config, "micro_expert_width", 16),
+            micro_expert_gate_init=getattr(config, "micro_expert_gate_init", 0.1),
+            active_num_experts=getattr(config, "active_num_experts", None),
+            active_expert_width=getattr(config, "active_expert_width", None),
         )
         self.mlp = MLP_REGISTRY.build(config.mlp_type, mlp_config)
 
@@ -238,22 +204,22 @@ class TransformerBlock(nn.Module):
 
         previous_token_ids = None
         attention_past = past_key_value
-        contextual_routing = self.config.routing_strategy == "token_id_composed_modulo"
+        contextual_routing = self._uses_tr_hash
         if contextual_routing and past_key_value is not None:
             if (
                 isinstance(past_key_value, (tuple, list))
                 and len(past_key_value) == 2
                 and past_key_value[0].shape[2] == 0
             ):
-                # An empty legacy allocation has no missing history.
+                # An empty allocation has no missing history.
                 attention_past = past_key_value
             elif isinstance(past_key_value, (tuple, list)) and len(past_key_value) == 3:
                 attention_past = past_key_value[:2]
                 previous_token_ids = past_key_value[2]
             else:
                 raise ValueError(
-                    "Source67 cached routing requires (key, value, previous_token_ids); "
-                    "a legacy KV cache cannot reconstruct the two previous routing IDs"
+                    "TR-HASH cached routing requires (key, value, previous_token_ids); "
+                    "a two-tensor KV cache cannot reconstruct the two previous routing IDs"
                 )
 
         # Self Attention
@@ -264,7 +230,7 @@ class TransformerBlock(nn.Module):
             past_key_value=attention_past,
             use_cache=use_cache,
         )
-        if self.config.architecture_profile == "source67" or self.config.attention_type in {
+        if self._uses_tr_hash or self.config.attention_type in {
             "causal_fast_weight_conv",
             "lexical_gqa",
             "lexical_bias_gqa",

@@ -10,9 +10,10 @@ Implementations:
 - SlidingWindowCache: Fixed-window cache (Mistral-style)
 """
 
-import torch
-from typing import Optional, Tuple, List, Dict
 from dataclasses import dataclass
+from typing import Dict, List, Tuple
+
+import torch
 
 
 @dataclass

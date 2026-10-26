@@ -17,7 +17,7 @@ Usage:
     norm = NORMALIZATION_REGISTRY.build("rmsnorm", hidden_size=768)
 """
 
-from .norms import RMSNorm, LayerNorm, IdentityNorm, build_norm
+from .norms import IdentityNorm, LayerNorm, RMSNorm, build_norm
 
 __all__ = [
     "RMSNorm",

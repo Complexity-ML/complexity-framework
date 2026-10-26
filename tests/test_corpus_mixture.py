@@ -15,18 +15,18 @@ from complexity.training import (
     WeightedStreamingTextDataset,
     allocate_weighted_counts,
 )
-from scripts.build_corrective_replay_plan import build_corrective_replay_plan
-from scripts.build_tr_hash_70b_replay_plan import (
-    DEFAULT_REPLAY_PASSES,
-    DEFAULT_UNIQUE_BUDGETS,
-    build_replay_plan,
-)
-from scripts.tokenize_tr_hash_200m_200b import (
-    DEFAULT_HF_REPO,
+from complexity.training.corpus_preparation import (
     TokenShardWriter,
+    prepare_corpus_mixture,
     resolve_layout,
     upload_dataset_subset,
     write_mixture_manifest,
+)
+from complexity.training.replay import (
+    DEFAULT_REPLAY_PASSES,
+    DEFAULT_UNIQUE_BUDGETS,
+    build_corrective_replay_plan,
+    build_replay_plan,
 )
 
 
@@ -75,9 +75,7 @@ def test_each_corpus_is_losslessly_packed_in_its_own_buffer() -> None:
 )
 def test_invalid_mixtures_fail_before_loading_remote_data(sources, match) -> None:
     with pytest.raises(ValueError, match=match):
-        WeightedStreamingTextDataset(
-            tokenizer=_Tokenizer(), seq_len=4, sources=sources
-        )
+        WeightedStreamingTextDataset(tokenizer=_Tokenizer(), seq_len=4, sources=sources)
 
 
 def test_weighted_count_allocation_conserves_every_sequence() -> None:
@@ -132,12 +130,8 @@ def test_uint16_shards_round_trip_through_pretokenized_reader(tmp_path) -> None:
 
     assert len(samples) == 5
     for index, sample in enumerate(samples):
-        assert torch.equal(
-            sample["input_ids"], torch.arange(index * 4, index * 4 + 4)
-        )
-        assert torch.equal(
-            sample["labels"], torch.arange(index * 4 + 1, index * 4 + 5)
-        )
+        assert torch.equal(sample["input_ids"], torch.arange(index * 4, index * 4 + 4))
+        assert torch.equal(sample["labels"], torch.arange(index * 4 + 1, index * 4 + 5))
 
 
 def _remote_token_fixture(tmp_path: Path):
@@ -160,11 +154,7 @@ def _remote_token_fixture(tmp_path: Path):
         global_batch_sequences=1,
         rows_by_source={"tiny": 5},
     )
-    files = {
-        str(path.relative_to(remote))
-        for path in remote.rglob("*")
-        if path.is_file()
-    }
+    files = {str(path.relative_to(remote)) for path in remote.rglob("*") if path.is_file()}
     downloads: list[str] = []
 
     def download(*, filename, local_dir, **_kwargs):
@@ -232,9 +222,7 @@ def test_list_files_gives_up_after_max_attempts(tmp_path, monkeypatch) -> None:
         cache.list_files(max_attempts=3)
 
 
-def test_hub_download_falls_back_to_http_after_xet_transport_failure(
-    tmp_path, monkeypatch
-) -> None:
+def test_hub_download_falls_back_to_http_after_xet_transport_failure(tmp_path, monkeypatch) -> None:
     from complexity.training.corpus_mixture import _HubShardCache
 
     monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
@@ -334,9 +322,7 @@ def test_remote_shards_stream_to_completion_with_bounded_cache(tmp_path) -> None
         name for name in files if name.endswith(".bin")
     }
     for index, sample in enumerate(samples):
-        assert torch.equal(
-            sample["input_ids"], torch.arange(index * 4, index * 4 + 4)
-        )
+        assert torch.equal(sample["input_ids"], torch.arange(index * 4, index * 4 + 4))
     cached_shards = list((tmp_path / "cache").rglob("*.bin"))
     assert sum(path.stat().st_size for path in cached_shards) <= 20
 
@@ -405,9 +391,7 @@ def test_replay_plan_reuses_selected_rows_without_copying_shards(tmp_path) -> No
             {
                 "name": "selected",
                 "passes": 2,
-                "sources": {
-                    "tiny": [{"file": "tokens-00001.bin", "rows": 2}]
-                },
+                "sources": {"tiny": [{"file": "tokens-00001.bin", "rows": 2}]},
             }
         ],
     }
@@ -444,9 +428,7 @@ def test_resume_skip_rows_skips_already_trained_rows_without_disturbing_the_plan
             {
                 "name": "selected",
                 "passes": 2,
-                "sources": {
-                    "tiny": [{"file": "tokens-00001.bin", "rows": 2}]
-                },
+                "sources": {"tiny": [{"file": "tokens-00001.bin", "rows": 2}]},
             }
         ],
     }
@@ -474,11 +456,17 @@ def test_resume_skip_rows_defaults_to_zero_and_changes_nothing(tmp_path) -> None
         "unique_tokens": 8,
         "trained_tokens": 16,
         "phases": [
-            {"name": "selected", "passes": 2, "sources": {"tiny": [{"file": "tokens-00001.bin", "rows": 2}]}}
+            {
+                "name": "selected",
+                "passes": 2,
+                "sources": {"tiny": [{"file": "tokens-00001.bin", "rows": 2}]},
+            }
         ],
     }
     dataset = PretokenizedCorpusMixtureDataset(remote, replay_plan=plan)
-    dataset_explicit_zero = PretokenizedCorpusMixtureDataset(remote, replay_plan=plan, resume_skip_rows=0)
+    dataset_explicit_zero = PretokenizedCorpusMixtureDataset(
+        remote, replay_plan=plan, resume_skip_rows=0
+    )
 
     def as_lists(ds):
         return [sample["input_ids"].tolist() for sample in ds]
@@ -547,7 +535,10 @@ def test_corrective_replay_plan_actually_loads_through_the_real_validator(tmp_pa
     remote = tmp_path / "remote"
     source = TextCorpusSource("tiny", 1.0, data_files="unused.jsonl")
     writer = TokenShardWriter(
-        remote / "corpora" / source.name, seq_len=4, total_rows=10, rows_per_shard=2,
+        remote / "corpora" / source.name,
+        seq_len=4,
+        total_rows=10,
+        rows_per_shard=2,
     )
     writer.feed(torch.arange(41, dtype=torch.int64).numpy())
     writer.write_manifest(source=source)
@@ -576,9 +567,7 @@ def test_corrective_replay_plan_actually_loads_through_the_real_validator(tmp_pa
 
     samples = list(resumed)
     seen_shards = {
-        s["file"]
-        for phase in corrected_plan["phases"]
-        for s in phase["sources"]["tiny"]
+        s["file"] for phase in corrected_plan["phases"] for s in phase["sources"]["tiny"]
     }
     assert "tokens-00000.bin" not in {
         s["file"] for s in corrected_plan["phases"][1]["sources"]["tiny"]
@@ -607,9 +596,7 @@ def test_quality_plan_selects_highest_scored_shards_and_records_exposure(tmp_pat
     assert plan["selection_mode"] == "quality_score"
     assert plan["unique_tokens"] == 8
     assert plan["trained_tokens"] == 24
-    assert plan["phases"][0]["sources"]["tiny"] == [
-        {"file": "tokens-00001.bin", "rows": 2}
-    ]
+    assert plan["phases"][0]["sources"]["tiny"] == [{"file": "tokens-00001.bin", "rows": 2}]
     assert [phase["name"] for phase in plan["phases"]] == [
         "unique_core",
         "quality_replay_2",
@@ -619,10 +606,13 @@ def test_quality_plan_selects_highest_scored_shards_and_records_exposure(tmp_pat
 
 def test_default_70b_plan_separates_unique_tokens_from_replayed_exposure() -> None:
     assert sum(DEFAULT_UNIQUE_BUDGETS.values()) == 70_000_000_000
-    assert sum(
-        DEFAULT_UNIQUE_BUDGETS[name] * DEFAULT_REPLAY_PASSES[name]
-        for name in DEFAULT_UNIQUE_BUDGETS
-    ) == 130_000_000_000
+    assert (
+        sum(
+            DEFAULT_UNIQUE_BUDGETS[name] * DEFAULT_REPLAY_PASSES[name]
+            for name in DEFAULT_UNIQUE_BUDGETS
+        )
+        == 130_000_000_000
+    )
 
 
 def test_hub_upload_preserves_corpus_paths_and_uses_resumable_api(tmp_path) -> None:
@@ -636,7 +626,7 @@ def test_hub_upload_preserves_corpus_paths_and_uses_resumable_api(tmp_path) -> N
     api = _Api()
     upload_dataset_subset(
         output_root=tmp_path,
-        repo_id=DEFAULT_HF_REPO,
+        repo_id="Pacific-i64/data-32k-200b-tokens",
         allow_patterns=("corpora/dclm/**",),
         token=None,
         workers=64,
@@ -654,3 +644,105 @@ def test_hub_upload_preserves_corpus_paths_and_uses_resumable_api(tmp_path) -> N
             "print_report_every": 60,
         }
     ]
+
+
+@pytest.mark.parametrize("tokens", [[-1], [65536], [1.5], [[1, 2]]])
+def test_token_writer_rejects_invalid_ids_without_wrapping(tmp_path, tokens):
+    import numpy as np
+
+    writer = TokenShardWriter(tmp_path, seq_len=4, total_rows=1, rows_per_shard=1)
+    with pytest.raises(ValueError, match="flat integer|without wrapping"):
+        writer.feed(np.asarray(tokens))
+    assert writer.source_tokens_written == 0
+    assert not list(tmp_path.iterdir())
+
+
+def test_packaged_preparation_preserves_source_boundaries_and_refuses_overwrite(tmp_path):
+    sources = tuple(TextCorpusSource(name, 0.5, dataset_id="unused") for name in ("a", "b"))
+    streams = {
+        "a": [{"text": "1 2 3 4"}, {"text": "5 6 7 8"}],
+        "b": [{"text": "11 12 13 14"}, {"text": "15 16 17 18"}],
+    }
+    arguments = dict(
+        output_root=tmp_path,
+        tokenizer=_Tokenizer(),
+        sources=sources,
+        target_tokens=16,
+        seq_len=4,
+        global_batch_sequences=1,
+        rows_per_shard=1,
+        streams=streams,
+    )
+    manifest = prepare_corpus_mixture(**arguments)
+    samples = list(PretokenizedCorpusMixtureDataset(manifest.parent))
+    assert [sample["input_ids"].tolist() for sample in samples] == [
+        [1, 2, 3, 4],
+        [11, 12, 13, 14],
+        [0, 5, 6, 7],
+        [0, 15, 16, 17],
+    ]
+    assert [sample["labels"].tolist() for sample in samples] == [
+        [2, 3, 4, 0],
+        [12, 13, 14, 0],
+        [5, 6, 7, 8],
+        [15, 16, 17, 18],
+    ]
+    with pytest.raises(FileExistsError, match="not empty"):
+        prepare_corpus_mixture(**arguments)
+
+
+def test_data_cli_preflight_and_replay_read_through_the_framework(tmp_path):
+    from typer.testing import CliRunner
+
+    from complexity.cli.app import app
+
+    runner = CliRunner()
+    corpus_config = tmp_path / "corpus.json"
+    corpus_config.write_text(
+        json.dumps(
+            {
+                "sources": [{"name": "tiny", "weight": 1.0, "dataset_id": "unused"}],
+                "target_tokens": 20,
+                "seq_len": 4,
+                "global_batch_sequences": 1,
+                "rows_per_shard": 2,
+            }
+        )
+    )
+    output = tmp_path / "untouched"
+    result = runner.invoke(app, ["data", "prepare", str(corpus_config), str(output), "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["actual_tokens"] == 20
+    assert not output.exists()
+    remote, *_ = _remote_token_fixture(tmp_path)
+    result = runner.invoke(app, ["data", "inspect", str(remote)])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["unique_tokens"] == 20
+    replay_config = tmp_path / "replay.json"
+    replay_config.write_text(
+        json.dumps(
+            {"unique_token_budgets": {"tiny": 8}, "replay_passes": {"tiny": 2}, "row_alignment": 1}
+        )
+    )
+    plan_path = tmp_path / "plan.json"
+    result = runner.invoke(app, ["data", "replay", str(remote), str(replay_config), str(plan_path)])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["trained_tokens"] == 16
+    assert len(list(PretokenizedCorpusMixtureDataset(remote, replay_plan=plan_path))) == 4
+    result = runner.invoke(app, ["data", "replay", str(remote), str(replay_config), str(plan_path)])
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+
+
+def test_replay_rejects_nonfinite_quality_scores(tmp_path):
+    remote, *_ = _remote_token_fixture(tmp_path)
+    dataset = PretokenizedCorpusMixtureDataset(remote)
+    scores = {f"corpora/tiny/tokens-{index:05d}.bin": float("nan") for index in range(3)}
+    with pytest.raises(ValueError, match="finite"):
+        build_replay_plan(
+            dataset,
+            unique_token_budgets={"tiny": 8},
+            replay_passes={"tiny": 1},
+            row_alignment=1,
+            quality_scores=scores,
+        )

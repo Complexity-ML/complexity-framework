@@ -1,209 +1,137 @@
-"""
-INL Complexity Framework - API Python Complète
-==============================================
+"""Convenience wrappers over the canonical Complexity interfaces.
 
-API flexible pour:
-- Utilisation simple (notebook, scripts)
-- Construction de modèles maison (architectures custom)
-- Training et inference
+    from complexity.api import Model, Dataset, Trainer, TrainerConfig
+    model = Model.create(hidden_size=64, num_hidden_layers=2,
+                         num_attention_heads=4, vocab_size=256)
+    # dataset = Dataset.load("train.jsonl", tokenizer=your_local_tokenizer)
+    # Trainer(model, TrainerConfig(max_steps=10)).train(dataset)
 
-Usage Basique:
-    from complexity.api import Tokenizer, Model, Dataset, Trainer
-
-    tokenizer = Tokenizer.load("llama-7b")
-    model = Model.load("llama-7b", device="cuda")
-    dataset = Dataset.load("./train.jsonl", tokenizer=tokenizer)
-
-    trainer = Trainer(model, dataset)
-    trainer.train()
-
-Usage Avancé (modèles maison):
-    from complexity.api import (
-        # Building blocks
-        Attention, MLP, Position, Norm, Block,
-        GQA, RoPE, RMSNorm, TokenRoutedMLP,
-        # CUDA / Triton optimizations
-        CUDA, Triton, FlashAttention, SlidingWindowAttention,
-        # Inference
-        Generate, GenerationConfig,
-        # Multimodal
-        Vision, Audio, Video, Fusion, Robot, Omni,
-        # Registry pour custom
-        register,
-    )
-
-    # Construire son propre modèle
-    class MonModele(nn.Module):
-        def __init__(self, config):
-            super().__init__()
-            self.attn = GQA(config.hidden_size, config.num_heads, config.kv_heads)
-            self.mlp = TokenRoutedMLP(hidden_size=config.hidden_size, intermediate_size=config.intermediate_size, num_experts=8)
-            self.norm = RMSNorm(config.hidden_size)
-            self.rope = RoPE(config.head_dim, config.max_seq_len)
-
-    # Ou via factories
-    attn = Attention.gqa(hidden_size=4096, num_heads=32, kv_heads=8)
-    mlp_moe = MLP.moe(hidden_size=4096, num_experts=8, top_k=2)
-
-    # CUDA / Triton optimizations
-    flash_attn = CUDA.flash(hidden_size=4096, num_heads=32)
-    sliding_attn = CUDA.sliding_window(hidden_size=4096, num_heads=32, window_size=4096)
-    sparse_attn = CUDA.sparse(hidden_size=4096, num_heads=32)
-    linear_attn = CUDA.linear(hidden_size=4096, num_heads=32)  # O(N)!
-
-    # Enregistrer un composant custom
-    @register("attention", "my_attention")
-    class MyAttention(AttentionBase):
-        ...
+``Model.load`` loads local saved weights or constructs a named preset with fresh
+weights. ``Model.save`` exports a model; resumable training state is handled by
+``Trainer.save_checkpoint``. Building blocks and multimodal factories remain
+available through their existing imports, and are loaded only when requested.
+For generation use ``complexity.inference.create_external_backend``.
 """
 
-# =============================================================================
-# Base API (simple usage)
-# =============================================================================
+from importlib import import_module as _import_module
 
-# =============================================================================
-# Building Blocks (modèles maison) - depuis core/
-# =============================================================================
-from .core import (
-    ATTENTION_REGISTRY,
-    # CUDA / Triton Optimizations
-    CUDA,
-    # Attention
-    GQA,
-    MHA,
-    MLP,
-    MLP_REGISTRY,
-    MODEL_REGISTRY,
-    MQA,
-    NORMALIZATION_REGISTRY,
-    POSITION_REGISTRY,
-    ALiBi,
-    ALiBiPositionBias,
-    # Factories
-    Attention,
-    AttentionBase,
-    AttentionConfig,
-    Block,
-    Checkpointing,
-    ComplexityModel,
-    Debug,
-    DynamicNTKRoPE,
-    # Efficient (small budget)
-    Efficient,
-    FlashAttention,
-    GroupedQueryAttention,
-    # Helpers
-    Helpers,
-    IdentityNorm,
-    Init,
-    KVCache,
-    LayerNorm,
-    LearnedPositionEmbedding,
-    LinearAttention,
-    Mask,
-    MemoryEfficient,
-    MixedPrecision,
-    MLPBase,
-    MLPConfig,
-    ModelConfig,
-    MultiHeadAttention,
-    MultiQueryAttention,
-    MultiScaleAttention,
-    Norm,
-    Position,
-    QuantConfig,
-    Quantize,
-    QuantizedLinear,
-    # Registry
-    Registry,
-    # Normalization
-    RMSNorm,
-    # Position
-    RoPE,
-    RotaryEmbedding,
-    Sampling,
-    SlidingWindowAttention,
-    SlidingWindowCache,
-    SmallModels,
-    SparseAttention,
-    StandardRoPE,
-    Tensors,
-    # MLP
-    TokenRoutedMLP,
-    # Block & Model
-    TransformerBlock,
-    Triton,
-    YaRN,
-    YaRNRoPE,
-    apply_rotary_pos_emb,
-    build_norm,
-    register,
-    register_attention,
-    register_mlp,
-    register_model,
-    register_normalization,
-    register_position,
-    rotate_half,
-)
-from .dataset import DataConfig, DataPipeline, Dataset, StreamingDataset
-
-# =============================================================================
-# Inference & Generation
-# =============================================================================
-from .inference import (
-    DecodingStrategy,
-    Generate,
-    GenerationConfig,
-    InferenceConfig,
-    InferenceEngine,
-    create_engine,
-)
-from .model import Model
-
-# =============================================================================
-# Multimodal (Vision, Audio)
-# =============================================================================
-from .multimodal import (
-    Audio,
-    AudioConfig,
-    AudioConvStack,
-    # Audio
-    AudioEncoder,
-    CLIPVisionEncoder,
-    ConcatProjection,
-    CrossAttentionFusion,
-    Fusion,
-    FusionConfig,
-    GatedFusion,
-    MelSpectrogramEncoder,
-    # Fusion
-    MultimodalFusion,
-    Omni,
-    PatchEmbedding,
-    PerceiverResampler,
-    Robot,
-    SigLIPEncoder,
-    # Robotics
-    TRHashSensorFusionClassifier,
-    TRHashSensorFusionConfig,
-    Video,
-    # Factories
-    Vision,
-    VisionConfig,
-    # Vision
-    VisionEncoder,
-    VisionTransformer,
-    WhisperEncoder,
-)
-from .tokenizer import Tokenizer, TokenizerConfig
-from .trainer import Trainer, TrainerConfig
-
-# =============================================================================
-# Exports
-# =============================================================================
+_EXPORTS = {
+    "create_external_backend": (".inference", "create_external_backend"),
+    "ExternalGenerationConfig": (".inference", "ExternalGenerationConfig"),
+    "Tokenizer": (".tokenizer", "Tokenizer"),
+    "TokenizerConfig": (".tokenizer", "TokenizerConfig"),
+    "Model": (".model", "Model"),
+    "Trainer": (".trainer", "Trainer"),
+    "TrainerConfig": (".trainer", "TrainerConfig"),
+    "Dataset": (".dataset", "Dataset"),
+    "DataConfig": (".dataset", "DataConfig"),
+    "StreamingDataset": (".dataset", "StreamingDataset"),
+    "DataPipeline": (".dataset", "DataPipeline"),
+    "Attention": (".core", "Attention"),
+    "MLP": (".core", "MLP"),
+    "Position": (".core", "Position"),
+    "Norm": (".core", "Norm"),
+    "Block": (".core", "Block"),
+    "GQA": (".core", "GQA"),
+    "MHA": (".core", "MHA"),
+    "MQA": (".core", "MQA"),
+    "GroupedQueryAttention": (".core", "GroupedQueryAttention"),
+    "MultiHeadAttention": (".core", "MultiHeadAttention"),
+    "MultiQueryAttention": (".core", "MultiQueryAttention"),
+    "AttentionBase": (".core", "AttentionBase"),
+    "AttentionConfig": (".core", "AttentionConfig"),
+    "TokenRoutedMLP": (".core", "TokenRoutedMLP"),
+    "MLPBase": (".core", "MLPBase"),
+    "MLPConfig": (".core", "MLPConfig"),
+    "RoPE": (".core", "RoPE"),
+    "YaRN": (".core", "YaRN"),
+    "ALiBi": (".core", "ALiBi"),
+    "StandardRoPE": (".core", "StandardRoPE"),
+    "YaRNRoPE": (".core", "YaRNRoPE"),
+    "DynamicNTKRoPE": (".core", "DynamicNTKRoPE"),
+    "ALiBiPositionBias": (".core", "ALiBiPositionBias"),
+    "LearnedPositionEmbedding": (".core", "LearnedPositionEmbedding"),
+    "RotaryEmbedding": (".core", "RotaryEmbedding"),
+    "rotate_half": (".core", "rotate_half"),
+    "apply_rotary_pos_emb": (".core", "apply_rotary_pos_emb"),
+    "RMSNorm": (".core", "RMSNorm"),
+    "LayerNorm": (".core", "LayerNorm"),
+    "IdentityNorm": (".core", "IdentityNorm"),
+    "build_norm": (".core", "build_norm"),
+    "TransformerBlock": (".core", "TransformerBlock"),
+    "ComplexityModel": (".core", "ComplexityModel"),
+    "ModelConfig": (".core", "ModelConfig"),
+    "Registry": (".core", "Registry"),
+    "register": (".core", "register"),
+    "ATTENTION_REGISTRY": (".core", "ATTENTION_REGISTRY"),
+    "MLP_REGISTRY": (".core", "MLP_REGISTRY"),
+    "NORMALIZATION_REGISTRY": (".core", "NORMALIZATION_REGISTRY"),
+    "POSITION_REGISTRY": (".core", "POSITION_REGISTRY"),
+    "MODEL_REGISTRY": (".core", "MODEL_REGISTRY"),
+    "register_attention": (".core", "register_attention"),
+    "register_mlp": (".core", "register_mlp"),
+    "register_normalization": (".core", "register_normalization"),
+    "register_position": (".core", "register_position"),
+    "register_model": (".core", "register_model"),
+    "CUDA": (".core", "CUDA"),
+    "Triton": (".core", "Triton"),
+    "FlashAttention": (".core", "FlashAttention"),
+    "SlidingWindowAttention": (".core", "SlidingWindowAttention"),
+    "SparseAttention": (".core", "SparseAttention"),
+    "LinearAttention": (".core", "LinearAttention"),
+    "MultiScaleAttention": (".core", "MultiScaleAttention"),
+    "Helpers": (".core", "Helpers"),
+    "Init": (".core", "Init"),
+    "Mask": (".core", "Mask"),
+    "KVCache": (".core", "KVCache"),
+    "SlidingWindowCache": (".core", "SlidingWindowCache"),
+    "Sampling": (".core", "Sampling"),
+    "Tensors": (".core", "Tensors"),
+    "Debug": (".core", "Debug"),
+    "Checkpointing": (".core", "Checkpointing"),
+    "Efficient": (".core", "Efficient"),
+    "Quantize": (".core", "Quantize"),
+    "QuantConfig": (".core", "QuantConfig"),
+    "QuantizedLinear": (".core", "QuantizedLinear"),
+    "MixedPrecision": (".core", "MixedPrecision"),
+    "MemoryEfficient": (".core", "MemoryEfficient"),
+    "SmallModels": (".core", "SmallModels"),
+    "Generate": (".inference", "Generate"),
+    "GenerationConfig": (".inference", "GenerationConfig"),
+    "InferenceEngine": (".inference", "InferenceEngine"),
+    "InferenceConfig": (".inference", "InferenceConfig"),
+    "DecodingStrategy": (".inference", "DecodingStrategy"),
+    "create_engine": (".inference", "create_engine"),
+    "Vision": (".multimodal", "Vision"),
+    "Audio": (".multimodal", "Audio"),
+    "Video": (".multimodal", "Video"),
+    "Fusion": (".multimodal", "Fusion"),
+    "Robot": (".multimodal", "Robot"),
+    "Omni": (".multimodal", "Omni"),
+    "VisionEncoder": (".multimodal", "VisionEncoder"),
+    "VisionConfig": (".multimodal", "VisionConfig"),
+    "PatchEmbedding": (".multimodal", "PatchEmbedding"),
+    "VisionTransformer": (".multimodal", "VisionTransformer"),
+    "CLIPVisionEncoder": (".multimodal", "CLIPVisionEncoder"),
+    "SigLIPEncoder": (".multimodal", "SigLIPEncoder"),
+    "AudioEncoder": (".multimodal", "AudioEncoder"),
+    "AudioConfig": (".multimodal", "AudioConfig"),
+    "MelSpectrogramEncoder": (".multimodal", "MelSpectrogramEncoder"),
+    "WhisperEncoder": (".multimodal", "WhisperEncoder"),
+    "AudioConvStack": (".multimodal", "AudioConvStack"),
+    "MultimodalFusion": (".multimodal", "MultimodalFusion"),
+    "FusionConfig": (".multimodal", "FusionConfig"),
+    "CrossAttentionFusion": (".multimodal", "CrossAttentionFusion"),
+    "GatedFusion": (".multimodal", "GatedFusion"),
+    "ConcatProjection": (".multimodal", "ConcatProjection"),
+    "PerceiverResampler": (".multimodal", "PerceiverResampler"),
+    "TRHashSensorFusionClassifier": (".multimodal", "TRHashSensorFusionClassifier"),
+    "TRHashSensorFusionConfig": (".multimodal", "TRHashSensorFusionConfig"),
+}
 
 __all__ = [
-    # ========== Base API ==========
+    "create_external_backend",
+    "ExternalGenerationConfig",
     "Tokenizer",
     "TokenizerConfig",
     "Model",
@@ -213,13 +141,11 @@ __all__ = [
     "DataConfig",
     "StreamingDataset",
     "DataPipeline",
-    # ========== Building Blocks - Factories ==========
     "Attention",
     "MLP",
     "Position",
     "Norm",
     "Block",
-    # ========== Attention ==========
     "GQA",
     "MHA",
     "MQA",
@@ -228,11 +154,9 @@ __all__ = [
     "MultiQueryAttention",
     "AttentionBase",
     "AttentionConfig",
-    # ========== MLP ==========
     "TokenRoutedMLP",
     "MLPBase",
     "MLPConfig",
-    # ========== Position ==========
     "RoPE",
     "YaRN",
     "ALiBi",
@@ -244,16 +168,13 @@ __all__ = [
     "RotaryEmbedding",
     "rotate_half",
     "apply_rotary_pos_emb",
-    # ========== Normalization ==========
     "RMSNorm",
     "LayerNorm",
     "IdentityNorm",
     "build_norm",
-    # ========== Block & Model ==========
     "TransformerBlock",
     "ComplexityModel",
     "ModelConfig",
-    # ========== Registry ==========
     "Registry",
     "register",
     "ATTENTION_REGISTRY",
@@ -266,7 +187,6 @@ __all__ = [
     "register_normalization",
     "register_position",
     "register_model",
-    # ========== CUDA / Triton ==========
     "CUDA",
     "Triton",
     "FlashAttention",
@@ -274,7 +194,6 @@ __all__ = [
     "SparseAttention",
     "LinearAttention",
     "MultiScaleAttention",
-    # ========== Helpers ==========
     "Helpers",
     "Init",
     "Mask",
@@ -284,7 +203,6 @@ __all__ = [
     "Tensors",
     "Debug",
     "Checkpointing",
-    # ========== Efficient (Small Budget) ==========
     "Efficient",
     "Quantize",
     "QuantConfig",
@@ -292,41 +210,49 @@ __all__ = [
     "MixedPrecision",
     "MemoryEfficient",
     "SmallModels",
-    # ========== Inference ==========
     "Generate",
     "GenerationConfig",
     "InferenceEngine",
     "InferenceConfig",
     "DecodingStrategy",
     "create_engine",
-    # ========== Multimodal - Factories ==========
     "Vision",
     "Audio",
     "Video",
     "Fusion",
     "Robot",
     "Omni",
-    # ========== Vision ==========
     "VisionEncoder",
     "VisionConfig",
     "PatchEmbedding",
     "VisionTransformer",
     "CLIPVisionEncoder",
     "SigLIPEncoder",
-    # ========== Audio ==========
     "AudioEncoder",
     "AudioConfig",
     "MelSpectrogramEncoder",
     "WhisperEncoder",
     "AudioConvStack",
-    # ========== Fusion ==========
     "MultimodalFusion",
     "FusionConfig",
     "CrossAttentionFusion",
     "GatedFusion",
     "ConcatProjection",
     "PerceiverResampler",
-    # ========== TR-Hash Robotics ==========
     "TRHashSensorFusionClassifier",
     "TRHashSensorFusionConfig",
 ]
+
+
+def __getattr__(name):
+    """Load only the public feature requested by the caller."""
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute = _EXPORTS[name]
+    value = getattr(_import_module(module_name, __name__), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

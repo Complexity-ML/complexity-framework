@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.metrics_csv_to_tensorboard import finite_float, mirror_once
+import pytest
+
+from complexity.training.tensorboard import finite_float, mirror_once
 
 
 class FakeWriter:
@@ -46,3 +48,32 @@ def test_mirror_once_writes_new_scalar_points_only(tmp_path: Path):
     assert ("Loss/train", 2.0, 10) in writer.scalars
     assert ("Throughput/tokens_per_second", 56000.0, 10) in writer.scalars
     assert writer.flushes == 1
+
+
+def test_mirror_retries_partial_cells_without_duplicating_valid_scalars(tmp_path: Path):
+    metrics = tmp_path / "metrics.csv"
+    metrics.write_text("step,train_loss,lr\n2,1.25,1e-\n", encoding="utf-8")
+    writer = FakeWriter()
+    seen = set()
+    assert mirror_once(metrics, writer, seen) == 1
+    metrics.write_text("step,train_loss,lr\n2,1.25,1e-5\n", encoding="utf-8")
+    assert mirror_once(metrics, writer, seen) == 1
+    assert writer.scalars == [("Loss/train", 1.25, 2), ("LR", 1e-5, 2)]
+
+
+def test_sft_jsonl_metrics_count_step_zero_and_retry_uncommitted_line(tmp_path):
+    metrics = tmp_path / "metrics.jsonl"
+    complete = '{"step":0,"loss":2.5,"gradient_norm":1.5,"seconds":0.25}\n'
+    metrics.write_text(complete + '{"step":1,"loss":', encoding="utf-8")
+    writer, seen = FakeWriter(), set()
+    assert mirror_once(metrics, writer, seen) == 3
+    metrics.write_text(complete + '{"step":1,"loss":2.0}\n', encoding="utf-8")
+    assert mirror_once(metrics, writer, seen) == 1
+    assert writer.scalars[-1] == ("Loss/train", 2.0, 1)
+
+
+def test_metrics_reject_malformed_committed_json(tmp_path):
+    path = tmp_path / "metrics.jsonl"
+    path.write_text('{"step":\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="line 1"):
+        mirror_once(path, FakeWriter(), set())

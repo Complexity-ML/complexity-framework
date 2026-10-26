@@ -6,7 +6,7 @@ import torch
 from safetensors import safe_open
 
 from complexity import ComplexityModel, ModelConfig
-from scripts.export_tr_hash_transformers import export_bundle
+from complexity.export.transformers import build_transformers_config, export_bundle
 
 ADAPTER = Path("integrations/transformers/tr_hash_moe")
 
@@ -31,7 +31,7 @@ def _tiny_config():
         hidden_size=32,
         num_hidden_layers=2,
         num_attention_heads=4,
-        num_key_value_heads=2,
+        num_key_value_heads=1,
         intermediate_size=16,
         shared_intermediate_size=48,
         vocab_size=64,
@@ -40,8 +40,7 @@ def _tiny_config():
         num_experts=4,
         top_k=2,
         top_k_primary_weight=0.5,
-        routing_strategy="token_id_multi_hash",
-        route_hash_count=2,
+        routing_strategy="token_id_composed_modulo",
         use_custom_kernels=False,
         use_cggr=False,
     )
@@ -123,10 +122,13 @@ def test_exported_bundle_loads_through_auto_model(tmp_path, monkeypatch):
     assert config.num_experts_per_tok == 2
     assert raw_exported_config["top_k"] == 2
     assert raw_exported_config["num_experts_per_tok"] == 2
+    assert raw_exported_config["top_k_primary_weight"] == 0.5
     assert "top_k" not in config.to_dict()
     with safe_open(output / "model.safetensors", framework="pt") as checkpoint:
         assert checkpoint.metadata()["format"] == "pt"
     with torch.no_grad():
+        ids = torch.tensor([[1, 5, 9]])
+        torch.testing.assert_close(model(ids).logits, native(ids)["logits"], rtol=1e-5, atol=1e-6)
         output_ids = model.generate(
             torch.tensor([[1, 5, 9]]),
             max_new_tokens=2,
@@ -174,3 +176,103 @@ def test_export_infers_special_token_ids(tmp_path):
     assert config["eos_token_id"] == 0
     assert config["pad_token_id"] == 1
     assert config["unk_token_id"] == 3
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"attention_type": "lexical_gqa"},
+        {"tie_word_embeddings": False},
+        {"top_k": 1},
+        {"learn_hash_pair_gates": True},
+        {"active_expert_width": 2},
+        {"layer_mlp_controls": []},
+        {"rope_type": "yarn"},
+    ],
+)
+def test_export_rejects_unsupported_runtime_behavior(override):
+    config = _tiny_config().to_dict()
+    config.update(override)
+    with pytest.raises(ValueError, match="Unsupported Transformers export"):
+        build_transformers_config(config)
+
+
+def test_export_preserves_source_bytes_and_requires_a_separate_destination(tmp_path):
+    import hashlib
+
+    native = ComplexityModel(_tiny_config()).eval()
+    source = tmp_path / "native"
+    native.save_pretrained(source)
+    config_file = source / "config.json"
+    weights_file = source / "model.safetensors"
+    hashes = [hashlib.sha256(path.read_bytes()).hexdigest() for path in [config_file, weights_file]]
+    with pytest.raises(ValueError, match="separate from source"):
+        export_bundle(config_path=config_file, weights_path=weights_file, output=source)
+    output = tmp_path / "export"
+    export_bundle(config_path=config_file, weights_path=weights_file, output=output)
+    assert [
+        hashlib.sha256(path.read_bytes()).hexdigest() for path in [config_file, weights_file]
+    ] == hashes
+    with (
+        safe_open(weights_file, framework="pt") as original,
+        safe_open(output / "model.safetensors", framework="pt") as exported,
+    ):
+        assert original.keys() == exported.keys()
+        for key in original.keys():
+            assert torch.equal(original.get_tensor(key), exported.get_tensor(key))
+
+
+def test_current_1b_recipe_is_in_export_supported_family():
+    import json
+
+    config = json.loads(Path("scripts/pretrain_1b_fsdp/model.json").read_text())
+    exported = build_transformers_config(config)
+    assert exported["num_experts_per_tok"] == 2
+    assert exported["num_experts"] == 4
+    assert exported["hidden_size"] == 1536
+
+
+def test_adapter_embeddings_require_ids_and_match_native_gradients():
+    from torch.nn import functional as F
+
+    Config, CausalLM = _load_adapter_modules()
+    native = ComplexityModel(_tiny_config()).eval()
+    adapted = CausalLM(Config(**native.config.to_dict())).eval()
+    adapted.load_state_dict(native.state_dict(), strict=True)
+    ids = torch.tensor([[1, 7, 3, 5]])
+    embeddings = adapted.get_input_embeddings()(ids)
+    with pytest.raises(ValueError, match="routing_ids"):
+        adapted(inputs_embeds=embeddings)
+    actual = adapted(inputs_embeds=embeddings, routing_ids=ids, labels=ids, use_cache=False)
+    expected = native(ids)["logits"]
+    loss = F.cross_entropy(expected[:, :-1].reshape(-1, 64), ids[:, 1:].reshape(-1))
+    torch.testing.assert_close(actual.logits, expected, rtol=1e-5, atol=1e-6)
+    actual.loss.backward()
+    loss.backward()
+    for name, parameter in native.named_parameters():
+        gradient = dict(adapted.named_parameters())[name].grad
+        if parameter.grad is None:
+            assert gradient is None
+        else:
+            torch.testing.assert_close(gradient, parameter.grad, rtol=1e-4, atol=1e-6)
+
+
+def test_adapter_cache_beam_reorder_and_crop_preserve_routing_ids():
+    Config, CausalLM = _load_adapter_modules()
+    native = ComplexityModel(_tiny_config()).eval()
+    model = CausalLM(Config(**native.config.to_dict())).eval()
+    model.load_state_dict(native.state_dict(), strict=True)
+    ids = torch.tensor([[1, 7, 3, 5], [8, 4, 2, 6]])
+    with torch.inference_mode():
+        cache = model(ids[:, :3], use_cache=True).past_key_values
+        order = torch.tensor([1, 0])
+        cache = model._reorder_cache(cache, order)
+        actual = model(ids[order, 3:], past_key_values=cache, use_cache=True).logits
+        expected = model(ids[order]).logits[:, 3:]
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+        if hasattr(cache, "crop"):
+            cache.crop(2)
+            actual = model(ids[order, 2:], past_key_values=cache, use_cache=True).logits
+            torch.testing.assert_close(
+                actual, model(ids[order]).logits[:, 2:], rtol=1e-5, atol=1e-6
+            )

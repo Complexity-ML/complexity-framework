@@ -1,190 +1,97 @@
-# TR-Hash execution engine
+# TR-HASH engine
 
-`complexity.tr_hash` is the execution contract for shared computation plus
-deterministic token-ID-routed residual experts. It is not a learned contextual
-router.
+TR-HASH has one architecture: a shared SwiGLU branch, four deterministic
+experts, and routed GQA attention. There is no learned router or balancing loss.
 
-`TRHashEngineMLP` (`mlp_type="tr_hash_engine"`, alias `tr_hash_moe`) adapts the
-engine to each decoder block. New models should use this path. Historical
-`TokenRoutedMLP` checkpoints require the explicit
-[conversion guide](token-routed.md).
+## Architecture
 
-## Released 200M engine shape
+The decoder uses four query heads, one key/value head, Q/K RMS normalization,
+RoPE, and two selected attention heads per token. The selected heads are
+multiplied by `sqrt(2)` before the output projection.
 
-The public 200M model uses, in each of 16 layers:
-
-| Field | Value |
-|---|---:|
-| Hidden size | 896 |
-| Vocabulary | 32,000 |
-| Shared width | 3,072 |
-| Stored experts | 4 |
-| Per-expert width | 64 |
-| Stored routed width | 256 |
-| Active routes / width | top-2 / 128 |
-| Route strategy | `token_id_multi_hash` |
-| Hash channels | 2 |
-| Route weights | 0.5 / 0.5 |
-
-At the `ModelConfig`/`MLPConfig` layer, `intermediate_size=256` is the total
-stored routed width. `TRHashEngineMLP` validates divisibility and passes
-`expert_width=intermediate_size // num_experts`, or 64, to
-`TRHashEngineConfig`.
-
-## Computation
-
-For contextual hidden state `x`, token ID `t`, shared branch `S`, expert `E`,
-fixed layer route `R`, fixed route weights `a`, and fixed output scales:
+For hidden width `H`, the defaults are shared width `2H`, four expert widths
+`H/4`, and fixed expert weights `(0.5, 0.5)`. The MLP output is:
 
 ```text
-y = shared_scale × S(x)
-  + routed_scale × Σ_j a_j E[R[layer, j, t]](x)
+shared(x) + 2 * (0.5 * expert_a(x) + 0.5 * expert_b(x))
 ```
 
-The hash selects parameters. Attention has already contextualized `x`; routing
-does not reduce the model to an embedding lookup.
+`intermediate_size` is the total stored routed width; it is divided by four.
+Explicit widths resize this same architecture. The route law and branch
+weights remain fixed.
 
-## Route construction
+## Composed causal routing
 
-The model-block adapter supports four canonical deterministic strategies:
+Let `t` be the original current token ID, `p1` and `p2` its two preceding IDs,
+and `l` the absolute layer index starting at zero. Missing prefix IDs are zero.
 
-| Strategy | Construction |
-|---|---|
-| `modulo_cyclic` | layer-permuted modulo primary with cyclic distinct routes |
-| `token_id_balanced_hash` | collision-free tuples with exact marginal balance over complete blocks |
-| `token_id_multi_hash` | summed independent rendezvous scores followed by fixed top-k |
-| `token_id_hierarchical_hash` | balanced parent routes with deterministic clone selection |
+```text
+u = (p1 + 5*p2) % 9
 
-The released model uses multi-hash. Each token/expert pair receives one 32-bit
-score per channel. Channel scores are summed, then the highest-scoring distinct
-experts become the route. The result is compiled into the ordinary
-`[top_k, vocab_size]` table, so additional hash channels do not add runtime
-routing-model compute.
+if l == 1:
+    a = ((t + 1) % 4) XOR (2 * ((u % 3) % 2))
+    d = 1 + (t//4 + 2*(u//3) + 1) % 3
+else:
+    a = (t + l) % 4
+    d = 1 + (t//4 + (1 + l%2)*(u%3) + l) % 3
+b = (a + d) % 4
+```
 
-Persisted tables must stay paired with the expert weights they trained. Loading
-or converting a checkpoint must transplant its exact table rather than
-silently regenerate a different mapping.
+Attention uses the current ID. At physical layer one, its heads are
+`a=(t//12)%4` and `b=(a+1)%4`. At other layers, `a=(t+l)%4`,
+`d=1+(t//4+l)%3`, and `b=(a+d)%4`.
 
-## Refinement support
+Before projecting V at physical layer zero, input channel `j` is read from
+`(j + (H//4)*(t%4)) % H`. Other layers use the ordinary V input. The shared
+MLP remains unmasked. Layer indices do not repeat on a two-layer cycle.
 
-The engine supports full-parameter same-corpus refinement without changing
-token IDs, route tables or tensor layout. Refinement starts from pretrained
-weights only; the optimizer, scheduler and step counter are new. Gradients
-continue through attention, the shared SwiGLU path and both selected lexical
-experts, so the entire architecture remains trainable during this phase.
+The pure implementation is `complexity.tr_hash.composed_routing`.
 
-Complexity Framework requires this refinement boundary before instruction SFT
-for lexical TR-HASH language models. `validate_refinement_plan` verifies one
-pass over the exact pretraining `unique_core`, and
-`validate_training_stage_transition` rejects a direct text
-`pretraining -> SFT` transition.
-
-## Supported engine matrix
-
-| Axis | Contract |
-|---|---|
-| Experts | 1, 2, 4, 8, 16 |
-| Active routes | top-1, top-2, top-4, never greater than experts |
-| Hash channels | 2 through 8 for multi-hash |
-| Widths | independent shared and per-expert widths |
-| Precision | FP32, BF16, FP16 |
-| Attention metadata | GQA or MHA |
-| Training parallelism | one device or replicated DDP |
-| Execution | PyTorch, CGGR/Triton, fused CUDA, CUDA Graph reference path |
-
-FP8 and INT8 enum values fail explicitly in this engine until their grouped
-GEMM implementations exist. TR-Hash-i64 has a separate inference quantization
-contract; do not infer framework-training support from the serving runtime.
-
-## Direct engine example
-
-`TRHashEngineConfig.expert_width` is explicitly per expert:
+## Create a model
 
 ```python
-import torch
+from complexity import ComplexityModel, ModelConfig
 
-from complexity.tr_hash import (
-    AttentionBackbone,
-    TRHashEngine,
-    TRHashEngineConfig,
-    TRHashStrategy,
+config = ModelConfig(
+    hidden_size=64, num_hidden_layers=2, vocab_size=256,
+    intermediate_size=64, shared_intermediate_size=128,
+    max_position_embeddings=64,
+    use_custom_kernels=False, use_cggr=False,
 )
-
-engine = TRHashEngine(
-    TRHashEngineConfig(
-        hidden_size=896,
-        vocab_size=32_000,
-        num_experts=4,
-        top_k=2,
-        shared_width=3_072,
-        expert_width=64,
-        routing_strategy=TRHashStrategy.MULTI_HASH,
-        route_hash_count=2,
-        route_weights=(0.5, 0.5),
-        routed_output_scale=2.0,
-        attention_backbone=AttentionBackbone.GQA,
-    )
-)
-
-hidden = torch.randn(2, 128, 896)
-token_ids = torch.randint(0, 32_000, (2, 128))
-output = engine(hidden, token_ids)
+model = ComplexityModel(config)
+print(model.num_parameters())  # 110976
 ```
 
-## Backend selection
+`routing_strategy` serializes as `token_id_composed_modulo`. Other routing
+laws, expert counts, head counts and unequal expert weights are rejected.
+Dense models use their separately named dense MLP.
 
-`backend="auto"` selects the fastest tested compatible path and reports the
-decision. Top-2 shapes with two to eight experts can use the hash-native fused
-CUDA path. Other supported shapes may use general CGGR/Triton. CPU, MPS, ROCm
-under conservative policy, or unsupported CUDA shapes use the universal
-PyTorch reference.
+## Caches and execution
 
-Inspect the realized path:
+Native cache entries contain `(K, V, last_two_original_ids)`. Generation must
+retain routing history per batch row. `inputs_embeds` requires explicit
+`routing_ids`; embeddings cannot recover original IDs. Domain models pass
+unmodified patch, spatial or temporal IDs to this same routing law.
 
-```python
-layer = model.layers[0].mlp
-print(layer.engine.last_backend)
-print(layer.capability_summary("cuda"))
-```
+PyTorch is the numerical reference. CGGR dispatches the same dynamic routes
+when available. A backend that cannot preserve context routing, selected heads
+and V binding is rejected rather than substituted silently.
 
-Requested flags are not evidence that a kernel ran. Throughput reports must
-record the selected backend from runtime state after warm-up.
+## Save and export
 
-## Dynamic capacity
+Native exports serialize the architecture, weights and canonical routing
+anchor. Loading checks the explicit routing law and rejects a different anchor.
+The anchor records zero-prefix routes; runtime routes still depend on history.
 
-An allocated engine can be reduced to a deterministic prefix-width
-sub-network:
+`complexity convert to-hf INPUT OUTPUT` creates an autonomous Transformers
+bundle containing model code, composed routing helpers and the tensor weights.
+Its cache keeps routing IDs through continuation, beam reordering and cropping.
+The table-only custom MLX/vLLM layouts cannot represent this architecture and
+raise an explicit error. Generic external serving endpoints remain separate.
 
-```python
-engine.set_active_capacity(num_experts=2, expert_width=32)
-```
+## Evidence
 
-The change re-derives routes for the active expert count and invalidates cached
-CUDA Graphs. PyTorch and CGGR support reduced capacity. Fused CUDA requires the
-full allocated capacity because its compiled pair metadata is shape-specific.
-Dynamic capacity is an experimental runtime control; it does not describe the
-released 200M checkpoint.
-
-## CUDA Graph buckets
-
-The framework reference manager requires:
-
-- `phase="inference"`;
-- `backend="cuda_graph"`;
-- one or more static `(batch, sequence)` buckets;
-- `eval()` and `torch.no_grad()`.
-
-It pads to the smallest containing bucket, copies into persistent buffers,
-replays the captured graph, and returns the unpadded slice. Production serving
-and continuous batching are implemented separately by TR-Hash-i64.
-
-## Correctness policy
-
-The universal PyTorch implementation is the numerical reference. Every
-optimized path must have forward and backward parity tests for its supported
-shape and dtype. A missing optimized dependency must produce an explicit
-fallback reason; a required production kernel must fail preflight rather than
-silently relabel the fallback.
-
-See [GPU and dispatch paths](cuda.md) and
-[TR-HASH MoE 200M release](tr-hash-200m-release.md).
+The notebooks compare small models under matched data, masks, updates and
+seeds. Parameter equality alone does not establish equal compute. Decoder
+integration tests cover logits, gradients, save/load and cached continuation;
+they do not establish quality at larger widths or in every modality.

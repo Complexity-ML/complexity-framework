@@ -4,17 +4,19 @@ Base MLP class for framework-complexity.
 All MLP implementations must inherit from this class.
 """
 
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
 class MLPConfig:
     """Configuration for MLP modules."""
+
     hidden_size: int
     intermediate_size: int
     hidden_act: str = "silu"  # silu, gelu, relu
@@ -25,9 +27,8 @@ class MLPConfig:
     expert_initialization: str = "gpt_normal"
     initializer_range: float = 0.02
     vocab_size: int = 100000  # For token-routed MoE
-    hash_routing: str = ""  # "" = modulo (token_id % E), "learned" = learned projection router
-    routing_strategy: str = "auto"
-    route_hash_count: int = 2
+    hash_routing: str = ""  # Generic setting; nonempty values are rejected by the TR-HASH adapter.
+    routing_strategy: str = "token_id_composed_modulo"
     # Present only so the standalone historical ablations can be replayed.
     token_frequencies: Optional[torch.Tensor] = None
     # Semantic LSH routing: route on a fixed random-hyperplane hash of the
@@ -39,22 +40,32 @@ class MLPConfig:
     lsh_from_layer: int = 0  # Use LSH routing only for layers >= this index; earlier layers stay lexical (h not yet semantic).
     lsh_threshold_mode: str = "zero"  # "zero" or "batch_median"
     shared_expert: bool = True  # Shared lexical expert: dense MLP + routed experts
-    shared_intermediate_size: Optional[int] = None  # Shared expert size (default: intermediate_size)
+    shared_intermediate_size: Optional[int] = None  # TR-HASH defaults to 2 * hidden_size.
     shared_expert_chunk_tokens: int = 0  # 0 = dense shared expert in one pass; >0 chunks token dimension to reduce activation peak.
     use_shared_routed_gates: bool = False  # Learn scalar gates for shared vs routed expert outputs.
     shared_gate_init: float = 1.0  # Initial shared expert output multiplier.
     routed_gate_init: float = 1.0  # Initial routed expert output multiplier.
     shared_output_scale: float = 1.0  # Fixed shared branch multiplier; adds no parameters.
-    routed_output_scale: Optional[float] = None  # Auto: source67=2, historical routing=1.
+    routed_output_scale: Optional[float] = None  # Fixed TR-HASH branch scale.
     top_k: int = 2  # Each token activates K deterministic expert routes.
-    top_k_primary_weight: Optional[float] = None  # K>1 primary expert blend weight; None keeps the default 0.95.
+    top_k_primary_weight: Optional[float] = (
+        None  # TR-HASH requires equal routes; None resolves to 0.5.
+    )
     learn_hash_pair_gates: bool = False  # Learn one mixture scalar per fixed unordered hash pair.
-    hash_pair_gate_init: float = 0.5  # Initial expert-a weight; 0.5 exactly reproduces equal top-2 routing.
-    learn_hash_channel_modulation: bool = False  # Learn tiny expert/channel gains addressed by a fixed token-ID hash.
-    hash_channel_scale_init: float = 0.0  # Zero exactly preserves the unmodulated routed branch at initialization.
+    hash_pair_gate_init: float = (
+        0.5  # Initial expert-a weight; 0.5 exactly reproduces equal top-2 routing.
+    )
+    learn_hash_channel_modulation: bool = (
+        False  # Learn tiny expert/channel gains addressed by a fixed token-ID hash.
+    )
+    hash_channel_scale_init: float = (
+        0.0  # Zero exactly preserves the unmodulated routed branch at initialization.
+    )
     layer_idx: int = 0  # Layer index propagated from the block; used for the built-in per-layer routing permutation.
     static_expert_capacity: bool = False  # Fixed capacity for torch.export / pipeline tracing.
-    collect_moe_telemetry: bool = False  # Per-layer expert/RMS diagnostics. Off by default for throughput.
+    collect_moe_telemetry: bool = (
+        False  # Per-layer expert/RMS diagnostics. Off by default for throughput.
+    )
     # Dynamic TR-Hash capacity (tr_hash_engine/tr_hash_moe only): start the
     # engine already shrunk to a smaller deterministic ID/hash-routed
     # sub-network. None keeps the full allocated (num_experts, routed width)
@@ -74,23 +85,12 @@ class MLPConfig:
     micro_expert_gate_init: float = 0.1
 
     def __post_init__(self):
-        if self.routing_strategy is None or self.routing_strategy == "auto":
-            self.routing_strategy = (
-                "token_id_composed_modulo"
-                if self.num_experts == 4 and self.top_k == 2
-                else "token_id_balanced_hash"
-            )
-        source67 = self.routing_strategy == "token_id_composed_modulo"
-        if source67 and (self.num_experts != 4 or self.top_k != 2):
-            raise ValueError("source67 composed modulo requires num_experts=4 and top_k=2")
+        if self.routing_strategy is None:
+            self.routing_strategy = "token_id_composed_modulo"
+        if self.routing_strategy != "token_id_composed_modulo":
+            raise ValueError("Only token_id_composed_modulo routing is supported")
         if self.routed_output_scale is None:
-            self.routed_output_scale = 2.0 if source67 else 1.0
-        if source67 and (
-            self.top_k_primary_weight not in {None, 0.5}
-            or self.shared_output_scale != 1.0
-            or self.routed_output_scale != 2.0
-        ):
-            raise ValueError("source67 requires fixed 50/50 routing and shared/routed scales 1/2")
+            self.routed_output_scale = 2.0
         if self.hidden_size <= 0:
             raise ValueError("hidden_size must be positive")
         if self.intermediate_size <= 0:
@@ -98,9 +98,7 @@ class MLPConfig:
         if self.num_experts <= 0:
             raise ValueError("num_experts must be positive")
         if self.expert_initialization not in {"gpt_normal", "legacy_kaiming"}:
-            raise ValueError(
-                "expert_initialization must be 'gpt_normal' or 'legacy_kaiming'"
-            )
+            raise ValueError("expert_initialization must be 'gpt_normal' or 'legacy_kaiming'")
         if self.initializer_range <= 0.0:
             raise ValueError("initializer_range must be positive")
         if self.vocab_size <= 0:
@@ -115,44 +113,13 @@ class MLPConfig:
             raise ValueError("hash_pair_gate_init must be strictly between 0 and 1")
         if abs(self.hash_channel_scale_init) > 1.0:
             raise ValueError("hash_channel_scale_init must be in [-1, 1]")
-        _removed_routing_strategies = {
-            "zipf",
-            "round_robin",
-            "random",
-            "lsh_hidden",
-        }
-        if self.routing_strategy in _removed_routing_strategies:
-            raise ValueError(
-                f"routing_strategy={self.routing_strategy!r} was removed: this "
-                "framework is scoped to deterministic token-ID / hash-table "
-                "routing only. Use one of modulo_cyclic, token_id_balanced_hash, "
-                "token_id_pair_coverage_hash, token_id_multi_hash "
-                "(legacy aliases: modulo, "
-                "modulo_balanced_secondary, modulo_frequency_balanced_secondary)."
-            )
-        if self.routing_strategy not in {
-            "token_id_composed_modulo",
-            "modulo",
-            "modulo_cyclic",
-            "modulo_balanced_secondary",
-            "modulo_frequency_balanced_secondary",
-            "token_id_balanced_hash",
-            "token_id_pair_coverage_hash",
-            "token_id_multi_hash",
-            "token_id_hierarchical_hash",
-        }:
-            raise ValueError(
-                "routing_strategy must be one of token_id_composed_modulo, modulo_cyclic, "
-                "modulo_frequency_balanced_secondary, token_id_balanced_hash, "
-                "token_id_pair_coverage_hash, token_id_multi_hash, "
-                "token_id_hierarchical_hash "
-                "(legacy aliases: modulo, modulo_balanced_secondary)"
-            )
-        if not 2 <= self.route_hash_count <= 8:
-            raise ValueError("route_hash_count must be between 2 and 8")
         if self.lsh_threshold_mode not in {"batch_median", "zero"}:
             raise ValueError("lsh_threshold_mode must be 'batch_median' or 'zero'")
-        if isinstance(self.use_cggr, str) and self.use_cggr.strip().lower() not in {"auto", "true", "false"}:
+        if isinstance(self.use_cggr, str) and self.use_cggr.strip().lower() not in {
+            "auto",
+            "true",
+            "false",
+        }:
             raise ValueError("use_cggr must be one of 'auto', 'true', 'false', True, or False")
         if self.shared_intermediate_size is not None and self.shared_intermediate_size <= 0:
             raise ValueError("shared_intermediate_size must be positive when set")

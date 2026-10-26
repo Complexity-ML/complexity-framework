@@ -175,6 +175,15 @@ weights/
 
 # Training outputs
 artifacts/
+.research_goal/
+
+# Local LaTeX build outputs; manuscript sources and figures are tracked.
+TR_Hash_Paper/*.aux
+TR_Hash_Paper/*.bbl
+TR_Hash_Paper/*.blg
+TR_Hash_Paper/*.out
+TR_Hash_Paper/*.synctex.gz
+TR_Hash_Paper/main.pdf
 runs/
 logs/
 tensorboard/

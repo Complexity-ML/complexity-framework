@@ -78,7 +78,7 @@ class TestInferenceEngine:
 
     def test_create_engine(self):
         """Test creating inference engine."""
-        from complexity.inference import InferenceEngine, InferenceConfig
+        from complexity.inference import InferenceEngine
         from complexity.models import ComplexityModel
         from complexity.config import ModelConfig
 
@@ -86,7 +86,7 @@ class TestInferenceEngine:
             hidden_size=128,
             num_hidden_layers=2,
             num_attention_heads=4,
-            num_key_value_heads=2,
+            num_key_value_heads=1,
             intermediate_size=256,
             vocab_size=1000,
         )
@@ -105,7 +105,7 @@ class TestInferenceEngine:
             hidden_size=128,
             num_hidden_layers=2,
             num_attention_heads=4,
-            num_key_value_heads=2,
+            num_key_value_heads=1,
             intermediate_size=256,
             vocab_size=1000,
         )
@@ -118,6 +118,81 @@ class TestInferenceEngine:
 
         engine = InferenceEngine(model, inference_config)
         assert engine is not None
+
+    @pytest.mark.parametrize("prefix_length", (1, 5))
+    def test_generation_preserves_kv_and_two_token_routing_history(self, prefix_length):
+        from complexity.config import ModelConfig
+        from complexity.inference import GenerationConfig, InferenceConfig, InferenceEngine
+        from complexity.inference.engine import DecodingStrategy
+        from complexity.models import ComplexityModel
+
+        torch.manual_seed(21)
+        model = ComplexityModel(
+            ModelConfig(
+                hidden_size=32,
+                num_hidden_layers=2,
+                vocab_size=128,
+                max_position_embeddings=32,
+                use_custom_kernels=False,
+            )
+        )
+        cached = InferenceEngine(model, InferenceConfig(max_cache_length=32))
+        full = InferenceEngine(model, InferenceConfig(use_kv_cache=False))
+        assert cached.cache.num_heads == 1
+        assert cached.cache.head_dim == 8
+        prompt = torch.randint(0, 128, (2, prefix_length))
+        generation = GenerationConfig(
+            strategy=DecodingStrategy.GREEDY,
+            max_new_tokens=4,
+            return_logits=True,
+        )
+        seen = None
+        lengths = []
+
+        def verify_history(module, args, kwargs, output):
+            nonlocal seen
+            token_ids = args[0]
+            incoming = kwargs.get("past_key_values")
+            if seen is None:
+                assert incoming is None
+                seen = token_ids.clone()
+            else:
+                expected_previous = torch.nn.functional.pad(seen, (max(0, 2 - seen.size(1)), 0))[
+                    :, -2:
+                ]
+                assert incoming is not None
+                assert all(len(layer_cache) == 3 for layer_cache in incoming)
+                assert all(
+                    torch.equal(layer_cache[2], expected_previous) for layer_cache in incoming
+                )
+                seen = torch.cat((seen, token_ids), dim=1)
+            expected = torch.nn.functional.pad(seen, (max(0, 2 - seen.size(1)), 0))[:, -2:]
+            assert all(len(layer_cache) == 3 for layer_cache in output["past_key_values"])
+            assert all(
+                torch.equal(layer_cache[2], expected) for layer_cache in output["past_key_values"]
+            )
+            lengths.append(token_ids.size(1))
+
+        hook = model.register_forward_hook(verify_history, with_kwargs=True)
+        cached_result = cached.generate(prompt, generation)
+        hook.remove()
+        assert lengths == [prefix_length, 1, 1, 1]
+        full_result = full.generate(prompt, generation)
+        assert torch.equal(cached_result["sequences"], full_result["sequences"])
+        torch.testing.assert_close(
+            cached_result["logits"], full_result["logits"], atol=2e-5, rtol=2e-5
+        )
+
+        seen = None
+        lengths.clear()
+        hook = model.register_forward_hook(verify_history, with_kwargs=True)
+        streamed = torch.stack(list(cached.generate_stream(prompt, generation)), dim=1)
+        hook.remove()
+        assert lengths == [prefix_length, 1, 1, 1]
+        assert torch.equal(streamed, full_result["sequences"][:, prefix_length:])
+        assert torch.equal(
+            cached.generate(prompt, generation)["sequences"], full_result["sequences"]
+        )
 
 
 class TestGenerationConfig:
@@ -174,8 +249,8 @@ class TestSpeculativeDecoder:
         target_config = ModelConfig(
             hidden_size=256,
             num_hidden_layers=4,
-            num_attention_heads=8,
-            num_key_value_heads=4,
+            num_attention_heads=4,
+            num_key_value_heads=1,
             intermediate_size=512,
             vocab_size=1000,
         )
@@ -183,7 +258,7 @@ class TestSpeculativeDecoder:
             hidden_size=128,
             num_hidden_layers=2,
             num_attention_heads=4,
-            num_key_value_heads=2,
+            num_key_value_heads=1,
             intermediate_size=256,
             vocab_size=1000,
         )

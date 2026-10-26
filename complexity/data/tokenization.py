@@ -21,13 +21,20 @@ INL Complexity Format Features:
 - Memory/context <|memory|>, <|retrieve|>
 """
 
-import torch
-from typing import List, Optional, Union, Dict, Any, Callable
-from pathlib import Path
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from __future__ import annotations
+
 import json
 import re
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from pathlib import Path as Path
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import Callable as Callable
+
+from .._optional import require_optional
+
+if TYPE_CHECKING:
+    import torch
 
 
 class Tokenizer(ABC):
@@ -207,10 +214,7 @@ class SentencePieceTokenizer(Tokenizer):
         Args:
             model_path: Path to SentencePiece model file (.model)
         """
-        try:
-            import sentencepiece as spm
-        except ImportError:
-            raise ImportError("sentencepiece required. Install with: pip install sentencepiece")
+        spm = require_optional("sentencepiece", "tokenizers", feature="SentencePiece tokenization")
 
         self.sp = spm.SentencePieceProcessor()
         self.sp.Load(model_path)
@@ -265,10 +269,7 @@ class TiktokenWrapper(Tokenizer):
                 - "r50k_base": Older models
             special_tokens: Additional special tokens
         """
-        try:
-            import tiktoken
-        except ImportError:
-            raise ImportError("tiktoken required. Install with: pip install tiktoken")
+        tiktoken = require_optional("tiktoken", "tokenizers", feature="tiktoken tokenization")
 
         self.encoding = tiktoken.get_encoding(encoding_name)
 
@@ -324,10 +325,9 @@ class HuggingFaceTokenizer(Tokenizer):
             use_fast: Use fast Rust tokenizer if available
             **kwargs: Additional arguments for AutoTokenizer
         """
-        try:
-            from transformers import AutoTokenizer
-        except ImportError:
-            raise ImportError("transformers required. Install with: pip install transformers")
+        AutoTokenizer = require_optional(
+            "transformers", "hf", feature="Hugging Face tokenization"
+        ).AutoTokenizer
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name_or_path,
@@ -388,9 +388,22 @@ def get_tokenizer(
     Returns:
         Configured tokenizer
     """
+    # Historical CLI callers pass --model through this name. Keep the public
+    # model_path signature while honoring that alias instead of ignoring it.
+    model_path = model_path or kwargs.pop("model_name", None)
+    if tokenizer_type == "hf":
+        tokenizer_type = "huggingface"
     if tokenizer_type == "tiktoken":
+        encoding_name = kwargs.get("encoding_name")
+        if encoding_name is None and model_path is not None:
+            tiktoken = require_optional("tiktoken", "tokenizers", feature="tiktoken tokenization")
+
+            if model_path in tiktoken.list_encoding_names():
+                encoding_name = model_path
+            else:
+                encoding_name = tiktoken.encoding_for_model(model_path).name
         return TiktokenWrapper(
-            encoding_name=kwargs.get("encoding_name", "cl100k_base"),
+            encoding_name=encoding_name or "cl100k_base",
         )
     elif tokenizer_type == "sentencepiece":
         if model_path is None:

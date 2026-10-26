@@ -10,12 +10,15 @@ boilerplate and cap repeated response surfaces.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
 import yaml
+
+from complexity._optional import require_optional
 
 
 def _string_tuple(value: Any, field_name: str) -> tuple[str, ...]:
@@ -476,14 +479,16 @@ class SFTCurriculum:
 
 
 def load_curriculum(path: str | Path) -> SFTCurriculum:
-    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    path = Path(path)
+    content = path.read_text(encoding="utf-8")
+    raw = json.loads(content) if path.suffix.lower() == ".json" else yaml.safe_load(content)
     if not isinstance(raw, dict):
-        raise ValueError("curriculum YAML must contain an object")
+        raise ValueError("curriculum JSON/YAML must contain an object")
     if raw.get("version", 1) != 1:
         raise ValueError(f"unsupported curriculum version: {raw.get('version')}")
     stages_raw = raw.get("stages")
     if not isinstance(stages_raw, list) or not stages_raw:
-        raise ValueError("curriculum YAML must contain at least one stage")
+        raise ValueError("curriculum JSON/YAML must contain at least one stage")
     stages = tuple(CurriculumStage.from_dict(item) for item in stages_raw)
     names = [stage.name for stage in stages]
     if len(names) != len(set(names)):
@@ -507,6 +512,7 @@ def load_projected_metadata(path: str | Path | None) -> dict[str, dict[str, Any]
     if not path.exists():
         return {}
     try:
+        require_optional("pyarrow", "data")
         import pyarrow.parquet as pq
     except ImportError as error:  # pragma: no cover - environment dependent
         raise ImportError("curriculum Parquet metadata requires pyarrow") from error

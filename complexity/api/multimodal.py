@@ -22,28 +22,20 @@ Usage:
     # Omni — image + text -> text
     model = Omni.model(hidden_size=1024, vocab_size=32000)
     out = model(pixel_values=images, input_ids=text_ids)
-    logits = out["logits"]
-"""
+    logits = out["logits"]"""
 
 from __future__ import annotations
-
 from typing import List, Optional
-
 import torch.nn as nn
-
 from complexity.generative.sensor_fusion import (
     SENSOR_MODALITIES,
     TRHashSensorFusionClassifier,
     TRHashSensorFusionConfig,
 )
-from complexity.generative.vision_language import (
-    TRHashImageTextToText,
-    TRHashVisionLanguageConfig,
-)
+from complexity.generative.vision_language import TRHashImageTextToText, TRHashVisionLanguageConfig
 from complexity.multimodal import (
     AudioConfig,
     AudioConvStack,
-    # Audio
     AudioEncoder,
     CLIPVisionEncoder,
     ConcatProjection,
@@ -51,18 +43,15 @@ from complexity.multimodal import (
     FusionConfig,
     GatedFusion,
     MelSpectrogramEncoder,
-    # Fusion
     MultimodalFusion,
     PatchEmbedding,
     PerceiverResampler,
     SigLIPEncoder,
     TubeletEmbedding,
     VideoConfig,
-    # Video
     VideoEncoder,
     VideoTransformer,
     VisionConfig,
-    # Vision
     VisionEncoder,
     VisionTransformer,
     WhisperEncoder,
@@ -84,9 +73,8 @@ class Vision:
     """
     Factory pour créer des encodeurs vision.
 
-    Les nouveaux encodeurs utilisent Source67 : IDs de patches originaux,
+    Les nouveaux encodeurs utilisent TR-HASH : IDs de patches originaux,
     MLP contextuel à deux lags et attention GQA avec têtes routées et V0.
-    ``architecture_profile="legacy"`` conserve le précédent contrat top1/MHA.
     Ces extensions vision n'héritent pas du score mesuré sur texte.
 
     Usage:
@@ -121,9 +109,7 @@ class Vision:
         """
         if vision_type not in cls.TYPES:
             raise ValueError(f"Unknown vision type: {vision_type}. Use: {list(cls.TYPES.keys())}")
-
         vision_cls = cls.TYPES[vision_type]
-
         if vision_type == "transformer":
             values = _rename_factory_kwargs(
                 kwargs, {"num_layers": "num_hidden_layers", "num_heads": "num_attention_heads"}
@@ -141,7 +127,7 @@ class Vision:
         patch_size: int = 16,
         hidden_size: int = 768,
         num_layers: int = 12,
-        num_heads: int = 12,
+        num_heads: int = 4,
         **kwargs,
     ) -> nn.Module:
         """
@@ -179,19 +165,14 @@ class Vision:
         cls, image_size: int = 224, patch_size: int = 16, hidden_size: int = 768
     ) -> nn.Module:
         """Patch embedding layer seul."""
-        return PatchEmbedding(
-            image_size=image_size,
-            patch_size=patch_size,
-            hidden_size=hidden_size,
-        )
+        return PatchEmbedding(image_size=image_size, patch_size=patch_size, hidden_size=hidden_size)
 
 
 class Audio:
     """
     Factory pour créer des encodeurs audio.
 
-    Les nouveaux encodeurs utilisent Source67 avec les positions de frames
-    originales ; le profil legacy reste explicite. Ils attendent un mel déjà
+    Les nouveaux encodeurs utilisent TR-HASH avec les positions de frames
     calculé ``[B, n_mels, frames]``. L'encodeur
     ``complexity.generative.audio.encoder.AudioEncoder`` accepte au contraire
     une waveform ``[B, samples]`` et calcule lui-même le mel.
@@ -207,11 +188,7 @@ class Audio:
         encoder = Audio.mel(n_mels=80, hidden_size=768)
     """
 
-    TYPES = {
-        "standard": AudioEncoder,
-        "whisper": WhisperEncoder,
-        "mel": MelSpectrogramEncoder,
-    }
+    TYPES = {"standard": AudioEncoder, "whisper": WhisperEncoder, "mel": MelSpectrogramEncoder}
 
     @classmethod
     def create(cls, audio_type: str = "standard", **kwargs) -> nn.Module:
@@ -224,9 +201,7 @@ class Audio:
         """
         if audio_type not in cls.TYPES:
             raise ValueError(f"Unknown audio type: {audio_type}. Use: {list(cls.TYPES.keys())}")
-
         audio_cls = cls.TYPES[audio_type]
-
         if audio_type == "mel":
             values = _rename_factory_kwargs(
                 kwargs, {"num_layers": "num_hidden_layers", "num_heads": "num_attention_heads"}
@@ -243,7 +218,7 @@ class Audio:
         n_mels: int = 80,
         hidden_size: int = 768,
         num_layers: int = 6,
-        num_heads: int = 12,
+        num_heads: int = 4,
         **kwargs,
     ) -> nn.Module:
         """
@@ -284,7 +259,7 @@ class Fusion:
     """
     Factory pour créer des modules de fusion multimodal.
 
-    Cross-attention et Perceiver utilisent le MLP Source67 avec les IDs de
+    Cross-attention et Perceiver utilisent le MLP TR-HASH avec les IDs de
     requêtes originaux. Leurs cross-attentions restent spécifiques à la tâche.
     Les modules gated et concat gardent leurs projections dédiées.
 
@@ -322,9 +297,7 @@ class Fusion:
         """
         if fusion_type not in cls.TYPES:
             raise ValueError(f"Unknown fusion type: {fusion_type}. Use: {list(cls.TYPES.keys())}")
-
         fusion_cls = cls.TYPES[fusion_type]
-
         values = _rename_factory_kwargs(
             kwargs, {"num_attention_heads": "num_heads", "num_hidden_layers": "num_layers"}
         )
@@ -332,7 +305,7 @@ class Fusion:
 
     @classmethod
     def cross_attention(
-        cls, hidden_size: int = 768, num_heads: int = 12, num_layers: int = 2, **kwargs
+        cls, hidden_size: int = 768, num_heads: int = 4, num_layers: int = 2, **kwargs
     ) -> nn.Module:
         """
         Cross-attention fusion (texte attend sur vision).
@@ -387,8 +360,7 @@ class Video:
     """
     Factory pour créer des encodeurs vidéo (ViViT + token-routed MLP).
 
-    Le profil Source67 utilise les positions de tubelets originales pour le
-    MLP contextuel et les attentions GQA spatiale/temporelle. Le profil legacy
+    TR-HASH utilise les positions de tubelets originales pour le
     conserve l'ancien contrat. Aucun score vidéo n'est déduit du score texte.
 
     Usage:
@@ -409,11 +381,10 @@ class Video:
         temporal_patch_size: int = 2,
         hidden_size: int = 768,
         num_layers: int = 12,
-        num_heads: int = 12,
+        num_heads: int = 4,
         num_experts: int = 4,
         output_dim: Optional[int] = None,
         *,
-        architecture_profile: str = "source67",
         num_key_value_heads: Optional[int] = None,
     ) -> nn.Module:
         """
@@ -427,9 +398,8 @@ class Video:
             hidden_size: Dimension hidden
             num_layers: Nombre de layers
             num_heads: Nombre de heads
-            num_experts: Experts par bloc MLP (4 pour Source67).
-            architecture_profile: Source67 par défaut, legacy pour les anciens modèles.
-            num_key_value_heads: Têtes KV explicites ; défaut 1 en Source67.
+            num_experts: Experts par bloc MLP (4 pour TR-HASH).
+            num_key_value_heads: Une seule tête KV, imposée par TR-HASH.
             output_dim: Projection de sortie optionnelle
         """
         return VideoEncoder(
@@ -442,7 +412,6 @@ class Video:
             num_heads=num_heads,
             num_experts=num_experts,
             output_dim=output_dim,
-            architecture_profile=architecture_profile,
             num_key_value_heads=num_key_value_heads,
         )
 
@@ -505,9 +474,9 @@ class Omni:
     """
     Factory pour créer des modèles multimodaux (image + texte -> texte).
 
-    Le modèle complet Source67 assigne des IDs aux préfixes visuels et aux
+    Le modèle complet TR-HASH assigne des IDs aux préfixes visuels et aux
     tokens texte dans le même décodeur. La tour vision utilise également le
-    profil commun ; le connecteur croisé garde sa capacité dédiée.
+    moteur commun ; le connecteur croisé garde sa capacité dédiée.
 
     Portée actuelle : image + texte -> texte uniquement (pas encore audio ni
     vidéo).
@@ -547,47 +516,36 @@ class Omni:
         return TRHashImageTextToText(config)
 
 
-# =============================================================================
-# Exports
-# =============================================================================
-
 __all__ = [
-    # Factories
     "Vision",
     "Audio",
     "Video",
     "Fusion",
     "Robot",
     "Omni",
-    # Direct classes - Vision
     "VisionEncoder",
     "VisionConfig",
     "PatchEmbedding",
     "VisionTransformer",
     "CLIPVisionEncoder",
     "SigLIPEncoder",
-    # Direct classes - Audio
     "AudioEncoder",
     "AudioConfig",
     "MelSpectrogramEncoder",
     "WhisperEncoder",
     "AudioConvStack",
-    # Direct classes - Video
     "VideoEncoder",
     "VideoConfig",
     "TubeletEmbedding",
     "VideoTransformer",
-    # Direct classes - Fusion
     "MultimodalFusion",
     "FusionConfig",
     "CrossAttentionFusion",
     "GatedFusion",
     "ConcatProjection",
     "PerceiverResampler",
-    # Direct classes - Robot
     "TRHashSensorFusionClassifier",
     "TRHashSensorFusionConfig",
-    # Direct classes - Omni
     "TRHashImageTextToText",
     "TRHashVisionLanguageConfig",
 ]

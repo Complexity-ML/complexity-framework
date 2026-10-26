@@ -1,6 +1,6 @@
 import pytest
 
-from scripts.check_onnx_quantized_artifacts import (
+from complexity.vision.detection.quantized_artifacts import (
     check_accuracy_artifact_bindings,
     check_quantized_accuracy_report,
     check_quantized_parity_report,

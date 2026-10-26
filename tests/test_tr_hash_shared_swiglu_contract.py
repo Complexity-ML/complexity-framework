@@ -52,7 +52,7 @@ TEXT_DECODER_CONFIG = ModelConfig(
     intermediate_size=64,
     num_hidden_layers=1,
     num_attention_heads=4,
-    num_key_value_heads=2,
+    num_key_value_heads=1,
     mlp_type="tr_hash_engine",
     num_experts=4,
     top_k=2,
@@ -232,32 +232,28 @@ def test_text_runtime_resolves_default_shared_width_instead_of_disabling_it() ->
             TRHashImageConfig().top_k,
         ),
         (
-            "legacy multimodal vision",
-            VisionConfig(architecture_profile="legacy", intermediate_size=64).intermediate_size,
-            VisionConfig(architecture_profile="legacy", intermediate_size=64).intermediate_size
-            // VisionConfig(architecture_profile="legacy", intermediate_size=64).num_experts,
-            1,
+            "multimodal vision",
+            VisionConfig(hidden_size=16).shared_intermediate_size,
+            VisionConfig(hidden_size=16).intermediate_size // 4,
+            2,
         ),
         (
-            "legacy multimodal audio",
-            AudioConfig(architecture_profile="legacy", intermediate_size=64).intermediate_size,
-            AudioConfig(architecture_profile="legacy", intermediate_size=64).intermediate_size
-            // AudioConfig(architecture_profile="legacy", intermediate_size=64).num_experts,
-            1,
+            "multimodal audio",
+            AudioConfig(hidden_size=16).shared_intermediate_size,
+            AudioConfig(hidden_size=16).intermediate_size // 4,
+            2,
         ),
         (
-            "legacy multimodal video",
-            VideoConfig(architecture_profile="legacy", intermediate_size=64).intermediate_size,
-            VideoConfig(architecture_profile="legacy", intermediate_size=64).intermediate_size
-            // VideoConfig(architecture_profile="legacy", intermediate_size=64).num_experts,
-            1,
+            "multimodal video",
+            VideoConfig(hidden_size=16).shared_intermediate_size,
+            VideoConfig(hidden_size=16).intermediate_size // 4,
+            2,
         ),
         (
-            "legacy multimodal fusion",
-            FusionConfig(architecture_profile="legacy", hidden_size=16).hidden_size * 4,
-            (FusionConfig(architecture_profile="legacy", hidden_size=16).hidden_size * 4)
-            // FusionConfig(architecture_profile="legacy", hidden_size=16).num_experts,
-            1,
+            "multimodal fusion",
+            FusionConfig(hidden_size=16).shared_intermediate_size,
+            FusionConfig(hidden_size=16).hidden_size // 4,
+            2,
         ),
     ),
 )
@@ -282,35 +278,39 @@ def test_production_routed_experts_are_smaller_than_the_shared_path(
 
 
 @pytest.mark.parametrize(
-    "mlp",
+    "mlp_class,config",
     (
-        VisionTokenRoutedMLP(
-            VisionConfig(
-                architecture_profile="legacy", hidden_size=16, intermediate_size=64, num_experts=4
-            )
-        ),
-        AudioTokenRoutedMLP(
-            AudioConfig(
-                architecture_profile="legacy", hidden_size=16, intermediate_size=64, num_experts=4
-            )
-        ),
-        VideoTokenRoutedMLP(
-            VideoConfig(
-                architecture_profile="legacy", hidden_size=16, intermediate_size=64, num_experts=4
-            )
-        ),
-        FusionTokenRoutedMLP(
-            FusionConfig(
-                architecture_profile="legacy", hidden_size=16, num_attention_heads=4, num_experts=4
-            )
-        ),
+        pytest.param(VisionTokenRoutedMLP, VisionConfig(hidden_size=16), id="vision"),
+        pytest.param(AudioTokenRoutedMLP, AudioConfig(hidden_size=16), id="audio"),
+        pytest.param(VideoTokenRoutedMLP, VideoConfig(hidden_size=16), id="video"),
+        pytest.param(FusionTokenRoutedMLP, FusionConfig(hidden_size=16), id="fusion"),
     ),
 )
-def test_legacy_multimodal_routed_mlp_keeps_shared_swiglu_and_gradients(mlp) -> None:
-    values = torch.randn(2, 4, 16)
-    output = mlp(values, torch.arange(4))
+def test_multimodal_routed_mlp_keeps_shared_swiglu_and_gradients(mlp_class, config) -> None:
+    mlp = mlp_class(config)
+    engine = mlp.engine
+    hidden_size = config.hidden_size
+    assert (config.num_attention_heads, config.num_key_value_heads) == (4, 1)
+    assert (engine.config.num_experts, engine.config.top_k) == (4, 2)
+    assert engine.config.shared_width == 2 * hidden_size
+    assert engine.config.expert_width == hidden_size // 4
+    assert sum(parameter.numel() for parameter in mlp.parameters()) == (
+        3 * hidden_size * (2 * hidden_size + 4 * (hidden_size // 4))
+    )
+
+    values = torch.randn(2, 4, hidden_size)
+    token_ids = torch.arange(4).expand(2, -1)
+    output = mlp(values, token_ids)
     output.square().mean().backward()
 
     assert output.shape == values.shape
-    assert mlp.shared_gate_up_proj.weight.grad is not None
-    assert mlp.shared_down_proj.weight.grad is not None
+    for projection in (engine.shared_gate, engine.shared_up, engine.shared_down):
+        gradient = projection.weight.grad
+        assert gradient is not None
+        assert torch.isfinite(gradient).all()
+        assert torch.count_nonzero(gradient) > 0
+    for parameter in (engine.expert_gate, engine.expert_up, engine.expert_down):
+        gradient = parameter.grad
+        assert gradient is not None
+        assert torch.isfinite(gradient).all()
+        assert gradient.abs().sum(dim=(1, 2)).gt(0).all()

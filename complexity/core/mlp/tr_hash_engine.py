@@ -1,53 +1,9 @@
-"""MLP adapter that makes the canonical TR-Hash engine a model block.
-
-The historical ``token_routed`` module predates :mod:`complexity.tr_hash` and
-contains its own dispatch implementation.  This adapter is the explicit path
-for new models that should execute through :class:`TRHashEngine` itself.
-"""
+"""Model-block adapter for the canonical shared-plus-four-expert TR-HASH engine."""
 
 from __future__ import annotations
-
-from dataclasses import replace
-
-from ...tr_hash import (
-    AttentionBackbone,
-    TRHashBackend,
-    TRHashEngine,
-    TRHashEngineConfig,
-    TRHashPhase,
-    TRHashPrecision,
-    TRHashStrategy,
-)
+from ...tr_hash import TRHashBackend, TRHashEngine, TRHashEngineConfig, TRHashPrecision
 from ..registry import register_mlp
 from .base import MLPBase, MLPConfig
-
-
-def _route_weights(top_k: int, primary_weight: float | None) -> tuple[float, ...]:
-    if top_k == 1:
-        return (1.0,)
-    primary = 1.0 / top_k if primary_weight is None else float(primary_weight)
-    primary = min(1.0, max(0.0, primary))
-    remainder = (1.0 - primary) / (top_k - 1)
-    return (primary, *(remainder for _ in range(top_k - 1)))
-
-
-def _strategy(value: str) -> TRHashStrategy:
-    aliases = {
-        "token_id_composed_modulo": TRHashStrategy.COMPOSED_MODULO,
-        "modulo": TRHashStrategy.MODULO_CYCLIC,
-        "modulo_cyclic": TRHashStrategy.MODULO_CYCLIC,
-        "token_id_balanced_hash": TRHashStrategy.BALANCED_HASH,
-        "token_id_multi_hash": TRHashStrategy.MULTI_HASH,
-        "token_id_hierarchical_hash": TRHashStrategy.HIERARCHICAL_HASH,
-    }
-    try:
-        return aliases[str(value).lower()]
-    except KeyError as exc:
-        raise ValueError(
-            "tr_hash_engine supports token_id_composed_modulo, modulo_cyclic, token_id_balanced_hash, "
-            "token_id_multi_hash, or token_id_hierarchical_hash; "
-            f"got {value!r}"
-        ) from exc
 
 
 def _backend(config: MLPConfig) -> TRHashBackend:
@@ -67,111 +23,76 @@ def _backend(config: MLPConfig) -> TRHashBackend:
 @register_mlp("tr_hash_engine")
 @register_mlp("tr_hash_moe")
 class TRHashEngineMLP(MLPBase):
-    """Shared SwiGLU plus fixed token-ID experts executed by ``TRHashEngine``."""
-
     def __init__(self, config: MLPConfig):
         super().__init__(config)
-        strategy = _strategy(config.routing_strategy)
-        if config.intermediate_size % config.num_experts:
-            raise ValueError("TR-Hash routed width must be divisible by num_experts")
-        shared_width = (
-            int(
-                config.shared_intermediate_size
-                if config.shared_intermediate_size is not None
-                else (
-                    2 * config.hidden_size
-                    if strategy is TRHashStrategy.COMPOSED_MODULO
-                    else config.intermediate_size
-                )
-            )
-            if config.shared_expert
-            else 0
-        )
-        self.top_k = int(config.top_k)
-        self._primary_weight = (
-            1.0
-            if self.top_k == 1
-            else float(
-                1.0 / self.top_k
-                if config.top_k_primary_weight is None
-                else config.top_k_primary_weight
-            )
-        )
+        if config.expert_initialization != "gpt_normal" or config.hidden_act != "silu":
+            raise ValueError("TR-HASH requires normal initialization and SwiGLU")
+        if (
+            config.use_shared_routed_gates
+            or config.learn_hash_pair_gates
+            or config.learn_hash_channel_modulation
+            or config.lsh_routing
+            or config.hash_routing
+            or config.token_frequencies is not None
+        ):
+            raise ValueError("TR-HASH uses fixed token-ID routes and fixed branch weights")
+        if config.shared_gate_init != 1.0 or config.routed_gate_init != 1.0:
+            raise ValueError("TR-HASH does not use learned branch gates")
+        if not config.shared_expert:
+            raise ValueError("TR-HASH requires its shared expert")
+        if config.intermediate_size % 4:
+            raise ValueError("TR-HASH routed width must be divisible by four")
+        self.top_k = 2
+        self._primary_weight = 0.5
         self.engine = TRHashEngine(
             TRHashEngineConfig(
                 hidden_size=config.hidden_size,
                 vocab_size=config.vocab_size,
                 num_experts=config.num_experts,
-                top_k=self.top_k,
-                shared_width=shared_width,
-                expert_width=config.intermediate_size // config.num_experts,
+                top_k=config.top_k,
+                shared_width=config.shared_intermediate_size or 2 * config.hidden_size,
+                expert_width=config.intermediate_size // 4,
                 initializer_range=float(config.initializer_range),
-                routing_strategy=strategy,
+                routing_strategy=config.routing_strategy,
                 layer_index=int(config.layer_idx),
-                route_hash_count=int(config.route_hash_count),
-                route_weights=_route_weights(
-                    self.top_k,
-                    config.top_k_primary_weight,
-                ),
+                route_weights=(0.5, 0.5)
+                if config.top_k_primary_weight is None
+                else (config.top_k_primary_weight, 1 - config.top_k_primary_weight),
                 shared_output_scale=float(config.shared_output_scale),
                 routed_output_scale=float(config.routed_output_scale),
-                attention_backbone=AttentionBackbone.GQA,
-                phase=TRHashPhase.TRAINING,
                 precision=TRHashPrecision.BF16,
                 backend=_backend(config),
             )
         )
         if config.active_num_experts is not None or config.active_expert_width is not None:
             self.engine.set_active_capacity(
-                num_experts=config.active_num_experts,
-                expert_width=config.active_expert_width,
+                num_experts=config.active_num_experts, expert_width=config.active_expert_width
             )
 
     def forward(self, hidden_states, token_ids=None, **kwargs):
         if token_ids is None:
-            raise ValueError("tr_hash_engine requires token_ids")
+            raise ValueError("TR-HASH requires original token_ids")
         return self.engine(
-            hidden_states,
-            token_ids,
-            previous_token_ids=kwargs.get("previous_token_ids"),
+            hidden_states, token_ids, previous_token_ids=kwargs.get("previous_token_ids")
         )
 
     def set_top_k_primary_weight(self, weight: float) -> None:
-        if self.engine.config.routing_strategy is TRHashStrategy.COMPOSED_MODULO:
-            if float(weight) != 0.5:
-                raise ValueError("source67 requires a fixed top_k_primary_weight of 0.5")
-            return
-        if self.top_k == 1:
-            self._primary_weight = 1.0
-            return
-        self._primary_weight = min(1.0, max(0.0, float(weight)))
-        self.engine.config = replace(
-            self.engine.config,
-            route_weights=_route_weights(self.top_k, self._primary_weight),
-        )
-        # All execution paths must observe the same changed mixture policy.
-        self.engine._route_weights.copy_(
-            self.engine._route_weights.new_tensor(self.engine.config.route_weights)
-        )
-        self.engine._graph_pool.clear()
+        if float(weight) != 0.5:
+            raise ValueError("TR-HASH requires a fixed top_k_primary_weight of 0.5")
 
     def set_active_experts(self, num_experts: int) -> None:
-        """Shrink to a smaller deterministic ID/hash-routed expert pool at runtime."""
         self.engine.set_active_capacity(num_experts=num_experts)
 
     def set_active_expert_width(self, width: int) -> None:
-        """Shrink each active expert's intermediate width at runtime."""
         self.engine.set_active_capacity(expert_width=width)
 
     def training_control_capabilities(self) -> frozenset[str]:
-        if self.engine.config.routing_strategy is TRHashStrategy.COMPOSED_MODULO:
-            return frozenset({"active_expert_width"})
-        return frozenset({"topk_primary_weight", "active_num_experts", "active_expert_width"})
+        return frozenset({"active_expert_width"})
 
     def training_telemetry(self) -> dict[str, float]:
         return {
-            "topk_w": float(self._primary_weight),
-            "active_num_experts": float(self.engine.active_num_experts),
+            "topk_w": 0.5,
+            "active_num_experts": 4.0,
             "active_expert_width": float(self.engine.active_expert_width),
         }
 

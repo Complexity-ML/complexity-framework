@@ -6,14 +6,14 @@ from __future__ import annotations
 
 import torch.nn as nn
 
+from complexity.core.attention import AttentionConfig
 from complexity.core.attention.flash_attention import (
     FlashAttention,
-    SlidingWindowAttention,
-    SparseAttention,
     LinearAttention,
     MultiScaleAttention,
+    SlidingWindowAttention,
+    SparseAttention,
 )
-from complexity.core.attention import AttentionConfig
 
 
 class _AttentionOutputOnly(nn.Module):

@@ -5,6 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from complexity.export.assets import (
+    build_chat_export_config,
+    configure_tokenizer_chat_template,
+    copy_tokenizer_files,
+    strip_tokenizer_chat_template,
+    write_chat_template,
+)
 from complexity.inference.chat_template import (
     AGENTIC_CHAT_TEMPLATE_ID,
     AGENTIC_THINK_FINAL_ENVELOPE,
@@ -22,13 +29,6 @@ from complexity.inference.chat_template import (
     render_messages_before_assistant,
     render_thinking_inference_prompt,
     validate_chat_template,
-)
-from scripts.convert_pt_to_mlx import write_chat_template
-from scripts.export_tr_hash_vllm import (
-    build_config,
-    configure_tokenizer_chat_template,
-    copy_tokenizer_files,
-    strip_tokenizer_chat_template,
 )
 
 
@@ -260,48 +260,42 @@ def test_standalone_jinja_loader_rejects_incomplete_mlx_bundle(tmp_path) -> None
         load_chat_template_jinja(tmp_path)
 
 
-def test_vllm_config_declares_exported_template() -> None:
+def test_transformers_config_declares_exported_template() -> None:
     template = default_chat_template()
-    config = build_config(
+    config = build_chat_export_config(
         {
             "hidden_size": 64,
             "num_hidden_layers": 2,
             "num_attention_heads": 4,
-            "num_key_value_heads": 2,
+            "num_key_value_heads": 1,
             "intermediate_size": 128,
             "vocab_size": 256,
+            "routing_strategy": "token_id_composed_modulo",
         },
         template,
     )
     assert config["chat_template_id"] == CHAT_TEMPLATE_ID
     assert config["chat_template_file"] == "chat_template.jinja"
+    assert config["architectures"] == ["TRHashForCausalLM"]
+    assert config["model_type"] == "tr_hash_moe"
 
 
-def test_vllm_export_preserves_legacy_modulo_cyclic_routing() -> None:
-    legacy = build_config(
+def test_export_requires_explicit_composed_routing() -> None:
+    with pytest.raises(ValueError, match="routing_strategy"):
+        build_chat_export_config({"hidden_size": 64})
+    current = build_chat_export_config(
         {
             "hidden_size": 64,
             "num_hidden_layers": 2,
             "num_attention_heads": 4,
-            "num_key_value_heads": 2,
+            "num_key_value_heads": 1,
             "intermediate_size": 128,
             "vocab_size": 256,
-        }
-    )
-    current = build_config(
-        {
-            "hidden_size": 64,
-            "num_hidden_layers": 2,
-            "num_attention_heads": 4,
-            "num_key_value_heads": 2,
-            "intermediate_size": 128,
-            "vocab_size": 256,
-            "routing_strategy": "token_id_pair_coverage_hash",
+            "routing_strategy": "token_id_composed_modulo",
         }
     )
 
-    assert legacy["routing_strategy"] == "modulo_cyclic"
-    assert current["routing_strategy"] == "token_id_pair_coverage_hash"
+    assert current["routing_strategy"] == "token_id_composed_modulo"
 
 
 def test_export_copies_only_tokenizer_assets(tmp_path) -> None:
@@ -389,14 +383,15 @@ def test_base_export_removes_tokenizer_chat_template(tmp_path) -> None:
 
 
 def test_base_config_has_no_chat_template_metadata() -> None:
-    config = build_config(
+    config = build_chat_export_config(
         {
             "hidden_size": 64,
             "num_hidden_layers": 2,
             "num_attention_heads": 4,
-            "num_key_value_heads": 2,
+            "num_key_value_heads": 1,
             "intermediate_size": 128,
             "vocab_size": 256,
+            "routing_strategy": "token_id_composed_modulo",
         },
         chat_template=None,
     )
@@ -405,7 +400,7 @@ def test_base_config_has_no_chat_template_metadata() -> None:
     assert "chat_template_file" not in config
 
 
-def test_mlx_export_preserves_checkpoint_chat_template(tmp_path) -> None:
+def test_export_preserves_checkpoint_chat_template(tmp_path) -> None:
     template = default_chat_template()
     template["training_projection"] = "naturalize_card_hand_preserve_assistant_turns"
 
@@ -422,3 +417,43 @@ def test_mlx_export_preserves_checkpoint_chat_template(tmp_path) -> None:
         ]
         == "naturalize_card_hand_preserve_assistant_turns"
     )
+
+
+def test_chat_export_preserves_native_expert_shape_and_rejects_unsupported_architecture() -> None:
+    raw = {
+        "mlp_type": "tr_hash_engine",
+        "num_experts": 4,
+        "top_k": 2,
+        "shared_intermediate_size": 1024,
+        "routing_strategy": "token_id_composed_modulo",
+        "routed_output_scale": 2.0,
+        "chat_template_id": "stale",
+        "chat_template_file": "stale.jinja",
+    }
+    config = build_chat_export_config(raw)
+    for field in (
+        "mlp_type",
+        "num_experts",
+        "shared_intermediate_size",
+        "routing_strategy",
+        "routed_output_scale",
+    ):
+        assert config[field] == raw[field]
+    assert config["num_experts_per_tok"] == 2
+    assert "chat_template_id" not in config
+    assert "chat_template_file" not in config
+    assert raw["chat_template_id"] == "stale"
+    with pytest.raises(ValueError, match="Unsupported Transformers export"):
+        build_chat_export_config({**raw, "mlp_type": "swiglu"})
+
+
+def test_invalid_template_leaves_tokenizer_assets_unchanged(tmp_path) -> None:
+    path = tmp_path / "tokenizer_config.json"
+    path.write_text('{"chat_template": "stale", "model_max_length": 2048}', encoding="utf-8")
+    (tmp_path / "chat_template.jinja").write_text("stale", encoding="utf-8")
+    before = {asset.name: asset.read_bytes() for asset in tmp_path.iterdir()}
+
+    with pytest.raises(ValueError):
+        configure_tokenizer_chat_template(tmp_path, {"id": "invalid"})
+
+    assert {asset.name: asset.read_bytes() for asset in tmp_path.iterdir()} == before

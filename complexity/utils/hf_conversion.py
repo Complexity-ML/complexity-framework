@@ -9,12 +9,15 @@ Supports:
 - Push to HuggingFace Hub
 """
 
-import torch
-import torch.nn as nn
-from typing import Dict, Any, Optional, Tuple
-from pathlib import Path
 import json
 import logging
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+import torch
+import torch.nn as nn
+
+from complexity._optional import require_optional
 
 logger = logging.getLogger(__name__)
 
@@ -155,10 +158,9 @@ def load_from_huggingface(
         model = ComplexityModel(config)
         model = load_from_huggingface("meta-llama/Llama-2-7b-hf", model)
     """
-    try:
-        from transformers import AutoModelForCausalLM
-    except ImportError:
-        raise ImportError("transformers is required. Install with: pip install transformers")
+    AutoModelForCausalLM = require_optional(
+        "transformers", "hf", feature="Loading Hugging Face weights"
+    ).AutoModelForCausalLM
 
     # Load HF model
     logger.info(f"Loading HuggingFace model: {model_name_or_path}")
@@ -349,10 +351,8 @@ def push_to_hub(
 
         push_to_hub(model, "myuser/my-complexity-model")
     """
-    try:
-        from huggingface_hub import HfApi, create_repo
-    except ImportError:
-        raise ImportError("huggingface_hub is required. Install with: pip install huggingface_hub")
+    hub = require_optional("huggingface_hub", "hf", feature="Publishing to Hugging Face")
+    HfApi, create_repo = hub.HfApi, hub.create_repo
 
     import tempfile
 
@@ -415,6 +415,7 @@ def from_pretrained(
 
     # Get config from HuggingFace
     try:
+        require_optional("transformers", "hf")
         from transformers import AutoConfig
         hf_config = AutoConfig.from_pretrained(model_name_or_path)
 

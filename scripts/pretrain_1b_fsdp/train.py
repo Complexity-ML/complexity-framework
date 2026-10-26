@@ -12,6 +12,7 @@ from complexity.config import ModelConfig
 from model_impl import TrainingModel, has_liger_fused_linear_ce
 from data import Corpus, ROOT, sha
 from checkpoint_json import checkpoint_reader
+from flow_control import CHECKPOINT, STOP, upload_control_state, wait_for_upload_capacity
 
 
 def log(event, **kw):
@@ -49,7 +50,8 @@ def main():
     corpus=Corpus(rank); args.output.mkdir(parents=True, exist_ok=True)
     runtime=ROOT/'runtime'; runtime.mkdir(exist_ok=True)
     with torch.device(f'cuda:{rank}'):
-        model=TrainingModel(ModelConfig(**json.loads((ROOT/'model.json').read_text())))
+        config=ModelConfig.from_dict(json.loads((ROOT/'model.json').read_text()), strict=True)
+        model=TrainingModel(config)
     policy=MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
     for block in model.model.layers: fully_shard(block, mp_policy=policy, reshard_after_forward=True)
     fully_shard(model, mp_policy=policy, reshard_after_forward=True)
@@ -104,19 +106,35 @@ def main():
     checkpoints=sorted(p for p in args.output.glob('step_*') if (p/'complete.json').is_file())
     step=load(checkpoints[-1]) if checkpoints else 0
     limit=min(args.limit or recipe['max_updates'], recipe['max_updates'])
-    log('start', next_update=step, target_updates=recipe['max_updates'], target_tokens=corpus.plan['scheduled_tokens'], world_size=world, context=recipe['context'], tokens_per_update=corpus.plan['tokens_per_update'], experts=8, top_k=2)
+    log('start', next_update=step, target_updates=recipe['max_updates'], target_tokens=corpus.plan['scheduled_tokens'], world_size=world, context=recipe['context'], tokens_per_update=corpus.plan['tokens_per_update'], experts=config.num_experts, top_k=config.top_k)
     model.train()
     writer=None
     if rank==0:
         from torch.utils.tensorboard import SummaryWriter
         writer=SummaryWriter(str(runtime/'tensorboard'))
     initial_step=step
+
+    def synchronize_upload_control(value):
+        control=torch.tensor(value,device=f'cuda:{rank}',dtype=torch.int64)
+        dist.broadcast(control,src=0)
+        return int(control.item())
+
     while step<limit:
+        request=wait_for_upload_capacity(
+            lambda: upload_control_state(args.output,runtime,limited=args.limit is not None),
+            synchronize_upload_control,is_main=rank==0,
+            on_wait=lambda: log('waiting_for_upload',step=step),
+        )
+        if request:
+            save(step,kind="interrupt")
+            if rank==0 and request & CHECKPOINT:
+                (runtime/'request-checkpoint').unlink(missing_ok=True)
+            if request & STOP:
+                log('graceful_stop',step=step); break
+            # Recheck capacity before consuming the next training batch.
+            continue
         if rank==0:
             if step==initial_step or step%32==0: corpus.prefetch(step)
-            # Do not fill disk with checkpoints if uploads cannot keep up.
-            while len([p for p in args.output.glob('step_*') if (p/'complete.json').exists() and not (runtime/(p.name+'.uploaded.json')).exists()])>=3 and not args.limit:
-                log('waiting_for_upload', step=step); time.sleep(30)
         dist.barrier(); started=time.monotonic()
         batch=torch.from_numpy(corpus.batch(step,rank)).to(f'cuda:{rank}')
         x,y=batch[:,:-1].contiguous(),batch[:,1:].contiguous()

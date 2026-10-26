@@ -1,0 +1,4 @@
+
+# Preserve the official upstream TMLR style files byte for byte.
+TR_Hash_Paper/tmlr.sty -whitespace
+TR_Hash_Paper/tmlr.bst -whitespace

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "complexity-framework"
-version = "0.3.0"
+dynamic = ["version"]
 description = "Modular Python framework for Transformer and Token-Routed language-model research"
 readme = "README.md"
 license = {text = "CC-BY-NC-4.0"}
@@ -38,27 +38,44 @@ requires-python = ">=3.10"
 dependencies = [
     # NOTE: torch is intentionally NOT in required deps. PyPI's default `torch`
     # wheel is the NVIDIA CUDA build — installing it via `pip install -e .` on a
-    # ROCm host silently replaces the AMD-built torch and yanks in 1.5 GB of
-    # nvidia-* packages. Pick a backend extra ([cuda] / [rocm] / [cpu]) so
-    # torch resolves against the right wheel index.
+    # ROCm host can replace the AMD-built torch. Install the backend wheel
+    # first with scripts/install_backend.sh; extras cannot choose a wheel index.
     "numpy>=1.23.0",
     "einops>=0.6.0",
-    "transformers>=4.30.0",
-    "tokenizers>=0.13.0",
-    "tiktoken>=0.7.0",
-    "datasets>=2.0.0",
     "tqdm>=4.0.0",
-    "wandb>=0.15.0",
     "safetensors>=0.4.0",   # save_pretrained + checkpointing
     "filelock>=3.16.1",     # process-safe lazy token-shard cache
     "jinja2>=3.0.0",        # standalone HF/vLLM/MLX chat-template rendering
     "pyyaml>=6.0",          # imported at module load in config/model_config.py
     "typer>=0.9.0",         # CLI (complexity.cli)
-    "tensorboard>=2.14.0",  # complexity.training.callbacks.TensorBoardCallback
+    "rich>=13.0.0",         # CLI tables/progress, including local tokenization
     "tomli>=2.0.0; python_version < '3.11'",  # portable Supervisor job manifests
 ]
 
 [project.optional-dependencies]
+# Local native training, evaluation, and safetensors export use only the core
+# dependencies plus a separately installed Torch backend. These integrations
+# are loaded only by operations that explicitly use them.
+hf = [
+    "transformers>=4.30.0",
+    "huggingface-hub>=0.20.0",
+    "tokenizers>=0.13.0",
+]
+tokenizers = [
+    "tokenizers>=0.13.0",
+    "tiktoken>=0.7.0",
+    "sentencepiece>=0.2.0",
+]
+data = [
+    "datasets>=2.0.0",
+    "huggingface-hub>=0.20.0",
+    "pyarrow>=15.0.0",
+    "pandas>=1.5.0",
+]
+tracking = [
+    "wandb>=0.15.0",
+    "tensorboard>=2.14.0",
+]
 # IMPORTANT: torch is intentionally NOT listed in any backend extra.
 #
 # Reason: pip cannot attach a `--index-url` to an extra. If we list torch here
@@ -90,6 +107,8 @@ image = [
     "diffusers>=0.30.0",
     "accelerate>=0.30.0",
     "hf-xet>=1.1.0",
+    "huggingface-hub>=0.20.0",
+    "tokenizers>=0.13.0",
 ]
 dev = [
     "pytest>=7.0.0",
@@ -104,6 +123,10 @@ tools = [
 pretrain-data = [
     "boto3>=1.34.0",
     "hf-xet>=1.1.0",
+    "datasets>=2.0.0",
+    "huggingface-hub>=0.20.0",
+    "tokenizers>=0.13.0",
+    "transformers>=4.30.0",
 ]
 serve = [
     "fastapi>=0.115.0",
@@ -112,6 +135,8 @@ serve = [
 ]
 export = [
     "Pillow>=10.0.0",
+    "huggingface-hub>=0.20.0",
+    "psutil>=5.9.0",
     "onnx>=1.12.0; platform_system != 'Darwin'",
     "onnx>=1.12.0,<1.18.0; platform_system == 'Darwin' and python_version < '3.13'",
     "onnx>=1.20.0; platform_system == 'Darwin' and python_version >= '3.13'",
@@ -145,11 +170,11 @@ viz = [
 complexity = "complexity.cli.app:main"
 cf-plan-run = "complexity.training.plan_run:main"
 cf-plan-cluster = "complexity.training.cluster_plan:main"
-cf-image-train = "complexity.generative.image.training:main"
-cf-image-edit-train = "complexity.generative.image.edit_training:main"
-cf-detector-train = "complexity.generative.detection.training:main"
-cf-vision-pretrain = "complexity.generative.vision_language.pretraining:main"
-cf-detector-serve = "complexity.generative.detection.service:main"
+cf-image-train = "complexity.vision.image.training:main"
+cf-image-edit-train = "complexity.vision.image.edit_training:main"
+cf-detector-train = "complexity.vision.detection.training:main"
+cf-vision-pretrain = "complexity.vision.vision_language.pretraining:main"
+cf-detector-serve = "complexity.vision.detection.service:main"
 cf-sensor-fusion-train = "complexity.generative.sensor_fusion.training:main"
 cf-sensor-fusion-submit = "complexity.generative.sensor_fusion.submission:main"
 
@@ -164,8 +189,13 @@ where = ["."]
 include = ["complexity*"]
 exclude = ["docs*", "tests*"]
 
+[tool.setuptools.dynamic]
+version = {attr = "complexity._version.__version__"}
+
 [tool.setuptools.package-data]
 "*" = ["*.py"]
+"complexity.training.stack_sft" = ["recipes/*.yaml"]
+"complexity.vision.detection" = ["*.json"]
 
 [tool.setuptools.exclude-package-data]
 "*" = ["*.png", "*.jpg", "*.jpeg", "*.gif", "*.svg", "*.md"]

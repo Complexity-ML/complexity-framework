@@ -1,10 +1,16 @@
-# TR-HASH 125B corpus build runbook
+# Historical TR-HASH 125B corpus build runbook
 
-This runbook prepares the production corpus build on the 120-core CPU host.
+> **Archived source-build protocol.** The named preparation, pinning, audit
+> and shell launchers are absent from this checkout. Commands and measured
+> history below preserve that earlier environment; they are not current
+> execution instructions. Use [current framework workflows](../workflows.md).
+> This 125B corpus plan is separate from the preserved paused 1B/70B recipe.
+
+This runbook recorded the production corpus build on the 120-core CPU host.
 It deliberately does **not** permit final tokenization with an unvalidated or
 mutable tokenizer.
 
-The canonical production path is now the source-curated direct materializer.
+The recorded production path used the source-curated direct materializer.
 It preserves the exact 75B foundation + 50B agentic source budgets while
 matching the high-throughput architecture used for the earlier 200B corpus.
 

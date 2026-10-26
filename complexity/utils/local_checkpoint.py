@@ -8,7 +8,6 @@ from typing import Any
 
 import torch
 
-
 CHECKPOINT_FILE = "checkpoint.pt"
 LATEST_FILE = "latest"
 

@@ -20,8 +20,7 @@ def _tiny_config(**overrides) -> TRHashSensorFusionConfig:
         hidden_size=32,
         num_hidden_layers=2,
         num_attention_heads=4,
-        num_experts=8,
-        architecture_profile="legacy",
+        num_experts=4,
         top_k=2,
         shared_width=32,
         expert_width=8,
@@ -59,17 +58,17 @@ def _inputs(batch: int = 2) -> dict[str, torch.Tensor]:
     }
 
 
-def test_config_uses_eight_experts_and_modality_position_routes():
+def test_config_uses_four_experts_and_modality_position_routes():
     config = _tiny_config()
     model = TRHashSensorFusionClassifier(config)
-    assert config.num_experts == 8
+    assert config.num_experts == 4
     assert model.route_ids.shape == (config.route_vocab_size,)
     assert torch.equal(model.route_ids, torch.arange(config.route_vocab_size))
     assert tuple(model.encoders) == SENSOR_MODALITIES
     for block in model.blocks:
-        assert block.mlp.config.num_experts == 8
+        assert block.mlp.config.num_experts == 4
         assert block.mlp.config.top_k == 2
-        assert torch.unique(block.mlp.route_table).numel() == 8
+        assert torch.unique(block.mlp.route_table).numel() == 4
 
 
 def test_all_modalities_forward_loss_and_expert_gradients():
@@ -89,7 +88,7 @@ def test_all_modalities_forward_loss_and_expert_gradients():
         assert gradient.abs().sum() > 0
 
 
-def test_class_hash_head_is_residual_balanced_and_trainable():
+def test_class_hash_head_is_residual_composed_and_trainable():
     config = _tiny_config(
         num_classes=8,
         class_hash_expert_width=8,
@@ -98,7 +97,7 @@ def test_class_hash_head_is_residual_balanced_and_trainable():
     model = TRHashSensorFusionClassifier(config)
     assert model.class_hash_head is not None
     assert model.class_hash_head.mlp.route_table.shape == (config.top_k, 8)
-    assert torch.unique(model.class_hash_head.mlp.route_table).numel() == 8
+    assert torch.unique(model.class_hash_head.mlp.route_table).numel() == 4
 
     output = model(_inputs(), torch.tensor([1, 3]))
     assert output["class_hash_logits"].shape == (2, 8)
@@ -198,7 +197,7 @@ def test_hash_routes_every_class_modality_pair_through_fixed_experts():
     assert model.class_modality_gate is not None
     gate = model.class_modality_gate
     assert gate.mlp.route_table.shape == (config.top_k, len(SENSOR_MODALITIES) * 6)
-    assert torch.unique(gate.mlp.route_table).numel() == 8
+    assert torch.unique(gate.mlp.route_table).numel() == 4
 
     output = model(_inputs(), torch.tensor([1, 3]))
     assert output["modality_weights"].shape == (2, len(SENSOR_MODALITIES), 6)
@@ -257,7 +256,6 @@ def test_compact_profile_stays_under_ten_million_parameters():
 def test_loads_only_an_exact_compatible_pretrained_tower(tmp_path):
     config = _tiny_config()
     detector_config = TRHashDetectorConfig(
-        architecture_profile=config.architecture_profile,
         vision_key_value_heads=config.vision_key_value_heads,
         image_size=config.vision_image_size,
         patch_size=config.vision_patch_size,
