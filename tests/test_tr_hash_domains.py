@@ -459,3 +459,29 @@ def test_public_video_factory_uses_canonical_attention_and_raw_ids():
             num_heads=4,
             num_key_value_heads=2,
         )
+
+
+def test_domain_attention_onnx_normalization_preserves_eager_weights_and_gradients(monkeypatch):
+    torch.manual_seed(73)
+    attention = DomainSelfAttention(16, 4, layer_index=1).double().eval()
+    with torch.no_grad():
+        attention.q_norm.weight.copy_(torch.linspace(0.25, 1.25, 4))
+        attention.k_norm.weight.copy_(torch.linspace(1.3, 0.5, 4))
+    original = {name: value.clone() for name, value in attention.state_dict().items()}
+    values = torch.randn(2, 5, 16, dtype=torch.float64, requires_grad=True)
+    ids = torch.tensor([[0, 12, 24, 36, 48], [35, 7, 13, 47, 26]])
+    expected = attention(values, ids)
+    expected.square().sum().backward()
+    expected_input_grad = values.grad.clone()
+    expected_grads = {name: parameter.grad.clone() for name, parameter in attention.named_parameters()}
+    attention.zero_grad(set_to_none=True)
+    exported_values = values.detach().clone().requires_grad_()
+    monkeypatch.setattr(torch.onnx, "is_in_onnx_export", lambda: True)
+    actual = attention(exported_values, ids)
+    actual.square().sum().backward()
+    torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+    torch.testing.assert_close(exported_values.grad, expected_input_grad, rtol=1e-12, atol=1e-12)
+    for name, parameter in attention.named_parameters():
+        torch.testing.assert_close(parameter.grad, expected_grads[name], rtol=1e-12, atol=1e-12)
+    for name, value in attention.state_dict().items():
+        torch.testing.assert_close(value, original[name], rtol=0, atol=0)

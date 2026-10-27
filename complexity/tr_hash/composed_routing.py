@@ -57,7 +57,8 @@ def composed_mlp_routes(
     before_previous = combined[:, :sequence]
     context = (previous + 5 * before_previous).remainder(9)
     if layer_index == 1:
-        primary = (token_ids + 1).remainder(4) ^ (2 * context.remainder(3).remainder(2))
+        # Adding two modulo four flips the same bit as XOR with two.
+        primary = ((token_ids + 1).remainder(4) + 2 * context.remainder(3).remainder(2)).remainder(4)
         stride = 1 + (token_ids // 4 + 2 * (context // 3) + 1).remainder(3)
     else:
         primary = (token_ids + layer_index).remainder(4)

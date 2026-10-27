@@ -102,7 +102,12 @@ if DynamicCache is not None:
             self._select_routing(indices)
 
         def crop(self, max_length):
-            super().crop(max_length)
+            # Preserve absolute-length and relative-removal requests. Newer HF
+            # caches accept only negative removal counts; both APIs accept those.
+            length = self.get_seq_length()
+            target = max(0, length + max_length) if max_length < 0 else min(length, max_length)
+            if target < length:
+                super().crop(target - length)
             if self.routing_token_ids is not None:
                 self.routing_token_ids = self.routing_token_ids[:, :self.get_seq_length()]
                 self.routing_history = update_routing_history(self.routing_token_ids)

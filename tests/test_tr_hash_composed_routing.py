@@ -212,3 +212,21 @@ def test_canonical_engine_has_one_route_family_and_fixed_capacity():
 def test_head_routing_rejects_other_head_counts(heads):
     with pytest.raises(ValueError, match="four query heads"):
         composed_head_routes(torch.tensor([[1, 2]]), 1, heads)
+
+
+def test_layer1_exportable_primary_matches_xor_for_all_byte_ids_and_history_classes():
+    from pathlib import Path
+
+    triples = torch.cartesian_prod(torch.arange(256), torch.arange(9), torch.arange(9))
+    token, p1, p2 = triples.unbind(dim=1)
+    ids = token.unsqueeze(1)
+    history = torch.stack((p2, p1), dim=1)
+    context = (p1 + 5 * p2) % 9
+    primary = ((token + 1) % 4) ^ (2 * ((context % 3) % 2))
+    stride = 1 + (token // 4 + 2 * (context // 3) + 1) % 3
+    expected = torch.stack((primary, (primary + stride) % 4)).unsqueeze(-1)
+    assert torch.equal(composed_mlp_routes(ids, 1, history), expected)
+    root = Path(__file__).resolve().parents[1]
+    assert (root / "complexity/tr_hash/composed_routing.py").read_bytes() == (
+        root / "complexity/export/transformers_adapter/composed_routing.py"
+    ).read_bytes()

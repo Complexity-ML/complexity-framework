@@ -257,7 +257,8 @@ def test_adapter_embeddings_require_ids_and_match_native_gradients():
             torch.testing.assert_close(gradient, parameter.grad, rtol=1e-4, atol=1e-6)
 
 
-def test_adapter_cache_beam_reorder_and_crop_preserve_routing_ids():
+@pytest.mark.parametrize("crop_request, kept_length", [(2, 2), (-2, 2), (-1, 3), (0, 0), (-10, 0), (4, 4), (9, 4)])
+def test_adapter_cache_beam_reorder_and_crop_preserve_routing_ids(crop_request, kept_length):
     Config, CausalLM = _load_adapter_modules()
     native = ComplexityModel(_tiny_config()).eval()
     model = CausalLM(Config(**native.config.to_dict())).eval()
@@ -271,10 +272,16 @@ def test_adapter_cache_beam_reorder_and_crop_preserve_routing_ids():
         expected = model(ids[order]).logits[:, 3:]
         torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
         if hasattr(cache, "crop"):
-            cache.crop(2)
-            actual = model(ids[order, 2:], past_key_values=cache, use_cache=True).logits
+            cache.crop(crop_request)
+            assert cache.get_seq_length() == kept_length
+            prefix = ids[order, :kept_length]
+            assert torch.equal(cache.routing_token_ids, prefix)
+            padded = torch.cat((torch.zeros((2, 2), dtype=torch.long), prefix), dim=1)
+            assert torch.equal(cache.routing_history, padded[:, -2:])
+            continued = torch.cat((ids[order], torch.tensor([[9], [10]])), dim=1)
+            actual = model(continued[:, kept_length:], past_key_values=cache, use_cache=True).logits
             torch.testing.assert_close(
-                actual, model(ids[order]).logits[:, 2:], rtol=1e-5, atol=1e-6
+                actual, model(continued).logits[:, kept_length:], rtol=1e-5, atol=1e-6
             )
 
 

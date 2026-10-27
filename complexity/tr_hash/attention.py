@@ -98,6 +98,16 @@ class DomainSelfAttention(nn.Module):
         self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
         self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-6)
 
+    @staticmethod
+    def _normalize_qk(values: torch.Tensor, norm: nn.RMSNorm) -> torch.Tensor:
+        if not torch.onnx.is_in_onnx_export():
+            return norm(values)
+        # Opset 17 has no aten::rms_norm. Match RMSNorm's opmath precision,
+        # epsilon, learned scale and final input-dtype cast using basic ops.
+        working = values.float() if values.dtype in (torch.float16, torch.bfloat16) else values
+        normalized = working * torch.rsqrt(working.pow(2).mean(dim=-1, keepdim=True) + norm.eps)
+        return (normalized * norm.weight).to(dtype=values.dtype)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -114,7 +124,7 @@ class DomainSelfAttention(nn.Module):
         k = F.linear(x, k_weight).view(batch, length, 1, self.head_dim).transpose(1, 2)
         values = bind_value_channels(x, route_ids, self.layer_index)
         v = F.linear(values, v_weight).view(batch, length, 1, self.head_dim).transpose(1, 2)
-        q, k = self.q_norm(q), self.k_norm(k)
+        q, k = self._normalize_qk(q, self.q_norm), self._normalize_qk(k, self.k_norm)
         y = F.scaled_dot_product_attention(
             q,
             k.repeat_interleave(4, dim=1),
