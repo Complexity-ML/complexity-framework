@@ -1,10 +1,13 @@
 """Configuration for direct image-and-text to text generation."""
 
 from __future__ import annotations
-from dataclasses import asdict, dataclass, fields, field
+
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Dict
-from complexity.tr_hash.attention import resolve_domain_heads, resolve_domain_widths
+
 from complexity.config import ModelConfig
+from complexity.tr_hash.attention import resolve_domain_heads, resolve_domain_widths
+
 from .vision_tower import TRHashVisionTowerConfig
 
 

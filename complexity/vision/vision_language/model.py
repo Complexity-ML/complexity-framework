@@ -1,11 +1,15 @@
 """Direct image-and-text to text model with a TR-Hash causal decoder."""
 
 from __future__ import annotations
+
 from typing import Any, Dict, Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 from complexity.models import ComplexityModel
+
 from .config import TRHashVisionLanguageConfig
 from .vision_tower import TRHashVisionTower
 

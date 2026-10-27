@@ -7,12 +7,15 @@ the high-resolution stages, a cheap global final stage, and interpolated 2D
 position grids for variable-resolution training and inference."""
 
 from __future__ import annotations
+
 import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
+
 from complexity.tr_hash import TRHashPrecision
+from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
 
 
 def _build_relative_position_index(window_size: int) -> torch.Tensor:

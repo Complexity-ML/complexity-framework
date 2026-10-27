@@ -1,12 +1,15 @@
 """Instruction-guided image editing with spatial TR-Hash conditioning."""
 
 from __future__ import annotations
+
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Mapping, Optional, Sequence
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
+
 from .config import TRHashImageConfig
 from .model import TRHashTextToImage, _modulate, _timestep_embedding
 

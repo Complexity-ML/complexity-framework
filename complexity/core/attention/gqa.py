@@ -14,10 +14,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ...tr_hash.composed_routing import bind_value_channels, composed_head_routes
 from ...utils.device import sdpa_kernel_context
 from ..position.rotary import PartialRoPE, RotaryEmbedding
 from ..registry import register_attention
-from ...tr_hash.composed_routing import bind_value_channels, composed_head_routes
 from .base import AttentionBase, AttentionConfig
 
 HAS_SDPA = hasattr(F, "scaled_dot_product_attention")

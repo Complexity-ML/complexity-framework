@@ -1,11 +1,13 @@
 """Canonical TR-HASH modality blocks and task-specific connector components. Original position IDs are preserved for head/value routing and contextual expert assignment."""
 
 import math
-from dataclasses import asdict, dataclass, fields, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp, resolve_domain_heads
 
 

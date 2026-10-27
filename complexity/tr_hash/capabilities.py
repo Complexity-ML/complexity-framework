@@ -1,9 +1,12 @@
 """Runtime execution policies for the unique contextual TR-HASH engine."""
 
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Optional, Tuple
+
 import torch
+
 from .config import TRHashBackend, TRHashEngineConfig, TRHashPrecision
 
 

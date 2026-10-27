@@ -1,14 +1,18 @@
 """TR-HASH TR-Hash fusion model for multimodal robot perception."""
 
 from __future__ import annotations
+
 from typing import Mapping, Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
+
 from complexity.tr_hash import TRHashPrecision
+from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
 from complexity.vision.detection.config import TRHashDetectorConfig
 from complexity.vision.detection.hierarchical_tower import HierarchicalTRHashVisionTower
+
 from .config import SENSOR_MODALITIES, TRHashSensorFusionConfig
 from .encoders import SequenceTokenizerV2
 from .structured_encoders import IMUDeviceGraphTokenizer, SkeletonGraphTokenizer

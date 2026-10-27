@@ -1,7 +1,9 @@
 """Versioned detector presets with stable, testable architecture budgets."""
 
 from __future__ import annotations
+
 from typing import Any
+
 from .config import TRHashDetectorConfig
 
 COCO_V8_NANO_NAME = "coco-v8-nano"

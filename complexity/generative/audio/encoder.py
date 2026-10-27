@@ -4,12 +4,20 @@ Raw post-convolution frame positions feed GQA and the two-lag expert MLP.
 The route-ID space is sized by max_frames, independently of input length."""
 
 from __future__ import annotations
-from complexity.tr_hash.attention import resolve_domain_heads, resolve_domain_widths
-from dataclasses import asdict, dataclass, fields, field
+
+from dataclasses import asdict, dataclass, field, fields
+
 import torch
 import torch.nn as nn
-from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
+
 from complexity.tr_hash import TRHashPrecision
+from complexity.tr_hash.attention import (
+    DomainSelfAttention,
+    make_domain_mlp,
+    resolve_domain_heads,
+    resolve_domain_widths,
+)
+
 from .mel import LogMelSpectrogram
 
 

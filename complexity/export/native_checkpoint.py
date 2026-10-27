@@ -20,7 +20,6 @@ from complexity.config import ModelConfig
 from complexity.models import ComplexityModel
 
 
-
 def normalize_native_checkpoint_config(raw: Mapping, weights: Mapping) -> ModelConfig:
     """Infer shape-backed widths and preserve HF routing aliases, failing closed."""
     if not isinstance(raw, Mapping) or not isinstance(weights, Mapping):

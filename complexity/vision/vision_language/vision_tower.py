@@ -4,13 +4,20 @@ Original spatial IDs feed both the two-lag MLP and GQA head/value routing.
 This spatial extension has no validated vision score."""
 
 from __future__ import annotations
-from complexity.tr_hash.attention import resolve_domain_heads, resolve_domain_widths
-from dataclasses import asdict, dataclass, fields, field
+
+from dataclasses import asdict, dataclass, field, fields
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
+
 from complexity.tr_hash import TRHashPrecision
+from complexity.tr_hash.attention import (
+    DomainSelfAttention,
+    make_domain_mlp,
+    resolve_domain_heads,
+    resolve_domain_widths,
+)
 
 
 @dataclass

@@ -1,6 +1,7 @@
 """Model-block adapter for the canonical shared-plus-four-expert TR-HASH engine."""
 
 from __future__ import annotations
+
 from ...tr_hash import TRHashBackend, TRHashEngine, TRHashEngineConfig, TRHashPrecision
 from ..registry import register_mlp
 from .base import MLPBase, MLPConfig

@@ -27,8 +27,13 @@ except ModuleNotFoundError as exc:
         'Install with: pip install "complexity-framework[hf]"'
     ) from exc
 
+from .composed_routing import (
+    bind_value_channels,
+    composed_head_routes,
+    composed_mlp_routes,
+    update_routing_history,
+)
 from .configuration_tr_hash_moe import TRHashConfig
-from .composed_routing import bind_value_channels, composed_head_routes, composed_mlp_routes, update_routing_history
 
 
 def _expected_route_anchor(vocab_size, layer_index):

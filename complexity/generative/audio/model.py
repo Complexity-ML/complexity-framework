@@ -1,11 +1,14 @@
 """TR-Hash speech-to-text (ASR) and text-to-speech (TTS) models."""
 
 from __future__ import annotations
+
 from typing import Any, Dict, Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
+
 from complexity.models import ComplexityModel
 from complexity.vision.image.model import (
     _modulate,
@@ -13,6 +16,7 @@ from complexity.vision.image.model import (
     _timestep_embedding,
     _TRHashDiTBlock,
 )
+
 from .config import TRHashAudioConfig, TRHashSpeechToTextConfig
 from .encoder import AudioEncoder
 

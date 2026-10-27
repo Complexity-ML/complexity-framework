@@ -7,6 +7,12 @@ from .capabilities import (
     select_backend,
     supports_fused_cuda,
 )
+from .composed_routing import (
+    bind_value_channels,
+    composed_head_routes,
+    composed_mlp_routes,
+    update_routing_history,
+)
 from .config import (
     SUPPORTED_EXPERT_COUNTS,
     SUPPORTED_TOP_K,
@@ -19,12 +25,6 @@ from .config import (
     TRHashStrategy,
 )
 from .engine import TRHashEngine, reference_topk_swiglu
-from .composed_routing import (
-    bind_value_channels,
-    composed_head_routes,
-    composed_mlp_routes,
-    update_routing_history,
-)
 from .routing import (
     build_route_table,
     compile_top2_pair_metadata,

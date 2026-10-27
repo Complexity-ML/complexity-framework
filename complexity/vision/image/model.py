@@ -1,14 +1,18 @@
 """Latent rectified-flow transformer with deterministic TR-Hash experts."""
 
 from __future__ import annotations
+
 import math
 from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
-from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
+
 from complexity.tr_hash import TRHashPrecision
+from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
+
 from .config import TRHashImageConfig
 
 

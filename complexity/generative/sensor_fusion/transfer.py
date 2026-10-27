@@ -1,9 +1,12 @@
 """Compatible vision-tower transfer for TR-Hash sensor fusion."""
 
 from __future__ import annotations
+
 import json
 from pathlib import Path
+
 from safetensors.torch import load_file
+
 from ...vision.detection.config import TRHashDetectorConfig
 from .model import TRHashSensorFusionClassifier
 

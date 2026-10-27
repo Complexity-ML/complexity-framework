@@ -4,12 +4,15 @@ Raw flattened temporal/spatial positions feed both GQA and the two-lag MLP.
 No video accuracy result is implied by the text recipe."""
 
 from __future__ import annotations
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 from complexity.multimodal.video import TubeletEmbedding, VideoConfig
-from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
 from complexity.tr_hash import TRHashPrecision
+from complexity.tr_hash.attention import DomainSelfAttention, make_domain_mlp
+
 from .config import TRHashVideoTowerConfig
 
 

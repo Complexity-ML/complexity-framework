@@ -1,11 +1,14 @@
 """Optional level specialization and temporal motion for TR-Hash detection."""
 
 from __future__ import annotations
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from complexity.tr_hash.attention import make_domain_mlp
+
 from complexity.tr_hash import TRHashPrecision
+from complexity.tr_hash.attention import make_domain_mlp
+
 from .config import TRHashDetectorConfig
 
 

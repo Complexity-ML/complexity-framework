@@ -1,9 +1,11 @@
 """Configuration for the TR-Hash MoE video tower."""
 
 from __future__ import annotations
-from complexity.tr_hash.attention import resolve_domain_heads, resolve_domain_widths
-from dataclasses import asdict, dataclass, fields, field
+
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Dict
+
+from complexity.tr_hash.attention import resolve_domain_heads, resolve_domain_widths
 
 
 @dataclass(frozen=True)

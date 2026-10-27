@@ -25,8 +25,11 @@ Usage:
     logits = out["logits"]"""
 
 from __future__ import annotations
+
 from typing import List, Optional
+
 import torch.nn as nn
+
 from complexity.generative.sensor_fusion import (
     SENSOR_MODALITIES,
     TRHashSensorFusionClassifier,

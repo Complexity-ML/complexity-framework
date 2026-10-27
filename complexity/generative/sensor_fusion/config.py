@@ -1,10 +1,12 @@
 """Configuration for the TR-Hash multimodal robot perception model."""
 
 from __future__ import annotations
-from complexity.tr_hash.attention import resolve_domain_heads, resolve_domain_widths
-from dataclasses import asdict, dataclass, fields, field
+
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Dict, Tuple
+
 from complexity.tr_hash import TRHashPrecision
+from complexity.tr_hash.attention import resolve_domain_heads, resolve_domain_widths
 
 SENSOR_MODALITIES: Tuple[str, ...] = ("depth", "ir", "thermal", "imu", "radar", "skeleton")
 

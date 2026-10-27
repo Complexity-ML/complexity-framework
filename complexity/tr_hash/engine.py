@@ -11,11 +11,11 @@ import torch.nn.functional as F
 
 from .buckets import GraphBucketPlanner
 from .capabilities import BackendDecision, select_backend, supports_fused_cuda
+from .composed_routing import composed_mlp_routes
 from .config import (
     TRHashBackend,
     TRHashEngineConfig,
 )
-from .composed_routing import composed_mlp_routes
 from .routing import build_route_table
 
 logger = logging.getLogger(__name__)

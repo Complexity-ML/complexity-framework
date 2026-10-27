@@ -5,10 +5,13 @@ provides architecture behavior; it makes no vision or audio quality claim.
 """
 
 from __future__ import annotations
+
 import math
+
 import torch
 from torch import nn
 from torch.nn import functional as F
+
 from .composed_routing import bind_value_channels, composed_head_routes
 from .config import TRHashBackend, TRHashEngineConfig, TRHashPrecision, TRHashStrategy
 from .engine import TRHashEngine
